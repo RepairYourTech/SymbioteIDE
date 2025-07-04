@@ -183,7 +183,7 @@ jobs:
         npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
     
     - name: Upload Release Assets
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           dist/*.exe
