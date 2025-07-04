@@ -1,0 +1,126 @@
+/* VS Code Theme Variables */
+:root {
+  --font-family: var(--vscode-font-family);
+  --font-size: var(--vscode-font-size);
+  --font-weight: var(--vscode-font-weight);
+  
+  --background: var(--vscode-editor-background);
+  --foreground: var(--vscode-editor-foreground);
+  --border: var(--vscode-panel-border);
+  
+  --panel-background: var(--vscode-panel-background);
+  --input-background: var(--vscode-input-background);
+  --input-foreground: var(--vscode-input-foreground);
+  --input-border: var(--vscode-input-border);
+  
+  --button-background: var(--vscode-button-background);
+  --button-foreground: var(--vscode-button-foreground);
+  --button-hover-background: var(--vscode-button-hoverBackground);
+  
+  --success-color: var(--vscode-testing-iconPassed);
+  --warning-color: var(--vscode-testing-iconQueued);
+  --error-color: var(--vscode-testing-iconFailed);
+  --info-color: var(--vscode-textLink-foreground);
+  
+  --scrollbar-slider: var(--vscode-scrollbarSlider-background);
+  --scrollbar-slider-hover: var(--vscode-scrollbarSlider-hoverBackground);
+  --scrollbar-slider-active: var(--vscode-scrollbarSlider-activeBackground);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+  font-weight: var(--font-weight);
+  color: var(--foreground);
+  background-color: var(--background);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-slider);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-slider-hover);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-slider-active);
+}
+
+/* Common Styles */
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 2px;
+  background-color: var(--button-background);
+  color: var(--button-foreground);
+  transition: background-color 0.2s;
+}
+
+button:hover {
+  background-color: var(--button-hover-background);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  background-color: var(--input-background);
+  color: var(--input-foreground);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  padding: 4px 8px;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  margin-bottom: 0.5em;
+}
+
+a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

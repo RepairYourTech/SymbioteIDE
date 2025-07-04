@@ -1,0 +1,10 @@
+{
+  "name": "@symbiote/browser",
+  "version": "1.0.0",
+  "description": "Chromium browser integration for SymbioteIDE",
+  "main": "index.ts",
+  "dependencies": {
+    "playwright": "^1.40.1",
+    "@playwright/test": "^1.40.1"
+  }
+}

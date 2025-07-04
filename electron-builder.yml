@@ -1,0 +1,163 @@
+appId: com.symbiote.SymbioteIDE
+productName: SymbioteIDE
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - out/**/*
+  - package.json
+  - product.json
+  - resources/**/*
+  - "!**/*.ts"
+  - "!**/*.map"
+  - "!src/**/*"
+  - "!build/**/*"
+  - "!test/**/*"
+  - "!scripts/**/*"
+  - "!extensions/**/test/**"
+  - "!extensions/**/src/**"
+
+asarUnpack:
+  - "**/node_modules/@parcel/watcher/**"
+  - "**/node_modules/@vscode/sqlite3/**"
+  - "**/node_modules/@vscode/spdlog/**"
+  - "**/node_modules/@vscode/windows-ca-certs/**"
+  - "**/node_modules/@vscode/windows-mutex/**"
+  - "**/node_modules/@vscode/windows-process-tree/**"
+  - "**/node_modules/@vscode/windows-registry/**"
+  - "**/node_modules/kerberos/**"
+  - "**/node_modules/keytar/**"
+  - "**/node_modules/native-is-elevated/**"
+  - "**/node_modules/native-keymap/**"
+  - "**/node_modules/native-watchdog/**"
+  - "**/node_modules/node-pty/**"
+  - "**/node_modules/vscode-nsfw/**"
+  - "**/node_modules/vscode-windows-ca-certs/**"
+  - "**/.venv-adk/**"
+
+electronVersion: 32.0.1
+
+# Windows Configuration
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  icon: resources/win32/code.ico
+  publisherName: SymbioteIDE Inc.
+  verifyUpdateCodeSignature: false
+  certificateSubjectName: SymbioteIDE Inc.
+  signAndEditExecutable: true
+
+nsis:
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  installerIcon: resources/win32/code.ico
+  uninstallerIcon: resources/win32/code.ico
+  installerSidebar: resources/win32/inno-setup-bg.bmp
+  include: build/win32/installer.nsh
+  
+# macOS Configuration
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+        - universal
+    - target: zip
+      arch:
+        - x64
+        - arm64
+        - universal
+  category: public.app-category.developer-tools
+  icon: resources/darwin/code.icns
+  bundleIdentifier: com.symbiote.SymbioteIDE
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/darwin/entitlements.plist
+  entitlementsInherit: build/darwin/entitlements.plist
+  notarize: false
+
+dmg:
+  sign: false
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# Linux Configuration
+linux:
+  target:
+    - deb
+    - rpm
+    - AppImage
+    - snap
+  icon: resources/linux/code.png
+  desktop:
+    Name: SymbioteIDE
+    Comment: AI-Powered Development Environment
+    GenericName: Text Editor
+    Exec: symbiote-ide %F
+    Icon: symbiote-ide
+    Type: Application
+    StartupNotify: true
+    Categories: Utility;TextEditor;Development;IDE;
+    MimeType: text/plain;inode/directory;
+    Actions: new-empty-window;
+    Keywords: vscode;symbiote;ai;ide;
+  category: Development
+
+deb:
+  priority: optional
+  compression: xz
+  depends:
+    - libnss3
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - python3
+
+rpm:
+  compression: xz
+  fpm:
+    - --rpm-rpmbuild-define
+    - "_build_id_links none"
+
+snap:
+  grade: stable
+  confinement: classic
+
+appImage:
+  artifactName: ${productName}-${version}-${arch}.AppImage
+
+# Publishing Configuration
+publish:
+  - provider: generic
+    url: https://releases.symbiote-ide.com
+    channel: latest
+
+# Build Configuration
+buildDependenciesFromSource: false
+nodeGypRebuild: false
+npmRebuild: false
+
+afterSign: build/darwin/sign.js

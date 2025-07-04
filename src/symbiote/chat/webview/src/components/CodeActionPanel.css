@@ -1,0 +1,32 @@
+.code-action-panel {
+  background: var(--vscode-editor-background);
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: var(--chat-spacing-md);
+  flex-shrink: 0;
+}
+
+.code-action-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--chat-spacing-sm);
+  margin-bottom: var(--chat-spacing-md);
+  font-weight: 500;
+}
+
+.code-action-panel-title {
+  font-size: 14px;
+}
+
+.code-action-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--chat-spacing-sm);
+  max-height: 300px;
+  overflow-y: auto;
+  margin-bottom: var(--chat-spacing-md);
+}
+
+.code-action-panel-footer {
+  display: flex;
+  justify-content: flex-end;
+}

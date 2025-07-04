@@ -1,0 +1,22 @@
+{
+  "watch": [
+    "src/symbiote/**/*",
+    "src/vs/**/*"
+  ],
+  "ext": "ts,js,json",
+  "ignore": [
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/node_modules/**",
+    "**/out/**",
+    "**/dist/**",
+    "**/.build/**"
+  ],
+  "exec": "npm run compile:symbiote",
+  "env": {
+    "NODE_ENV": "development",
+    "SYMBIOTE_DEV": "1"
+  },
+  "delay": 1000,
+  "verbose": false
+}

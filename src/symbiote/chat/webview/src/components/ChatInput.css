@@ -1,0 +1,60 @@
+.chat-input-container {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: var(--chat-spacing-md);
+  background: var(--vscode-editor-background);
+  flex-shrink: 0;
+}
+
+.chat-input-wrapper {
+  display: flex;
+  gap: var(--chat-spacing-sm);
+  align-items: flex-end;
+}
+
+.chat-input {
+  flex: 1;
+  min-height: 40px;
+  max-height: 120px;
+  padding: var(--chat-spacing-sm) var(--chat-spacing-md);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: var(--chat-radius-sm);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: inherit;
+  font-size: inherit;
+  resize: none;
+  outline: none;
+  transition: var(--chat-transition);
+}
+
+.chat-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.chat-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-input-actions {
+  display: flex;
+  gap: var(--chat-spacing-xs);
+}
+
+.chat-input-actions vscode-button::part(control) {
+  min-width: 32px;
+  height: 32px;
+  padding: 4px;
+}
+
+.chat-input-hints {
+  margin-top: var(--chat-spacing-xs);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--chat-spacing-xs);
+}

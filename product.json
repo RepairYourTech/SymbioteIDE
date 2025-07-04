@@ -1,0 +1,241 @@
+{
+  "nameShort": "SymbioteIDE",
+  "nameLong": "SymbioteIDE - AI-Powered Development Environment",
+  "applicationName": "symbiote-ide",
+  "dataFolderName": ".symbiote-ide",
+  "win32MutexName": "symbioteide",
+  "licenseName": "MIT",
+  "licenseUrl": "https://github.com/symbiote-ide/symbiote-ide/blob/main/LICENSE",
+  "win32DirName": "SymbioteIDE",
+  "win32NameVersion": "SymbioteIDE",
+  "win32RegValueName": "SymbioteIDE",
+  "win32AppId": "{{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}SymbioteIDE",
+  "win32x64AppId": "{{EA457B21-F73E-494C-ACAB-524FDE069978}SymbioteIDE",
+  "win32arm64AppId": "{{A5270FC5-65AD-483E-AC30-2C276B63D0AC}SymbioteIDE",
+  "win32UserAppId": "{{771FD6B0-FA20-440A-A002-3B3BAC16DC50}SymbioteIDE",
+  "win32x64UserAppId": "{{D628A17A-9713-46BF-8D57-E671B46A741E}SymbioteIDE",
+  "win32arm64UserAppId": "{{D9E514E7-1A56-452D-9337-2990C0DC4310}SymbioteIDE",
+  "win32AppUserModelId": "SymbioteIDE.SymbioteIDE",
+  "win32ShellNameShort": "S&ymbioteIDE",
+  "darwinBundleIdentifier": "com.symbiote.SymbioteIDE",
+  "linuxIconName": "symbiote-ide",
+  "licenseFileName": "LICENSE.txt",
+  "reportIssueUrl": "https://github.com/symbiote-ide/symbiote-ide/issues/new",
+  "urlProtocol": "symbiote-ide",
+  "webviewContentExternalBaseUrlTemplate": "https://{{uuid}}.vscode-cdn.net/insider/ef65ac1ba57f57f2a3961bfe94aa20481caca4c6/out/vs/workbench/contrib/webview/browser/pre/",
+  "extensionAllowedProposedApi": [
+    "GitHub.vscode-pull-request-github",
+    "Microsoft.vscode-js-debug",
+    "ms-vscode.vscode-github-issue-notebooks",
+    "ms-vscode.vscode-markdown-notebook",
+    "ms-vsliveshare.vsliveshare",
+    "ms-vscode-remote.remote-containers",
+    "ms-vscode-remote.remote-ssh",
+    "ms-vscode-remote.remote-ssh-edit",
+    "ms-vscode-remote.remote-wsl",
+    "ms-vscode-remote.vscode-remote-extensionpack",
+    "ms-vscode.azure-repos",
+    "ms-vscode.github-browser",
+    "ms-vscode.github-richnav",
+    "ms-vscode.remotehub",
+    "ms-vscode.remotehub-insiders",
+    "ms-ai-tools.notebook-renderers",
+    "ms-dotnettools.dotnet-interactive-vscode",
+    "ms-python.gather",
+    "ms-python.python",
+    "ms-toolsai.jupyter",
+    "ms-toolsai.vscode-ai",
+    "ms-toolsai.vscode-ai-remote",
+    "ms-vscode.azure-sphere-tools",
+    "ms-vscode.azure-sphere-tools-ui",
+    "ms-vscode.vscode-github-issue-notebooks",
+    "ms-vscode.vscode-markdown-notebook",
+    "ms-vscode.vscode-selfhost-test-provider",
+    "ms-vscode.vscode-typescript-notebook",
+    "vscode.vscode-web-playground",
+    "ms-vscode.remote-server",
+    "ms-vscode.remote-explorer",
+    "ms-azuretools.vscode-azurestaticwebapps",
+    "ms-vscode.js-debug-nightly",
+    "ms-vscode.lsif-browser",
+    "GitHub.github-vscode-theme",
+    "GitHub.copilot",
+    "GitHub.copilot-nightly",
+    "GitHub.copilot-chat",
+    "GitHub.remotehub",
+    "GitHub.remotehub-insiders",
+    "ms-vscode.azure-account",
+    "ms-vscode-remote.remote-containers-nightly",
+    "ms-vscode-remote.remote-ssh-nightly",
+    "ms-vscode-remote.remote-ssh-edit-nightly",
+    "ms-vscode-remote.remote-wsl-nightly",
+    "ms-vscode.js-debug",
+    "ms-vscode.js-debug-companion",
+    "ms-vscode.vscode-js-profile-table"
+  ],
+  "extensionSyncedKeys": {
+    "ritwickdey.liveserver": [
+      "liveServer.setup.version"
+    ]
+  },
+  "extensionVirtualWorkspacesSupport": {
+    "esbenp.prettier-vscode": {
+      "default": false
+    },
+    "msjsdiag.debugger-for-chrome": {
+      "default": false
+    },
+    "redhat.java": {
+      "default": false
+    },
+    "HookyQR.beautify": {
+      "default": false
+    },
+    "ritwickdey.LiveServer": {
+      "default": false
+    },
+    "VisualStudioExptTeam.vscodeintellicode": {
+      "default": false
+    },
+    "octref.vetur": {
+      "default": false
+    },
+    "formulahendry.code-runner": {
+      "default": false
+    },
+    "xdebug.php-debug": {
+      "default": false
+    },
+    "ms-mssql.mssql": {
+      "default": false
+    },
+    "christian-kohler.path-intellisense": {
+      "default": false
+    },
+    "eg2.tslint": {
+      "default": false
+    },
+    "eg2.vscode-npm-script": {
+      "default": false
+    },
+    "donjayamanne.githistory": {
+      "default": false
+    },
+    "Zignd.html-css-class-completion": {
+      "default": false
+    },
+    "christian-kohler.npm-intellisense": {
+      "default": false
+    },
+    "EditorConfig.EditorConfig": {
+      "default": false
+    },
+    "austin.code-gnu-global": {
+      "default": false
+    },
+    "johnpapa.Angular2": {
+      "default": false
+    },
+    "ms-vscode.vscode-typescript-tslint-plugin": {
+      "default": false
+    },
+    "DotJoshJohnson.xml": {
+      "default": false
+    },
+    "techer.open-in-browser": {
+      "default": false
+    },
+    "tht13.python": {
+      "default": false
+    },
+    "bmewburn.vscode-intelephense-client": {
+      "default": false
+    },
+    "Angular.ng-template": {
+      "default": false
+    },
+    "xdebug.php-pack": {
+      "default": false
+    },
+    "dbaeumer.jshint": {
+      "default": false
+    },
+    "yzhang.markdown-all-in-one": {
+      "default": false
+    },
+    "Dart-Code.flutter": {
+      "default": false
+    },
+    "streetsidesoftware.code-spell-checker": {
+      "default": false
+    },
+    "rebornix.Ruby": {
+      "default": false
+    },
+    "ms-vscode.sublime-keybindings": {
+      "default": false
+    },
+    "mitaki28.vscode-clang": {
+      "default": false
+    },
+    "steoates.autoimport": {
+      "default": false
+    },
+    "donjayamanne.python-extension-pack": {
+      "default": false
+    },
+    "shd101wyy.markdown-preview-enhanced": {
+      "default": false
+    },
+    "mikestead.dotenv": {
+      "default": false
+    },
+    "pranaygp.vscode-css-peek": {
+      "default": false
+    },
+    "ikappas.phpcs": {
+      "default": false
+    },
+    "platformio.platformio-ide": {
+      "default": false
+    },
+    "jchannon.csharpextensions": {
+      "default": false
+    },
+    "gruntfuggly.todo-tree": {
+      "default": false
+    }
+  },
+  "linkProtectionTrustedDomains": [
+    "https://*.symbiote-ide.com",
+    "https://*.github.com",
+    "https://github.com",
+    "https://*.githubusercontent.com",
+    "https://dev.azure.com",
+    "https://insiders.vscode.dev",
+    "https://code.visualstudio.com",
+    "https://go.microsoft.com",
+    "https://vscode.dev",
+    "https://marketplace.visualstudio.com",
+    "https://*.gallerycdn.vsassets.io"
+  ],
+  "aiConfig": {
+    "ariaKey": "symbiote-ide-aria-key"
+  },
+  "commonProperties": {
+    "aiConfig.ariaKey": "symbiote-ide-aria-key"
+  },
+  "commit": "development",
+  "date": "2024-01-01",
+  "checksums": {},
+  "darwinUniversalAssetId": "darwin-universal",
+  "quality": "stable",
+  "extensionsGallery": {
+    "serviceUrl": "https://marketplace.visualstudio.com/_apis/public/gallery",
+    "cacheUrl": "https://vscode.blob.core.windows.net/gallery/index",
+    "itemUrl": "https://marketplace.visualstudio.com/items",
+    "publisherUrl": "https://marketplace.visualstudio.com/publishers",
+    "resourceUrlTemplate": "https://{publisher}.vsassets.io/{publisher}/{name}/{version}/{path}",
+    "controlUrl": "https://az764295.vo.msecnd.net/extensions/marketplace.json"
+  }
+}

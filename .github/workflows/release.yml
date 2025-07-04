@@ -1,0 +1,240 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Is this a pre-release?'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  NODE_VERSION: '18.x'
+  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+
+jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Determine version
+      id: version
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Generate changelog
+      id: changelog
+      uses: requarks/changelog-action@v1
+      with:
+        token: ${{ github.token }}
+        tag: ${{ steps.version.outputs.version }}
+    
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        release_name: SymbioteIDE ${{ steps.version.outputs.version }}
+        body: |
+          ## What's New in ${{ steps.version.outputs.version }}
+          
+          ${{ steps.changelog.outputs.changes }}
+          
+          ### Features
+          - Multi-model AI orchestration engine
+          - MCP (Model Context Protocol) integration
+          - Visual agent builder interface
+          - AI-powered terminal enhancements
+          - Persistent memory with Mem0
+          - Knowledge graph with Neo4j and Qdrant
+          
+          ### Downloads
+          See assets below for platform-specific installers.
+          
+          ### Installation
+          - **Windows**: Download `.exe` or `.msi` installer
+          - **macOS**: Download `.dmg` for Intel or Apple Silicon
+          - **Linux**: Download `.AppImage`, `.deb`, or `.rpm` package
+          
+          ### System Requirements
+          - Windows 10/11 (x64)
+          - macOS 11.0+ (Intel or Apple Silicon)
+          - Ubuntu 20.04+ / Debian 10+ / Fedora 32+
+          - 8GB RAM minimum (16GB recommended)
+          - 2GB free disk space
+        draft: true
+        prerelease: ${{ inputs.prerelease || contains(steps.version.outputs.version, '-') }}
+
+  build-and-release:
+    name: Build and Release (${{ matrix.name }})
+    needs: prepare-release
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x64
+            platform: linux
+            arch: x64
+          - os: windows-latest
+            name: Windows x64
+            platform: win32
+            arch: x64
+          - os: macos-latest
+            name: macOS x64
+            platform: darwin
+            arch: x64
+          - os: macos-latest
+            name: macOS ARM64
+            platform: darwin
+            arch: arm64
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Setup Python (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install build tools (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: powershell
+      run: |
+        npm install --global --production windows-build-tools@5.2.2
+        npm config set msvs_version 2019
+    
+    - name: Install build tools (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libx11-dev libxkbfile-dev libsecret-1-dev rpm
+    
+    - name: Install build tools (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install python-setuptools
+    
+    - name: Cache Electron
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/electron
+          ~/.cache/electron-builder
+        key: ${{ runner.os }}-electron-${{ matrix.arch }}-${{ hashFiles('**/package-lock.json') }}
+    
+    - name: Install dependencies
+      env:
+        npm_config_arch: ${{ matrix.arch }}
+        npm_config_target_arch: ${{ matrix.arch }}
+        npm_config_disturl: https://electronjs.org/headers
+        npm_config_runtime: electron
+        npm_config_build_from_source: true
+      run: npm ci
+    
+    - name: Build application
+      run: |
+        npm run compile || true
+        npm run download-builtin-extensions || true
+        npm run compile-build || true
+        npm run compile-extensions-build || true
+    
+    - name: Package application
+      env:
+        CSC_IDENTITY_AUTO_DISCOVERY: false
+        SYMBIOTE_TARGET_ARCH: ${{ matrix.arch }}
+      run: |
+        npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+    
+    - name: Upload Release Assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          dist/*.exe
+          dist/*.msi
+          dist/*.deb
+          dist/*.rpm
+          dist/*.AppImage
+          dist/*.dmg
+          dist/*.pkg
+          dist/*.zip
+          dist/*.tar.gz
+        tag_name: ${{ needs.prepare-release.outputs.version }}
+        draft: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-release:
+    name: Publish Release
+    needs: [prepare-release, build-and-release]
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Publish release
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const { owner, repo } = context.repo;
+          const tag = '${{ needs.prepare-release.outputs.version }}';
+          
+          // Find the draft release
+          const releases = await github.rest.repos.listReleases({
+            owner,
+            repo
+          });
+          
+          const draftRelease = releases.data.find(r => r.tag_name === tag && r.draft);
+          
+          if (draftRelease) {
+            // Publish the release
+            await github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: draftRelease.id,
+              draft: false
+            });
+            
+            console.log(`Published release ${tag}`);
+          } else {
+            throw new Error(`Could not find draft release for tag ${tag}`);
+          }

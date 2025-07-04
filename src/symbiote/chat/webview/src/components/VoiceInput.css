@@ -1,0 +1,130 @@
+.voice-input-container {
+  position: relative;
+}
+
+.voice-recording {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: var(--chat-spacing-sm);
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: var(--chat-radius-md);
+  padding: var(--chat-spacing-md);
+  min-width: 280px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--chat-spacing-sm);
+  margin-bottom: var(--chat-spacing-md);
+}
+
+.recording-dot {
+  width: 12px;
+  height: 12px;
+  background: var(--vscode-errorForeground);
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.8);
+  }
+}
+
+.recording-time {
+  font-size: 16px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 40px;
+  margin-bottom: var(--chat-spacing-md);
+}
+
+.waveform-bar {
+  width: 3px;
+  background: var(--vscode-progressBar-background);
+  border-radius: 1.5px;
+  animation: wave 1s ease-in-out infinite;
+}
+
+.waveform-bar:nth-child(1) {
+  height: 10px;
+  animation-delay: 0s;
+}
+
+.waveform-bar:nth-child(2) {
+  height: 20px;
+  animation-delay: 0.1s;
+}
+
+.waveform-bar:nth-child(3) {
+  height: 30px;
+  animation-delay: 0.2s;
+}
+
+.waveform-bar:nth-child(4) {
+  height: 20px;
+  animation-delay: 0.3s;
+}
+
+.waveform-bar:nth-child(5) {
+  height: 10px;
+  animation-delay: 0.4s;
+}
+
+@keyframes wave {
+  0%, 100% {
+    transform: scaleY(0.5);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.recording-actions {
+  display: flex;
+  gap: var(--chat-spacing-sm);
+  justify-content: flex-end;
+}
+
+.voice-error {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: var(--chat-spacing-xs);
+  padding: var(--chat-spacing-xs) var(--chat-spacing-sm);
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+  border-radius: var(--chat-radius-sm);
+  color: var(--vscode-errorForeground);
+  font-size: 12px;
+  white-space: nowrap;
+}

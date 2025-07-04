@@ -1,0 +1,71 @@
+{
+  "name": "Automated Testing Agent",
+  "version": "1.0.0",
+  "description": "Comprehensive testing agent for unit, integration, and e2e tests",
+  "capabilities": [
+    "test_generation",
+    "test_execution",
+    "coverage_analysis",
+    "performance_testing"
+  ],
+  "workflow": {
+    "steps": [
+      {
+        "id": "analyze_code",
+        "action": "analyze_codebase",
+        "model": "code_analyzer",
+        "outputs": ["code_structure", "dependencies"]
+      },
+      {
+        "id": "generate_unit_tests",
+        "action": "create_unit_tests",
+        "model": "test_generator",
+        "dependsOn": ["analyze_code"],
+        "inputs": ["code_structure"]
+      },
+      {
+        "id": "generate_integration_tests",
+        "action": "create_integration_tests",
+        "model": "test_generator",
+        "dependsOn": ["analyze_code"],
+        "inputs": ["dependencies"],
+        "parallel": true
+      },
+      {
+        "id": "run_tests",
+        "action": "execute_test_suite",
+        "model": "test_runner",
+        "dependsOn": ["generate_unit_tests", "generate_integration_tests"]
+      },
+      {
+        "id": "analyze_coverage",
+        "action": "coverage_report",
+        "model": "coverage_analyzer",
+        "dependsOn": ["run_tests"]
+      },
+      {
+        "id": "suggest_improvements",
+        "action": "test_recommendations",
+        "model": "test_advisor",
+        "dependsOn": ["analyze_coverage"]
+      }
+    ]
+  },
+  "configuration": {
+    "testFramework": "jest",
+    "coverageThreshold": {
+      "statements": 80,
+      "branches": 75,
+      "functions": 80,
+      "lines": 80
+    },
+    "parallelTests": true,
+    "generateMocks": true
+  },
+  "requirements": {
+    "models": ["code_analyzer", "test_generator", "test_runner"],
+    "tools": ["jest", "coverage_tool", "mock_generator"],
+    "memory": true,
+    "knowledge_graph": true
+  }
+}

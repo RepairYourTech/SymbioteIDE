@@ -1,0 +1,85 @@
+{
+  "id": "example-notebook-001",
+  "name": "Example SymbioteIDE Notebook",
+  "cells": [
+    {
+      "id": "cell-1",
+      "type": "markdown",
+      "source": "# SymbioteIDE Notebook Example\n\nThis notebook demonstrates the powerful features of SymbioteIDE's native notebook functionality, including:\n- React component development with live preview\n- Tailwind CSS styling with JIT compilation\n- Interactive design system creation\n- Multi-language kernel support",
+      "outputs": [],
+      "metadata": {},
+      "executionState": "idle",
+      "createdAt": "2025-07-03T12:00:00Z",
+      "updatedAt": "2025-07-03T12:00:00Z"
+    },
+    {
+      "id": "cell-2",
+      "type": "react",
+      "language": "typescript",
+      "source": "import React, { useState } from 'react';\n\nexport default function WelcomeComponent() {\n  const [count, setCount] = useState(0);\n  \n  return (\n    <div className=\"flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8\">\n      <div className=\"bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full\">\n        <h1 className=\"text-3xl font-bold text-gray-800 mb-4 text-center\">\n          Welcome to SymbioteIDE Notebooks! 🚀\n        </h1>\n        <p className=\"text-gray-600 text-center mb-6\">\n          Build interactive React components with Tailwind CSS\n        </p>\n        <div className=\"flex flex-col items-center space-y-4\">\n          <div className=\"text-5xl font-bold text-indigo-600\">\n            {count}\n          </div>\n          <button\n            onClick={() => setCount(count + 1)}\n            className=\"px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transform transition-all duration-200 hover:scale-105 active:scale-95\"\n          >\n            Increment Count\n          </button>\n          <button\n            onClick={() => setCount(0)}\n            className=\"px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors\"\n          >\n            Reset\n          </button>\n        </div>\n      </div>\n    </div>\n  );\n}",
+      "outputs": [],
+      "metadata": {
+        "framework": "react",
+        "buildConfig": {
+          "bundler": "vite",
+          "cssProcessor": "tailwind"
+        }
+      },
+      "executionState": "idle",
+      "createdAt": "2025-07-03T12:00:00Z",
+      "updatedAt": "2025-07-03T12:00:00Z"
+    },
+    {
+      "id": "cell-3",
+      "type": "design",
+      "source": "{\n  \"type\": \"colorScheme\",\n  \"baseColor\": \"#6366f1\",\n  \"name\": \"Indigo Dream\",\n  \"description\": \"A modern color scheme based on indigo\"\n}",
+      "outputs": [],
+      "metadata": {},
+      "executionState": "idle",
+      "createdAt": "2025-07-03T12:00:00Z",
+      "updatedAt": "2025-07-03T12:00:00Z"
+    },
+    {
+      "id": "cell-4",
+      "type": "code",
+      "language": "javascript",
+      "source": "// Fetch data and visualize\nconst data = [\n  { month: 'Jan', value: 400 },\n  { month: 'Feb', value: 300 },\n  { month: 'Mar', value: 600 },\n  { month: 'Apr', value: 800 },\n  { month: 'May', value: 500 }\n];\n\n// Display as table\nconsole.table(data);\n\n// Calculate total\nconst total = data.reduce((sum, item) => sum + item.value, 0);\nconsole.log(`Total: ${total}`);\n\n// Export for use in other cells\nexports.monthlyData = data;\nexports.totalValue = total;",
+      "outputs": [],
+      "metadata": {},
+      "executionState": "idle",
+      "createdAt": "2025-07-03T12:00:00Z",
+      "updatedAt": "2025-07-03T12:00:00Z"
+    },
+    {
+      "id": "cell-5",
+      "type": "react",
+      "language": "typescript",
+      "source": "import React from 'react';\n\n// Use data from previous cell\nconst data = __cellExports['cell-4']?.monthlyData || [];\n\nexport default function DataVisualization() {\n  const maxValue = Math.max(...data.map(d => d.value));\n  \n  return (\n    <div className=\"p-8 bg-gray-50\">\n      <h2 className=\"text-2xl font-bold mb-6\">Monthly Data Visualization</h2>\n      <div className=\"space-y-4\">\n        {data.map((item, index) => (\n          <div key={index} className=\"flex items-center space-x-4\">\n            <span className=\"w-12 text-sm font-medium\">{item.month}</span>\n            <div className=\"flex-1 bg-gray-200 rounded-full h-8 relative\">\n              <div\n                className=\"absolute top-0 left-0 h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full flex items-center justify-end pr-3\"\n                style={{ width: `${(item.value / maxValue) * 100}%` }}\n              >\n                <span className=\"text-white text-sm font-semibold\">\n                  {item.value}\n                </span>\n              </div>\n            </div>\n          </div>\n        ))}\n      </div>\n    </div>\n  );\n}",
+      "outputs": [],
+      "metadata": {
+        "framework": "react",
+        "dependencies": ["cell-4"]
+      },
+      "executionState": "idle",
+      "createdAt": "2025-07-03T12:00:00Z",
+      "updatedAt": "2025-07-03T12:00:00Z"
+    }
+  ],
+  "metadata": {
+    "author": "SymbioteIDE Team",
+    "description": "Example notebook showcasing React, Tailwind, and design system features",
+    "tags": ["example", "react", "tailwind", "design-system"],
+    "projectId": "symbiote-ide",
+    "language": "typescript",
+    "framework": "react"
+  },
+  "kernelSpec": {
+    "name": "typescript",
+    "displayName": "TypeScript",
+    "language": "typescript",
+    "argv": ["ts-node"]
+  },
+  "createdAt": "2025-07-03T12:00:00Z",
+  "updatedAt": "2025-07-03T12:00:00Z",
+  "version": "1.0.0"
+}

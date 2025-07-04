@@ -1,0 +1,87 @@
+# macOS-specific overrides for Docker Compose
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.macos.yml up
+
+version: '3.8'
+
+services:
+  # macOS-specific volume handling
+  symbiote-ide:
+    volumes:
+      - ${WORKSPACE_PATH:-~/SymbioteWorkspace}:/workspace:delegated
+      - ${CONFIG_PATH:-~/.symbiote}:/config:delegated
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Enable macOS file system optimizations
+      - DOCKER_CONTENT_TRUST=0
+      - COMPOSE_DOCKER_CLI_BUILD=1
+
+  # macOS memory adjustments
+  neo4j:
+    environment:
+      # macOS Docker Desktop typically has less memory
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=1500m
+      - NEO4J_dbms_memory_pagecache_size=512m
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # Optimize for macOS virtualization
+  qdrant:
+    environment:
+      # macOS-optimized settings
+      - QDRANT__STORAGE__OPTIMIZERS__VACUUM_MIN_VECTOR_NUMBER=5000
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=2
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 3G
+
+  # Redis macOS configuration
+  redis:
+    # Use specific Redis config for macOS
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 1500mb
+      --maxmemory-policy allkeys-lru
+      --requirepass symbiote123
+      --tcp-backlog 128
+      --hz 10
+
+  # Agent runtime for macOS
+  agent-runtime:
+    deploy:
+      replicas: 2 # Less replicas on macOS
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 1500M
+        reservations:
+          cpus: '0.5'
+          memory: 768M
+
+  # macOS-specific Ollama configuration (if used)
+  # ollama:
+  #   platform: linux/amd64 # For Intel Macs
+  #   # platform: linux/arm64 # For Apple Silicon Macs
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0
+  #     - OLLAMA_MODELS=/models
+  #   volumes:
+  #     - ${HOME}/.ollama/models:/models:delegated
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '4.0'
+  #         memory: 8G
+
+# macOS-specific network configuration
+networks:
+  symbiote-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1450 # Lower MTU for macOS compatibility

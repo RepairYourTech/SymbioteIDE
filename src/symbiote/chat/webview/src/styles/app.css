@@ -1,0 +1,34 @@
+.chat-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.chat-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--chat-spacing-md);
+  position: relative;
+}
+
+/* Smooth scrolling */
+.chat-content {
+  scroll-behavior: smooth;
+}
+
+/* Fade in animation */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-app > * {
+  animation: fadeIn 0.3s ease-out;
+}

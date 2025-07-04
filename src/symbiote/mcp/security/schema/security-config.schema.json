@@ -1,0 +1,233 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MCP Security Configuration",
+  "description": "Configuration schema for MCP Security Layer",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Enable security features",
+      "default": true
+    },
+    "defaultTrustLevel": {
+      "type": "string",
+      "description": "Default trust level for new servers",
+      "enum": ["trusted", "verified", "unknown", "restricted", "untrusted"],
+      "default": "unknown"
+    },
+    "sandbox": {
+      "type": "object",
+      "description": "Sandbox configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "defaultIsolationLevel": {
+          "type": "string",
+          "enum": ["none", "basic", "strict"],
+          "default": "basic"
+        }
+      }
+    },
+    "scanning": {
+      "type": "object",
+      "description": "Security scanning configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "autoScan": {
+          "type": "boolean",
+          "description": "Automatically scan servers on startup",
+          "default": false
+        },
+        "scanOnInstall": {
+          "type": "boolean",
+          "description": "Scan servers when installing",
+          "default": true
+        },
+        "customPatterns": {
+          "type": "array",
+          "description": "Custom threat patterns",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "severity": {
+                "type": "string",
+                "enum": ["critical", "high", "medium", "low"]
+              },
+              "patterns": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["id", "name", "severity", "patterns"]
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "description": "Permission system configuration",
+      "properties": {
+        "defaultAction": {
+          "type": "string",
+          "enum": ["allow", "deny", "prompt"],
+          "default": "prompt"
+        },
+        "cacheDecisions": {
+          "type": "boolean",
+          "default": true
+        },
+        "decisionTTL": {
+          "type": "number",
+          "description": "Decision cache TTL in milliseconds",
+          "default": 3600000
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "description": "Audit configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "logRotationSizeMB": {
+          "type": "number",
+          "default": 100
+        },
+        "retentionDays": {
+          "type": "number",
+          "default": 30
+        },
+        "enableRealTimeAlerts": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "description": "Trust management configuration",
+      "properties": {
+        "decayEnabled": {
+          "type": "boolean",
+          "description": "Enable trust score decay over time",
+          "default": true
+        },
+        "decayRate": {
+          "type": "number",
+          "description": "Trust points lost per day of inactivity",
+          "default": 1
+        },
+        "incidentImpact": {
+          "type": "object",
+          "properties": {
+            "critical": { "type": "number", "default": -30 },
+            "high": { "type": "number", "default": -20 },
+            "medium": { "type": "number", "default": -10 },
+            "low": { "type": "number", "default": -5 }
+          }
+        }
+      }
+    },
+    "resourceLimits": {
+      "type": "object",
+      "description": "Default resource limits by trust level",
+      "properties": {
+        "trusted": {
+          "$ref": "#/definitions/resourceLimits"
+        },
+        "verified": {
+          "$ref": "#/definitions/resourceLimits"
+        },
+        "unknown": {
+          "$ref": "#/definitions/resourceLimits"
+        },
+        "restricted": {
+          "$ref": "#/definitions/resourceLimits"
+        },
+        "untrusted": {
+          "$ref": "#/definitions/resourceLimits"
+        }
+      }
+    },
+    "policies": {
+      "type": "array",
+      "description": "Security policies",
+      "items": {
+        "$ref": "#/definitions/securityPolicy"
+      }
+    }
+  },
+  "definitions": {
+    "resourceLimits": {
+      "type": "object",
+      "properties": {
+        "maxMemoryMB": { "type": "number" },
+        "maxCpuPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "maxFileHandles": { "type": "number" },
+        "maxThreads": { "type": "number" },
+        "maxExecutionTime": { "type": "number" },
+        "maxDiskIOMBps": { "type": "number" }
+      }
+    },
+    "securityPolicy": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "priority": { "type": "number" },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["filesystem", "network", "process", "resource"]
+              },
+              "resource": { "type": "string" },
+              "action": {
+                "type": "string",
+                "enum": ["allow", "deny", "prompt"]
+              },
+              "conditions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string" },
+                    "operator": { "type": "string" },
+                    "value": {}
+                  }
+                }
+              }
+            },
+            "required": ["id", "type", "resource", "action"]
+          }
+        },
+        "defaultAction": {
+          "type": "string",
+          "enum": ["allow", "deny", "prompt"]
+        },
+        "appliesTo": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["id", "name", "enabled", "priority", "rules", "defaultAction"]
+    }
+  }
+}

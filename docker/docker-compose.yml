@@ -1,0 +1,426 @@
+version: '3.8'
+
+# SymbioteIDE Infrastructure Stack
+# All services except Ollama are required for full functionality
+
+services:
+  # Core IDE Service
+  symbiote-ide:
+    build: 
+      context: ../
+      dockerfile: docker/Dockerfile.ide
+    image: symbiote/ide:latest
+    container_name: symbiote-ide
+    ports:
+      - "8080:8080"
+      - "3000:3000" # Debug port
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mem0:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - ORCHESTRATOR_URL=http://orchestrator:9000
+      - NEO4J_URL=bolt://neo4j:7687
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379
+      - MEM0_URL=http://mem0:8000
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - LANGFUSE_URL=http://langfuse:3000
+      - POSTGRES_URL=postgresql://symbiote:symbiote123@postgres:5432/symbiote
+      - ENABLE_HIVEMIND=true
+      - ENABLE_MEM0=true
+    volumes:
+      - ${WORKSPACE_PATH:-./workspace}:/workspace
+      - ${CONFIG_PATH:-~/.symbiote}:/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro # For Docker operations
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Orchestration Engine
+  orchestrator:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.orchestrator
+    image: symbiote/orchestrator:latest
+    container_name: symbiote-orchestrator
+    ports:
+      - "9000:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mem0:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - MEM0_URL=http://mem0:8000
+      - NEO4J_URL=bolt://neo4j:7687
+      - QDRANT_URL=http://qdrant:6333
+      - LANGFUSE_URL=http://langfuse:3000
+      - ENABLE_METRICS=true
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  # Agent Runtime Pool
+  agent-runtime:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.agent
+    image: symbiote/agent-runtime:latest
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      mem0:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - NEO4J_URL=bolt://neo4j:7687
+      - QDRANT_URL=http://qdrant:6333
+      - MEM0_URL=http://mem0:8000
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - REDIS_URL=redis://redis:6379
+      - AGENT_POOL_SIZE=5
+      - ENABLE_GPU=false
+    networks:
+      - symbiote-network
+    deploy:
+      replicas: 3 # Start with 3, scale as needed
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: symbiote-neo4j
+    ports:
+      - "7474:7474" # Browser
+      - "7687:7687" # Bolt
+    environment:
+      - NEO4J_AUTH=neo4j/symbiote123 # Change in production
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=2G
+      - NEO4J_dbms_memory_pagecache_size=512m
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "symbiote123", "RETURN 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: symbiote-qdrant
+    ports:
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__STORAGE__SNAPSHOTS_PATH=/qdrant/snapshots
+      - QDRANT__LOG_LEVEL=INFO
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - qdrant_snapshots:/qdrant/snapshots
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: symbiote-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --requirepass symbiote123
+    environment:
+      - REDIS_PASSWORD=symbiote123
+    volumes:
+      - redis_data:/data
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Mem0 Memory Layer
+  mem0:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.mem0
+    image: symbiote/mem0:latest
+    container_name: symbiote-mem0
+    ports:
+      - "8000:8000"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=symbiote123
+      - MEM0_CONFIG_PATH=/config/mem0.yaml
+    volumes:
+      - mem0_data:/data
+      - ${CONFIG_PATH:-~/.symbiote}/mem0:/config
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # RabbitMQ Message Queue
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: symbiote-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    environment:
+      - RABBITMQ_DEFAULT_USER=symbiote
+      - RABBITMQ_DEFAULT_PASS=symbiote123
+      - RABBITMQ_DEFAULT_VHOST=symbiote
+      - RABBITMQ_VM_MEMORY_HIGH_WATERMARK=0.8
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq_log:/var/log/rabbitmq
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Langfuse Observability
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: symbiote-langfuse
+    ports:
+      - "3030:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/langfuse
+      - NEXTAUTH_URL=http://localhost:3030
+      - NEXTAUTH_SECRET=mysecretkey # Change in production
+      - SALT=mysalt # Change in production
+      - TELEMETRY_ENABLED=false
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/public/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # PostgreSQL for Langfuse and SymbioteIDE
+  postgres:
+    image: postgres:16-alpine
+    container_name: symbiote-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - POSTGRES_DB=postgres
+      # Multiple databases will be created by init script
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus Metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: symbiote-prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ${CONFIG_PATH:-~/.symbiote}/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "wget", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Grafana Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: symbiote-grafana
+    ports:
+      - "3031:3000"
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin # Change in production
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=redis-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ${CONFIG_PATH:-~/.symbiote}/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - symbiote-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # OPTIONAL: Ollama for local LLM
+  # Uncomment if you want to use Ollama instead of your existing local LLM solution
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: symbiote-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_models:/root/.ollama
+  #   networks:
+  #     - symbiote-network
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:11434/"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+
+networks:
+  symbiote-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_import:
+  neo4j_plugins:
+  qdrant_data:
+  qdrant_snapshots:
+  redis_data:
+  mem0_data:
+  rabbitmq_data:
+  rabbitmq_log:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+  ollama_models: # For optional Ollama

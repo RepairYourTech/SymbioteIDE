@@ -1,0 +1,78 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "commonjs",
+		"lib": [
+			"ES2022",
+			"dom",
+			"dom.iterable"
+		],
+		"outDir": "./out",
+		"rootDir": "./src",
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"moduleResolution": "node",
+		"allowJs": true,
+		"checkJs": false,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"removeComments": false,
+		"noImplicitAny": true,
+		"strictNullChecks": true,
+		"strictFunctionTypes": true,
+		"strictBindCallApply": true,
+		"strictPropertyInitialization": true,
+		"noImplicitThis": true,
+		"alwaysStrict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noImplicitReturns": true,
+		"noFallthroughCasesInSwitch": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noPropertyAccessFromIndexSignature": false,
+		"allowUnusedLabels": false,
+		"allowUnreachableCode": false,
+		"exactOptionalPropertyTypes": false,
+		"baseUrl": ".",
+		"paths": {
+			"vs/*": ["./src/vs/*"],
+			"@symbiote/*": ["./src/*"]
+		},
+		"types": [
+			"node",
+			"mocha",
+			"sinon",
+			"webpack-env"
+		],
+		"jsx": "react",
+		"jsxFactory": "React.createElement",
+		"jsxFragmentFactory": "React.Fragment"
+	},
+	"include": [
+		"src/**/*",
+		"extensions/**/*",
+		"test/**/*"
+	],
+	"exclude": [
+		"node_modules",
+		"**/*.test.ts",
+		"**/*.spec.ts",
+		"out",
+		".build",
+		"extensions/**/out/**",
+		"extensions/**/dist/**"
+	],
+	"references": [
+		{
+			"path": "./src/tsconfig.json"
+		},
+		{
+			"path": "./extensions/tsconfig.json"
+		}
+	]
+}

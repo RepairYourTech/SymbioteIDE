@@ -1,0 +1,31 @@
+.attachment-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--chat-spacing-xs);
+  padding: var(--chat-spacing-xs) var(--chat-spacing-sm);
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: var(--chat-radius-sm);
+  font-size: 12px;
+}
+
+.attachment-preview-image {
+  flex-direction: column;
+  padding: var(--chat-spacing-sm);
+}
+
+.attachment-preview-image img {
+  max-width: 200px;
+  max-height: 150px;
+  object-fit: contain;
+  border-radius: var(--chat-radius-sm);
+  margin-bottom: var(--chat-spacing-xs);
+}
+
+.attachment-preview-file {
+  gap: var(--chat-spacing-sm);
+}
+
+.attachment-preview-name {
+  opacity: 0.9;
+}

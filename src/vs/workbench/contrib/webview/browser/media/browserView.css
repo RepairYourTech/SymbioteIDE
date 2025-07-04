@@ -1,0 +1,189 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.browser-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	background: var(--vscode-editor-background);
+}
+
+/* Tabs Container */
+.browser-view .tabs-container {
+	display: flex;
+	align-items: center;
+	height: 35px;
+	background: var(--vscode-editorGroupHeader-tabsBackground);
+	border-bottom: 1px solid var(--vscode-editorGroupHeader-tabsBorder);
+	overflow-x: auto;
+	scrollbar-width: thin;
+}
+
+.browser-view .tab {
+	display: flex;
+	align-items: center;
+	height: 100%;
+	min-width: 120px;
+	max-width: 240px;
+	padding: 0 8px;
+	border-right: 1px solid var(--vscode-editorGroupHeader-tabsBorder);
+	cursor: pointer;
+	user-select: none;
+	position: relative;
+}
+
+.browser-view .tab:hover {
+	background: var(--vscode-tab-hoverBackground);
+}
+
+.browser-view .tab.active {
+	background: var(--vscode-tab-activeBackground);
+	color: var(--vscode-tab-activeForeground);
+}
+
+.browser-view .tab-icon {
+	margin-right: 6px;
+	opacity: 0.8;
+}
+
+.browser-view .tab-title {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 13px;
+}
+
+.browser-view .tab-close {
+	margin-left: 4px;
+	opacity: 0;
+	cursor: pointer;
+	padding: 2px;
+	border-radius: 3px;
+}
+
+.browser-view .tab:hover .tab-close {
+	opacity: 0.7;
+}
+
+.browser-view .tab-close:hover {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.browser-view .new-tab-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	margin: 0 4px;
+	border-radius: 3px;
+	cursor: pointer;
+	opacity: 0.7;
+}
+
+.browser-view .new-tab-button:hover {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* Navigation Bar */
+.browser-view .navigation-bar {
+	display: flex;
+	align-items: center;
+	height: 40px;
+	padding: 0 8px;
+	background: var(--vscode-editor-background);
+	border-bottom: 1px solid var(--vscode-panel-border);
+	gap: 8px;
+}
+
+.browser-view .url-input-container {
+	flex: 1;
+	max-width: 600px;
+}
+
+.browser-view .url-input-container input {
+	width: 100%;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 3px;
+	padding: 4px 8px;
+	font-size: 13px;
+}
+
+.browser-view .url-input-container input:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* Content Container */
+.browser-view .content-container {
+	flex: 1;
+	position: relative;
+	overflow: hidden;
+}
+
+.browser-view .content-container .webview {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+}
+
+/* Action Bar Overrides */
+.browser-view .action-bar {
+	height: 100%;
+}
+
+.browser-view .action-bar .action-item {
+	display: flex;
+	align-items: center;
+	padding: 0 6px;
+	height: 100%;
+}
+
+.browser-view .action-bar .action-item:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	border-radius: 3px;
+}
+
+.browser-view .action-bar .action-item.disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.browser-view .action-bar .action-item.disabled:hover {
+	background: transparent;
+}
+
+/* Loading State */
+.browser-view .tab.loading .tab-icon {
+	animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+/* Bookmark Indicator */
+.browser-view .tab.bookmarked .tab-icon {
+	color: var(--vscode-notificationsWarningIcon-foreground);
+}
+
+/* Security Indicators */
+.browser-view .secure-indicator {
+	color: var(--vscode-notificationsInfoIcon-foreground);
+	margin-right: 4px;
+}
+
+.browser-view .insecure-indicator {
+	color: var(--vscode-notificationsErrorIcon-foreground);
+	margin-right: 4px;
+}

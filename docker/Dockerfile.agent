@@ -1,0 +1,56 @@
+# Dockerfile for Agent Runtime
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY src/symbiote/tsconfig.json ./src/symbiote/
+
+# Install dependencies
+RUN npm ci
+
+# Copy agent source
+COPY src/symbiote/agent-builder/ ./src/symbiote/agent-builder/
+COPY src/symbiote/adk/ ./src/symbiote/adk/
+COPY src/symbiote/utils/ ./src/symbiote/utils/
+COPY src/types/ ./src/types/
+
+# Build
+RUN npm run build
+
+# Production stage
+FROM node:20-alpine
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    curl \
+    git \
+    bash \
+    python3 \
+    py3-pip
+
+WORKDIR /app
+
+# Copy built files
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package*.json ./
+
+# Create agent workspace
+RUN mkdir -p /agents /workspace
+
+# Expose port
+EXPOSE 8081
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8081/health || exit 1
+
+# Environment
+ENV NODE_ENV=production
+ENV PORT=8081
+ENV AGENT_WORKSPACE=/agents
+
+# Start agent runtime
+CMD ["node", "dist/symbiote/agent-builder/agent-runtime.js"]

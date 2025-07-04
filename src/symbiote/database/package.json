@@ -1,0 +1,10 @@
+{
+  "name": "@symbiote/database",
+  "version": "1.0.0",
+  "description": "PostgreSQL database layer for SymbioteIDE",
+  "main": "index.ts",
+  "dependencies": {
+    "pg": "^8.11.3",
+    "@types/pg": "^8.10.9"
+  }
+}

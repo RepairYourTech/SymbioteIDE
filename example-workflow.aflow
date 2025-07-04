@@ -1,0 +1,57 @@
+{
+  "id": "example_workflow_001",
+  "name": "Example AI Workflow",
+  "description": "A sample workflow demonstrating agent capabilities",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "1",
+      "type": "agent",
+      "position": { "x": 100, "y": 100 },
+      "data": {
+        "label": "Code Analyzer",
+        "config": {
+          "agentType": "architecture-analyst",
+          "model": "claude-3-opus",
+          "temperature": 0.7
+        }
+      }
+    },
+    {
+      "id": "2",
+      "type": "tool",
+      "position": { "x": 400, "y": 100 },
+      "data": {
+        "label": "Read File",
+        "config": {
+          "tool": "file-read",
+          "parameters": {
+            "path": "${input.filePath}"
+          }
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1-2",
+      "source": "1",
+      "target": "2",
+      "type": "default"
+    }
+  ],
+  "variables": [
+    {
+      "id": "filePath",
+      "name": "filePath",
+      "type": "string",
+      "defaultValue": "./src/main.ts"
+    }
+  ],
+  "metadata": {
+    "created": "2025-01-07T00:00:00Z",
+    "modified": "2025-01-07T00:00:00Z",
+    "author": "system",
+    "tags": ["example", "ai", "code-analysis"]
+  }
+}

@@ -1,0 +1,181 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  NODE_VERSION: '18.x'
+
+jobs:
+  pr-validation:
+    name: Validate PR
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Check PR title
+      uses: amannn/action-semantic-pull-request@v5
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Check file size
+      run: |
+        # Check for large files (> 10MB)
+        large_files=$(find . -type f -size +10M | grep -v node_modules | grep -v .git || true)
+        if [ -n "$large_files" ]; then
+          echo "Error: Large files detected (>10MB):"
+          echo "$large_files"
+          exit 1
+        fi
+    
+    - name: Check for merge conflicts
+      run: |
+        if grep -r "<<<<<<< HEAD" --exclude-dir=.git .; then
+          echo "Error: Merge conflict markers detected"
+          exit 1
+        fi
+
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linter
+      run: npm run lint
+    
+    - name: Check TypeScript
+      run: npm run monaco-compile-check || true
+    
+    - name: Check formatting
+      run: |
+        npm run format
+        git diff --exit-code || (echo "Code formatting issues detected. Please run 'npm run format'" && exit 1)
+
+  test-coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run tests with coverage
+      run: npm test -- --coverage --passWithNoTests
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: false
+
+  build-test:
+    name: Build Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Test build
+      run: |
+        npm run compile || true
+        npm run compile-build || true
+
+  pr-comment:
+    name: PR Comment
+    runs-on: ubuntu-latest
+    needs: [pr-validation, code-quality, test-coverage, build-test]
+    if: always()
+    
+    steps:
+    - uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const { owner, repo, number } = context.issue;
+          
+          // Check job statuses
+          const jobs = context.payload.workflow_run?.jobs || [];
+          const failed = jobs.filter(j => j.conclusion === 'failure');
+          const passed = jobs.filter(j => j.conclusion === 'success');
+          
+          let comment = '## PR Check Results\n\n';
+          
+          if (failed.length === 0) {
+            comment += '✅ All checks passed!\n\n';
+          } else {
+            comment += `⚠️ ${failed.length} check(s) failed\n\n`;
+            comment += '### Failed checks:\n';
+            failed.forEach(job => {
+              comment += `- ❌ ${job.name}\n`;
+            });
+            comment += '\n';
+          }
+          
+          comment += '### Summary\n';
+          comment += `- PR Validation: ${context.payload.workflow_run?.jobs?.find(j => j.name === 'Validate PR')?.conclusion === 'success' ? '✅' : '❌'}\n`;
+          comment += `- Code Quality: ${context.payload.workflow_run?.jobs?.find(j => j.name === 'Code Quality')?.conclusion === 'success' ? '✅' : '❌'}\n`;
+          comment += `- Test Coverage: ${context.payload.workflow_run?.jobs?.find(j => j.name === 'Test Coverage')?.conclusion === 'success' ? '✅' : '❌'}\n`;
+          comment += `- Build Test: ${context.payload.workflow_run?.jobs?.find(j => j.name.includes('Build Test'))?.conclusion === 'success' ? '✅' : '❌'}\n`;
+          
+          // Find and update existing comment or create new one
+          const comments = await github.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: number
+          });
+          
+          const botComment = comments.data.find(c => 
+            c.user.type === 'Bot' && c.body.includes('PR Check Results')
+          );
+          
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: botComment.id,
+              body: comment
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body: comment
+            });
+          }

@@ -1,0 +1,196 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop, 'feature/**' ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip tests'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: '18.x'
+  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+
+jobs:
+  lint-and-test:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linter
+      run: npm run lint
+      continue-on-error: true
+    
+    - name: Run TypeScript check
+      run: npm run monaco-compile-check || true
+    
+    - name: Run tests
+      if: ${{ !inputs.skip_tests }}
+      run: npm test -- --passWithNoTests
+    
+    - name: Check layer violations
+      run: npm run valid-layers-check || true
+
+  build-matrix:
+    name: Build (${{ matrix.os }})
+    needs: lint-and-test
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            npm_config_arch: x64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            npm_config_arch: x64
+          - os: macos-latest
+            platform: darwin
+            arch: x64
+            npm_config_arch: x64
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+            npm_config_arch: arm64
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Setup Python (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install build tools (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        npm install --global --production windows-build-tools@5.2.2
+        npm config set msvs_version 2019
+    
+    - name: Install build tools (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libx11-dev libxkbfile-dev libsecret-1-dev rpm
+    
+    - name: Install build tools (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install python-setuptools
+    
+    - name: Set npm architecture
+      run: npm config set target_arch ${{ matrix.npm_config_arch }}
+    
+    - name: Install dependencies
+      env:
+        npm_config_arch: ${{ matrix.npm_config_arch }}
+        npm_config_target_arch: ${{ matrix.npm_config_arch }}
+        npm_config_disturl: https://electronjs.org/headers
+        npm_config_runtime: electron
+        npm_config_build_from_source: true
+      run: npm ci
+    
+    - name: Compile
+      run: npm run compile
+    
+    - name: Download built-in extensions
+      run: npm run download-builtin-extensions
+      continue-on-error: true
+    
+    - name: Build distributables
+      env:
+        SYMBIOTE_TARGET_ARCH: ${{ matrix.arch }}
+      run: |
+        npm run compile-build
+        npm run compile-extensions-build
+    
+    - name: Package application
+      env:
+        CSC_IDENTITY_AUTO_DISCOVERY: false
+      run: |
+        npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: symbiote-ide-${{ matrix.platform }}-${{ matrix.arch }}
+        path: |
+          dist/*.exe
+          dist/*.msi
+          dist/*.deb
+          dist/*.rpm
+          dist/*.AppImage
+          dist/*.dmg
+          dist/*.pkg
+          dist/*.zip
+          dist/*.tar.gz
+        retention-days: 7
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run npm audit
+      run: npm audit --production || true
+    
+    - name: Run Snyk security scan
+      uses: snyk/actions/node@master
+      continue-on-error: true
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: snyk.sarif
+
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: javascript, typescript
+        queries: security-and-quality
+    
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2

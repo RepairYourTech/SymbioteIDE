@@ -1,0 +1,51 @@
+{
+  "name": "Basic Development Agent",
+  "version": "1.0.0",
+  "description": "A simple agent template for basic development tasks",
+  "capabilities": [
+    "code_generation",
+    "code_review",
+    "documentation"
+  ],
+  "workflow": {
+    "steps": [
+      {
+        "id": "understand",
+        "action": "analyze_requirements",
+        "model": "best_available",
+        "fallback": "claude-3"
+      },
+      {
+        "id": "implement",
+        "action": "generate_code",
+        "model": "specialized_coder",
+        "dependsOn": ["understand"]
+      },
+      {
+        "id": "review",
+        "action": "review_code",
+        "model": "code_reviewer",
+        "dependsOn": ["implement"]
+      },
+      {
+        "id": "document",
+        "action": "generate_docs",
+        "model": "documentation_specialist",
+        "dependsOn": ["implement"],
+        "parallel": true
+      }
+    ]
+  },
+  "configuration": {
+    "maxRetries": 3,
+    "timeout": 300,
+    "parallelExecution": true,
+    "saveIntermediateResults": true
+  },
+  "requirements": {
+    "models": ["claude-3", "gpt-4", "specialized_coder"],
+    "tools": ["file_system", "git", "testing_framework"],
+    "memory": true,
+    "knowledge_graph": false
+  }
+}

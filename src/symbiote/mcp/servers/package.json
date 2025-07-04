@@ -1,0 +1,27 @@
+{
+  "name": "@symbiote/mcp-context-server",
+  "version": "1.0.0",
+  "description": "MCP server exposing unified Neo4j + Qdrant + Mem0 context system",
+  "main": "context-server.js",
+  "bin": {
+    "symbiote-context-server": "./context-server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node context-server.js",
+    "dev": "ts-node context-server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "ioredis": "^5.6.1",
+    "neo4j-driver": "^5.28.1"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.115",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

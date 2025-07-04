@@ -1,0 +1,77 @@
+# Windows-specific overrides for Docker Compose
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.windows.yml up
+
+version: '3.8'
+
+services:
+  # Windows-specific volume handling
+  symbiote-ide:
+    volumes:
+      # Use named volumes on Windows for better performance
+      - workspace_data:/workspace
+      - symbiote_config:/config
+      # Windows named pipe for Docker operations
+      - type: npipe
+        source: \\.\pipe\docker_engine
+        target: \\.\pipe\docker_engine
+
+  # Adjust memory limits for Windows Docker Desktop
+  neo4j:
+    environment:
+      # Windows-specific memory settings
+      - NEO4J_dbms_memory_heap_initial__size=256m
+      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_dbms_memory_pagecache_size=256m
+
+  # Windows performance optimizations
+  qdrant:
+    environment:
+      # Use Windows-optimized storage backend
+      - QDRANT__STORAGE__OPTIMIZERS__INDEXING_THRESHOLD=10000
+      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
+      - QDRANT__STORAGE__HNSW_INDEX__ON_DISK=false
+
+  # Redis Windows configuration
+  redis:
+    # Use Redis Windows build
+    image: redis:7-windowsservercore-ltsc2022
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync no
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --requirepass symbiote123
+
+  # RabbitMQ Windows settings
+  rabbitmq:
+    environment:
+      # Windows-specific disk free space check
+      - RABBITMQ_DISK_FREE_ABSOLUTE_LIMIT=2GB
+
+  # Agent runtime Windows adjustments
+  agent-runtime:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+
+# Windows-specific named volumes
+volumes:
+  workspace_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${WORKSPACE_PATH:-C:\SymbioteWorkspace}
+      o: bind
+  
+  symbiote_config:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${CONFIG_PATH:-C:\Users\%USERNAME%\.symbiote}
+      o: bind

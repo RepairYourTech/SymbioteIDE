@@ -1,0 +1,443 @@
+syntax = "proto3";
+
+package symbiote.orchestration;
+
+option go_package = "github.com/symbiote/orchestration/proto";
+
+// Main Orchestration Service
+service OrchestrationService {
+  // Execute a single task
+  rpc ExecuteTask(ExecuteTaskRequest) returns (ExecuteTaskResponse);
+  
+  // Execute a task with streaming response
+  rpc StreamTask(StreamTaskRequest) returns (stream StreamTaskResponse);
+  
+  // Execute multiple tasks in batch
+  rpc ExecuteBatch(ExecuteBatchRequest) returns (ExecuteBatchResponse);
+  
+  // Get task result
+  rpc GetTaskResult(GetTaskResultRequest) returns (GetTaskResultResponse);
+  
+  // Get batch results
+  rpc GetBatchResults(GetBatchResultsRequest) returns (GetBatchResultsResponse);
+  
+  // List available models
+  rpc ListModels(GetModelsRequest) returns (GetModelsResponse);
+  
+  // Get metrics
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+  
+  // Get queue status
+  rpc GetQueueStatus(GetQueueStatusRequest) returns (GetQueueStatusResponse);
+  
+  // Get cost estimate
+  rpc GetCostEstimate(GetCostEstimateRequest) returns (GetCostEstimateResponse);
+  
+  // Health check
+  rpc HealthCheck(Empty) returns (HealthCheckResponse);
+}
+
+// Configuration Service
+service ConfigurationService {
+  // Get configuration
+  rpc GetConfiguration(GetConfigurationRequest) returns (GetConfigurationResponse);
+  
+  // Update configuration
+  rpc UpdateConfiguration(UpdateConfigurationRequest) returns (UpdateConfigurationResponse);
+  
+  // Watch configuration changes
+  rpc WatchConfiguration(WatchConfigurationRequest) returns (stream ConfigurationEvent);
+}
+
+// Messages
+
+message Empty {}
+
+message AITask {
+  string id = 1;
+  string type = 2;
+  string prompt = 3;
+  TaskContext context = 4;
+  TaskConstraints constraints = 5;
+  TaskMetadata metadata = 6;
+  string priority = 7;
+  string session_id = 8;
+}
+
+message TaskContext {
+  repeated string files = 1;
+  map<string, string> variables = 2;
+  repeated Message history = 3;
+  string workspace_path = 4;
+  map<string, string> custom = 5;
+}
+
+message Message {
+  string role = 1;
+  string content = 2;
+  string timestamp = 3;
+}
+
+message TaskConstraints {
+  int32 max_tokens = 1;
+  double temperature = 2;
+  repeated string required_capabilities = 3;
+  repeated string exclude_models = 4;
+  CostConstraint cost_limit = 5;
+  int64 timeout_ms = 6;
+}
+
+message CostConstraint {
+  double amount = 1;
+  string currency = 2;
+}
+
+message TaskMetadata {
+  string source = 1;
+  string user_id = 2;
+  map<string, string> tags = 3;
+  bool cacheable = 4;
+  string trace_id = 5;
+}
+
+message ExecuteTaskRequest {
+  AITask task = 1;
+  ExecutionOptions options = 2;
+}
+
+message ExecutionOptions {
+  string priority = 1;
+  int64 timeout_ms = 2;
+  int32 max_retries = 3;
+  repeated string preferred_models = 4;
+  repeated string exclude_models = 5;
+  map<string, string> metadata = 6;
+}
+
+message ExecuteTaskResponse {
+  string request_id = 1;
+  string status = 2;
+  int64 estimated_wait_time_ms = 3;
+  int32 queue_position = 4;
+  string message = 5;
+}
+
+message StreamTaskRequest {
+  AITask task = 1;
+  StreamOptions options = 2;
+}
+
+message StreamOptions {
+  string priority = 1;
+  bool include_partial_results = 2;
+}
+
+message StreamTaskResponse {
+  string type = 1;
+  string request_id = 2;
+  StreamData data = 3;
+}
+
+message StreamData {
+  string content = 1;
+  int32 tokens = 2;
+  float progress = 3;
+  TaskResult result = 4;
+  Error error = 5;
+}
+
+message TaskResult {
+  string id = 1;
+  string task_id = 2;
+  string status = 3;
+  string content = 4;
+  string model = 5;
+  TokenUsage usage = 6;
+  Cost cost = 7;
+  int64 latency_ms = 8;
+  int64 timestamp = 9;
+  map<string, string> metadata = 10;
+  Error error = 11;
+}
+
+message TokenUsage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+}
+
+message Cost {
+  double amount = 1;
+  string currency = 2;
+  CostBreakdown breakdown = 3;
+}
+
+message CostBreakdown {
+  int32 input_tokens = 1;
+  int32 output_tokens = 2;
+  double input_cost = 3;
+  double output_cost = 4;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+  int64 timestamp = 4;
+  string request_id = 5;
+}
+
+message ExecuteBatchRequest {
+  repeated AITask tasks = 1;
+  BatchOptions options = 2;
+}
+
+message BatchOptions {
+  int32 max_concurrency = 1;
+  bool continue_on_error = 2;
+  string priority = 3;
+}
+
+message ExecuteBatchResponse {
+  string batch_id = 1;
+  int32 task_count = 2;
+  string status = 3;
+  int64 estimated_completion_time_ms = 4;
+}
+
+message GetTaskResultRequest {
+  string request_id = 1;
+  bool wait = 2;
+  int64 timeout_ms = 3;
+}
+
+message GetTaskResultResponse {
+  string request_id = 1;
+  string status = 2;
+  TaskResult result = 3;
+  Error error = 4;
+  ResultMetadata metadata = 5;
+}
+
+message ResultMetadata {
+  int64 queued_at = 1;
+  int64 started_at = 2;
+  int64 completed_at = 3;
+  int32 retries = 4;
+}
+
+message GetBatchResultsRequest {
+  string batch_id = 1;
+  bool include_partial = 2;
+}
+
+message GetBatchResultsResponse {
+  string batch_id = 1;
+  string status = 2;
+  int32 total_tasks = 3;
+  int32 completed_tasks = 4;
+  int32 failed_tasks = 5;
+  repeated TaskResult results = 6;
+  repeated Error errors = 7;
+}
+
+message GetModelsRequest {
+  bool include_unavailable = 1;
+  string task_type = 2;
+}
+
+message GetModelsResponse {
+  repeated ModelProfile models = 1;
+  string default_model = 2;
+}
+
+message ModelProfile {
+  string id = 1;
+  string provider = 2;
+  string name = 3;
+  repeated string capabilities = 4;
+  int32 context_window = 5;
+  ModelCost cost_per_token = 6;
+  bool supports_streaming = 7;
+  bool supports_functions = 8;
+  map<string, string> metadata = 9;
+}
+
+message ModelCost {
+  double input = 1;
+  double output = 2;
+}
+
+message GetMetricsRequest {
+  int64 start_time = 1;
+  int64 end_time = 2;
+  string aggregation = 3;
+}
+
+message GetMetricsResponse {
+  OrchestrationMetrics metrics = 1;
+  TimePeriod period = 2;
+}
+
+message TimePeriod {
+  int64 start = 1;
+  int64 end = 2;
+}
+
+message OrchestrationMetrics {
+  PerformanceMetrics performance = 1;
+  CostMetrics cost = 2;
+  QualityMetrics quality = 3;
+  UsageMetrics usage = 4;
+  int64 timestamp = 5;
+}
+
+message PerformanceMetrics {
+  double average_latency = 1;
+  double p50_latency = 2;
+  double p95_latency = 3;
+  double p99_latency = 4;
+  double throughput = 5;
+  int32 active_requests = 6;
+  int32 queued_requests = 7;
+}
+
+message CostMetrics {
+  double total_cost = 1;
+  map<string, double> cost_by_model = 2;
+  map<string, double> cost_by_user = 3;
+  map<string, double> cost_by_task_type = 4;
+  CostTrend trend = 5;
+}
+
+message CostTrend {
+  double daily_average = 1;
+  double weekly_average = 2;
+  double monthly_projection = 3;
+}
+
+message QualityMetrics {
+  double success_rate = 1;
+  double fallback_rate = 2;
+  double retry_rate = 3;
+  double validation_failure_rate = 4;
+  double user_satisfaction = 5;
+  double average_confidence = 6;
+}
+
+message UsageMetrics {
+  int64 total_requests = 1;
+  map<string, int64> requests_by_type = 2;
+  map<string, int64> requests_by_model = 3;
+  double cache_hit_rate = 4;
+  TokenUsage token_usage = 5;
+}
+
+message GetQueueStatusRequest {
+  bool detailed = 1;
+}
+
+message GetQueueStatusResponse {
+  QueueStats stats = 1;
+  bool is_accepting_requests = 2;
+  bool backpressure_active = 3;
+  QueueDetails details = 4;
+}
+
+message QueueStats {
+  int32 queue_length = 1;
+  int32 active_requests = 2;
+  int64 completed_requests = 3;
+  int64 failed_requests = 4;
+  double average_wait_time = 5;
+  double average_processing_time = 6;
+  double throughput = 7;
+  double error_rate = 8;
+  double utilization_rate = 9;
+  int64 oldest_request_age = 10;
+  map<string, int32> priority_distribution = 11;
+}
+
+message QueueDetails {
+  map<string, int32> priority_breakdown = 1;
+  int64 oldest_request_age = 2;
+  map<string, int64> estimated_wait_times = 3;
+}
+
+message GetCostEstimateRequest {
+  AITask task = 1;
+  repeated string preferred_models = 2;
+}
+
+message GetCostEstimateResponse {
+  CostEstimate estimate = 1;
+  string selected_model = 2;
+  repeated ModelEstimate alternatives = 3;
+}
+
+message CostEstimate {
+  double minimum = 1;
+  double expected = 2;
+  double maximum = 3;
+  string currency = 4;
+  string confidence = 5;
+}
+
+message ModelEstimate {
+  string model = 1;
+  CostEstimate estimate = 2;
+}
+
+message HealthCheckResponse {
+  string status = 1;
+  string version = 2;
+  int64 uptime = 3;
+  map<string, ComponentHealth> components = 4;
+}
+
+message ComponentHealth {
+  string status = 1;
+  string message = 2;
+  int64 last_check = 3;
+  map<string, string> metadata = 4;
+}
+
+message GetConfigurationRequest {
+  string path = 1;
+  bool include_defaults = 2;
+}
+
+message GetConfigurationResponse {
+  string config_json = 1;
+  string version = 2;
+  int64 last_modified = 3;
+}
+
+message UpdateConfigurationRequest {
+  string config_json = 1;
+  bool validate_only = 2;
+}
+
+message UpdateConfigurationResponse {
+  bool success = 1;
+  ValidationResult validation = 2;
+  repeated string applied_changes = 3;
+}
+
+message ValidationResult {
+  bool valid = 1;
+  repeated string errors = 2;
+  repeated string warnings = 3;
+}
+
+message WatchConfigurationRequest {
+  repeated string paths = 1;
+}
+
+message ConfigurationEvent {
+  string type = 1;
+  int64 timestamp = 2;
+  string path = 3;
+  string old_value = 4;
+  string new_value = 5;
+}

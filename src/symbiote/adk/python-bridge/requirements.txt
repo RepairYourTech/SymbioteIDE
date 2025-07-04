@@ -1,0 +1,17 @@
+# Google ADK (Agent Development Kit) requirements
+google-generativeai>=0.3.0
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+protobuf>=4.25.0
+
+# Web server for bridge
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Async support
+aiohttp>=3.9.0
+asyncio>=3.4.3
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.5.0

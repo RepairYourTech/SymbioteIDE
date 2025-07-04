@@ -1,0 +1,69 @@
+.code-action-card {
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: var(--chat-radius-sm);
+  padding: var(--chat-spacing-md);
+  transition: var(--chat-transition);
+}
+
+.code-action-card:hover {
+  border-color: var(--vscode-focusBorder);
+}
+
+.code-action-header {
+  display: flex;
+  align-items: center;
+  gap: var(--chat-spacing-sm);
+  margin-bottom: var(--chat-spacing-sm);
+}
+
+.code-action-title {
+  flex: 1;
+  font-weight: 500;
+}
+
+.code-action-description {
+  margin-bottom: var(--chat-spacing-sm);
+  font-size: 13px;
+  opacity: 0.9;
+  line-height: 1.5;
+}
+
+.code-action-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--chat-spacing-xs);
+  margin-bottom: var(--chat-spacing-sm);
+  font-size: 12px;
+}
+
+.code-action-file {
+  display: flex;
+  align-items: center;
+  gap: var(--chat-spacing-xs);
+  opacity: 0.8;
+}
+
+.code-action-file-path {
+  font-family: var(--vscode-editor-font-family);
+}
+
+.code-action-confidence {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: var(--chat-spacing-sm);
+}
+
+.code-action-buttons {
+  display: flex;
+  gap: var(--chat-spacing-sm);
+  margin-top: var(--chat-spacing-md);
+}
+
+.code-action-buttons vscode-button {
+  flex: 1;
+}
+
+.code-action-buttons vscode-button::part(control) {
+  gap: var(--chat-spacing-xs);
+}

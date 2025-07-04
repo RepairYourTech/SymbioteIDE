@@ -1,0 +1,917 @@
+/* Dashboard Layout */
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.dashboard.loading,
+.dashboard.error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-spinner {
+  text-align: center;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 20px;
+  border: 3px solid var(--vscode-progressBar-background);
+  border-top: 3px solid transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.error-container {
+  text-align: center;
+  padding: 40px;
+  max-width: 500px;
+}
+
+.error-container h2 {
+  color: var(--error-color);
+  margin-bottom: 20px;
+}
+
+/* Header */
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--panel-background);
+  flex-shrink: 0;
+}
+
+.header-title h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.header-nav {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  margin-right: 20px;
+}
+
+.nav-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--foreground);
+  opacity: 0.7;
+  transition: opacity 0.2s, background-color 0.2s;
+}
+
+.nav-button:hover {
+  opacity: 1;
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.nav-button.active {
+  opacity: 1;
+  background-color: var(--vscode-toolbar-activeBackground);
+}
+
+.nav-icon {
+  font-size: 16px;
+}
+
+.nav-label {
+  font-size: 13px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.refresh-button {
+  padding: 4px 8px;
+  font-size: 16px;
+  background: transparent;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.refresh-button:hover {
+  opacity: 1;
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+/* Dashboard Content */
+.dashboard-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* Overview Grid */
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 20px;
+}
+
+/* Panels */
+.panel {
+  background-color: var(--panel-background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-header h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.panel-content {
+  padding: 20px;
+}
+
+/* System Overview */
+.status-indicator {
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  padding: 12px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+}
+
+.stat-label {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 4px;
+  background-color: var(--vscode-progressBar-background);
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.memory-stats h3 {
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.memory-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.memory-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+}
+
+.memory-label {
+  flex: 1;
+  font-size: 13px;
+}
+
+.memory-value {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.memory-size {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* Agents Panel */
+.agents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-card {
+  padding: 16px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+  border: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+
+.agent-card:hover {
+  border-color: var(--vscode-focusBorder);
+}
+
+.agent-card.error {
+  border-color: var(--error-color);
+}
+
+.agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.agent-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-status {
+  font-size: 16px;
+}
+
+.agent-name-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.agent-type {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.toggle-button {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.toggle-button.active {
+  background-color: var(--vscode-button-secondaryBackground);
+}
+
+.agent-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.meta-item {
+  display: flex;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.meta-label {
+  opacity: 0.7;
+}
+
+.agent-metrics {
+  display: flex;
+  gap: 16px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  background-color: var(--background);
+  border-radius: 4px;
+  flex: 1;
+}
+
+.metric-label {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.metric-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.agent-capabilities {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cap-label {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.cap-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.capability-tag {
+  padding: 2px 8px;
+  font-size: 11px;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 10px;
+}
+
+.agent-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.action-button {
+  flex: 1;
+  padding: 6px 12px;
+  font-size: 12px;
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  opacity: 0.7;
+}
+
+.create-agent-button {
+  margin-top: 16px;
+}
+
+/* Agent Summary */
+.agent-summary {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+}
+
+.active-count {
+  color: var(--success-color);
+}
+
+.idle-count {
+  color: var(--warning-color);
+}
+
+/* Activity Log Styles */
+.activity-log .log-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.icon-button {
+  padding: 4px 8px;
+  font-size: 16px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.icon-button:hover {
+  opacity: 1;
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.log-filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.filter-input {
+  flex: 1;
+  padding: 6px 12px;
+  background-color: var(--input-background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+}
+
+.filter-select {
+  padding: 6px 12px;
+  background-color: var(--input-background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+}
+
+.log-entries {
+  max-height: 600px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background-color: var(--background);
+}
+
+.log-entry {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-entry.log-error {
+  background-color: rgba(255, 0, 0, 0.05);
+}
+
+.log-entry.log-warn {
+  background-color: rgba(255, 165, 0, 0.05);
+}
+
+.log-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.log-timestamp {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.log-level {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.log-source {
+  font-size: 12px;
+  padding: 2px 8px;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 10px;
+}
+
+.log-message {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.log-details {
+  margin-top: 8px;
+  padding: 8px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+}
+
+.log-details pre {
+  margin: 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-metadata {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.metadata-item {
+  font-size: 11px;
+  display: flex;
+  gap: 4px;
+}
+
+.metadata-key {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.metadata-value {
+  font-family: monospace;
+}
+
+/* Settings Panel Styles */
+.settings-panel .panel-header {
+  position: sticky;
+  top: 0;
+  background-color: var(--panel-background);
+  z-index: 10;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-section {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section h3 {
+  font-size: 16px;
+  margin-bottom: 16px;
+}
+
+.setting-item {
+  margin-bottom: 16px;
+}
+
+.setting-item label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.setting-item.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-item.checkbox label {
+  margin-bottom: 0;
+}
+
+.setting-item select,
+.setting-item input[type="text"],
+.setting-item input[type="number"] {
+  width: 100%;
+  padding: 6px 12px;
+  background-color: var(--input-background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+}
+
+.panel-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-item input[type="checkbox"] {
+  margin: 0;
+}
+
+.checkbox-item label {
+  margin: 0;
+  font-size: 13px;
+}
+
+.button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.button.primary {
+  background-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.button.primary:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+.button.secondary {
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.button.secondary:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.setting-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+/* Cost Tracking Additional Styles */
+.budget-status {
+  margin-bottom: 24px;
+  padding: 16px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+}
+
+.budget-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.budget-percentage {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.budget-percentage.warning {
+  color: var(--warning-color);
+}
+
+.budget-bar {
+  position: relative;
+  height: 20px;
+  background-color: var(--vscode-progressBar-background);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.budget-fill {
+  height: 100%;
+  background-color: var(--success-color);
+  transition: width 0.3s ease;
+}
+
+.budget-fill.warning {
+  background-color: var(--warning-color);
+}
+
+.budget-threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: var(--error-color);
+}
+
+.budget-details {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+.cost-projections {
+  margin-bottom: 24px;
+}
+
+.projection-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.projection-item {
+  padding: 12px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+  text-align: center;
+}
+
+.projection-label {
+  display: block;
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.projection-value {
+  display: block;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.breakdown-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.chart-container h4 {
+  font-size: 14px;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.cost-details-table {
+  margin-top: 24px;
+}
+
+.cost-details-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cost-details-table th,
+.cost-details-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.cost-details-table th {
+  font-weight: 600;
+  background-color: var(--input-background);
+}
+
+/* Orchestration Metrics Additional Styles */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.metric-card {
+  padding: 16px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+}
+
+.metric-card h3 {
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.metric-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.metric-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.stat-label {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.stat-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.stat-value.error {
+  color: var(--error-color);
+}
+
+.rate-limits {
+  margin-bottom: 24px;
+}
+
+.rate-limits h3 {
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.limits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rate-limit-item {
+  padding: 12px;
+  background-color: var(--input-background);
+  border-radius: 4px;
+}
+
+.limit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.limit-provider {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.limit-usage {
+  font-size: 13px;
+}
+
+.limit-bar {
+  position: relative;
+  height: 8px;
+  background-color: var(--vscode-progressBar-background);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.limit-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.limit-reset {
+  display: block;
+  font-size: 11px;
+  opacity: 0.7;
+  margin-top: 4px;
+}
+
+.model-usage-section {
+  margin-top: 24px;
+}
+
+.usage-chart {
+  margin-bottom: 24px;
+}
+
+.usage-table {
+  overflow-x: auto;
+}
+
+.usage-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.usage-table th,
+.usage-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-table th {
+  font-weight: 600;
+  background-color: var(--input-background);
+}
+
+.usage-table td.error {
+  color: var(--error-color);
+}
