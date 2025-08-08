@@ -1,0 +1,477 @@
+/* Professional IDE Layout Styles */
+
+.ide-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #1e1e1e;
+  color: #cccccc;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* Menu Bar */
+.menu-bar {
+  height: 30px;
+  background: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.menu-items {
+  display: flex;
+  gap: 16px;
+}
+
+.menu-item {
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background-color 0.1s;
+}
+
+.menu-item:hover {
+  background: #3c3c3c;
+}
+
+.window-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.window-control {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.window-control:hover {
+  background: #3c3c3c;
+}
+
+.window-control.close:hover {
+  background: #e81123;
+  color: white;
+}
+
+/* Main IDE Body */
+.ide-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Activity Bar */
+.activity-bar {
+  width: 48px;
+  background: #2d2d30;
+  border-right: 1px solid #3e3e42;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 8px 0;
+}
+
+.activity-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-items-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-item {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 18px;
+  transition: background-color 0.1s;
+  position: relative;
+}
+
+.activity-item:hover {
+  background: #3c3c3c;
+}
+
+.activity-item.active {
+  background: #37373d;
+}
+
+.activity-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 16px;
+  background: #007acc;
+}
+
+/* Panels */
+.left-panel,
+.right-panel {
+  width: 300px;
+  background: #252526;
+  border-right: 1px solid #3e3e42;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 600px;
+}
+
+.right-panel {
+  border-right: none;
+  border-left: 1px solid #3e3e42;
+}
+
+.panel-header {
+  height: 35px;
+  background: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.panel-toggle {
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-size: 14px;
+}
+
+.panel-toggle:hover {
+  background: #3c3c3c;
+}
+
+.panel-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+
+/* Editor Area */
+.editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+  overflow: hidden;
+}
+
+/* Bottom Panel */
+.bottom-panel {
+  height: 200px;
+  background: #252526;
+  border-top: 1px solid #3e3e42;
+  display: flex;
+  flex-direction: column;
+  min-height: 100px;
+  max-height: 400px;
+}
+
+.panel-tabs {
+  height: 35px;
+  background: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 4px;
+}
+
+.panel-tab {
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 3px;
+  font-size: 13px;
+  transition: background-color 0.1s;
+  border-bottom: 2px solid transparent;
+}
+
+.panel-tab:hover {
+  background: #3c3c3c;
+}
+
+.panel-tab.active {
+  background: #37373d;
+  border-bottom-color: #007acc;
+}
+
+/* Status Bar */
+.status-bar {
+  height: 22px;
+  background: #007acc;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.status-left,
+.status-right {
+  display: flex;
+  gap: 16px;
+}
+
+.status-item {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  transition: background-color 0.1s;
+}
+
+.status-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* File Explorer Styles */
+.file-explorer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.file-explorer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  margin-bottom: 8px;
+}
+
+.file-explorer-header h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cccccc;
+}
+
+.file-explorer-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.file-explorer-actions button {
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 2px;
+  font-size: 14px;
+}
+
+.file-explorer-actions button:hover {
+  background: #3c3c3c;
+}
+
+.file-tree {
+  flex: 1;
+  overflow: auto;
+}
+
+.file-node {
+  display: flex;
+  align-items: center;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background-color 0.1s;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.file-node:hover {
+  background: #2a2d2e;
+}
+
+.file-icon {
+  margin-right: 6px;
+  font-size: 14px;
+}
+
+.file-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Code Editor Styles */
+.code-editor {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+}
+
+.editor-tabs {
+  display: flex;
+  background: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.editor-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.editor-tab {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background: #2d2d30;
+  border-right: 1px solid #3e3e42;
+  cursor: pointer;
+  transition: background-color 0.1s;
+  white-space: nowrap;
+  font-size: 13px;
+  min-width: 120px;
+}
+
+.editor-tab:hover {
+  background: #37373d;
+}
+
+.editor-tab.active {
+  background: #1e1e1e;
+  border-bottom: 2px solid #007acc;
+}
+
+.tab-name {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.modified-indicator {
+  color: #f0f0f0;
+  font-weight: bold;
+}
+
+.tab-close {
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-size: 16px;
+  margin-left: 8px;
+}
+
+.tab-close:hover {
+  background: #3c3c3c;
+}
+
+.editor-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.editor-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  color: #969696;
+}
+
+.editor-welcome h2 {
+  margin: 0 0 16px 0;
+  color: #cccccc;
+}
+
+/* Trading Panel Styles */
+.trading-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.trading-section {
+  background: #2d2d30;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+.trading-section h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #cccccc;
+}
+
+/* Loading States */
+.loading-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: #969696;
+}
+
+/* Panel Content */
+.panel-content {
+  padding: 12px;
+  color: #cccccc;
+  font-size: 13px;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .left-panel,
+  .right-panel {
+    width: 250px;
+  }
+}
+
+@media (max-width: 900px) {
+  .right-panel {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .left-panel {
+    width: 200px;
+  }
+}

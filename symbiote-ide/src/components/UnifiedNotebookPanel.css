@@ -1,0 +1,795 @@
+/* Unified Notebook Panel Styles - Modern Professional Design */
+
+.unified-notebook-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  overflow: hidden;
+}
+
+/* Tab Navigation */
+.tab-navigation {
+  display: flex;
+  background: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  padding: 12px 20px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tab:hover {
+  background: #37373d;
+  color: #ffffff;
+}
+
+.tab.active {
+  color: #ffffff;
+  border-bottom-color: #007acc;
+  background: #1e1e1e;
+}
+
+/* Tab Content */
+.tab-content {
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+}
+
+/* Browse Notebooks Tab */
+.browse-notebooks-tab {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.notebooks-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #3e3e42;
+}
+
+.notebooks-header h3 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.create-notebook-button {
+  background: #007acc;
+  border: none;
+  color: #ffffff;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.create-notebook-button:hover {
+  background: #0e639c;
+  transform: translateY(-1px);
+}
+
+.notebooks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.notebook-card {
+  background: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 8px;
+  padding: 20px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.notebook-card:hover {
+  border-color: #007acc;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 122, 204, 0.2);
+}
+
+.notebook-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.notebook-icon {
+  font-size: 32px;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #3c3c3c;
+  border-radius: 8px;
+}
+
+.notebook-info {
+  flex: 1;
+}
+
+.notebook-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: #ffffff;
+  margin-bottom: 4px;
+}
+
+.notebook-type {
+  font-size: 13px;
+  color: #cccccc;
+}
+
+.notebook-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #888888;
+}
+
+.stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-icon {
+  font-size: 14px;
+}
+
+/* Create Notebook Tab */
+.create-notebook-tab {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.create-form {
+  background: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 8px;
+  padding: 30px;
+}
+
+.create-form h3 {
+  margin: 0 0 24px 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: #ffffff;
+  text-align: center;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.form-input,
+.form-textarea,
+.form-select {
+  width: 100%;
+  background: #3c3c3c;
+  border: 1px solid #5a5a5a;
+  color: #d4d4d4;
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.form-input:focus,
+.form-textarea:focus,
+.form-select:focus {
+  border-color: #007acc;
+  box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+
+.form-input::placeholder,
+.form-textarea::placeholder {
+  color: #888888;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #ffffff;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #007acc;
+}
+
+.help-text {
+  margin: 6px 0 0 24px;
+  font-size: 12px;
+  color: #888888;
+  line-height: 1.4;
+}
+
+.form-actions {
+  text-align: center;
+  margin-top: 30px;
+}
+
+.create-button {
+  background: #007acc;
+  border: none;
+  color: #ffffff;
+  padding: 14px 32px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  min-width: 200px;
+}
+
+.create-button:hover:not(:disabled) {
+  background: #0e639c;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 122, 204, 0.3);
+}
+
+.create-button:disabled {
+  background: #5a5a5a;
+  color: #888888;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Notebook Editor Tab */
+.notebook-editor-tab {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.notebook-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  padding: 16px 20px;
+  background: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 8px;
+}
+
+.notebook-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.notebook-title h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.notebook-type-badge {
+  background: #007acc;
+  color: #ffffff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.add-cell-button,
+.back-button {
+  background: #3c3c3c;
+  border: 1px solid #5a5a5a;
+  color: #d4d4d4;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.add-cell-button:hover,
+.back-button:hover {
+  background: #4a4a4a;
+  border-color: #6a6a6a;
+}
+
+.back-button {
+  background: #007acc;
+  border-color: #007acc;
+  color: #ffffff;
+}
+
+.back-button:hover {
+  background: #0e639c;
+  border-color: #0e639c;
+}
+
+/* Cells Container */
+.cells-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.notebook-cell {
+  background: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.cell-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+}
+
+.cell-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cell-type {
+  font-size: 13px;
+  font-weight: 500;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.execution-info {
+  font-size: 12px;
+  color: #cccccc;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.execution-time {
+  color: #888888;
+}
+
+.cell-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.execute-button,
+.edit-button,
+.delete-button {
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.execute-button:hover {
+  background: #27ae60;
+  color: #ffffff;
+}
+
+.edit-button:hover {
+  background: #f39c12;
+  color: #ffffff;
+}
+
+.delete-button:hover {
+  background: #e74c3c;
+  color: #ffffff;
+}
+
+.execute-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Cell Content */
+.cell-content {
+  padding: 16px;
+}
+
+.cell-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cell-textarea {
+  width: 100%;
+  background: #1e1e1e;
+  border: 1px solid #3e3e42;
+  color: #d4d4d4;
+  padding: 12px;
+  border-radius: 6px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  resize: vertical;
+  outline: none;
+}
+
+.cell-textarea:focus {
+  border-color: #007acc;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.save-button,
+.cancel-button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.save-button {
+  background: #27ae60;
+  color: #ffffff;
+}
+
+.save-button:hover {
+  background: #229954;
+}
+
+.cancel-button {
+  background: #e74c3c;
+  color: #ffffff;
+}
+
+.cancel-button:hover {
+  background: #c0392b;
+}
+
+.cell-display {
+  background: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.cell-source {
+  margin: 0;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Cell Outputs */
+.cell-outputs {
+  border-top: 1px solid #3e3e42;
+  background: #1e1e1e;
+}
+
+.cell-output {
+  padding: 12px 16px;
+  border-bottom: 1px solid #3e3e42;
+}
+
+.cell-output:last-child {
+  border-bottom: none;
+}
+
+.text-output pre {
+  margin: 0;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.html-output {
+  color: #d4d4d4;
+}
+
+.image-output img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+.json-output pre {
+  margin: 0;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #d4d4d4;
+  background: #252526;
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+/* AI Annotations */
+.ai-annotations {
+  border-top: 1px solid #3e3e42;
+  background: #252526;
+  padding: 12px 16px;
+}
+
+.annotations-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-annotation {
+  background: #3c3c3c;
+  border: 1px solid #5a5a5a;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.ai-annotation:last-child {
+  margin-bottom: 0;
+}
+
+.annotation-type {
+  font-size: 12px;
+  font-weight: 600;
+  color: #007acc;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.annotation-content {
+  font-size: 13px;
+  color: #d4d4d4;
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.annotation-meta {
+  font-size: 11px;
+  color: #888888;
+}
+
+/* Empty States */
+.empty-state,
+.empty-notebook {
+  text-align: center;
+  padding: 60px 20px;
+  color: #888888;
+}
+
+.empty-state h4,
+.empty-notebook h4 {
+  margin: 0 0 8px 0;
+  color: #cccccc;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.empty-state p,
+.empty-notebook p {
+  margin: 0 0 20px 0;
+  font-size: 14px;
+}
+
+.create-first-notebook-button,
+.quick-add-button {
+  background: #007acc;
+  border: none;
+  color: #ffffff;
+  padding: 12px 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  margin: 0 8px;
+}
+
+.create-first-notebook-button:hover,
+.quick-add-button:hover {
+  background: #0e639c;
+  transform: translateY(-1px);
+}
+
+.quick-add-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .tab-content {
+    padding: 16px;
+  }
+  
+  .notebooks-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+  
+  .notebook-toolbar {
+    flex-direction: column;
+    gap: 16px;
+    align-items: stretch;
+  }
+  
+  .toolbar-actions {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  
+  .cell-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+  }
+  
+  .cell-info {
+    justify-content: space-between;
+  }
+  
+  .cell-actions {
+    justify-content: center;
+  }
+  
+  .quick-add-buttons {
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .quick-add-button {
+    width: 200px;
+  }
+}
+
+/* Accessibility */
+.tab:focus,
+.notebook-card:focus,
+.create-notebook-button:focus,
+.create-button:focus,
+.add-cell-button:focus,
+.back-button:focus,
+.execute-button:focus,
+.edit-button:focus,
+.delete-button:focus,
+.save-button:focus,
+.cancel-button:focus {
+  outline: 2px solid #007acc;
+  outline-offset: 2px;
+}
+
+/* High Contrast Support */
+@media (prefers-contrast: high) {
+  .unified-notebook-panel {
+    background: #000000;
+    color: #ffffff;
+  }
+  
+  .create-form,
+  .notebook-card,
+  .notebook-cell {
+    background: #000000;
+    border-color: #ffffff;
+  }
+  
+  .form-input,
+  .form-textarea,
+  .form-select,
+  .cell-textarea {
+    background: #000000;
+    border-color: #ffffff;
+    color: #ffffff;
+  }
+}
+
+/* Reduced Motion Support */
+@media (prefers-reduced-motion: reduce) {
+  .tab,
+  .notebook-card,
+  .create-notebook-button,
+  .create-button,
+  .add-cell-button,
+  .back-button,
+  .execute-button,
+  .edit-button,
+  .delete-button,
+  .save-button,
+  .cancel-button,
+  .quick-add-button {
+    transition: none;
+  }
+  
+  .notebook-card:hover,
+  .create-notebook-button:hover,
+  .create-button:hover,
+  .quick-add-button:hover {
+    transform: none;
+  }
+}

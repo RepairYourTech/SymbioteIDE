@@ -1,0 +1,769 @@
+/* Symbiote Terminal - AI-Enhanced Terminal (Warp Killer) */
+
+.symbiote-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #0a0a0a;
+  color: #ffffff;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  overflow: hidden;
+}
+
+/* Header */
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+  min-height: 60px;
+}
+
+.header-left h3 {
+  margin: 0 0 4px 0;
+  color: #00ff88;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.terminal-subtitle {
+  color: #888;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.header-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.control-button {
+  background: #333;
+  color: #ffffff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.control-button:hover {
+  background: #444;
+}
+
+.control-button.active {
+  background: #00ff88;
+  color: #000000;
+}
+
+/* Terminal Content */
+.terminal-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Session Tabs */
+.session-tabs {
+  display: flex;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+  padding: 0 20px;
+  overflow-x: auto;
+}
+
+.session-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-right: 4px;
+  min-width: 120px;
+}
+
+.session-tab:hover {
+  background: #333;
+}
+
+.session-tab.active {
+  background: #0a0a0a;
+  border-color: #00ff88;
+}
+
+.session-name {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.session-status {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.session-status.active {
+  background: #00ff88;
+  color: #000000;
+}
+
+.session-status.idle {
+  background: #666;
+  color: #ffffff;
+}
+
+.session-status.busy {
+  background: #ff9500;
+  color: #000000;
+}
+
+.session-status.error {
+  background: #ff4444;
+  color: #ffffff;
+}
+
+/* Terminal Main */
+.terminal-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Session Info */
+.session-info {
+  padding: 12px 20px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+}
+
+.session-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.session-path {
+  color: #00ff88;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.session-shell {
+  color: #888;
+  font-size: 12px;
+  background: #333;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+/* Terminal Output */
+.terminal-output {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  background: #0a0a0a;
+  line-height: 1.5;
+}
+
+.command-entry {
+  margin-bottom: 16px;
+  border-left: 2px solid transparent;
+  padding-left: 12px;
+  transition: all 0.2s ease;
+}
+
+.command-entry:hover {
+  border-left-color: #333;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.command-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.prompt {
+  color: #00ff88;
+  font-weight: bold;
+  font-size: 16px;
+}
+
+.command-text {
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.nl-badge {
+  background: #ff9500;
+  color: #000000;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.interpreted-command {
+  color: #888;
+  font-size: 12px;
+  font-style: italic;
+  margin-left: 16px;
+  flex-basis: 100%;
+}
+
+.timestamp {
+  color: #666;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.command-output {
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.command-output pre {
+  margin: 0;
+  color: #cccccc;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.command-error {
+  background: #2a1a1a;
+  border: 1px solid #ff4444;
+  border-radius: 4px;
+  padding: 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.command-error pre {
+  margin: 0;
+  color: #ff8888;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-suggestions {
+  background: #1a2a1a;
+  border: 1px solid #00ff88;
+  border-radius: 6px;
+  padding: 8px;
+  margin: 8px 0;
+}
+
+.ai-suggestion {
+  color: #cccccc;
+  font-size: 12px;
+  margin-bottom: 4px;
+  padding: 4px 0;
+}
+
+.ai-suggestion:last-child {
+  margin-bottom: 0;
+}
+
+.command-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.execution-time {
+  color: #888;
+}
+
+.exit-code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.exit-code.success {
+  background: #00ff88;
+  color: #000000;
+}
+
+.exit-code.error {
+  background: #ff4444;
+  color: #ffffff;
+}
+
+.executing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #00ff88;
+  font-size: 14px;
+  margin: 16px 0;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Terminal Input */
+.terminal-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px;
+  background: #1a1a1a;
+  border-top: 1px solid #333;
+}
+
+.input-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.nl-toggle {
+  background: #333;
+  color: #ffffff;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nl-toggle:hover {
+  background: #444;
+}
+
+.nl-toggle.active {
+  background: #ff9500;
+  color: #000000;
+}
+
+.input-field {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  background: #0a0a0a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 8px 12px;
+  gap: 8px;
+}
+
+.input-field:focus-within {
+  border-color: #00ff88;
+  box-shadow: 0 0 0 2px rgba(0, 255, 136, 0.2);
+}
+
+.command-input-field {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+}
+
+.command-input-field::placeholder {
+  color: #666;
+}
+
+.execute-button {
+  background: #00ff88;
+  color: #000000;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.execute-button:hover:not(:disabled) {
+  background: #00cc6a;
+}
+
+.execute-button:disabled {
+  background: #333;
+  color: #666;
+  cursor: not-allowed;
+}
+
+/* AI Panel */
+.ai-panel {
+  background: #1a2a1a;
+  border: 1px solid #00ff88;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 20px;
+}
+
+.ai-panel h4 {
+  margin: 0 0 12px 0;
+  color: #00ff88;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.suggestions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suggestion-item {
+  background: #0a0a0a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: #cccccc;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Workflows Sidebar */
+.workflows-sidebar {
+  width: 300px;
+  background: #1a1a1a;
+  border-left: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workflows-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #333;
+}
+
+.workflows-header h4 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.create-workflow-button {
+  background: #00ff88;
+  color: #000000;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.create-workflow-button:hover:not(:disabled) {
+  background: #00cc6a;
+}
+
+.create-workflow-button:disabled {
+  background: #333;
+  color: #666;
+  cursor: not-allowed;
+}
+
+.workflows-list {
+  flex: 1;
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+.workflow-item {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.workflow-info {
+  flex: 1;
+}
+
+.workflow-info h5 {
+  margin: 0 0 4px 0;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workflow-info p {
+  margin: 0 0 8px 0;
+  color: #cccccc;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.workflow-commands {
+  color: #888;
+  font-size: 11px;
+  background: #333;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.execute-workflow-button {
+  background: #333;
+  color: #ffffff;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 32px;
+}
+
+.execute-workflow-button:hover:not(:disabled) {
+  background: #00ff88;
+  color: #000000;
+}
+
+.execute-workflow-button:disabled {
+  background: #222;
+  color: #666;
+  cursor: not-allowed;
+}
+
+.no-workflows {
+  text-align: center;
+  color: #888;
+  padding: 40px 20px;
+}
+
+.no-workflows p {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* Status Bar */
+.terminal-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 20px;
+  background: #1a1a1a;
+  border-top: 1px solid #333;
+  font-size: 11px;
+  color: #888;
+}
+
+.terminal-status span {
+  padding: 2px 8px;
+  background: #333;
+  border-radius: 4px;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .workflows-sidebar {
+    width: 250px;
+  }
+}
+
+@media (max-width: 768px) {
+  .terminal-header {
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px 16px;
+  }
+  
+  .header-left,
+  .header-controls {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .terminal-content {
+    flex-direction: column;
+  }
+  
+  .workflows-sidebar {
+    width: 100%;
+    height: 200px;
+    border-left: none;
+    border-top: 1px solid #333;
+  }
+  
+  .session-tabs {
+    padding: 0 16px;
+    overflow-x: auto;
+  }
+  
+  .terminal-output {
+    padding: 16px;
+  }
+  
+  .terminal-input {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  
+  .input-field {
+    min-width: 200px;
+  }
+  
+  .terminal-status {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 16px;
+  }
+}
+
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .control-button,
+  .session-tab,
+  .command-entry,
+  .execute-button,
+  .nl-toggle {
+    transition: none;
+  }
+  
+  .spinner {
+    animation: none;
+  }
+}
+
+/* High contrast mode */
+@media (prefers-contrast: high) {
+  .symbiote-terminal,
+  .terminal-output,
+  .workflow-item,
+  .ai-panel {
+    border: 2px solid #ffffff;
+  }
+  
+  .session-tab.active {
+    border: 3px solid #00ff88;
+  }
+}
+
+/* Focus States */
+.control-button:focus,
+.session-tab:focus,
+.execute-button:focus,
+.nl-toggle:focus,
+.create-workflow-button:focus,
+.execute-workflow-button:focus {
+  outline: 2px solid #00ff88;
+  outline-offset: 2px;
+}
+
+.command-input-field:focus {
+  outline: none;
+}
+
+/* Scrollbar Styling */
+.terminal-output::-webkit-scrollbar,
+.workflows-list::-webkit-scrollbar,
+.session-tabs::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.terminal-output::-webkit-scrollbar-track,
+.workflows-list::-webkit-scrollbar-track,
+.session-tabs::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+.terminal-output::-webkit-scrollbar-thumb,
+.workflows-list::-webkit-scrollbar-thumb,
+.session-tabs::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+.terminal-output::-webkit-scrollbar-thumb:hover,
+.workflows-list::-webkit-scrollbar-thumb:hover,
+.session-tabs::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
+
+/* Terminal Themes */
+.symbiote-terminal.theme-matrix {
+  --primary-color: #00ff00;
+  --bg-color: #000000;
+  --text-color: #00ff00;
+}
+
+.symbiote-terminal.theme-cyberpunk {
+  --primary-color: #ff00ff;
+  --bg-color: #0a0a0a;
+  --text-color: #ffffff;
+}
+
+.symbiote-terminal.theme-ocean {
+  --primary-color: #00aaff;
+  --bg-color: #001122;
+  --text-color: #ffffff;
+}
+
+/* Animation for command execution */
+.command-entry.executing {
+  border-left-color: #00ff88;
+  animation: pulse-border 1s infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-left-color: #00ff88; }
+  50% { border-left-color: #00cc6a; }
+}
+
+/* Syntax highlighting for commands */
+.command-text .keyword {
+  color: #ff9500;
+  font-weight: 600;
+}
+
+.command-text .string {
+  color: #00ff88;
+}
+
+.command-text .flag {
+  color: #ff6b6b;
+}
+
+.command-text .path {
+  color: #74c0fc;
+}

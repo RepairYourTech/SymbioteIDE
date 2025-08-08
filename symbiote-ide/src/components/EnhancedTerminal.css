@@ -1,0 +1,576 @@
+/* Enhanced Terminal - AI-Powered Terminal with Natural Language Commands */
+
+.enhanced-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #0c0c0c;
+  border: 1px solid #333;
+  border-radius: 8px;
+  overflow: hidden;
+  font-family: 'Courier New', 'Consolas', monospace;
+}
+
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1e1e1e;
+  border-bottom: 1px solid #333;
+  padding: 8px 12px;
+}
+
+.terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #252525;
+  border: 1px solid #444;
+  border-radius: 6px 6px 0 0;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 12px;
+  color: #cccccc;
+  max-width: 200px;
+}
+
+.terminal-tab:hover {
+  background: #333;
+  border-color: #555;
+}
+
+.terminal-tab.active {
+  background: #0c0c0c;
+  border-bottom-color: #0c0c0c;
+  color: #ffffff;
+}
+
+.tab-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-shell {
+  color: #888;
+  font-size: 10px;
+}
+
+.close-tab {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 4px;
+  transition: color 0.2s ease;
+}
+
+.close-tab:hover {
+  color: #ff6b6b;
+}
+
+.new-tab {
+  background: #007acc;
+  color: #ffffff;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.new-tab:hover {
+  background: #005a9e;
+}
+
+.terminal-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-toggle,
+.multiplex-toggle,
+.clear-terminal {
+  background: #333;
+  color: #cccccc;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ai-toggle:hover,
+.multiplex-toggle:hover,
+.clear-terminal:hover {
+  background: #444;
+  color: #ffffff;
+}
+
+.ai-toggle.active {
+  background: #28a745;
+  color: #ffffff;
+}
+
+.multiplex-toggle.active {
+  background: #007acc;
+  color: #ffffff;
+}
+
+.terminal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.terminal-output {
+  flex: 1;
+  padding: 12px;
+  overflow-y: auto;
+  background: #0c0c0c;
+  color: #ffffff;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.output-line {
+  margin-bottom: 2px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.output-line.executing {
+  color: #ffc107;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.spinner {
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.terminal-input-area {
+  background: #0c0c0c;
+  border-top: 1px solid #333;
+  padding: 8px 12px;
+}
+
+.input-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.prompt {
+  color: #28a745;
+  font-weight: 600;
+  font-size: 13px;
+  min-width: fit-content;
+}
+
+.command-input,
+.natural-language-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  padding: 4px 0;
+}
+
+.command-input::placeholder,
+.natural-language-input::placeholder {
+  color: #666;
+}
+
+.natural-language-input {
+  border-bottom: 1px solid #444;
+  padding-bottom: 4px;
+}
+
+.ai-input-section {
+  position: relative;
+}
+
+.ai-suggestions {
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  margin-top: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.suggestions-header {
+  padding: 8px 12px;
+  background: #252525;
+  border-bottom: 1px solid #333;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffc107;
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  border-bottom: 1px solid #333;
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.suggestion-item:hover {
+  background: #333;
+}
+
+.suggestion-command {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.suggestion-command code {
+  background: #333;
+  color: #ffffff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.confidence {
+  background: #28a745;
+  color: #ffffff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.suggestion-description {
+  color: #cccccc;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.terminal-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1e1e1e;
+  border-top: 1px solid #333;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #888;
+}
+
+.status-left,
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.session-info {
+  font-weight: 500;
+}
+
+.mode-indicator {
+  color: #28a745;
+  font-weight: 600;
+}
+
+.multiplex-indicator {
+  color: #007acc;
+  font-weight: 600;
+}
+
+/* Terminal Output Styling */
+.terminal-output .output-line {
+  position: relative;
+}
+
+/* Command prompt styling */
+.terminal-output .output-line:has-text("$") {
+  color: #28a745;
+  font-weight: 600;
+}
+
+/* Error output styling */
+.terminal-output .output-line:contains("Error"),
+.terminal-output .output-line:contains("error"),
+.terminal-output .output-line:contains("failed") {
+  color: #ff6b6b;
+}
+
+/* Success output styling */
+.terminal-output .output-line:contains("Success"),
+.terminal-output .output-line:contains("success"),
+.terminal-output .output-line:contains("completed") {
+  color: #28a745;
+}
+
+/* Warning output styling */
+.terminal-output .output-line:contains("Warning"),
+.terminal-output .output-line:contains("warning") {
+  color: #ffc107;
+}
+
+/* File path styling */
+.terminal-output .output-line:contains("/"),
+.terminal-output .output-line:contains("\\") {
+  color: #87ceeb;
+}
+
+/* Git output styling */
+.terminal-output .output-line:contains("git"),
+.terminal-output .output-line:contains("branch"),
+.terminal-output .output-line:contains("commit") {
+  color: #ff9500;
+}
+
+/* Custom scrollbar for terminal output */
+.terminal-output::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal-output::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.terminal-output::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 4px;
+}
+
+.terminal-output::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* AI Suggestions scrollbar */
+.ai-suggestions::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ai-suggestions::-webkit-scrollbar-track {
+  background: #252525;
+}
+
+.ai-suggestions::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 3px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .terminal-header {
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+  }
+  
+  .terminal-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  
+  .terminal-tab {
+    min-width: 120px;
+    flex-shrink: 0;
+  }
+  
+  .terminal-controls {
+    justify-content: center;
+  }
+  
+  .terminal-status {
+    flex-direction: column;
+    gap: 4px;
+    align-items: stretch;
+    text-align: center;
+  }
+  
+  .status-left,
+  .status-right {
+    justify-content: center;
+  }
+}
+
+/* High Contrast Mode */
+@media (prefers-contrast: high) {
+  .enhanced-terminal {
+    border: 2px solid #ffffff;
+  }
+  
+  .terminal-tab,
+  .ai-suggestions,
+  .suggestion-item {
+    border: 1px solid #ffffff;
+  }
+  
+  .prompt {
+    color: #00ff00;
+  }
+  
+  .mode-indicator {
+    color: #00ff00;
+  }
+  
+  .multiplex-indicator {
+    color: #00bfff;
+  }
+}
+
+/* Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  .terminal-tab,
+  .ai-toggle,
+  .multiplex-toggle,
+  .clear-terminal,
+  .new-tab,
+  .suggestion-item,
+  .close-tab {
+    transition: none;
+  }
+  
+  .spinner {
+    animation: none;
+  }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+  }
+}
+
+/* Focus States for Accessibility */
+.command-input:focus,
+.natural-language-input:focus {
+  outline: 2px solid #007acc;
+  outline-offset: 2px;
+}
+
+.terminal-tab:focus,
+.ai-toggle:focus,
+.multiplex-toggle:focus,
+.clear-terminal:focus,
+.new-tab:focus {
+  outline: 2px solid #007acc;
+  outline-offset: 2px;
+}
+
+.suggestion-item:focus {
+  background: #444;
+  outline: 2px solid #007acc;
+  outline-offset: -2px;
+}
+
+/* Dark Theme Enhancements */
+.enhanced-terminal {
+  --terminal-bg: #0c0c0c;
+  --terminal-text: #ffffff;
+  --terminal-border: #333;
+  --terminal-accent: #007acc;
+  --terminal-success: #28a745;
+  --terminal-warning: #ffc107;
+  --terminal-error: #ff6b6b;
+  --terminal-muted: #888;
+}
+
+/* Terminal Animation Effects */
+.terminal-output .output-line {
+  animation: fadeIn 0.1s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Command History Navigation (future enhancement) */
+.command-input.history-mode {
+  background: rgba(0, 122, 204, 0.1);
+  border-bottom: 1px solid #007acc;
+}
+
+/* AI Mode Visual Indicators */
+.ai-input-section .input-line {
+  position: relative;
+}
+
+.ai-input-section .input-line::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(45deg, #28a745, #007acc);
+  border-radius: 2px;
+}
+
+/* Terminal Session Indicators */
+.terminal-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #007acc;
+}
+
+/* Multiplex Mode Enhancements */
+.enhanced-terminal.multiplex-mode .terminal-tabs {
+  background: linear-gradient(90deg, #1e1e1e 0%, #252525 100%);
+}
+
+/* AI Suggestion Categories */
+.suggestion-item[data-category="git"] .suggestion-command code {
+  background: #ff9500;
+  color: #000000;
+}
+
+.suggestion-item[data-category="npm"] .suggestion-command code {
+  background: #cb3837;
+  color: #ffffff;
+}
+
+.suggestion-item[data-category="file"] .suggestion-command code {
+  background: #87ceeb;
+  color: #000000;
+}
+
+.suggestion-item[data-category="system"] .suggestion-command code {
+  background: #6f42c1;
+  color: #ffffff;
+}

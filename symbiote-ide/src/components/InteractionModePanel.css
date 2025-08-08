@@ -1,0 +1,527 @@
+/* Interaction Mode Panel - Key Differentiator UI */
+
+.interaction-mode-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.panel-header {
+  padding: 20px 24px;
+  background: #252525;
+  border-bottom: 1px solid #333;
+  text-align: center;
+}
+
+.panel-header h3 {
+  margin: 0 0 8px 0;
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.panel-header p {
+  margin: 0;
+  color: #888;
+  font-size: 14px;
+}
+
+/* Mode Selection Cards */
+.mode-selection {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.mode-card {
+  background: #252525;
+  border: 2px solid #333;
+  border-radius: 12px;
+  padding: 20px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.mode-card:hover {
+  border-color: #444;
+  background: #2a2a2a;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.mode-card.active {
+  border-color: #007acc;
+  background: #2a2a2a;
+  box-shadow: 0 0 20px rgba(0, 122, 204, 0.3);
+}
+
+.mode-card.beginner {
+  border-left: 4px solid #28a745;
+}
+
+.mode-card.intermediate {
+  border-left: 4px solid #ffc107;
+}
+
+.mode-card.advanced {
+  border-left: 4px solid #dc3545;
+}
+
+.mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.mode-icon {
+  font-size: 32px;
+  margin-right: 12px;
+}
+
+.mode-info {
+  flex: 1;
+}
+
+.mode-info h4 {
+  margin: 0 0 4px 0;
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.complexity-badge {
+  background: #444;
+  color: #ffffff;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.complexity-badge {
+  background: #28a745;
+}
+
+.mode-card.intermediate .complexity-badge {
+  background: #ffc107;
+  color: #000000;
+}
+
+.mode-card.advanced .complexity-badge {
+  background: #dc3545;
+}
+
+.active-indicator {
+  color: #007acc;
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.mode-description {
+  color: #cccccc;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+/* Mode Metrics */
+.mode-metrics {
+  margin-bottom: 20px;
+}
+
+.metric {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.metric label {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 80px;
+}
+
+.metric-bar {
+  flex: 1;
+  height: 6px;
+  background: #444;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.metric-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.metric-fill.ai-automation {
+  background: linear-gradient(90deg, #007acc, #0099ff);
+}
+
+.metric-fill.user-control {
+  background: linear-gradient(90deg, #28a745, #34ce57);
+}
+
+.metric-value {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 35px;
+  text-align: right;
+}
+
+/* Mode Features */
+.mode-features h5 {
+  margin: 0 0 12px 0;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mode-features ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mode-features li {
+  color: #cccccc;
+  font-size: 12px;
+  margin-bottom: 6px;
+  position: relative;
+  padding-left: 16px;
+}
+
+.mode-features li:before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: #28a745;
+  font-weight: bold;
+}
+
+.mode-features li.more-features {
+  color: #888;
+  font-style: italic;
+}
+
+.mode-features li.more-features:before {
+  content: '…';
+  color: #888;
+}
+
+/* Current Mode Status */
+.current-mode-status {
+  background: #252525;
+  border-top: 1px solid #333;
+  padding: 20px 24px;
+}
+
+.status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.status-header h4 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.settings-toggle {
+  background: #444;
+  color: #ffffff;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.settings-toggle:hover {
+  background: #555;
+}
+
+/* Advanced Settings */
+.advanced-settings {
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.advanced-settings h5 {
+  margin: 0 0 16px 0;
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.setting-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.setting-item label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.setting-item input[type="checkbox"] {
+  transform: scale(1.2);
+  accent-color: #007acc;
+}
+
+.setting-description {
+  color: #888;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-left: 28px;
+}
+
+/* Mode Benefits */
+.mode-benefits {
+  background: #252525;
+  border-top: 1px solid #333;
+  padding: 20px 24px;
+}
+
+.mode-benefits h4 {
+  margin: 0 0 16px 0;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.benefits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.benefit-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 8px;
+}
+
+.benefit-icon {
+  font-size: 20px;
+  min-width: 24px;
+}
+
+.benefit-item h5 {
+  margin: 0 0 4px 0;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.benefit-item p {
+  margin: 0;
+  color: #cccccc;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Transition Overlay */
+.transition-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(30, 30, 30, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.transition-content {
+  text-align: center;
+  color: #ffffff;
+}
+
+.transition-spinner {
+  font-size: 48px;
+  margin-bottom: 16px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.transition-content h4 {
+  margin: 0 0 8px 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.transition-content p {
+  margin: 0;
+  color: #888;
+  font-size: 14px;
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .mode-selection {
+    grid-template-columns: 1fr;
+  }
+  
+  .benefits-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .panel-header {
+    padding: 16px 20px;
+  }
+  
+  .mode-selection {
+    padding: 16px;
+    gap: 16px;
+  }
+  
+  .mode-card {
+    padding: 16px;
+  }
+  
+  .mode-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .status-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .current-mode-status,
+  .mode-benefits {
+    padding: 16px 20px;
+  }
+}
+
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .mode-card,
+  .settings-toggle,
+  .metric-fill {
+    transition: none;
+  }
+  
+  .mode-card:hover {
+    transform: none;
+  }
+  
+  .transition-spinner {
+    animation: none;
+  }
+}
+
+/* High contrast mode */
+@media (prefers-contrast: high) {
+  .interaction-mode-panel,
+  .mode-card,
+  .advanced-settings,
+  .benefit-item {
+    border: 2px solid #ffffff;
+  }
+  
+  .mode-card.active {
+    border: 3px solid #007acc;
+  }
+}
+
+/* Focus States for Accessibility */
+.mode-card:focus,
+.settings-toggle:focus {
+  outline: 2px solid #007acc;
+  outline-offset: 2px;
+}
+
+.setting-item input[type="checkbox"]:focus {
+  outline: 2px solid #007acc;
+  outline-offset: 2px;
+}
+
+/* Animation Enhancements */
+.mode-card {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.mode-card.active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(45deg, rgba(0, 122, 204, 0.1), rgba(0, 122, 204, 0.05));
+  pointer-events: none;
+  border-radius: 10px;
+}
+
+/* Mode-specific styling */
+.mode-card.beginner:hover {
+  box-shadow: 0 8px 24px rgba(40, 167, 69, 0.2);
+}
+
+.mode-card.intermediate:hover {
+  box-shadow: 0 8px 24px rgba(255, 193, 7, 0.2);
+}
+
+.mode-card.advanced:hover {
+  box-shadow: 0 8px 24px rgba(220, 53, 69, 0.2);
+}
