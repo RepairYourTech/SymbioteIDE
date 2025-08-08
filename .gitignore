@@ -1,0 +1,32 @@
+﻿# Build outputs
+target/
+dist/
+build/
+node_modules/
+
+# Rust artifacts
+*.rlib
+*.rmeta
+*.bin
+*.pdb
+*.exe
+*.dll
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Cache
+.cache
+.vite/
