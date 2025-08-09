@@ -6,6 +6,6 @@ pub mod file;
 pub mod agent;
 
 pub use user::*;
-pub use project::*;
+pub use project::{Project, ProjectSettings, ProjectType, ProjectVisibility, ProjectStatus, ProjectFile, ProjectActivity, ActivityType};
 pub use file::*;
 pub use agent::*;

@@ -27,6 +27,9 @@ pub mod error;
 pub mod parser;
 pub mod tokenizer;
 pub mod codebase_intelligence;
+pub mod context_bus;
+pub mod agent_orchestrator;
+pub mod performance_validation;
 
 // Re-export commonly used types
 pub use error::{SymbioteError, Result};
@@ -130,7 +133,7 @@ impl std::fmt::Display for ProjectId {
 }
 
 /// Agent ID type for AI agent identification
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AgentId(uuid::Uuid);
 
 impl AgentId {

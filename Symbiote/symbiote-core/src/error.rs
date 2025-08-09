@@ -92,6 +92,16 @@ impl SymbioteError {
         Self::Security(message.into())
     }
 
+    pub fn database<S: Into<String>>(message: S) -> Self {
+        Self::Database(sqlx::Error::Configuration(message.into().into()))
+    }
+
+    pub fn serialization<S: Into<String>>(message: S) -> Self {
+        // Create a simple IO error and convert it to serde_json::Error
+        let io_error = std::io::Error::new(std::io::ErrorKind::InvalidData, message.into());
+        Self::Serialization(serde_json::Error::io(io_error))
+    }
+
     /// Create an authentication error
     pub fn authentication<S: Into<String>>(message: S) -> Self {
         Self::Authentication(message.into())

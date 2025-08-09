@@ -8,8 +8,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-use ring::{aead, pbkdf2, rand::{SecureRandom, SystemRandom}};
+use ring::{aead::{self, BoundKey, NonceSequence, Nonce, NONCE_LEN}, pbkdf2, rand::{SecureRandom, SystemRandom}};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+/// Counter-based nonce sequence for AEAD encryption
+struct CounterNonceSequence(u32);
+
+impl NonceSequence for CounterNonceSequence {
+    fn advance(&mut self) -> std::result::Result<Nonce, ring::error::Unspecified> {
+        let mut nonce_bytes = vec![0; NONCE_LEN];
+        let bytes = self.0.to_be_bytes();
+        nonce_bytes[8..].copy_from_slice(&bytes);
+        self.0 += 1;
+        Nonce::try_assume_unique_for_key(&nonce_bytes)
+    }
+}
 
 /// Encryption algorithm types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -313,14 +326,14 @@ impl EncryptionProvider for DefaultEncryptionProvider {
         let algorithm = key_metadata.algorithm.aead_algorithm();
         let unbound_key = aead::UnboundKey::new(algorithm, raw_key)
             .map_err(|_| SymbioteError::internal("Failed to create encryption key"))?;
-        let sealing_key = aead::SealingKey::new(unbound_key);
+
+        // Create nonce sequence
+        let nonce_sequence = CounterNonceSequence(1);
+        let mut sealing_key = aead::SealingKey::new(unbound_key, nonce_sequence);
 
         // Encrypt data
-        let nonce_sequence = aead::Nonce::try_assume_unique_for_key(&nonce)
-            .map_err(|_| SymbioteError::internal("Invalid nonce"))?;
-
         let mut ciphertext = data_to_encrypt;
-        let tag = sealing_key.seal_in_place_separate_tag(nonce_sequence, aead::Aad::empty(), &mut ciphertext)
+        let tag = sealing_key.seal_in_place_separate_tag(aead::Aad::empty(), &mut ciphertext)
             .map_err(|_| SymbioteError::internal("Encryption failed"))?;
 
         Ok(EncryptedData {
@@ -342,17 +355,16 @@ impl EncryptionProvider for DefaultEncryptionProvider {
         let algorithm = encrypted_data.algorithm.aead_algorithm();
         let unbound_key = aead::UnboundKey::new(algorithm, &raw_key)
             .map_err(|_| SymbioteError::internal("Failed to create decryption key"))?;
-        let opening_key = aead::OpeningKey::new(unbound_key);
+        // Create nonce sequence (starting from 1 to match encryption)
+        let nonce_sequence = CounterNonceSequence(1);
+        let mut opening_key = aead::OpeningKey::new(unbound_key, nonce_sequence);
 
-        // Prepare data for decryption
-        let nonce_sequence = aead::Nonce::try_assume_unique_for_key(&encrypted_data.nonce)
-            .map_err(|_| SymbioteError::internal("Invalid nonce"))?;
-
+        // Combine ciphertext and tag
         let mut ciphertext_and_tag = encrypted_data.ciphertext.clone();
         ciphertext_and_tag.extend_from_slice(&encrypted_data.tag);
 
         // Decrypt data
-        let plaintext = opening_key.open_in_place(nonce_sequence, aead::Aad::empty(), &mut ciphertext_and_tag)
+        let plaintext = opening_key.open_in_place(aead::Aad::empty(), &mut ciphertext_and_tag)
             .map_err(|_| SymbioteError::internal("Decryption failed"))?;
 
         // Decompress if needed
@@ -362,7 +374,7 @@ impl EncryptionProvider for DefaultEncryptionProvider {
     fn generate_key(&self, purpose: KeyPurpose, algorithm: EncryptionAlgorithm) -> Result<EncryptionKey> {
         let key_id = Uuid::new_v4();
         let key_length = algorithm.key_length();
-        let raw_key = self.generate_random_bytes(key_length)?;
+        let _raw_key = self.generate_random_bytes(key_length)?;
 
         let key_metadata = EncryptionKey {
             id: key_id,

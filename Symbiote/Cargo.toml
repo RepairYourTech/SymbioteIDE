@@ -18,6 +18,7 @@ members = [
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7"
 futures = "0.3"
+async-trait = "0.1"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -31,8 +32,6 @@ tower-http = { version = "0.5", features = ["cors", "trace", "compression"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "uuid"] }
-neo4rs = "0.7"
-qdrant-client = "1.10"
 neo4rs = "0.7"
 qdrant-client = "1.10"
 
@@ -49,6 +48,9 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # UUID
 uuid = { version = "1.10", features = ["v4", "serde"] }
+
+# Random number generation
+rand = "0.8"
 
 # Configuration
 config = "0.14"
