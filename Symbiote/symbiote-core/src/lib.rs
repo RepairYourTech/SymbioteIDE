@@ -4,6 +4,7 @@
 //! This module provides the foundational components that all other modules depend on.
 
 // Core modules as defined in the plan
+pub mod agents;
 pub mod commands;
 pub mod events;
 pub mod services;
@@ -35,6 +36,7 @@ pub mod performance_validation;
 // Re-export commonly used types
 pub use error::{SymbioteError, Result};
 pub use config::{AppConfig, DatabaseConfig, AIProvidersConfig, SecurityConfig, PerformanceConfig, FeatureFlags};
+pub use agents::{SymbioteAgentFramework, HiveMind, Symbiote, TeamManager, AgentBuilder};
 
 /// User ID type for consistent user identification across the system
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
