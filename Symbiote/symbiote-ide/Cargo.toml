@@ -1,0 +1,10 @@
+[package]
+name = "symbiote-ide"
+version = "0.1.0"
+edition = "2021"
+description = "IDE system for Symbiote"
+
+[dependencies]
+symbiote-core = { path = "../symbiote-core" }
+tokio = { workspace = true }
+serde = { workspace = true }

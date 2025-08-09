@@ -1,0 +1,108 @@
+[workspace]
+resolver = "2"
+members = [
+    "symbiote-core",
+    "symbiote-ai",
+    "symbiote-db",
+    "symbiote-auth",
+    "symbiote-api",
+    "symbiote-security",
+    "symbiote-workflow",
+    "symbiote-trading",
+    "symbiote-terminal",
+    "symbiote-ide"
+]
+
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP client and server
+reqwest = { version = "0.12", features = ["json", "stream"] }
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace", "compression"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "uuid"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+# Configuration
+config = "0.14"
+
+# Tree-sitter for parsing
+tree-sitter = "0.24"
+
+# AI tokenization
+tiktoken-rs = "0.6"
+
+# Cryptography
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+
+# Regex
+regex = "1.10"
+
+# Async channels
+async-channel = "2.3"
+
+[profile.dev]
+opt-level = 0
+debug = true
+split-debuginfo = "unpacked"
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = "unwind"
+incremental = true
+codegen-units = 256
+rpath = false
+
+[profile.release]
+opt-level = 3
+debug = false
+split-debuginfo = "off"
+debug-assertions = false
+overflow-checks = false
+lto = "thin"
+panic = "abort"
+incremental = false
+codegen-units = 1
+rpath = false
+
+[profile.test]
+opt-level = 0
+debug = 2
+debug-assertions = true
+overflow-checks = true
+incremental = true
+codegen-units = 256
+
+[profile.bench]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = true
+incremental = false
+codegen-units = 1

@@ -1,0 +1,10 @@
+[package]
+name = "symbiote-trading"
+version = "0.1.0"
+edition = "2021"
+description = "Trading system for Symbiote IDE"
+
+[dependencies]
+symbiote-core = { path = "../symbiote-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
