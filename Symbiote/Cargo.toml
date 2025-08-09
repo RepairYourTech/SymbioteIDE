@@ -31,6 +31,10 @@ tower-http = { version = "0.5", features = ["cors", "trace", "compression"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "uuid"] }
+neo4rs = "0.7"
+qdrant-client = "1.10"
+neo4rs = "0.7"
+qdrant-client = "1.10"
 
 # Error handling
 anyhow = "1.0"
@@ -61,9 +65,12 @@ tree-sitter-json = "0.23"
 tiktoken-rs = "0.6"
 
 # Cryptography
+ring = "0.17"
+base64 = "0.22"
+
+# Cryptography
 sha2 = "0.10"
 hmac = "0.12"
-base64 = "0.22"
 
 # Regex
 regex = "1.10"

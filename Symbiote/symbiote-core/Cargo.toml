@@ -71,6 +71,14 @@ tiktoken-rs = { workspace = true }
 # Additional dependencies for codebase intelligence
 num_cpus = "1.16"
 
+# Cryptography
+ring = { workspace = true }
+base64 = { workspace = true }
+
+# Multi-database support
+neo4rs = { workspace = true }
+qdrant-client = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3.12"
 tokio-test = "0.4"
