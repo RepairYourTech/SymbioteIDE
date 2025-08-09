@@ -226,6 +226,13 @@ impl SymbioteError {
 /// Result type alias for convenience
 pub type Result<T> = std::result::Result<T, SymbioteError>;
 
+// Additional From implementations for error types not covered by thiserror
+impl From<anyhow::Error> for SymbioteError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Internal(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,11 +246,8 @@ mod tests {
 
     #[test]
     fn test_error_retryable() {
-        let network_err = SymbioteError::Network(reqwest::Error::from(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "Connection refused",
-        )));
-        assert!(network_err.is_retryable());
+        let timeout_err = SymbioteError::timeout("Request timeout");
+        assert!(timeout_err.is_retryable());
 
         let validation_err = SymbioteError::validation("Invalid input");
         assert!(!validation_err.is_retryable());

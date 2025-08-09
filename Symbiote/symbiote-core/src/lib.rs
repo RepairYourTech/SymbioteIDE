@@ -24,6 +24,9 @@ pub mod extensions;
 pub mod utils;
 pub mod config;
 pub mod error;
+pub mod parser;
+pub mod tokenizer;
+pub mod codebase_intelligence;
 
 // Re-export commonly used types
 pub use error::{SymbioteError, Result};
@@ -99,7 +102,7 @@ impl std::fmt::Display for SessionId {
 }
 
 /// Project ID type for project identification
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ProjectId(uuid::Uuid);
 
 impl ProjectId {
