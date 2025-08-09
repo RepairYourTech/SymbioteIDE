@@ -18,12 +18,20 @@ pub mod global;
 pub mod optimization;
 pub mod compression;
 pub mod knowledge_graph;
+pub mod enhanced;
+pub mod realtime;
+pub mod intelligence;
+pub mod mcp;
 
 pub use bus::*;
 pub use global::*;
 pub use optimization::*;
 pub use compression::*;
 pub use knowledge_graph::*;
+pub use enhanced::*;
+pub use realtime::*;
+pub use intelligence::*;
+pub use mcp::*;
 
 /// System identifier for context management
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
