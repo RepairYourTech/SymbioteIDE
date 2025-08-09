@@ -92,6 +92,10 @@ impl SymbioteError {
         Self::Security(message.into())
     }
 
+    pub fn file_system<S: Into<String>>(message: S) -> Self {
+        Self::FileSystem(std::io::Error::new(std::io::ErrorKind::Other, message.into()))
+    }
+
     pub fn database<S: Into<String>>(message: S) -> Self {
         Self::Database(sqlx::Error::Configuration(message.into().into()))
     }
