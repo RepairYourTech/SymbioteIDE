@@ -1,0 +1,70 @@
+version: 2.1
+
+orbs:
+  rust: circleci/rust@1.6.0
+  node: circleci/node@5.1.0
+
+jobs:
+  rust-build:
+    docker:
+      - image: cimg/rust:1.75
+    working_directory: ~/project/symbiote-ide/src-tauri
+    steps:
+      - checkout:
+          path: ~/project
+      - rust/install:
+          version: stable
+      - run:
+          name: Check Rust version
+          command: rustc --version
+      - run:
+          name: Build Rust project
+          command: cargo build --verbose
+      - run:
+          name: Run Rust tests
+          command: cargo test --verbose
+
+  frontend-build:
+    docker:
+      - image: cimg/node:20.10
+    working_directory: ~/project/symbiote-ide
+    steps:
+      - checkout:
+          path: ~/project
+      - node/install-packages:
+          pkg-manager: npm
+      - run:
+          name: Build frontend
+          command: npm run build
+      - run:
+          name: Run frontend tests
+          command: npm test --passWithNoTests
+
+  tauri-build:
+    docker:
+      - image: cimg/rust:1.75
+    working_directory: ~/project/symbiote-ide
+    steps:
+      - checkout:
+          path: ~/project
+      - rust/install:
+          version: stable
+      - node/install-packages:
+          pkg-manager: npm
+      - run:
+          name: Install Tauri CLI
+          command: cargo install tauri-cli
+      - run:
+          name: Build Tauri app
+          command: npm run tauri:build
+
+workflows:
+  version: 2
+  build-and-test:
+    jobs:
+      - rust-build
+      - frontend-build
+      - tauri-build:
+          requires:
+            - rust-build
+            - frontend-build
