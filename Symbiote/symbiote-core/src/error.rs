@@ -25,6 +25,9 @@ pub enum SymbioteError {
     #[error("Security error: {0}")]
     Security(String),
 
+    #[error("Context error: {0}")]
+    Context(String),
+
     #[error("Network error: {0}")]
     Network(#[from] reqwest::Error),
 
@@ -94,6 +97,10 @@ impl SymbioteError {
 
     pub fn file_system<S: Into<String>>(message: S) -> Self {
         Self::FileSystem(std::io::Error::new(std::io::ErrorKind::Other, message.into()))
+    }
+
+    pub fn context<S: Into<String>>(message: S) -> Self {
+        Self::Context(message.into())
     }
 
     pub fn database<S: Into<String>>(message: S) -> Self {
@@ -218,6 +225,7 @@ impl SymbioteError {
             Self::Parse(_) => "parse",
             Self::Config(_) => "config",
             Self::Security(_) => "security",
+            Self::Context(_) => "context",
             Self::Network(_) => "network",
             Self::Serialization(_) => "serialization",
             Self::Authentication(_) => "authentication",

@@ -27,6 +27,7 @@ pub mod error;
 pub mod parser;
 pub mod tokenizer;
 pub mod codebase_intelligence;
+pub mod context;
 pub mod context_bus;
 pub mod agent_orchestrator;
 pub mod performance_validation;
