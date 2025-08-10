@@ -5,13 +5,13 @@
 use thiserror::Error;
 
 /// Main error type for the Symbiote system
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum SymbioteError {
     #[error("File system error: {0}")]
-    FileSystem(#[from] std::io::Error),
+    FileSystem(String),
 
     #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(String),
 
     #[error("AI provider error: {0}")]
     AIProvider(String),
@@ -28,11 +28,14 @@ pub enum SymbioteError {
     #[error("Context error: {0}")]
     Context(String),
 
+    #[error("Context corruption: {0}")]
+    ContextCorruption(String),
+
     #[error("Network error: {0}")]
-    Network(#[from] reqwest::Error),
+    Network(String),
 
     #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
+    Serialization(String),
 
     #[error("Authentication error: {0}")]
     Authentication(String),
@@ -72,6 +75,15 @@ pub enum SymbioteError {
 
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
+
+    #[error("External error: {0}")]
+    External(String),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
+    #[error("Execution error: {0}")]
+    Execution(String),
 }
 
 impl SymbioteError {
@@ -96,7 +108,7 @@ impl SymbioteError {
     }
 
     pub fn file_system<S: Into<String>>(message: S) -> Self {
-        Self::FileSystem(std::io::Error::new(std::io::ErrorKind::Other, message.into()))
+        Self::FileSystem(message.into())
     }
 
     pub fn context<S: Into<String>>(message: S) -> Self {
@@ -104,13 +116,11 @@ impl SymbioteError {
     }
 
     pub fn database<S: Into<String>>(message: S) -> Self {
-        Self::Database(sqlx::Error::Configuration(message.into().into()))
+        Self::Database(message.into())
     }
 
     pub fn serialization<S: Into<String>>(message: S) -> Self {
-        // Create a simple IO error and convert it to serde_json::Error
-        let io_error = std::io::Error::new(std::io::ErrorKind::InvalidData, message.into());
-        Self::Serialization(serde_json::Error::io(io_error))
+        Self::Serialization(message.into())
     }
 
     /// Create an authentication error
@@ -181,6 +191,16 @@ impl SymbioteError {
         Self::ServiceUnavailable(message.into())
     }
 
+    /// Create an external error
+    pub fn external<S: Into<String>>(message: S) -> Self {
+        Self::External(message.into())
+    }
+
+    /// Create a not implemented error
+    pub fn not_implemented<S: Into<String>>(message: S) -> Self {
+        Self::NotImplemented(message.into())
+    }
+
     /// Check if this error is retryable
     pub fn is_retryable(&self) -> bool {
         matches!(
@@ -226,6 +246,7 @@ impl SymbioteError {
             Self::Config(_) => "config",
             Self::Security(_) => "security",
             Self::Context(_) => "context",
+            Self::ContextCorruption(_) => "context_corruption",
             Self::Network(_) => "network",
             Self::Serialization(_) => "serialization",
             Self::Authentication(_) => "authentication",
@@ -241,6 +262,9 @@ impl SymbioteError {
             Self::ConcurrentModification(_) => "concurrent_modification",
             Self::QuotaExceeded(_) => "quota_exceeded",
             Self::ServiceUnavailable(_) => "service_unavailable",
+            Self::External(_) => "external",
+            Self::NotImplemented(_) => "not_implemented",
+            Self::Execution(_) => "execution",
         }
     }
 }
@@ -252,6 +276,30 @@ pub type Result<T> = std::result::Result<T, SymbioteError>;
 impl From<anyhow::Error> for SymbioteError {
     fn from(err: anyhow::Error) -> Self {
         Self::Internal(err.to_string())
+    }
+}
+
+impl From<std::io::Error> for SymbioteError {
+    fn from(err: std::io::Error) -> Self {
+        SymbioteError::FileSystem(err.to_string())
+    }
+}
+
+impl From<sqlx::Error> for SymbioteError {
+    fn from(err: sqlx::Error) -> Self {
+        SymbioteError::Database(err.to_string())
+    }
+}
+
+impl From<reqwest::Error> for SymbioteError {
+    fn from(err: reqwest::Error) -> Self {
+        SymbioteError::Network(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for SymbioteError {
+    fn from(err: serde_json::Error) -> Self {
+        SymbioteError::Serialization(err.to_string())
     }
 }
 

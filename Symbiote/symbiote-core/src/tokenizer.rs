@@ -489,6 +489,15 @@ pub struct ModelInfo {
     pub tokenizer_type: TokenizerType,
 }
 
+impl std::fmt::Debug for UniversalTokenizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UniversalTokenizer")
+            .field("tokenizers", &format!("{} tokenizers loaded", self.tokenizers.len()))
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
 impl Default for UniversalTokenizer {
     fn default() -> Self {
         Self::new().expect("Failed to create default tokenizer")

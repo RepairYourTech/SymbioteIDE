@@ -198,6 +198,7 @@ impl GlobalContext {
             symbols: vec![], // Will be populated by parser
             imports: vec![], // Will be populated by parser
             exports: vec![], // Will be populated by parser
+            size: update.data["size"].as_u64(),
             last_modified: update.timestamp,
             cursor_position: None,
             selection: None,
@@ -272,6 +273,7 @@ impl GlobalContext {
             id: conversation_id.to_string(),
             title: update.data["title"].as_str().unwrap_or("New Conversation").to_string(),
             messages: VecDeque::new(),
+            message_count: Some(0),
             participants: vec![Participant::User("user".to_string()), Participant::AI("assistant".to_string())],
             context_files: vec![],
             created_at: update.timestamp,
@@ -318,11 +320,13 @@ impl GlobalContext {
         let workflow = WorkflowContext {
             id: workflow_id.to_string(),
             name: update.data["name"].as_str().unwrap_or("Unnamed Workflow").to_string(),
+            description: update.data["description"].as_str().map(|s| s.to_string()),
             status: WorkflowStatus::Running,
             steps: vec![], // Will be populated as workflow progresses
             current_step: None,
             variables: HashMap::new(),
             created_at: update.timestamp,
+            updated_at: update.timestamp,
             started_at: Some(update.timestamp),
             completed_at: None,
         };
@@ -433,6 +437,7 @@ pub struct UserPreferences {
     pub ai_suggestions: bool,
     pub context_window_size: usize,
     pub optimization_frequency: OptimizationFrequency,
+    pub custom_settings: std::collections::HashMap<String, serde_json::Value>,
 }
 
 impl Default for UserPreferences {
@@ -444,6 +449,7 @@ impl Default for UserPreferences {
             ai_suggestions: true,
             context_window_size: 10000,
             optimization_frequency: OptimizationFrequency::Moderate,
+            custom_settings: std::collections::HashMap::new(),
         }
     }
 }

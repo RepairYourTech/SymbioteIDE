@@ -22,6 +22,9 @@ pub mod enhanced;
 pub mod realtime;
 pub mod intelligence;
 pub mod mcp;
+pub mod tokenizer;
+pub mod handoff;
+pub mod monitor;
 
 pub use bus::*;
 pub use global::*;
@@ -32,6 +35,9 @@ pub use enhanced::*;
 pub use realtime::*;
 pub use intelligence::*;
 pub use mcp::*;
+pub use tokenizer::*;
+pub use handoff::*;
+pub use monitor::*;
 
 /// System identifier for context management
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -255,6 +261,7 @@ pub struct FileContext {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
     pub exports: Vec<Export>,
+    pub size: Option<u64>,
     pub last_modified: u64,
     pub cursor_position: Option<Position>,
     pub selection: Option<Range>,
@@ -339,6 +346,7 @@ pub struct ConversationContext {
     pub messages: VecDeque<Message>,
     pub participants: Vec<Participant>,
     pub context_files: Vec<String>,
+    pub message_count: Option<usize>,
     pub created_at: u64,
     pub last_activity: u64,
 }
@@ -395,11 +403,13 @@ pub enum AttachmentType {
 pub struct WorkflowContext {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub status: WorkflowStatus,
     pub steps: Vec<WorkflowStep>,
     pub current_step: Option<usize>,
     pub variables: HashMap<String, serde_json::Value>,
     pub created_at: u64,
+    pub updated_at: u64,
     pub started_at: Option<u64>,
     pub completed_at: Option<u64>,
 }

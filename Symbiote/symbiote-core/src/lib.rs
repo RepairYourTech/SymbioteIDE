@@ -15,6 +15,10 @@ pub mod core;
 pub mod security;
 pub mod specialized;
 pub mod notebook;
+pub mod assistant;
+pub mod memory;
+pub mod workspace;
+pub mod codebase_index;
 pub mod terminal;
 pub mod file_system;
 pub mod git;
@@ -30,6 +34,7 @@ pub mod tokenizer;
 pub mod codebase_intelligence;
 pub mod context;
 pub mod context_bus;
+pub mod workflow;
 pub mod agent_orchestrator;
 pub mod performance_validation;
 
