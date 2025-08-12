@@ -1,32 +1,52 @@
-﻿# Build outputs
-target/
+﻿# General
+.DS_Store
+Thumbs.db
+
+# Node / web
+node_modules/
+.next/
 dist/
 build/
-node_modules/
 
-# Rust artifacts
+# Rust
+/target/
+**/target/
 *.rlib
 *.rmeta
 *.bin
 *.pdb
 *.exe
 *.dll
+Cargo.lock
 
-# IDE files
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env
+.env
+*.env.local
+
+# IDE
 .vscode/
 .idea/
 
-# OS files
-.DS_Store
-Thumbs.db
+# OS
+Icon?
 
-# Environment
-.env
-.env.local
+# Coverage
+coverage/
 
-# Logs
-*.log
-
-# Cache
-.cache
+# Caches
+.cache/
 .vite/
+.playwright/
+
+# Databases
+*.sqlite
+*.db
+*.sqlite3
