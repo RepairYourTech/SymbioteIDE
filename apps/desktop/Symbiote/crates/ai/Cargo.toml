@@ -1,0 +1,96 @@
+[package]
+name = "symbiote-ai"
+version = "0.1.0"
+edition = "2021"
+description = "Unified AI provider integration and model management for Symbiote"
+license = "MIT"
+repository = "https://github.com/RepairYourTech/SymbioteIDE"
+keywords = ["ai", "providers", "models", "cost-tracking", "optimization"]
+categories = ["api-bindings", "algorithms"]
+
+[dependencies]
+# Core dependencies
+symbiote-core = { path = "../symbiote-core" }
+symbiote-vault = { path = "../vault" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Decimal arithmetic for cost calculations
+rust_decimal = { version = "1.0", features = ["serde"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# HTTP client for provider APIs
+reqwest = { version = "0.11", features = ["json", "stream"] }
+
+# WebSocket for streaming
+tokio-tungstenite = "0.21"
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
+
+# Rate limiting
+governor = "0.6"
+
+# Circuit breakers
+circuit-breaker = "0.1"
+
+# Performance
+dashmap = "5.0"
+parking_lot = "0.12"
+
+# Observability
+opentelemetry = "0.20"
+prometheus = "0.13"
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# Database for cost tracking and model metadata
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "decimal"] }
+
+# URL handling
+url = "2.0"
+
+# Secret management
+secrecy = "0.8"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+criterion = "0.5"
+mockall = "0.12"
+wiremock = "0.5"
+
+[[bin]]
+name = "ai-provider-manager"
+path = "src/main.rs"
+
+[[bench]]
+name = "provider_performance"
+harness = false
+
+[[bench]]
+name = "model_selection"
+harness = false
+
+[[bench]]
+name = "cost_optimization"
+harness = false

@@ -1,0 +1,183 @@
+# Plan Manifest — maps repo folders to spec anchors (plan-only)
+
+root:
+  workspace:
+    cargo_workspace: Symbiote/Cargo.toml
+    toolchain: Symbiote/rust-toolchain.toml
+  docs_index: newplan/SYMBIOTE_UNIFIED_SPECIFICATION.md
+
+folders:
+  apps/desktop:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+      - newplan/specs/agents-feature-mapping.md#1-personal-assistant-global-orchestrator
+    acceptance:
+      - repo.arch.acceptance
+  apps/ui:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+      - newplan/specs/agents-feature-mapping.md#2-ide-code-intelligence-editor-lsp-diff
+      - newplan/specs/agents-feature-mapping.md#4-visual-workflow-builder
+    acceptance:
+      - ui.ide.acceptance
+  apps/cli:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+    acceptance:
+      - cli.acceptance
+  crates/agents-sdk:
+    spec:
+      - newplan/specs/symbiote-agent-sdk.md
+    acceptance:
+      - sdk.acceptance
+  crates/assistant:
+    spec:
+      - newplan/specs/agents-architecture.md#assistant-orchestrator
+      - newplan/specs/agents-feature-mapping.md#1-personal-assistant-global-orchestrator
+    acceptance:
+      - assistant.acceptance
+  crates/ai:
+    spec:
+      - newplan/specs/agents-architecture.md#provider-specific-agents-sdk--cli
+      - newplan/specs/symbiote-agent-sdk.md#normalized-provider-envelope-plan-only
+    acceptance:
+      - providers.acceptance
+  crates/context:
+    spec:
+      - newplan/specs/repository-architecture.md#context-engine-recommended-not-mandatory
+    acceptance:
+      - context.acceptance
+  crates/workflow:
+    spec:
+      - newplan/specs/repository-architecture.md#workflow-builder--debugger-plan-only
+      - newplan/specs/agents-feature-mapping.md#4-visual-workflow-builder
+    acceptance:
+      - workflow.acceptance
+  crates/vcs:
+    spec:
+      - newplan/specs/repository-architecture.md#source-control--github-integration-plan-only
+      - newplan/specs/agents-feature-mapping.md#3-source-control--prs-vs-code-level-scm
+    acceptance:
+      - vcs.acceptance
+  crates/github:
+    spec:
+      - newplan/specs/repository-architecture.md#source-control--github-integration-plan-only
+      - newplan/specs/agents-architecture.md#github-agent-details
+    acceptance:
+      - github.acceptance
+  crates/tools:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+      - newplan/specs/agents-architecture.md#runtime-cratesagents
+    acceptance:
+      - tools.acceptance
+  crates/diff:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+      - newplan/specs/agents-feature-mapping.md#2-ide-code-intelligence-editor-lsp-diff
+    acceptance:
+      - diff.acceptance
+  crates/ide:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+      - newplan/specs/agents-feature-mapping.md#2-ide-code-intelligence-editor-lsp-diff
+    acceptance:
+      - ide.acceptance
+  crates/storage:
+    spec:
+      - newplan/specs/repository-architecture.md#context-engine-recommended-not-mandatory
+    acceptance:
+      - storage.acceptance
+  crates/settings:
+    spec:
+      - newplan/specs/repository-architecture.md#layering--dependencies
+    acceptance:
+      - settings.acceptance
+  crates/security:
+    spec:
+      - newplan/specs/repository-architecture.md#security--policy
+    acceptance:
+      - security.acceptance
+  crates/vault:
+    spec:
+      - newplan/specs/repository-architecture.md#security--policy
+    acceptance:
+      - vault.acceptance
+  crates/egress:
+    spec:
+      - newplan/specs/repository-architecture.md#security--policy
+    acceptance:
+      - egress.acceptance
+  crates/telemetry:
+    spec:
+      - newplan/specs/repository-architecture.md#security--policy
+    acceptance:
+      - telemetry.acceptance
+  crates/memory:
+    spec:
+      - newplan/specs/repository-architecture.md#context-engine-recommended-not-mandatory
+    acceptance:
+      - memory.acceptance
+  crates/mcp:
+    spec:
+      - newplan/SYMBIOTE_UNIFIED_SPECIFICATION.md#mcp-integration-unified
+    acceptance:
+      - mcp.acceptance
+  crates/catalog:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+    acceptance:
+      - catalog.acceptance
+  crates/connectors:
+    spec:
+      - newplan/specs/repository-architecture.md#connectors-first-class
+      - newplan/specs/agents-feature-mapping.md#7-connectors--quick-connect
+    acceptance:
+      - connectors.acceptance
+  crates/browser:
+    spec:
+      - newplan/specs/repository-architecture.md#top-level-layout-proposed
+    acceptance:
+      - browser.acceptance
+  tests/e2e:
+    spec:
+      - newplan/specs/repository-architecture.md#testing-strategy
+      - newplan/specs/agents-architecture.md#e2e-test-agent-details
+    acceptance:
+      - e2e.acceptance
+  tests/integration:
+    spec:
+      - newplan/specs/repository-architecture.md#testing-strategy
+    acceptance:
+      - integration.acceptance
+  tests/performance:
+    spec:
+      - newplan/specs/repository-architecture.md#testing-strategy
+    acceptance:
+      - performance.acceptance
+  tests/golden:
+    spec:
+      - newplan/specs/repository-architecture.md#testing-strategy
+    acceptance:
+      - golden.acceptance
+  infra/docker:
+    spec:
+      - newplan/specs/repository-architecture.md#infra--ops
+    acceptance:
+      - infra.docker.acceptance
+  infra/devcontainers:
+    spec:
+      - newplan/specs/repository-architecture.md#infra--ops
+    acceptance:
+      - infra.devcontainers.acceptance
+  infra/ci:
+    spec:
+      - newplan/specs/repository-architecture.md#infra--ops
+    acceptance:
+      - infra.ci.acceptance
+  infra/configs:
+    spec:
+      - newplan/specs/repository-architecture.md#infra--ops
+    acceptance:
+      - infra.configs.acceptance
+

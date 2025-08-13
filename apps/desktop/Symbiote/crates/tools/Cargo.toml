@@ -1,0 +1,99 @@
+[package]
+name = "symbiote-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Comprehensive typed tool SDK for creating, managing, and executing tools within Symbiote"
+license = "MIT"
+repository = "https://github.com/RepairYourTech/SymbioteIDE"
+keywords = ["tools", "sdk", "type-safe", "sandboxed", "validation"]
+categories = ["development-tools", "api-bindings"]
+
+[dependencies]
+# Core dependencies
+symbiote-core = { path = "../symbiote-core" }
+symbiote-security = { path = "../security" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Schema generation and validation
+jsonschema = "0.17"
+schemars = "0.8"
+
+# Procedural macros
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+
+# Sandboxing and security
+nix = { version = "0.27", features = ["process", "signal"] }
+libc = "0.2"
+
+# Resource monitoring
+sysinfo = "0.29"
+
+# Performance
+dashmap = "5.0"
+parking_lot = "0.12"
+
+# Observability
+opentelemetry = "0.20"
+prometheus = "0.13"
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# Database for tool metadata and metrics
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
+
+# URL handling
+url = "2.0"
+
+# Timeout handling
+tokio-util = { version = "0.7", features = ["time"] }
+
+# Process management
+subprocess = "0.2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+criterion = "0.5"
+mockall = "0.12"
+
+[lib]
+proc-macro = true
+
+[[bin]]
+name = "tool-manager"
+path = "src/main.rs"
+
+[[bench]]
+name = "tool_execution"
+harness = false
+
+[[bench]]
+name = "schema_generation"
+harness = false
+
+[[bench]]
+name = "validation_performance"
+harness = false

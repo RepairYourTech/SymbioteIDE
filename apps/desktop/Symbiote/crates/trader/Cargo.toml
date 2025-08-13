@@ -1,0 +1,96 @@
+[package]
+name = "symbiote-trader"
+version = "0.1.0"
+edition = "2021"
+description = "AI-powered cryptocurrency trading system with natural language interface"
+license = "MIT"
+repository = "https://github.com/RepairYourTech/SymbioteIDE"
+keywords = ["trading", "crypto", "ai", "defi", "finance"]
+categories = ["finance", "api-bindings", "algorithms"]
+
+[dependencies]
+# Core dependencies
+symbiote-core = { path = "../symbiote-core" }
+symbiote-ai = { path = "../ai" }
+symbiote-context = { path = "../context" }
+symbiote-vault = { path = "../vault" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Decimal arithmetic for financial calculations
+rust_decimal = { version = "1.0", features = ["serde"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# HTTP client for exchange APIs
+reqwest = { version = "0.11", features = ["json", "stream"] }
+
+# WebSocket for real-time data
+tokio-tungstenite = "0.21"
+
+# Cryptography for API authentication
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.21"
+
+# Database for trading data
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "decimal"] }
+
+# Technical analysis
+ta = "0.5"
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# Performance
+dashmap = "5.0"
+parking_lot = "0.12"
+
+# Blockchain integration
+ethers = "2.0"
+solana-sdk = "1.16"
+
+# UI Framework (for trading interface)
+leptos = { version = "0.6", features = ["csr"] }
+
+# Machine learning (optional)
+candle-core = { version = "0.3", optional = true }
+candle-nn = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+criterion = "0.5"
+mockall = "0.12"
+
+[features]
+default = ["ml"]
+ml = ["candle-core", "candle-nn"]
+
+[[bin]]
+name = "trader"
+path = "src/main.rs"
+
+[[bench]]
+name = "trading_performance"
+harness = false
+
+[[bench]]
+name = "strategy_execution"
+harness = false

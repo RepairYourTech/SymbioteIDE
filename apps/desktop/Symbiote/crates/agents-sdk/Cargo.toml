@@ -1,0 +1,105 @@
+[package]
+name = "symbiote-agents-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Comprehensive SDK for developing AI agents within the Symbiote ecosystem"
+license = "MIT"
+repository = "https://github.com/RepairYourTech/SymbioteIDE"
+keywords = ["agents", "sdk", "ai", "framework", "development"]
+categories = ["development-tools", "api-bindings"]
+
+[dependencies]
+# Core dependencies
+symbiote-core = { path = "../symbiote-core" }
+symbiote-tools = { path = "../tools" }
+symbiote-security = { path = "../security" }
+symbiote-storage = { path = "../storage" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Performance
+dashmap = "5.0"
+parking_lot = "0.12"
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# JSON Schema for tool definitions
+schemars = "0.8"
+jsonschema = "0.17"
+
+# Communication
+crossbeam-channel = "0.5"
+
+# State management
+bincode = "1.3"
+
+# Observability
+opentelemetry = "0.20"
+prometheus = "0.13"
+
+# Planning and reasoning (optional)
+petgraph = { version = "0.6", optional = true }
+
+# Machine learning for adaptation (optional)
+candle-core = { version = "0.3", optional = true }
+candle-nn = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+criterion = "0.5"
+mockall = "0.12"
+proptest = "1.0"
+
+[features]
+default = ["planning", "ml-adaptation"]
+planning = ["petgraph"]
+ml-adaptation = ["candle-core", "candle-nn"]
+
+[[bin]]
+name = "agent-dev-tools"
+path = "src/main.rs"
+
+[[example]]
+name = "simple_agent"
+path = "examples/simple_agent.rs"
+
+[[example]]
+name = "multi_agent_system"
+path = "examples/multi_agent_system.rs"
+
+[[example]]
+name = "tool_integration"
+path = "examples/tool_integration.rs"
+
+[[bench]]
+name = "agent_performance"
+harness = false
+
+[[bench]]
+name = "communication_throughput"
+harness = false
+
+[[bench]]
+name = "state_management"
+harness = false

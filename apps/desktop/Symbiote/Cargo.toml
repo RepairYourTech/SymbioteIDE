@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "apps/*",
+  "crates/*",
+  "tests/*"
+]
+

@@ -1,0 +1,106 @@
+[package]
+name = "symbiote-telemetry"
+version = "0.1.0"
+edition = "2021"
+description = "Comprehensive observability, monitoring, and analytics for Symbiote"
+license = "MIT"
+repository = "https://github.com/RepairYourTech/SymbioteIDE"
+keywords = ["telemetry", "observability", "monitoring", "analytics", "tracing"]
+categories = ["development-tools", "observability"]
+
+[dependencies]
+# Core dependencies
+symbiote-core = { path = "../symbiote-core" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# OpenTelemetry for distributed tracing
+opentelemetry = { version = "0.21", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.14"
+opentelemetry-jaeger = "0.20"
+opentelemetry-prometheus = "0.14"
+opentelemetry-semantic-conventions = "0.13"
+
+# Tracing
+tracing = "0.1"
+tracing-opentelemetry = "0.22"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+
+# Metrics
+prometheus = "0.13"
+metrics = "0.21"
+metrics-exporter-prometheus = "0.12"
+
+# Performance
+dashmap = "5.0"
+parking_lot = "0.12"
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# Database for analytics storage
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "json"] }
+
+# HTTP client for exporters
+reqwest = { version = "0.11", features = ["json"] }
+
+# Analytics and privacy
+sha2 = "0.10"
+rand = "0.8"
+
+# Time series data
+influxdb = { version = "0.7", optional = true }
+
+# Elasticsearch integration
+elasticsearch = { version = "8.5", optional = true }
+
+# Datadog integration
+datadog-api = { version = "0.1", optional = true }
+
+# Machine learning for anomaly detection (optional)
+candle-core = { version = "0.3", optional = true }
+candle-nn = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+criterion = "0.5"
+mockall = "0.12"
+
+[features]
+default = ["influxdb", "elasticsearch", "ml-anomaly-detection"]
+influxdb = ["dep:influxdb"]
+elasticsearch = ["dep:elasticsearch"]
+datadog = ["dep:datadog-api"]
+ml-anomaly-detection = ["candle-core", "candle-nn"]
+
+[[bin]]
+name = "telemetry-manager"
+path = "src/main.rs"
+
+[[bench]]
+name = "tracing_overhead"
+harness = false
+
+[[bench]]
+name = "metrics_collection"
+harness = false
+
+[[bench]]
+name = "analytics_processing"
+harness = false

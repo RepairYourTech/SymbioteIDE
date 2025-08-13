@@ -1,24 +1,5 @@
 {
-  "name": "ai-master-tool",
-  "version": "1.0.0",
-  "description": "This repository has been reset to adopt the new unified plan. All legacy code has been removed. The plan and specifications live under `newplan/` and serve as the single source of truth until implementation lands.",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/RepairYourTech/SymbioteIDE.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/RepairYourTech/SymbioteIDE/issues"
-  },
-  "homepage": "https://github.com/RepairYourTech/SymbioteIDE#readme",
-  "devDependencies": {
-    "@playwright/test": "^1.54.2"
+  "dependencies": {
+    "firebase": "^12.1.0"
   }
 }

@@ -16,6 +16,15 @@ Symbiote is a **single unified desktop application** that combines AI-powered ID
 **KEY POINT: This is ONE APPLICATION with integrated systems, not separate tools bundled together. Every feature works together through shared context, unified chat interface, and coordinated AI agents.**
 
 ### **What Users Can Actually DO:**
+
+### Plan Index (Architecture & Agents)
+- Repository Architecture (plan-only): newplan/specs/repository-architecture.md
+- Agents Architecture (plan-only): newplan/specs/agents-architecture.md
+- Agents ↔ Features Mapping (plan-only): newplan/specs/agents-feature-mapping.md
+- Ultimate Trader Agent Team (plan-only): newplan/specs/agents-trader-team.md
+- Symbiote Agent SDK (plan-only): newplan/specs/symbiote-agent-sdk.md
+
+
 - **"Build me a React app with authentication"** → SYMBIOTE coordinates agents to scaffold, code, test, and deploy
 - **"Find all functions that handle user data"** → Semantic search across entire codebase with visual relationships
 - **"Create a workflow to sync GitHub issues to Slack"** → Visual workflow builder with 200+ nodes
@@ -1160,6 +1169,8 @@ Schema notes (DDL examples)
 ### Compare Panel (All Providers & Models)
 - Purpose: side‑by‑side comparison across providers, models, and endpoints
 - Inputs/Filters
+  - UX note: When graph features are disabled (Neo4j off), relationship insights are limited. Enable Neo4j in Settings → Context Engine to unlock dependency-aware comparisons.
+
   - Providers (multi-select), Model families/tags, Capabilities (tools/json_mode/structured/vision/reasoning)
   - Price constraints (max prompt/completion $/M), Context window, Latency, Availability, Data policy
 - Views
@@ -1188,6 +1199,10 @@ Schema notes (DDL examples)
 - Unit: mappers (OpenRouter → Supabase schema), canonicalization, price normalization
 - Integration: live fetch mock, upsert correctness, delta alerts
 - Playwright: UI Compare end‑to‑end across WebView/browser; traces on failure; flake <2%
+
+- Large-repo regression: nightly suite on ≥1M LOC polyglot corpus; track retrieval recall@k, indexing lag, edit success rate
+- Provider/OS matrix: Windows/macOS/Linux × top providers (OpenAI/Anthropic/Gemini/OpenRouter/local); nightly smoke; weekly deep
+- Connector contracts: golden tests per connector with emulator-first strategy; healthcheck and rollback verified
 
 ### **🔄 COMPREHENSIVE MODEL DATA SOURCE:**
 **Reference Implementation:** [Roo Code Open Source Repository](https://github.com/RooCodeInc/Roo-Code)
@@ -1446,6 +1461,17 @@ impl AIPoweredCodeEditor {
 - **Terminal Assist**: Draft command, dry-run diff, “undo recipe”; concurrent tasks sidebar.
 - **Semantic Diff UX**: Apply-chunk with preview; conflict assistant with AI suggestions.
 - **Review Mode**: Inline comment threads and “accept with fix” (AI applies safe edits).
+
+
+- **Surgical Edit Mode (Powered by Hybrid Context):**
+  - Target by stable anchors (symbol IDs/signatures/import paths) with AST matchers; no brittle regex-only edits
+  - Plan minimal diffs (sub-file ranges); preserve surrounding code formatting and comments
+  - Guards: pre-check imports resolve and module compiles; dry-run patch on shadow tree; quick tests/linters
+  - Large-file strategy: windowed edits with neighbor context only; avoid whole-file context in prompts
+  - Idempotent patches with Patch IDs; repeat applies are no‑ops; reverse patch auto‑generated for rollback
+  - Language guardrails: TS (TS Server), Rust (rust-analyzer), Python (ruff/rope), Go (go/ast), Java (JDT), C# (Roslyn)
+  - Respect CODEOWNERS/monorepo boundaries; cross-package edits require elevated approval profile
+
 
 Acceptance (Editor UI): search TTFB < 150ms, 60fps scroll on 50k LOC, semantic diff on 10k+ LOC diffs.
 
@@ -5096,6 +5122,9 @@ pub struct AIProviderManager {
     config: ProviderConfig,
     orchestrator: MultiProviderOrchestrator,
 }
+    reliability: ReliabilityPolicy,          // health scoring, circuit breakers, jittered retries, failover trees
+    budget_guard: BudgetGuard,               // pre-exec cost prediction, hard/soft budget enforcement
+
 
 pub trait AIProvider: Send + Sync {
     async fn complete(&self, prompt: CompletionRequest) -> Result<CompletionResponse>;
@@ -5221,6 +5250,11 @@ impl AdapterRegistry {
 - JSON modes: schema-constrained outputs; invalid raises Error events; recovery paths
 - Vision: multi-image inputs; OCR hints; bounding boxes/captions mapping
 - Computer Use: action/event mapping into Browser Automation sandbox; approval gates
+- Observability & Cost Governance (User-Facing)
+  - Budgets: per workspace/org/day and week; soft (warn) and hard (block) limits; UI badges and alerts
+  - Cost/Token accounting: per call/provider/model/tool; rollups and anomaly detection; exportable reports
+  - Trace sampling + PII policy: defaults safe, “no secrets” guarantees; approval‑gated deep traces
+
 - Prompt Cache: cache_key/ttl behavior; privacy (no secrets in keys); hit/miss metrics
 - Native Web: allowlist enforcement; citations attached; anti‑prompt‑injection tests
 - Hybrid Reasoning: fast→deep escalation triggers; rationale logged; cost/latency deltas within budgets
@@ -5418,11 +5452,32 @@ pub trait WorkflowEngine {
 
 #### Triggers & Integrations Catalog (Representative)
 
+
+- Acceptance (Connectors)
+  - Setup ≤ 60s with valid creds; healthcheck feedback ≤ 2s; roll back cleanly on failure with audit
+  - Emulator parity where possible; local/remote switch without breaking nodes; profile-aware configs
+
 - Triggers: HTTP Webhook (signed), Cron, Kafka/NATS/SQS, FS Watcher, GitHub, Stripe, DB Change Stream, Supabase, Slack Slash Command, S3 Object, Manual, Workspace Event, Playwright
 - AI Nodes: Chat, Tool Call, Embeddings, RAG Retrieve, Rerank, Vision Analyze, OCR, Computer Use Session, Prompt Cache, Native Web Search, MoE Router, Reasoning Escalation, Cost Guard, Safety Filter, Prompt Redactor, Provider Picker, OpenRouter Generic Model Call (free‑form model id), Gemini Model Call
 - Data/DB Nodes: Postgres Query/Tx, CSV/Parquet IO, JSON Transform, Schema Validate, Merge/Join, De‑dupe, Encrypt/Decrypt, Cache Get/Put, KV, Redis, Qdrant, Neo4j, S3, Artifact Archive
 - Dev/IDE Nodes: Git ops, Test/Lint/Build, Task Runner, Coverage Report, Diff/Refactor, Dev Server Start/Restart (single-instance), Port Allocate, Vault Env Inject, CI Trigger, SBOM/License checks
 - Control Flow: Map/Filter/Reduce, Switch, Retry/Backoff, Throttle/Debounce, Parallel, Race, Timeout, Circuit Breaker, Subflow Call, Compensation, Semaphore/Mutex, Gate, Audit Event, Signal/Wait
+
+
+- Connector Node Delivery Phases
+
+- Durability & Compensation
+  - Sagas by default for side-effecting nodes; compensation steps declared in node contracts
+  - Idempotency keys; exactly‑once simulation via de‑duplication and effect logs
+  - Backpressure policies: queue depth budget; node concurrency caps; rate‑limiters
+
+  - v0.1: Supabase, Postgres, Qdrant, Neo4j (optional), Stripe, Vercel, S3/GCS/Blob
+  - v0.2: Firebase, Pinecone, AstraDB (vector), Lemon Squeezy, Cloudflare, Render, Netlify
+  - v0.3: Redis Streams/Kafka native, Bedrock/Vertex/Azure service nodes, Datadog/Sentry, Weaviate
+- Each connector node ships with:
+  - Typed inputs/outputs with JSON Schema; golden tests; live healthcheck; Vault SecretHandle wiring
+  - Per-scope config picker (Global/Workspace/Project); profile selector (dev/test/prod)
+  - Local emulator support where available (e.g., Supabase, Firebase emulators)
 
 #### Acceptance Criteria (Workflow Engine)
 
@@ -5866,6 +5921,13 @@ pub struct KeyStore {
 - **Policy Center**: Egress allowlist editor, TLS pinning status, violations feed.
 - **Risk Banners**: Non-blocking warnings in high-impact flows; quick approval dialogs with context.
 
+
+- Quick Connect flows (Connectors)
+  - One-click setup for: Supabase, Firebase, Vercel, Stripe, Lemon Squeezy, Qdrant, Pinecone, AstraDB, Neo4j (optional), AWS/GCP/Azure
+  - Auto-creates SecretHandles with minimal scopes; sets egress allowlists; healthcheck validates keys/permissions
+  - Scope picker + profile selector (dev/test/prod) inline; Workspace/Project overrides with diff
+  - Generates sample nodes/workflows and environment stubs; offers to run a connectivity test
+
 Acceptance (Security): rotate secret without editing workflows; violations visible within 2s with actionable remediations.
 
 ---
@@ -5939,6 +6001,15 @@ pub struct CodebaseIndexer {
 - **Code Embeddings:** Vector embeddings for semantic code similarity
 - **Real-Time Updates:** Incremental indexing on file changes
 
+
+- **Incremental Indexing Pipeline (enhanced):**
+  - Watchers: git diff + FS watch; branch/PR aware; backpressure on large repos
+  - Parsing: tree‑sitter/LSP for AST, symbols, imports, references per language
+  - Chunking: code‑aware splits (symbol bodies/blocks), stable anchors; no cross‑symbol leakage
+  - Embeddings: per chunk + symbol docstrings/tests; dedupe; rolling re‑embed thresholds
+  - Graph extraction: imports/calls/defines; test↔subject links; coverage overlay
+  - Schedules: background initial crawl; near‑real‑time incremental updates
+
 ---
 
 ## 🔄 ADVANCED CONTEXT ENGINE (AUGMENT'S ARCHITECTURE)
@@ -5951,9 +6022,9 @@ pub struct SymbioteContextEngine {
     file_watcher: FileWatcher,
 
     // Hybrid storage approach
-    vector_store: QdrantClient,           // Qdrant for semantic embeddings
-    graph_db: Neo4jClient,                // Neo4j for code relationships
-    sql_db: SqlitePool,                   // SQLite for structured metadata
+    vector_store: QdrantClient,           // Qdrant for semantic embeddings (optional: can be swapped or disabled)
+    graph_db: Option<Neo4jClient>,        // Optional: Neo4j for code relationships (degrades gracefully if None)
+    sql_db: SqlitePool,                   // SQLite for structured metadata (always available, embedded)
 
     // Configurable embedding providers
     embedding_manager: EmbeddingProviderManager,  // Support all providers
@@ -5965,8 +6036,15 @@ pub struct SymbioteContextEngine {
     // Intelligent retrieval with ranking
     hybrid_retriever: HybridRetriever,
     context_ranker: ContextRanker,
+    versioning: IndexVersioning,             // embedder/version params recorded; rolling re‑embed thresholds
+    compaction: IndexCompactor,              // dedupe chunks; PQ compression; configurable HNSW defaults
+    budget_planner: ContextBudgetPlanner,    // assemble ranges within token budgets with summarization
+
 }
 ```
+
+
+> Deployment Note: The hybrid engine is recommended but not mandatory. Default app profile embeds SQLite and can run with Qdrant embedded/local; Neo4j is optional and can be disabled per workspace/project. When disabled, relationship reasoning falls back to AST/LSP heuristics with clear UX notices.
 
 ### **Hybrid Approach Features:**
 
@@ -5988,6 +6066,11 @@ pub struct SymbioteContextEngine {
 - **File Metadata:** Paths, timestamps, sizes, languages
 - **Symbol Index:** Functions, classes, variables with locations
 - **Git History:** Commit metadata, diffs, branch information
+
+5. **Range Assembly (Surgical Retrieval):** Build minimal line ranges and symbol slices; avoid whole-file context where possible
+6. **Budget-Aware Packing:** Respect token limits; summarize non‑critical spans; prepend dependency stubs
+7. **Pre‑edit Verification:** Ensure invariants (imports resolve, module builds) before proposing edits
+
 - **Performance Metrics:** Query times, index statistics
 
 #### **🔄 Hybrid Retrieval Strategy:**
@@ -6238,8 +6321,31 @@ pub struct ConfigurationManager {
     workspace_configs: HashMap<WorkspaceId, WorkspaceConfiguration>,
     project_configs: HashMap<ProjectId, ProjectConfiguration>,
     ai_optimizer: AIConfigOptimizer,
+
+// Context Engine Profiles (Recommended, not mandatory):
+// - App-Core (bundled): SQLite (embedded), Qdrant (embedded/local), Memory substrate
+// - Workspace/Project override: local self-hosted or cloud (Qdrant, Neo4j, memory)
+// - Hierarchy: Global → Workspace → Project; hot‑switchable at runtime; safe rebinds
+
 }
 ```
+
+### Native Service Connectors (Recommended Catalog)
+- Databases/Backends: Supabase, Firebase, Postgres, MySQL, Mongo, Redis
+- Vectors/Graphs: Qdrant, Pinecone, AstraDB (vector), Neo4j (optional), Weaviate
+- Cloud Hosting/CI: Vercel, Netlify, Cloudflare, Render, Fly.io
+- Payments/Billing: Stripe, Lemon Squeezy
+- Auth/Identity: OAuth (Google/GitHub/Microsoft/Apple), Passkeys, SAML/SSO (roadmap)
+- Cloud Providers: AWS, GCP, Azure (scoped services: S3/GCS/Blob, SQS/PubSub/Service Bus, Cloud Functions/Lambda)
+- Observability: Sentry, Datadog, OpenTelemetry exporters
+
+Notes
+- All connectors use Vault SecretHandles (no raw secrets in app memory/prompts)
+- Per-scope configuration: Global → Workspace → Project; profile-aware (dev/test/prod)
+- Local/Cloud parity: support local emulators/self-hosted endpoints; degrade gracefully when unavailable
+- UI: Settings → Integrations: quick connect, health, scopes, per-service toggles; Workspace/Project overrides with diff view
+- Workflow Nodes: Out-of-the-box nodes for each service with typed inputs/outputs and test harnesses
+
 
 ### **Features:**
 - **Hierarchical Settings:** Global → Team → User → Workspace → Project
