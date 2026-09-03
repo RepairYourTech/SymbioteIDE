@@ -1,0 +1,43 @@
+name: Import Symbiote Roadmap v2
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validate and print operations without mutating issues
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - planning/bootstrap/import_symbiote_roadmap_v2.py
+      - planning/bootstrap/run_symbiote_roadmap_v2.py
+      - .github/workflows/import-symbiote-roadmap-v2.yml
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: symbiote-roadmap-v2-import
+  cancel-in-progress: false
+
+jobs:
+  validate-and-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate importer syntax
+        run: |
+          python -m py_compile planning/bootstrap/import_symbiote_roadmap_v2.py
+          python -m py_compile planning/bootstrap/run_symbiote_roadmap_v2.py
+
+      - name: Import or update roadmap issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: python planning/bootstrap/run_symbiote_roadmap_v2.py
