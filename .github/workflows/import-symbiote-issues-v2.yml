@@ -1,0 +1,50 @@
+name: Import Symbiote issue program v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".symbiote-planning/v2/**"
+      - ".github/workflows/import-symbiote-issues-v2.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: import-symbiote-issues-v2
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Reassemble and verify issue bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .symbiote-planning/v2/bundle.part* > /tmp/issue-bundle-v2.json.gz.b64
+          echo "1e32d83aea50084e8eb090fc8436f8953e5884feb83c2bdc866bb8f488e715fe  /tmp/issue-bundle-v2.json.gz.b64" | sha256sum -c -
+
+      - name: Import and cross-link program issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python .symbiote-planning/v2/import_issues_v2.py \
+            --bundle /tmp/issue-bundle-v2.json.gz.b64 \
+            --repo RepairYourTech/SymbioteIDE \
+            --apply \
+            --map-out /tmp/symbiote-created-issues.json
+
+      - name: Upload issue map
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: symbiote-v2-issue-map
+          path: /tmp/symbiote-created-issues.json
+          if-no-files-found: ignore
