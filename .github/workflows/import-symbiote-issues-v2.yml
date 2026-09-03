@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - ".symbiote-planning/v2/**"
-      - ".github/workflows/import-symbiote-issues-v2.yml"
+      - ".symbiote-planning/v2/run-import-v2"
 
 permissions:
   contents: read
@@ -18,7 +17,7 @@ concurrency:
 jobs:
   import:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -27,7 +26,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .symbiote-planning/v2/bundle.part* > /tmp/issue-bundle-v2.json.gz.b64
+          test -d .symbiote-planning/v2/payload
+          test "$(find .symbiote-planning/v2/payload -maxdepth 1 -type f -name 'chunk[0-9][0-9][0-9]' | wc -l)" -eq 41
+          cat .symbiote-planning/v2/payload/chunk[0-9][0-9][0-9] > /tmp/issue-bundle-v2.json.gz.b64
           echo "1e32d83aea50084e8eb090fc8436f8953e5884feb83c2bdc866bb8f488e715fe  /tmp/issue-bundle-v2.json.gz.b64" | sha256sum -c -
 
       - name: Import and cross-link program issues
