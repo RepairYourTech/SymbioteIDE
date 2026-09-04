@@ -25,4 +25,6 @@ The v2.2 amendment establishes:
 - multi-owner collision routing and intelligent remediation guidance;
 - identical collision/integration guarantees across multiple Symbiote Hosts.
 
-Live roadmap issue `GIT-05` (#442) and the v2.2-updated `GIT-01`, `DIAG-01`, `FND-03`, and `WORK-02` contracts implement this amendment. Future roadmap import tooling must preserve those semantics.
+Live roadmap issue `GIT-05` (#442) and the v2.2-updated `GIT-01`, `DIAG-01`, `FND-03`, and `WORK-02` contracts implement this amendment. The master roadmap, scheduler, distributed execution, continuous verification, Git/GitHub delivery, and client health surfaces must preserve these semantics.
+
+> **Importer maintenance rule:** before the bootstrap workflow is used again as an authoritative synchronizer, its encoded issue data must be regenerated to include every accepted amendment listed here. Until then, the live v2.2 issue bodies plus amendment documents outrank older bootstrap wording where they conflict.
