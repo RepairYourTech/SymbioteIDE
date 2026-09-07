@@ -5,23 +5,25 @@ on:
     paths: ['.symbiote-planning/audit-2026-09-07/**', '.github/workflows/symbiote-roadmap-audit-20260907.yml']
 permissions:
   contents: read
-  issues: read
+  issues: write
+  actions: read
 concurrency:
   group: symbiote-roadmap-audit-20260907
   cancel-in-progress: false
 jobs:
-  snapshot:
+  audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Snapshot all live issues and comments
+      - name: Apply authorized issue-only reconciliation and verify live state
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        run: python3 .symbiote-planning/audit-2026-09-07/snapshot.py
+        run: python3 .symbiote-planning/audit-2026-09-07/apply_audit.py
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: roadmap-audit-snapshot
+          name: roadmap-audit-result
           path: audit-output/
-          retention-days: 7
+          retention-days: 30
