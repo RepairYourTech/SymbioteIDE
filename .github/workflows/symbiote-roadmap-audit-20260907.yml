@@ -1,0 +1,27 @@
+name: Symbiote roadmap audit 2026-09-07
+on:
+  push:
+    branches: ['planning/audit-2026-09-07']
+    paths: ['.symbiote-planning/audit-2026-09-07/**', '.github/workflows/symbiote-roadmap-audit-20260907.yml']
+permissions:
+  contents: read
+  issues: read
+concurrency:
+  group: symbiote-roadmap-audit-20260907
+  cancel-in-progress: false
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Snapshot all live issues and comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python3 .symbiote-planning/audit-2026-09-07/snapshot.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roadmap-audit-snapshot
+          path: audit-output/
+          retention-days: 7
