@@ -369,9 +369,9 @@ pub(super) fn audit_finish(
                 sql_usize(r, 0)
             })?;
         if materialized != journal {
-            return Err(StoreError::Integrity(
-                "provider table differs from journal".into(),
-            ));
+            return Err(StoreError::Integrity(format!(
+                "{table} differs from journal"
+            )));
         }
     }
     Ok(())

@@ -6,13 +6,13 @@ Canonical owner: [#464](https://github.com/RepairYourTech/SymbioteIDE/issues/464
 
 - **Provider connections** — adapter identity, endpoint reference and authentication kind. Replacements supersede the stored record (new endpoint on the same identity); the journal keeps every revision.
 - **Billing entitlements** — bound to a stored connection by foreign key, carrying kind, verification evidence and expiry. Validation against an expired entitlement happens at SDK binding time, not registration time.
-- **Model descriptors** — SDK-owned content: context/output bounds and capabilities travel with the record and are re-validated by the SDK contract on registration (`schema_version`, nonzero bounds, capability sanity).
+- **Model descriptors** — SDK-owned content: context/output bounds travel with the record and are re-validated by the SDK contract on registration (`schema_version`, nonzero and consistent token bounds; capabilities are deserialized but not semantically validated).
 
-Registration is attributed to a real Project chosen by the caller (the Project whose workforce intends to use the provider): journal rows are project-scoped, so provenance is explicit, while the records themselves are global identity usable by any Project after re-authorization at binding time. Attribution does not scope visibility or grant authority.
+Registration is attributed to a real Project chosen by the caller (the Project whose workforce intends to use the provider): journal rows are project-scoped, so provenance is explicit, while the records themselves are global identity usable by any Project after re-authorization at binding time. Attribution grants nothing: the record bodies are withheld from the attribution project's journal reads — non-owner readers learn only that a registration occurred, never the connection, entitlement or descriptor contents.
 
 ## Authority and boundaries
 
-All registry writes require the local-owner bootstrap policy (`ReplaceProviderConnection`, `ReplaceBillingEntitlement`, `ReplaceModelDescriptor`), consistent with other Host-owned infrastructure; reads are owner-only as well. Restricted worker identities never touch this registry — least-privilege assignment (#269) will surface effective access separately. Provider records carry no secret values: `CredentialReference` remains a vault key reference, and secret materialization stays with the canonical secret broker (#217).
+All registry writes require the local-owner bootstrap policy (`ReplaceProviderConnection`, `ReplaceBillingEntitlement`, `ReplaceModelDescriptor`), consistent with other Host-owned infrastructure; reads are owner-only as well, and journal events carrying registry payloads are filtered to the same authority. Restricted worker identities never touch this registry — least-privilege assignment (#269) will surface effective access separately. Provider records carry no secret values: `CredentialReference` remains a vault key reference, and secret materialization stays with the canonical secret broker (#217).
 
 ## Journal replay and integrity
 

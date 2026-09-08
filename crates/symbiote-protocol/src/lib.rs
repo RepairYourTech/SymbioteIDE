@@ -499,12 +499,14 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::ExpireStaleLeases {} | Operation::GetSchedulingProjection {} => {
             principal.local_owner
         }
-        Operation::ReplaceProviderConnection { attribution, .. }
-        | Operation::ReplaceBillingEntitlement { attribution, .. }
-        | Operation::ReplaceModelDescriptor { attribution, .. } => {
+        Operation::ReplaceProviderConnection { .. }
+        | Operation::ReplaceBillingEntitlement { .. }
+        | Operation::ReplaceModelDescriptor { .. } => {
             // Provider identity is Host-owned infrastructure; the local owner
-            // bootstrap policy registers it. Attribution carries provenance.
-            principal.local_owner && principal.permits(attribution, ProjectPermission::Read)
+            // bootstrap policy registers it. The attribution project is
+            // provenance only and scopes nothing (the store separately
+            // verifies the project exists).
+            principal.local_owner
         }
         Operation::GetProviderConnection { .. }
         | Operation::GetBillingEntitlement { .. }
@@ -1090,7 +1092,13 @@ impl EventPayload {
             Self::ProviderRegistered { connection, at, .. } => {
                 at.0 <= i64::MAX as u64 && !connection.endpoint_reference.trim().is_empty()
             }
-            Self::EntitlementRegistered { at, .. } => at.0 <= i64::MAX as u64,
+            Self::EntitlementRegistered {
+                entitlement, at, ..
+            } => {
+                at.0 <= i64::MAX as u64
+                    && !entitlement.provider.as_str().is_empty()
+                    && entitlement.expires_at.0 > 0
+            }
             Self::ModelRegistered { descriptor, at, .. } => {
                 at.0 <= i64::MAX as u64 && descriptor.validate().is_ok()
             }

@@ -619,3 +619,69 @@ fn response_serialization_is_bounded_before_allocating_full_payload() {
         ErrorCode::ResourceExhausted
     );
 }
+
+#[test]
+fn provider_registry_writes_and_reads_stay_owner_authority_only() {
+    let connection = symbiote_domain::ProviderConnection {
+        id: ProviderConnectionId::new("provider-a").unwrap(),
+        adapter: InferenceProviderAdapterId::new("adapter").unwrap(),
+        endpoint_reference: "https://provider.example/v1".into(),
+        authentication: symbiote_domain::AuthenticationKind::ApiCredential,
+    };
+    let entitlement = symbiote_domain::BillingEntitlement {
+        id: BillingEntitlementId::new("entitlement-a").unwrap(),
+        provider: ProviderConnectionId::new("provider-a").unwrap(),
+        kind: symbiote_domain::BillingKind::MeteredApi,
+        verification_evidence: EvidenceId::new("evidence").unwrap(),
+        expires_at: Timestamp(1_000),
+    };
+    let descriptor = symbiote_runtime_sdk::provider::ModelDescriptor {
+        schema_version: symbiote_runtime_sdk::provider::PROVIDER_CONTRACT_VERSION,
+        id: ModelId::new("model-a").unwrap(),
+        provider_id: ProviderConnectionId::new("provider-a").unwrap(),
+        context_window_tokens: 1_000,
+        max_output_tokens: 500,
+        capabilities: symbiote_runtime_sdk::provider::ModelCapabilities {
+            reasoning_efforts: BTreeSet::new(),
+            tools: false,
+            images: false,
+            streaming: false,
+        },
+    };
+    for operation in [
+        Operation::ReplaceProviderConnection {
+            attribution: project_id(),
+            connection,
+        },
+        Operation::ReplaceBillingEntitlement {
+            attribution: project_id(),
+            entitlement: Box::new(entitlement),
+        },
+        Operation::ReplaceModelDescriptor {
+            attribution: project_id(),
+            descriptor: Box::new(descriptor),
+        },
+        Operation::GetProviderConnection {
+            provider_id: ProviderConnectionId::new("provider-a").unwrap(),
+        },
+        Operation::GetBillingEntitlement {
+            entitlement_id: BillingEntitlementId::new("entitlement-a").unwrap(),
+        },
+        Operation::GetModelDescriptor {
+            model_id: ModelId::new("model-a").unwrap(),
+        },
+    ] {
+        let request = request(operation.clone());
+        assert_eq!(
+            authorize(&principal(), &request).unwrap_err().code,
+            ErrorCode::PermissionDenied
+        );
+        assert!(
+            authorize(
+                &Principal::local_owner(UserId::new("owner").unwrap()),
+                &request
+            )
+            .is_ok()
+        );
+    }
+}

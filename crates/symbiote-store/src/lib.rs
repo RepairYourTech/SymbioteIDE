@@ -1252,7 +1252,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                 let descriptor = descriptor.as_ref();
                 descriptor
                     .validate()
-                    .map_err(|_| StoreError::InvalidProvider)?;
+                    .map_err(|_| StoreError::Integrity("invalid journaled descriptor".into()))?;
                 if revision != 0
                     || attribution.as_str() != project_key
                     || at.0 > i64::MAX as u64
