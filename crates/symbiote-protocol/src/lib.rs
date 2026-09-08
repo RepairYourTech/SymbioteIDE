@@ -8,7 +8,10 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 9 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
+    major: 1,
+    minor: 10,
+};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -23,6 +26,7 @@ pub struct ProtocolVersion {
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidRequest,
+    FailedPrecondition,
     RequestTooLarge,
     UnsupportedVersion,
     PermissionDenied,
@@ -47,6 +51,7 @@ impl ProtocolError {
     pub fn new(code: ErrorCode) -> Self {
         let message = match code {
             ErrorCode::InvalidRequest => "invalid request shape or field value",
+            ErrorCode::FailedPrecondition => "preparation composition refused by recorded state",
             ErrorCode::RequestTooLarge => "request exceeds 65536 bytes",
             ErrorCode::UnsupportedVersion => "no supported protocol version",
             ErrorCode::PermissionDenied => {
@@ -152,6 +157,12 @@ pub enum Operation {
     GetModelDescriptor {
         model_id: ModelId,
     },
+    PrepareDispatch {
+        task_id: TaskId,
+    },
+    GetDispatchPreparation {
+        task_id: TaskId,
+    },
     GetRoute {
         project_id: ProjectId,
         work_id: WorkId,
@@ -244,6 +255,7 @@ impl Operation {
             Self::GetProviderConnection { .. }
             | Self::GetBillingEntitlement { .. }
             | Self::GetModelDescriptor { .. } => None,
+            Self::PrepareDispatch { .. } | Self::GetDispatchPreparation { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -281,6 +293,7 @@ impl Operation {
                 | Self::ReplaceProviderConnection { .. }
                 | Self::ReplaceBillingEntitlement { .. }
                 | Self::ReplaceModelDescriptor { .. }
+                | Self::PrepareDispatch { .. }
                 | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
@@ -511,6 +524,9 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::GetProviderConnection { .. }
         | Operation::GetBillingEntitlement { .. }
         | Operation::GetModelDescriptor { .. } => principal.local_owner,
+        Operation::PrepareDispatch { .. } | Operation::GetDispatchPreparation { .. } => {
+            principal.local_owner
+        }
         Operation::GetRoute { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
@@ -782,6 +798,7 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    DispatchPreparation,
     ProviderRegistryWrite,
     ProviderRegistryRead,
     TaskLeaseManagement,
@@ -831,6 +848,7 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::DispatchPreparation,
             Capability::ProviderRegistryWrite,
             Capability::ProviderRegistryRead,
             Capability::TaskLeaseManagement,
@@ -947,6 +965,11 @@ pub enum EventPayload {
         actor: UserId,
         at: Timestamp,
     },
+    DispatchPrepared {
+        preparation: Box<symbiote_domain::DispatchPreparation>,
+        actor: UserId,
+        at: Timestamp,
+    },
     ResourceConsentRecorded {
         consent: Box<ResourceConsent>,
     },
@@ -990,6 +1013,7 @@ impl EventPayload {
             Self::ProviderRegistered { attribution, .. }
             | Self::EntitlementRegistered { attribution, .. }
             | Self::ModelRegistered { attribution, .. } => attribution,
+            Self::DispatchPrepared { preparation, .. } => &preparation.project_id,
         }
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
@@ -1105,6 +1129,13 @@ impl EventPayload {
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }
+            Self::DispatchPrepared {
+                preparation, at, ..
+            } => {
+                at.0 <= i64::MAX as u64
+                    && preparation.validate().is_ok()
+                    && &preparation.project_id == project_id
+            }
         }
     }
 }
@@ -1193,6 +1224,7 @@ pub enum ResponseBody {
     ProviderConnection(Box<symbiote_domain::ProviderConnection>),
     BillingEntitlement(Box<symbiote_domain::BillingEntitlement>),
     ModelDescriptor(Box<symbiote_runtime_sdk::provider::ModelDescriptor>),
+    DispatchPreparation(Box<symbiote_domain::DispatchPreparation>),
     Journal(JournalPage),
     Shutdown {},
 }

@@ -19,6 +19,8 @@ mod binding_tests;
 mod dependency_tests;
 #[path = "lease_tests.rs"]
 mod lease_tests;
+#[path = "preparation_tests.rs"]
+mod preparation_tests;
 #[path = "provider_tests.rs"]
 mod provider_tests;
 #[path = "route_tests.rs"]
@@ -319,7 +321,7 @@ fn team_v3_migration_preserves_data_and_corrupt_upgrade_rolls_back() {
         let before = store.events(&team.project_id, 0, 10).unwrap();
         store
             .connection
-            .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; PRAGMA user_version=3;")
+            .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE dispatch_preparations; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; PRAGMA user_version=3;")
             .unwrap();
         if corrupt {
             store
@@ -568,7 +570,7 @@ fn v2_legacy_tasks_remain_unclassified_until_explicit_durable_assignment() {
     let before = store.events(&project.id, 0, 10).unwrap();
     store
         .connection
-        .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2;")
+        .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE dispatch_preparations; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2;")
         .unwrap();
     drop(store);
     let mut store = Store::open(temp.database()).unwrap();
@@ -644,7 +646,7 @@ fn materialization_tampering_and_corrupt_v2_upgrade_are_not_repaired() {
     let temp = Temporary::new();
     let mut store = Store::open(temp.database()).unwrap();
     register(&mut store, "one");
-    store.connection.execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2; UPDATE projects SET revision=9;").unwrap();
+    store.connection.execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE dispatch_preparations; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2; UPDATE projects SET revision=9;").unwrap();
     drop(store);
     assert!(Store::open(temp.database()).is_err());
     let connection = Connection::open(temp.database()).unwrap();
@@ -1152,7 +1154,7 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
     let store = Store::open(temporary.database()).unwrap();
     store
         .connection
-        .pragma_update(None, "user_version", 10)
+        .pragma_update(None, "user_version", 11)
         .unwrap();
     drop(store);
     assert!(matches!(
@@ -1164,7 +1166,7 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
         connection
             .pragma_query_value(None, "user_version", |r| sql_u64(r, 0))
             .unwrap(),
-        10
+        11
     );
 }
 
@@ -1362,7 +1364,7 @@ fn v1_migration_preserves_existing_records_and_journal() {
     // Exact v1 layout: v2 only adds this table and bumps user_version.
     store
         .connection
-        .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
+        .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE dispatch_preparations; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
         .unwrap();
     drop(store);
     let mut store = Store::open(temporary.database()).unwrap();
@@ -1375,7 +1377,7 @@ fn v1_migration_preserves_existing_records_and_journal() {
             .connection
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     let consent = consent_fixture("consent-after-migration");
     store
@@ -1470,7 +1472,7 @@ fn corrupt_v1_migration_rolls_back_schema_and_version() {
         register(&mut store, "one");
         store
             .connection
-            .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
+            .execute_batch("DROP TABLE model_descriptors; DROP TABLE billing_entitlements; DROP TABLE dispatch_preparations; DROP TABLE provider_connections; DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
             .unwrap();
         if semantic_only {
             store

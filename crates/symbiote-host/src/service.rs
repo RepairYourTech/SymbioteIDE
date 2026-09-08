@@ -15,7 +15,8 @@ fn storage_error(error: StoreError) -> ProtocolError {
         | StoreError::InvalidDependency
         | StoreError::InvalidLease => ErrorCode::InvalidRequest,
         StoreError::DependenciesUnresolved => ErrorCode::Conflict,
-        StoreError::InvalidProvider => ErrorCode::InvalidRequest,
+        StoreError::InvalidProvider | StoreError::InvalidPreparation => ErrorCode::InvalidRequest,
+        StoreError::PreparationRefused => ErrorCode::FailedPrecondition,
         StoreError::LeaseConflict(_) => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
@@ -382,6 +383,36 @@ fn execute(
             .model_descriptor(model_id)
             .map(|descriptor| ResponseBody::ModelDescriptor(Box::new(descriptor)))
             .map_err(storage_error),
+        Operation::PrepareDispatch { task_id } => {
+            let at = match store
+                .preparation_command_timestamp(&request.command_id)
+                .map_err(storage_error)?
+            {
+                Some(at) => at,
+                None => Timestamp(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                        .as_millis()
+                        .try_into()
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+                ),
+            };
+            let (receipt, preparation) = store
+                .prepare_dispatch(
+                    request.command_id.clone(),
+                    task_id.clone(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map_err(storage_error)?;
+            let _ = receipt;
+            Ok(ResponseBody::DispatchPreparation(Box::new(preparation)))
+        }
+        Operation::GetDispatchPreparation { task_id } => store
+            .dispatch_preparation(task_id)
+            .map(|preparation| ResponseBody::DispatchPreparation(Box::new(preparation)))
+            .map_err(storage_error),
         Operation::GetSchedulingProjection {} => {
             let now = Timestamp(
                 SystemTime::now()
@@ -724,6 +755,15 @@ fn execute(
                                     _ => unreachable!("matched above"),
                                 }
                             }
+                            symbiote_store::EventPayload::DispatchPrepared {
+                                preparation,
+                                actor,
+                                at,
+                            } => EventPayload::DispatchPrepared {
+                                preparation,
+                                actor,
+                                at,
+                            },
                             symbiote_store::EventPayload::TaskLeased { lease, actor, at } => {
                                 EventPayload::TaskLeased { lease, actor, at }
                             }

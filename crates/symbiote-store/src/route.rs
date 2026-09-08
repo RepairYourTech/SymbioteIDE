@@ -24,11 +24,11 @@ fn event(decision: &RouteDecision, actor: &UserId, at: Timestamp) -> EventPayloa
     }
 }
 
-fn work_key(work: &WorkId) -> String {
+pub(super) fn work_key(work: &WorkId) -> String {
     work.key()
 }
 
-fn read(connection: &Connection, key: &str) -> Result<Option<RouteDecision>> {
+pub(super) fn read(connection: &Connection, key: &str) -> Result<Option<RouteDecision>> {
     let row: Option<(String, Option<String>, i64, String)> = connection
         .query_row(
             "SELECT project_id,role_id,resolved,decision FROM work_routes WHERE work_key=?1",

@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 1,
-    "minor": 9
+    "minor": 10
   },
   "correlation_id": "read-staffing",
   "command_id": "read-staffing",
