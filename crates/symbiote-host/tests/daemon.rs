@@ -83,7 +83,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":1},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":2},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 fn project(id: &str) -> Value {
     json!({"kind":"register_project","project":{"id":id,"name":id,"lead":format!("lead-{id}"),
@@ -92,8 +92,89 @@ fn project(id: &str) -> Value {
 }
 fn task(id: &str, project: &str) -> Value {
     json!({"kind":"create_task","task":{"id":id,"project_id":project,"root_id":format!("root-{project}"),"role_id":format!("lead-{project}"),
+      "origin":{"kind":"objective","work":{"project_id":project,"id":{"kind":"objective","id":format!("maintenance-{project}")}}},
       "task_contract":{"id":"coding-contract","revision":1},"stream":{"id":format!("stream-{id}"),"originating_chat":"chat","worktree":format!("worktree-{id}"),
       "branch":format!("task/{id}"),"base":"a".repeat(40),"target":"a".repeat(40)}}})
+}
+fn maintenance(project: &str) -> Value {
+    json!({"kind":"create_work","work":{"id":{"kind":"objective","id":format!("maintenance-{project}")},
+        "project_id":project,"role_id":format!("lead-{project}"),"title":"Maintenance fixture","description":"Explicit operational test work",
+        "utterance":null,"objective_class":"maintenance","parent":null,"dependencies":[],"requirements":[],"constraints":[],"risks":[],
+        "acceptance":["fixture verified"],"priority":2,"budget":null,"external_references":[]}})
+}
+
+#[test]
+fn work_hierarchy_replays_after_restart_and_never_accepts_client_completion() {
+    let mut host = Host::new();
+    ok(&host.call(request("register-work", project("work"))));
+    let create = request("create-maintenance", maintenance("work"));
+    let first = host.call(create.clone());
+    ok(&first);
+    host.crash();
+    host.start();
+    assert_eq!(ok(&host.call(create))["data"]["replayed"], true);
+    let id = json!({"kind":"objective","id":"maintenance-work"});
+    let change = |command: &str, revision: u64, edit: Value| {
+        request(
+            command,
+            json!({
+                "kind":"change_work","project_id":"work","id":id,"expected_revision":revision,"edit":edit
+            }),
+        )
+    };
+    let approve_request = change("request-approval", 0, json!({"kind":"request_approval"}));
+    ok(&host.call(approve_request.clone()));
+    host.crash();
+    host.start();
+    assert_eq!(ok(&host.call(approve_request))["data"]["replayed"], true);
+    assert_eq!(
+        host.call(change("stale", 0, json!({"kind":"approve"})))["result"]["Err"]["code"],
+        "stale_revision"
+    );
+    for (revision, edit) in [
+        (1, json!({"kind":"approve"})),
+        (2, json!({"kind":"start"})),
+        (3, json!({"kind":"request_completion"})),
+    ] {
+        ok(&host.call(change(&format!("edit-{revision}"), revision, edit)));
+    }
+    assert_eq!(
+        host.call(change(
+            "forged-complete",
+            4,
+            json!({"kind":"complete","evidence":{}})
+        ))["result"]["Err"]["code"],
+        "invalid_request"
+    );
+    ok(&host.call(change(
+        "cancel",
+        4,
+        json!({"kind":"cancel","reason":"scope changed"}),
+    )));
+    ok(&host.call(change(
+        "reopen",
+        5,
+        json!({"kind":"reopen","reason":"new requirements"}),
+    )));
+    let result = host.call(request(
+        "get-work",
+        json!({"kind":"get_work","project_id":"work","id":id}),
+    ));
+    assert_eq!(ok(&result)["data"]["state"], "draft");
+    assert_eq!(ok(&result)["data"]["revision"], 6);
+    assert_eq!(ok(&result)["data"]["history"].as_array().unwrap().len(), 6);
+    assert!(
+        ok(&result)["data"]["created_by"]
+            .as_str()
+            .unwrap()
+            .starts_with("local-uid-")
+    );
+    let mut forged = maintenance("work");
+    forged["created_by"] = json!("forged");
+    assert_eq!(
+        host.call(request("forged-creator", forged))["result"]["Err"]["code"],
+        "invalid_request"
+    );
 }
 fn ok(response: &Value) -> &Value {
     response
@@ -193,8 +274,9 @@ fn acknowledged_work_survives_sigkill_and_retries_keep_original_receipts() {
     let registration = request("register-alpha", project("alpha"));
     let first = host.call(registration.clone());
     assert_eq!(ok(&first)["kind"], "receipt");
+    ok(&host.call(request("maintenance-alpha", maintenance("alpha"))));
     let created = host.call(request("create-task", task("task-one", "alpha")));
-    assert_eq!(ok(&created)["data"]["sequence"], 2);
+    assert_eq!(ok(&created)["data"]["sequence"], 3);
     host.crash();
     host.start();
     let mut retry = registration.clone();
@@ -211,8 +293,8 @@ fn acknowledged_work_survives_sigkill_and_retries_keep_original_receipts() {
         "read-journal",
         json!({"kind":"read_journal","project_id":"alpha","after":1,"limit":10}),
     ));
-    assert_eq!(ok(&page)["data"]["events"].as_array().unwrap().len(), 1);
-    assert_eq!(ok(&page)["data"]["next_cursor"], 2);
+    assert_eq!(ok(&page)["data"]["events"].as_array().unwrap().len(), 2);
+    assert_eq!(ok(&page)["data"]["next_cursor"], 3);
     let mut conflict = registration;
     conflict["operation"]["project"]["name"] = json!("different intent");
     assert_eq!(
@@ -226,6 +308,7 @@ fn project_lineage_and_wire_authority_are_enforced_and_bad_input_does_not_stop_h
     let host = Host::new();
     ok(&host.call(request("alpha", project("alpha"))));
     ok(&host.call(request("beta", project("beta"))));
+    ok(&host.call(request("maintenance-alpha", maintenance("alpha"))));
     let mut wrong = task("wrong", "alpha");
     wrong["task"]["root_id"] = json!("root-beta");
     assert_eq!(
@@ -319,7 +402,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":1},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":2},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
