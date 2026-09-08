@@ -1,5 +1,13 @@
 # Engineering handoff
 
+## Architecture proof batch — 2026-09-08 UTC
+
+Foundations PR #473 merged at `a15368c1744fdff3c186dda11f24714d738c7efe` after separate review and passing stable/MSRV/roadmap checks. The #36/#170/#176/#179/#173 issues remain open for their broader acceptance. Current proof work is isolated on `issue-38-linux-proof` from that revision.
+
+Two runnable experiments now exist: `spikes/linux-shell` (Tauri/React/Monaco, three native PTYs, separate Preview and overlapping Lead WebViews) and `spikes/host-lifecycle` (independent Rust daemon, fixed process tree, disconnect/replay/cancel/restart fixtures). See `docs/proofs/linux-shell.md` and `docs/proofs/host-lifecycle.md` for reproduction, measurements, raw evidence and limitations. The initial GTK composition failure is retained alongside corrected interaction screenshots. Preview denial reports are untrusted observations, not authenticated security proof.
+
+These experiments do not select the desktop shell or transactional storage. Native Wayland/real X11, Windows/macOS, accessibility/IME/scaling, arbitrary descendant containment, representative resource budgets and full Preview authority isolation remain unpassed. The injected guardian-loss test exposes a recovery boundary instead of claiming unconditional orphan cleanup. No native API/Codex integration, production Host or usable release is complete. Continue the live #38 acceptance and separate #43 storage decision before dependent production integration; preserve the canonical queue and open broad issues.
+
 ## Executable foundation batch — 2026-09-08 UTC
 
 PR #472 was reviewed and merged as `d2c5d300652e3733ec0172c4b0ef0690fa168e37`. Current worktree `/mnt/data/projects/Symbiote-worktrees/issue-36-176-foundations`, branch `issue-36-176-foundations`, starts from that merged revision. Owners are #36/#170 domain/constitutional contracts, #176/#179 configuration/portable manifests, and #173 architecture decision/proof contracts. The first usable release must prove both native Rust/OpenAI API and external Codex execution under shared canonical controls; none of this batch calls paid inference or claims those integrations.

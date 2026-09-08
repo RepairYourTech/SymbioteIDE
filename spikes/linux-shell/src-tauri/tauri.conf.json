@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Symbiote Linux shell proof",
+  "version": "0.0.0",
+  "identifier": "tech.repairyour.symbiote.linux-proof",
+  "build": { "frontendDist": "../dist" },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src ipc: http://ipc.localhost; img-src 'self' data:; font-src 'self' data:; frame-src 'none'; object-src 'none'",
+      "capabilities": []
+    }
+  },
+  "bundle": { "active": false, "icon": ["target/proof-icon.png"] }
+}
