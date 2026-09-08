@@ -1,5 +1,13 @@
 # Engineering handoff
 
+## Local structured runtime transport — 2026-09-08 UTC
+
+Change Stream `issue-185-transport` starts from merged #476 at `d7b1391b0e03e861a168e915c0602be681e3b83d`. Owner #185 consumes the #180/#184 foundational contracts. This batch adds a process-backed local JSONL substrate and separate strict JSON-RPC 2.0 response correlation. It does not expose a Host worker activation endpoint or certify Codex/ACP compatibility.
+
+Independent review separates process supervision/framing from RPC correlation. See `docs/contracts/runtime-transport.md` for the actual guarantees, fixture commands and remaining acceptance. Broad #185 remains open for the other substrates, real packs, complete containment and recovery. The full native/Codex first release and persistent build goal remain incomplete.
+
+Next dependency-ready work: #214 versioned agent environment/resource desired-state contracts before #187 native configuration projection; #189 request/objective/capability/plan hierarchy can consume existing #36/#43/#181 foundations independently. Activation still requires the #174 → #191 → #218 trust/threat/enforcement chain. A successful process fixture supplies no sandbox or credential authority.
+
 ## Runtime SDK foundation — 2026-09-08 UTC
 
 Change Stream `issue-184-runtime-sdk` starts from merged #475 at `c1b7f2f6d7adcbe7c50377d1ff9e990b11019ebe`. Owners #184/#464 consume the reviewed #181/#36 contracts. `symbiote-runtime-sdk` separates agent-loop adapters from inference providers, qualifies immutable dispatches against current identity-bound capability/control evidence, and defines bounded session events and native/external auth/billing checks.

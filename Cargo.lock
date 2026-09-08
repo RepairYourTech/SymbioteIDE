@@ -320,6 +320,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-runtime-transport"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "symbiote-store"
 version = "0.1.0"
 dependencies = [

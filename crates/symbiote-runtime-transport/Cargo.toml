@@ -1,0 +1,14 @@
+[package]
+name = "symbiote-runtime-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+nix = { version = "=0.30.1", features = ["fs", "process", "signal"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
