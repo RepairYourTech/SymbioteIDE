@@ -263,7 +263,11 @@ impl Store {
     /// Transitions every held-but-unexpired-at-write lease whose expiry has
     /// passed into `expired`, journaling each transition. Idempotent: already
     /// expired leases are left alone.
-    pub fn expire_stale_leases(&mut self, at: Timestamp) -> Result<Vec<(TaskId, u64)>> {
+    pub fn expire_stale_leases(
+        &mut self,
+        actor: UserId,
+        at: Timestamp,
+    ) -> Result<Vec<(TaskId, u64)>> {
         if at.0 > i64::MAX as u64 {
             return Err(StoreError::InvalidLease);
         }
@@ -316,11 +320,15 @@ impl Store {
             for lease in stale {
                 let mut expired_lease = lease.clone();
                 expired_lease.state = LeaseState::Expired;
-                let payload = event(&expired_lease, &UserId::new("host").expect("static id"), at);
+                let payload = event(&expired_lease, &actor, at);
                 let request = serde_json::to_string(&payload)?;
-                let expiry_command =
-                    CommandId::new(format!("lease-expire-{}", lease.task_id.as_str()))
-                        .map_err(|_| StoreError::InvalidLease)?;
+                let expiry_command = CommandId::new(format!(
+                    "{}{}-{}",
+                    RESERVED_LEASE_PREFIX,
+                    lease.task_id.as_str(),
+                    lease.fencing_token
+                ))
+                .map_err(|_| StoreError::InvalidLease)?;
                 let replayed = replay(&transaction, &expiry_command, &request)?;
                 if replayed.is_none() {
                     transaction.execute(

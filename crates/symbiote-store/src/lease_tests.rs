@@ -209,14 +209,14 @@ fn leases_acquire_renew_expire_and_refuse_stale_tokens() {
     // Expiry transitions the stale lease and records the token (the renewal
     // at t=105 pushed the window out, so expire past the renewed expiry).
     let expired = store
-        .expire_stale_leases(Timestamp(105 + MIN_LEASE_MS + 1))
+        .expire_stale_leases(id!(UserId, "owner"), Timestamp(105 + MIN_LEASE_MS + 1))
         .unwrap();
     assert_eq!(expired, vec![(task.clone(), 1)]);
     assert_eq!(store.task_lease(&task).unwrap().state, LeaseState::Expired);
     // Expiry is idempotent.
     assert!(
         store
-            .expire_stale_leases(Timestamp(105 + MIN_LEASE_MS + 2))
+            .expire_stale_leases(id!(UserId, "owner"), Timestamp(105 + MIN_LEASE_MS + 2))
             .unwrap()
             .is_empty()
     );
@@ -376,7 +376,7 @@ fn interrupt_then_sweep_replays_and_reserved_ids_are_refused() {
         )
         .unwrap();
     let expired = store
-        .expire_stale_leases(Timestamp(100 + MAX_LEASE_MS + 1))
+        .expire_stale_leases(id!(UserId, "owner"), Timestamp(100 + MAX_LEASE_MS + 1))
         .unwrap();
     assert_eq!(expired.len(), 1);
     drop(store);
@@ -427,7 +427,7 @@ fn scheduling_projection_explains_ready_blocked_and_leased_tasks() {
     // The lease is held on the stream; after expiry the task would still be
     // Running (not Ready), so it never appears as schedulable.
     store
-        .expire_stale_leases(Timestamp(100 + MIN_LEASE_MS + 1))
+        .expire_stale_leases(id!(UserId, "owner"), Timestamp(100 + MIN_LEASE_MS + 1))
         .unwrap();
     let projection = store
         .scheduling_projection(Timestamp(101 + MIN_LEASE_MS))

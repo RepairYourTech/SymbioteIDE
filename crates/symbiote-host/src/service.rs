@@ -287,7 +287,9 @@ fn execute(
                     .try_into()
                     .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
             );
-            let expired = store.expire_stale_leases(now).map_err(storage_error)?;
+            let expired = store
+                .expire_stale_leases(principal.user_id().clone(), now)
+                .map_err(storage_error)?;
             let projection = store.scheduling_projection(now).map_err(storage_error)?;
             Ok(ResponseBody::SchedulerSweep {
                 expired: expired
