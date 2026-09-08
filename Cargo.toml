@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/symbiote-domain", "crates/symbiote-config", "crates/symbiote-architecture", "crates/symbiote-store", "crates/symbiote-protocol", "crates/symbiote-host", "crates/symbiote-runtime-sdk"]
+members = ["crates/symbiote-domain", "crates/symbiote-config", "crates/symbiote-architecture", "crates/symbiote-store", "crates/symbiote-protocol", "crates/symbiote-host", "crates/symbiote-runtime-sdk", "crates/symbiote-runtime-transport"]
 
 [workspace.package]
 version = "0.1.0"

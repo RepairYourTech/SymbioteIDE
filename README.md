@@ -10,6 +10,8 @@ Start the local service using the [Host run instructions](docs/contracts/host.md
 
 The [runtime SDK](docs/contracts/runtime-sdk.md) now defines capability-qualified agent adapters, separate inference providers and bounded session events. These contracts are prerequisites for live native/Codex integration; they do not enable agent execution in the Host yet.
 
+The [local runtime transport](docs/contracts/runtime-transport.md) adds bounded subprocess JSONL I/O and explicit JSON-RPC response correlation. Its deterministic harness fixtures exercise process failures; real runtime packs and sandbox enforcement remain pending.
+
 ```sh
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
