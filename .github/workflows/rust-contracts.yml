@@ -42,3 +42,19 @@ jobs:
       - if: matrix.toolchain == 'stable'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - name: Prove pinned Codex discovery without credentials or network
+        if: matrix.toolchain == 'stable'
+        run: |
+          mkdir "$RUNNER_TEMP/codex-proof"
+          cd "$RUNNER_TEMP/codex-proof"
+          npm pack --ignore-scripts @openai/codex@0.118.0-linux-x64
+          test "$(openssl dgst -sha512 -binary openai-codex-0.118.0-linux-x64.tgz | openssl base64 -A)" = 'vzU2d/gwAmZbf/DnwVzfQiNN3Ri04XpaZiJkHElIvGoqFbdrxRQFYTtslGDISYIO3o+POADZcFZIfamFsZj9yQ=='
+          tar -xzf openai-codex-0.118.0-linux-x64.tgz
+          sudo install -m 0755 package/vendor/x86_64-unknown-linux-musl/codex/codex /usr/bin/codex
+          cd "$GITHUB_WORKSPACE"
+          cargo build --locked -p symbiote-sandbox --bin symbiote-sandbox-launch
+          proof_root=$(mktemp -d "$RUNNER_TEMP/discovery.XXXXXXXX")
+          mkdir -m 700 "$proof_root/worktree" "$proof_root/protected"
+          cargo run --locked -p symbiote-runtime-discovery --example codex_discover -- \
+            "$GITHUB_WORKSPACE/target/debug/symbiote-sandbox-launch" \
+            "$proof_root/worktree" "$proof_root/protected"
