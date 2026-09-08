@@ -7,7 +7,7 @@ Canonical owner: [#211](https://github.com/RepairYourTech/SymbioteIDE/issues/211
 `Derived::derive(DeriveInputs)` is a pure function of canonical Project/Root/Change Stream identities plus a trusted policy seed (1–64 characters of `[A-Za-z0-9_-]`, supplied by Host state, never client JSON). The same recorded identities and seed always derive the same names:
 
 - `worktree_id`: the canonical `WorktreeId` newtype, `st-` plus 16 hex characters carrying a 64-bit digest truncation. It is a bounded identity string, never a path.
-- `branch`: `symbiote/<project>/<stream>/<24-hex>` — a Git-ref-safe branch in a reserved namespace; the suffix carries a 96-bit digest truncation. Every component passes check-ref-format rules (no leading dot, no `.lock`, no `..`, no `@{`, safe charset), and branch length is bounded to 256 bytes.
+- `branch`: `symbiote/<project>/<stream>/<24-hex>` — a Git-ref-safe branch in a reserved namespace; the suffix carries a 96-bit digest truncation. Every component passes check-ref-format rules (no leading dot, no `.lock`, no `..`, no `@{`, safe charset), and branch length is bounded to 512 bytes (the worst case of two 128-byte domain identities; the protocol TaskDraft bound matches).
 
 Both suffixes are truncated hashes: collision-resistant for any realistic stream count (a birthday collision on the branch suffix needs on the order of 2^48 derived names), not mathematically impossible. `derived(seed, ids)` feeds the store's existing worktree/branch uniqueness enforcement at Task creation, which remains the durable backstop; the seed choice is durable policy, because changing it changes every subsequent derived name.
 

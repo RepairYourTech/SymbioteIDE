@@ -604,7 +604,7 @@ impl TaskDraft {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self.origin.reference().project_id != self.project_id
             || self.stream.branch.trim().is_empty()
-            || self.stream.branch.len() > 256
+            || self.stream.branch.len() > 512
             || self.stream.branch.chars().any(char::is_control)
         {
             return Err(invalid());

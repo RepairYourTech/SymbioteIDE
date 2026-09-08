@@ -153,7 +153,10 @@ impl Derived {
             return Err(WorktreeError::InvalidIdentity);
         }
         let branch = format!("{BRANCH_PREFIX}/{project}/{stream}/{suffix}");
-        if branch.len() > 256 || !branch.split('/').all(ref_component) {
+        // 512 covers the worst case (two 128-byte domain identities); the
+        // protocol TaskDraft bound matches so derivation never produces a
+        // branch the wire would reject.
+        if branch.len() > 512 || !branch.split('/').all(ref_component) {
             return Err(WorktreeError::InvalidIdentity);
         }
         Ok(Self {
@@ -297,15 +300,20 @@ fn write_marker(marker_path: &Path, marker: &Marker) -> Result<(), WorktreeError
         _ => WorktreeError::UnsafePath,
     })?;
     let mut file = std::fs::File::from(fd);
-    let written = std::io::Write::write_all(&mut file, &body).and_then(|_| file.sync_all());
-    if written.is_err() {
-        // A half-written marker would permanently brick this identity:
-        // reserve would hit EEXIST while verify could never read it. Remove
-        // the marker we created so the identity stays reservable.
+    // Every failure after exclusive creation unlinks the marker we created:
+    // a surviving marker would brick the identity, since reserve would hit
+    // EEXIST while verify could never validate a half-written file.
+    let mut persisted = std::io::Write::write_all(&mut file, &body).and_then(|_| file.sync_all());
+    if persisted.is_ok() {
+        persisted = match marker_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            Some(parent) => sync_dir(parent).map_err(|_| std::io::Error::other("sync failed")),
+            None => Err(std::io::Error::other("marker parent missing")),
+        };
+    }
+    if persisted.is_err() {
         let _ = unlink(marker_path);
         return Err(WorktreeError::Io);
     }
-    sync_dir(marker_path.parent().ok_or(WorktreeError::UnsafePath)?)?;
     Ok(())
 }
 
@@ -512,7 +520,14 @@ pub fn release(reservation: &Reservation, policy: ReleasePolicy) -> Result<Outco
             // content, and a failure here keeps the marker as the source of
             // truth instead of downgrading the reservation to abandoned.
             fs::remove_dir(&worktree).map_err(|_| WorktreeError::Io)?;
-            unlink(&marker_path).map_err(|_| WorktreeError::Io)?;
+            if unlink(&marker_path).is_err() {
+                // Roll back to a consistent marker-plus-empty-directory
+                // state so a retry can proceed instead of leaving a stale
+                // marker that reserves collide with and release cannot read.
+                let _ = nix::unistd::mkdir(&worktree, Mode::from_bits_truncate(0o700));
+                let _ = check_private_dir(&worktree, true);
+                return Err(WorktreeError::Io);
+            }
             sync_dir(&project_dir)?;
             // Removing the project directory is best-effort; concurrent
             // reservations of the same project keep it alive.
