@@ -8,6 +8,7 @@ mod ids;
 mod lease;
 mod lifecycle;
 mod model;
+mod preparation;
 mod team;
 mod work;
 
@@ -17,6 +18,7 @@ pub use ids::*;
 pub use lease::*;
 pub use lifecycle::*;
 pub use model::*;
+pub use preparation::*;
 pub use team::*;
 pub use work::*;
 

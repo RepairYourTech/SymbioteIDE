@@ -63,7 +63,7 @@ pub(super) fn model_event(
     }
 }
 
-fn read_connection(connection: &Connection, id: &str) -> Result<Option<ConnectionRecord>> {
+pub(super) fn read(connection: &Connection, id: &str) -> Result<Option<ConnectionRecord>> {
     let (adapter, body): (String, String) = match connection
         .query_row(
             "SELECT adapter, body FROM provider_connections WHERE id=?1",
@@ -203,7 +203,7 @@ impl Store {
         if let Some(receipt) = replay(&transaction, &command_id, &request)? {
             return Ok(receipt);
         }
-        if read_connection(&transaction, entitlement.provider.as_str())?.is_none() {
+        if read(&transaction, entitlement.provider.as_str())?.is_none() {
             return Err(StoreError::RelationshipMismatch);
         }
         let body = serde_json::to_string(&entitlement)?;
@@ -256,7 +256,7 @@ impl Store {
         if let Some(receipt) = replay(&transaction, &command_id, &request)? {
             return Ok(receipt);
         }
-        if read_connection(&transaction, descriptor.provider_id.as_str())?.is_none() {
+        if read(&transaction, descriptor.provider_id.as_str())?.is_none() {
             return Err(StoreError::RelationshipMismatch);
         }
         let body = serde_json::to_string(&descriptor)?;
@@ -282,7 +282,7 @@ impl Store {
     }
 
     pub fn provider_connection(&self, id: &ProviderConnectionId) -> Result<ConnectionRecord> {
-        read_connection(&self.connection, id.as_str())?
+        read(&self.connection, id.as_str())?
             .filter(|c| &c.id == id)
             .ok_or(StoreError::NotFound)
     }
@@ -339,7 +339,7 @@ pub(super) fn audit_finish(
     // compares the full materialized table against the journal-derived map
     // in both directions.
     for (id, expected) in providers {
-        if read_connection(connection, id.as_str())?.as_ref() != Some(expected) {
+        if read(connection, id.as_str())?.as_ref() != Some(expected) {
             return Err(StoreError::Integrity(
                 "provider state differs from journal".into(),
             ));

@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":9},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":10},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":9},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":10},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
@@ -820,4 +820,64 @@ fn leases_fence_stale_owners_and_the_projection_is_explainable() {
             .len(),
         1
     );
+}
+
+#[test]
+fn dispatch_preparation_records_composition_and_refusals() {
+    let mut host = Host::new();
+    ok(&host.call(request("register-disp", project("disp"))));
+    ok(&host.call(request("disp-maintenance", maintenance("disp"))));
+    ok(&host.call(request("disp-task", task("disp-task", "disp"))));
+    // The projection explains the task as schedulable; the preparation then
+    // records the composition steps against durable state.
+    let projection_response = host.call(request(
+        "disp-projection",
+        json!({"kind":"get_scheduling_projection"}),
+    ));
+    let sweep = ok(&projection_response);
+    assert_eq!(sweep["data"]["schedulable"].as_array().unwrap().len(), 1);
+    let prepare = request(
+        "disp-prepare-1",
+        json!({"kind":"prepare_dispatch","task_id":"disp-task"}),
+    );
+    let first_response = host.call(prepare.clone());
+    let first = ok(&first_response)["data"].clone();
+    // Without routing and a lease the composition is recorded as refused.
+    assert_eq!(first["outcome"], "refused");
+    let steps = first["steps"].as_array().unwrap();
+    assert!(
+        steps
+            .iter()
+            .any(|s| s["kind"] == "scheduling" && s["schedulable"] == true)
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|s| s["kind"] == "routing" && s["resolved"] == Value::Null)
+    );
+    // Replay returns the identical composition.
+    let replay_response = host.call(prepare);
+    let replay = ok(&replay_response)["data"].clone();
+    assert_eq!(replay, first);
+    // Restart: the preparation replays from the journal.
+    host.crash();
+    host.start();
+    let read_response = host.call(request(
+        "disp-prepare-read",
+        json!({"kind":"get_dispatch_preparation","task_id":"disp-task"}),
+    ));
+    assert_eq!(ok(&read_response)["data"], first);
+    // The journal carries the dispatch_prepared event.
+    let journal_response = host.call(request(
+        "disp-journal",
+        json!({"kind":"read_journal","project_id":"disp","after":0,"limit":100}),
+    ));
+    let journal = ok(&journal_response);
+    let kinds: Vec<&str> = journal["data"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["payload"]["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"dispatch_prepared"));
 }

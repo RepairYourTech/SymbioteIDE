@@ -14,13 +14,14 @@ use symbiote_workforce::{BindingConfiguration, RouteDecision};
 mod binding;
 mod dependency;
 mod lease;
+mod preparation;
 mod provider;
 mod route;
 mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 9;
+const DATABASE_VERSION: i64 = 10;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -58,6 +59,8 @@ pub enum StoreError {
     InvalidLease,
     LeaseConflict(symbiote_domain::LeaseError),
     InvalidProvider,
+    InvalidPreparation,
+    PreparationRefused,
     ResourceExhausted,
 }
 impl fmt::Display for StoreError {
@@ -174,6 +177,11 @@ pub enum EventPayload {
         actor: UserId,
         at: Timestamp,
     },
+    DispatchPrepared {
+        preparation: Box<symbiote_domain::DispatchPreparation>,
+        actor: UserId,
+        at: Timestamp,
+    },
     TaskChanged {
         task_id: TaskId,
         command: Box<TaskCommand>,
@@ -282,6 +290,9 @@ impl Store {
         }
         if version < 9 {
             transaction.execute_batch(provider::MIGRATION_V9)?;
+        }
+        if version < 10 {
+            transaction.execute_batch(preparation::MIGRATION_V10)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -908,6 +919,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         BTreeMap::new();
     let mut models: BTreeMap<ModelId, symbiote_runtime_sdk::provider::ModelDescriptor> =
         BTreeMap::new();
+    let mut preparations: BTreeMap<TaskId, symbiote_domain::DispatchPreparation> = BTreeMap::new();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -1272,6 +1284,26 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                 }
                 models.insert(descriptor.id.clone(), descriptor.clone());
             }
+            EventPayload::DispatchPrepared {
+                preparation,
+                actor,
+                at,
+            } => {
+                let preparation = preparation.as_ref();
+                preparation
+                    .validate()
+                    .map_err(|_| StoreError::InvalidPreparation)?;
+                if preparation.project_id.as_str() != project_key
+                    || at.0 > i64::MAX as u64
+                    || request
+                        != serde_json::to_string(&preparation::event(preparation, actor, *at))?
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid preparation journal lineage".into(),
+                    ));
+                }
+                preparations.insert(preparation.task_id.clone(), preparation.clone());
+            }
             EventPayload::TaskDependenciesSet {
                 task_id,
                 project_id,
@@ -1333,6 +1365,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         ));
     }
     provider::audit_finish(connection, &providers, &entitlements, &models)?;
+    preparation::audit_finish(connection, &preparations)?;
     work_audit.finish(connection)?;
     team_audit.finish(connection)?;
     binding_audit.finish(connection)?;
