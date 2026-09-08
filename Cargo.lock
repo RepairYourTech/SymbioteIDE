@@ -414,6 +414,7 @@ dependencies = [
  "serde_json",
  "symbiote-domain",
  "symbiote-host-inventory",
+ "symbiote-runtime-sdk",
  "symbiote-trust",
  "symbiote-workforce",
 ]
@@ -470,6 +471,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symbiote-domain",
+ "symbiote-runtime-sdk",
  "symbiote-trust",
  "symbiote-workforce",
 ]

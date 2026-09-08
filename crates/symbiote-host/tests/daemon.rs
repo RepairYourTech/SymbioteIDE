@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":8},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":9},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":8},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":9},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
