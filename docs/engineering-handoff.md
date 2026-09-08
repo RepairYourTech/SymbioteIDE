@@ -1,5 +1,11 @@
 # Engineering handoff
 
+## Agent environment contracts — 2026-09-08 UTC
+
+Change Stream `issue-214-environment` starts from merged #477 at `18fd58c`. Owner #214 consumes the #179/#184 foundations. Versioned desired resource declarations enter the portable Project manifest, with read-only environment resolution and explicit scope, trust, ownership and compatibility boundaries. Native files remain projections; this batch performs no resource installation or worker activation.
+
+See `docs/contracts/agent-environment.md` for parsing, merge and remaining integration acceptance. #187 can consume these contracts for read-only projection planning before native file reconciliation. #174/#191/#218 trust and preventive enforcement, #189 hierarchy, actual native/Codex packs and full first-release verification remain open. The persistent build goal is not achieved.
+
 ## Local structured runtime transport — 2026-09-08 UTC
 
 Change Stream `issue-185-transport` starts from merged #476 at `d7b1391b0e03e861a168e915c0602be681e3b83d`. Owner #185 consumes the #180/#184 foundational contracts. This batch adds a process-backed local JSONL substrate and separate strict JSON-RPC 2.0 response correlation. It does not expose a Host worker activation endpoint or certify Codex/ACP compatibility.

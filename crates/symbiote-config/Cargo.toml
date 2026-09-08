@@ -10,6 +10,10 @@ autoexamples = false
 name = "config_schema"
 path = "examples/schema.rs"
 
+[[example]]
+name = "environment_plan"
+path = "examples/environment_plan.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

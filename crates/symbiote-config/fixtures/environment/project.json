@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "project_id": "example-project",
+  "agent_environments": {
+    "development": {
+      "schema_version": 1,
+      "project_id": "example-project",
+      "mode": "managed_isolated",
+      "core_policies": ["verification-policy-v1"],
+      "layers": [{
+        "target": {"scope": "project", "id": "example-project"},
+        "source": "project-defaults",
+        "revision": "v1",
+        "resources": [{
+          "id": "test-runner",
+          "kind": "tool",
+          "payload_ref": "catalog-test-runner",
+          "version_ref": "v1",
+          "compatibility_ref": "unverified-test-runner-v1",
+          "requirement": "required",
+          "ownership": "symbiote_managed",
+          "trust": "untrusted",
+          "lifecycle": "desired",
+          "hook_intent": null,
+          "required_grants": ["run-project-tests"]
+        }]
+      }],
+      "extensions": {}
+    }
+  }
+}
