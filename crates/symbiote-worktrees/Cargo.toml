@@ -1,0 +1,16 @@
+[package]
+name = "symbiote-worktrees"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+symbiote-domain = { path = "../symbiote-domain" }
+symbiote-trust = { path = "../symbiote-trust" }
+serde.workspace = true
+serde_json.workspace = true
+nix = { version = "=0.30.1", features = ["dir", "user", "fs"] }
+
+[lints]
+workspace = true
