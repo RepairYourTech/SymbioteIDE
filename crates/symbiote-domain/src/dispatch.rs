@@ -27,6 +27,9 @@ impl WorkforceRuntimeContract {
     pub fn binding(&self) -> &WorkforceBinding {
         &self.binding
     }
+    pub fn enforcement(&self) -> &BTreeMap<Control, EnforcementClaim> {
+        &self.enforcement
+    }
     pub fn role(&self) -> &Role {
         &self.role
     }

@@ -8,6 +8,8 @@ The Rust workspace now includes a local `symbioted` service and `symbiote` CLI b
 
 Start the local service using the [Host run instructions](docs/contracts/host.md). The Host currently targets Linux and authenticates local clients using OS peer credentials. The separate [Linux shell experiment](docs/proofs/linux-shell.md) remains a proof workload, not the production workbench.
 
+The [runtime SDK](docs/contracts/runtime-sdk.md) now defines capability-qualified agent adapters, separate inference providers and bounded session events. These contracts are prerequisites for live native/Codex integration; they do not enable agent execution in the Host yet.
+
 ```sh
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -16,6 +18,7 @@ cargo run -p symbiote-domain --example domain_schema
 cargo run -p symbiote-config --example config_schema
 cargo run -p symbiote-architecture --example architecture_schema
 cargo run -p symbiote-protocol --example protocol_schema
+cargo run -p symbiote-runtime-sdk --example runtime_schema
 ```
 
 Schema examples emit JSON to stdout. The generated structural schemas do not replace runtime cross-field checks. Rust 1.85 is the declared minimum; Cargo.lock pins dependencies. CI tests the minimum and current stable toolchain. Workspace code forbids unsafe Rust.
