@@ -1057,13 +1057,14 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             }
             EventPayload::TaskDependenciesSet {
                 task_id,
+                project_id,
                 edges,
                 actor,
                 at,
-                ..
             } => {
                 dependency_audit.set(
                     task_id,
+                    &Some(project_id.clone()),
                     edges,
                     actor,
                     *at,

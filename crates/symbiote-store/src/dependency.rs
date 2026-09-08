@@ -323,14 +323,32 @@ impl Audit {
     pub(super) fn set(
         &mut self,
         task: &TaskId,
+        declared_project: &Option<ProjectId>,
         edges: &[TaskDependencyEdge],
         actor: &UserId,
         at: Timestamp,
         journal: (&str, u64, &str),
     ) -> Result<()> {
         let (project_key, revision, request) = journal;
+        // The payload's declared project is part of authenticated intent: a
+        // payload naming another project while its rows and request stay tied
+        // to the journal row is corruption, not a valid relocation.
+        let declared = ProjectId::new(
+            declared_project
+                .as_ref()
+                .ok_or(StoreError::Integrity(
+                    "dependency event without project".into(),
+                ))?
+                .as_str(),
+        )
+        .map_err(|_| StoreError::Integrity("bad dependency project".into()))?;
         let project = ProjectId::new(project_key)
             .map_err(|_| StoreError::Integrity("bad dependency project".into()))?;
+        if declared != project {
+            return Err(StoreError::Integrity(
+                "dependency event project differs from journal".into(),
+            ));
+        }
         let dependencies = TaskDependencies {
             project_id: project.clone(),
             task_id: task.clone(),
@@ -364,7 +382,26 @@ impl Audit {
     pub(super) fn finish(self, connection: &Connection) -> Result<()> {
         // Owners whose final set is empty have no rows; the per-key
         // comparison below is the authoritative check, so a count-based
-        // rejection would wrongly refuse a legitimately cleared task.
+        // rejection would wrongly refuse a legitimately cleared task. The
+        // inverse is still corruption: injected rows with no journal
+        // provenance must fail, so every materialized owner must appear in
+        // the journal-derived graph.
+        let mut statement =
+            connection.prepare("SELECT DISTINCT project_id, task_id FROM task_dependencies")?;
+        let rows =
+            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (project, task) = row?;
+            let project = ProjectId::new(project)
+                .map_err(|_| StoreError::Integrity("bad dependency project".into()))?;
+            let task = TaskId::new(task)
+                .map_err(|_| StoreError::Integrity("bad dependency task".into()))?;
+            if !self.graph.contains_key(&(project, task)) {
+                return Err(StoreError::Integrity(
+                    "dependency owner lacks journal provenance".into(),
+                ));
+            }
+        }
         for (key, expected) in self.graph {
             if read(connection, &key)? != expected.edges {
                 return Err(StoreError::Integrity(
