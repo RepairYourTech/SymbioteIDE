@@ -1,5 +1,13 @@
 # Engineering handoff
 
+## Durable metadata Host — 2026-09-08 UTC
+
+Current Change Stream: `issue-43-durable-host`, isolated from merged #474 at `42eda51a7e4955cb5f44aa85833e8a313a6ae3a7`. Owners #43/#181/#180 consume the reviewed #36/#176 foundational contracts. New Rust workspace crates implement SQLite current-state/journal transactions, typed transport-neutral requests, and an actual Linux daemon/CLI using private same-UID IPC. The GUI has no canonical state ownership. No agent subprocess or model billing is enabled.
+
+The daemon can register a Project with its Roots/Roles, create ready Tasks/initial Change Streams, read records and replay committed events. Real-process tests force daemon death and transaction-boundary death, reconnect independent clients, replay dropped replies and check concurrency. Separate review covers storage/protocol and Host transport; current-head CI belongs to the containing PR. See `docs/contracts/{storage,protocol,host}.md` for the exact implemented boundaries and reproduction commands.
+
+Next prerequisite work includes execution permissions/credentials and durable side-effect disposition, runtime/workforce contracts, actual process/worktree supervision and the remaining #38 architecture proofs. Native/Codex execution, desktop integration, backup/export recovery and full protocol/service packaging remain pending. Do not close broad #43/#181/#180 on metadata storage alone or advertise the shell/security/runtime as release-ready.
+
 ## Architecture proof batch — 2026-09-08 UTC
 
 Foundations PR #473 merged at `a15368c1744fdff3c186dda11f24714d738c7efe` after separate review and passing stable/MSRV/roadmap checks. The #36/#170/#176/#179/#173 issues remain open for their broader acceptance. Current proof work is isolated on `issue-38-linux-proof` from that revision.
