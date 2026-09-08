@@ -28,6 +28,7 @@ pub enum DomainError {
     Cycle,
     MissingReference,
     ResourceLimit,
+    InvalidPreparation,
 }
 impl fmt::Display for DomainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

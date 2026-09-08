@@ -197,7 +197,8 @@ fn resolve_profile_provider(
         [binding_id],
         |r| r.get(0),
     )?;
-    let binding: symbiote_workforce::BindingConfiguration = serde_json::from_str(&body)?;
+    let binding: symbiote_workforce::BindingConfiguration =
+        serde_json::from_str(&body).map_err(|_| StoreError::InvalidPreparation)?;
     let profile = &binding.primary.profile;
     match provider::read(transaction, profile.provider.as_str())? {
         Some(connection) => Ok(Some((connection.id.clone(), profile.model.clone()))),

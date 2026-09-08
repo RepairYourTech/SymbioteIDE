@@ -27,7 +27,7 @@ pub enum CompositionStep {
     Scheduling { schedulable: bool },
     Routing { resolved: Option<RoleId> },
     Lease { held: bool },
-    Worktree { reserved: bool },
+    Worktree { declared: bool },
     Provider { validated: bool },
 }
 
@@ -82,7 +82,9 @@ impl DispatchPreparation {
         steps.push(CompositionStep::Lease {
             held: lease.is_some(),
         });
-        steps.push(CompositionStep::Worktree { reserved: true });
+        // The stream row declares the worktree identity; filesystem
+        // reservation is issue 211's separate concern and is NOT checked here.
+        steps.push(CompositionStep::Worktree { declared: true });
         let provider_resolved = provider.is_some();
         steps.push(CompositionStep::Provider {
             validated: provider_resolved,

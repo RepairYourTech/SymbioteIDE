@@ -12,7 +12,7 @@ Canonical owner: [#205](https://github.com/RepairYourTech/SymbioteIDE/issues/205
 - **Worktree** — the stream's reserved worktree identity and branch from the Change Stream record (#211 slice owns filesystem reservation; this records the binding).
 - **Provider** — the routed Role's workforce binding (#203/#486) carries the runtime profile; its provider connection must exist in the #464 registry for the provider step to resolve.
 
-The outcome is `ready` only when scheduling, routing, lease, and provider all resolve. **A refused composition is recorded like a ready one** — refusals are evidence with the exact refusing step, not errors. `PreparationRefused`/`failed_precondition` is returned only to the caller; the durable record always lands.
+The outcome is `ready` only when scheduling, routing, lease, and provider all resolve. **A refused composition is recorded like a ready one**: the response body carries `outcome: "refused"` with the refusing step — refusal is a successful read of recorded state, not an error. Failures *outside* the enumerated steps (unknown task, unreadable origin, malformed stored binding) surface as errors and leave no preparation record; the journal's surrounding events remain the evidence for those.
 
 ## Authority
 
