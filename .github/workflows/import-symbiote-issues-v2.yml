@@ -8,7 +8,7 @@ on:
 
 permissions:
   contents: read
-  issues: write
+  issues: read
 
 concurrency:
   group: import-symbiote-issues-v2
@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   import:
+    # Historical payload is not authoritative. Replacement writer tracked in #470.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

@@ -10,8 +10,8 @@ on:
       - .github/workflows/import-symbiote-roadmap-v2-verified.yml
 
 permissions:
-  contents: write
-  issues: write
+  contents: read
+  issues: read
 
 concurrency:
   group: symbiote-roadmap-v2-verified-import
@@ -19,6 +19,8 @@ concurrency:
 
 jobs:
   import-and-verify:
+    # Historical payload is not authoritative. Replacement writer tracked in #470.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:

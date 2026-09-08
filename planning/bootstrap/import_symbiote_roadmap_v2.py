@@ -6,6 +6,7 @@ identified by a stable HTML marker. Re-running updates the managed issue bodies
 and labels but never closes or deletes unrelated work.
 """
 from __future__ import annotations
+raise SystemExit("RETIRED_STALE_IMPORTER: historical payload predates accepted amendments; see #470. No remote writes permitted.")
 
 import json
 import os

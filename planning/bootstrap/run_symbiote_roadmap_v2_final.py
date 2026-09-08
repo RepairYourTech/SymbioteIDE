@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Final validated runner for the Symbiote v2 roadmap importer."""
+raise SystemExit("RETIRED_STALE_IMPORTER: historical payload predates accepted amendments; see #470. No remote writes permitted.")
 from pathlib import Path
 
 source_path = Path(__file__).with_name("import_symbiote_roadmap_v2.py")
