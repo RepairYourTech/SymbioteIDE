@@ -379,6 +379,7 @@ dependencies = [
  "symbiote-host-inventory",
  "symbiote-protocol",
  "symbiote-store",
+ "symbiote-workforce",
 ]
 
 [[package]]
@@ -414,6 +415,7 @@ dependencies = [
  "symbiote-domain",
  "symbiote-host-inventory",
  "symbiote-trust",
+ "symbiote-workforce",
 ]
 
 [[package]]
@@ -469,6 +471,7 @@ dependencies = [
  "serde_json",
  "symbiote-domain",
  "symbiote-trust",
+ "symbiote-workforce",
 ]
 
 [[package]]
@@ -480,6 +483,18 @@ dependencies = [
  "serde_json",
  "sha2",
  "symbiote-domain",
+]
+
+[[package]]
+name = "symbiote-workforce"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "symbiote-domain",
+ "symbiote-host-inventory",
+ "symbiote-runtime-sdk",
 ]
 
 [[package]]

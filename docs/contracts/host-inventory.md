@@ -1,6 +1,6 @@
 # Host inventory foundation (#193)
 
-The authenticated local Host exposes `get_host_pulse` in protocol v1.4. A pulse
+The authenticated local Host exposes `get_host_pulse` in protocol v1.5. A pulse
 contains a private installation identity, an observation identity, observation
 and expiry times, probe provenance, resource facts and capability observations.
 It is telemetry, not canonical completion evidence or a reservation/launch permit.
@@ -56,7 +56,7 @@ rejection so malformed state fails rather than hanging at startup.
 `cargo build -p symbiote-host --bins` builds the daemon and CLI. With the daemon
 running, send `fixtures/host-inventory/read.json` through
 `symbiote --state-dir PRIVATE_DIRECTORY request` to inspect a real pulse.
-Upgrade CLI and daemon together for protocol v1.4. This batch adds no database
+Upgrade CLI and daemon together for protocol v1.5. This batch adds no database
 migration. Older binaries ignore `host-id`; preserve it when rolling back.
 
 Broad #193 remains open: atomic resource reservations/releases, pressure policies,

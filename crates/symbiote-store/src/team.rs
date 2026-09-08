@@ -180,6 +180,9 @@ pub(super) struct Audit {
     records: BTreeMap<ProjectId, (TeamConfiguration, UserId, Timestamp)>,
 }
 impl Audit {
+    pub(super) fn current(&self, project: &ProjectId) -> Option<&TeamConfiguration> {
+        self.records.get(project).map(|(team, _, _)| team)
+    }
     pub(super) fn replaced(
         &mut self,
         team: &TeamConfiguration,

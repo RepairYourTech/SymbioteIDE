@@ -33,6 +33,76 @@ fn profile(runtime: RuntimeKind) -> RuntimeProfile {
         eligible_hosts: [HostId::new("host").unwrap()].into(),
     }
 }
+
+#[test]
+fn explicit_control_minimums_preserve_partial_order_and_fresh_evidence() {
+    use EnforcementStrength::*;
+    let runtime = RuntimeKind::NativeSymbiote;
+    let profile = profile(runtime);
+    let mut d = descriptor(runtime);
+    let strengths = [
+        Native,
+        HostEnforced,
+        ExternallyObserved,
+        Emulated,
+        Unsupported,
+    ];
+    let expected = [
+        [true, true, true, true, false],
+        [false, true, true, true, false],
+        [false, false, true, false, false],
+        [false, false, false, true, false],
+        [false, false, false, false, false],
+    ];
+    for (i, actual) in strengths.iter().enumerate() {
+        d.controls.get_mut(&Control::Filesystem).unwrap().strength = *actual;
+        for (j, minimum) in strengths.iter().enumerate() {
+            assert_eq!(
+                qualify_profile_with_minimums(
+                    &profile,
+                    &d,
+                    &BTreeSet::new(),
+                    &BTreeMap::from([(Control::Filesystem, *minimum)]),
+                    Timestamp(10)
+                )
+                .is_ok(),
+                expected[i][j],
+                "actual {actual:?}, minimum {minimum:?}"
+            );
+        }
+    }
+    d.controls.get_mut(&Control::Filesystem).unwrap().strength = ExternallyObserved;
+    let requirements = BTreeMap::from([(Control::Filesystem, ExternallyObserved)]);
+    assert!(
+        qualify_profile(
+            &profile,
+            &d,
+            &BTreeSet::new(),
+            &[Control::Filesystem].into(),
+            Timestamp(10)
+        )
+        .is_err()
+    );
+    assert_eq!(
+        qualify_profile_with_minimums(
+            &profile,
+            &d,
+            &BTreeSet::new(),
+            &requirements,
+            Timestamp(1000)
+        ),
+        Err(QualificationError::StaleEvidence)
+    );
+    d.controls
+        .get_mut(&Control::Filesystem)
+        .unwrap()
+        .evidence
+        .profile_revision = Revision(9);
+    assert_eq!(
+        qualify_profile_with_minimums(&profile, &d, &BTreeSet::new(), &requirements, Timestamp(10)),
+        Err(QualificationError::StaleEvidence)
+    );
+}
 fn descriptor(runtime: RuntimeKind) -> RuntimeDescriptor {
     RuntimeDescriptor {
         sdk_version: SDK_VERSION,

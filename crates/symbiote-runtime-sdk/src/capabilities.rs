@@ -227,6 +227,24 @@ pub fn qualify_profile(
     required_controls: &BTreeSet<Control>,
     now: Timestamp,
 ) -> Result<(), QualificationError> {
+    let minimums = required_controls
+        .iter()
+        .cloned()
+        .map(|control| (control, EnforcementStrength::HostEnforced))
+        .collect();
+    qualify_profile_with_minimums(profile, descriptor, required_capabilities, &minimums, now)
+}
+
+/// Matches explicit minimum controls while retaining exact, fresh evidence.
+/// Observed and emulated controls are incomparable; neither prevents effects.
+/// The caller authenticates evidence and decides which minimum is permissible.
+pub fn qualify_profile_with_minimums(
+    profile: &RuntimeProfile,
+    descriptor: &RuntimeDescriptor,
+    required_capabilities: &BTreeSet<Capability>,
+    minimums: &BTreeMap<Control, EnforcementStrength>,
+    now: Timestamp,
+) -> Result<(), QualificationError> {
     descriptor.validate()?;
     if profile.adapter != descriptor.adapter_id
         || profile.runtime != descriptor.runtime
@@ -252,17 +270,32 @@ pub fn qualify_profile(
             _ => return Err(QualificationError::MissingCapability(capability.clone())),
         }
     }
-    for control in required_controls {
+    for (control, minimum) in minimums {
         let support = descriptor
             .controls
             .get(control)
             .ok_or_else(|| QualificationError::MissingControl(control.clone()))?;
-        if !matches!(
-            support.strength,
-            EnforcementStrength::Native | EnforcementStrength::HostEnforced
-        ) || support.mechanism.trim().is_empty()
-            || support.mechanism.len() > 256
-        {
+        let meets = match minimum {
+            EnforcementStrength::Native => support.strength == EnforcementStrength::Native,
+            EnforcementStrength::HostEnforced => matches!(
+                support.strength,
+                EnforcementStrength::Native | EnforcementStrength::HostEnforced
+            ),
+            EnforcementStrength::ExternallyObserved => matches!(
+                support.strength,
+                EnforcementStrength::Native
+                    | EnforcementStrength::HostEnforced
+                    | EnforcementStrength::ExternallyObserved
+            ),
+            EnforcementStrength::Emulated => matches!(
+                support.strength,
+                EnforcementStrength::Native
+                    | EnforcementStrength::HostEnforced
+                    | EnforcementStrength::Emulated
+            ),
+            EnforcementStrength::Unsupported => false,
+        };
+        if !meets || support.mechanism.trim().is_empty() || support.mechanism.len() > 256 {
             return Err(QualificationError::InsufficientControl(control.clone()));
         }
         descriptor.evidence(&support.evidence, now)?;

@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 4 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 5 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -91,6 +91,18 @@ pub struct Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    ReplaceBinding {
+        expected_revision: Option<Revision>,
+        configuration: Box<symbiote_workforce::BindingConfiguration>,
+    },
+    GetBinding {
+        project_id: ProjectId,
+        binding_id: BindingId,
+    },
+    GetBindingReadiness {
+        project_id: ProjectId,
+        binding_id: BindingId,
+    },
     GetHostPulse {},
     ReplaceTeam {
         expected_revision: Option<Revision>,
@@ -160,6 +172,10 @@ pub enum Operation {
 impl Operation {
     pub fn project_id(&self) -> Option<&ProjectId> {
         match self {
+            Self::ReplaceBinding { configuration, .. } => Some(&configuration.binding.project_id),
+            Self::GetBinding { project_id, .. } | Self::GetBindingReadiness { project_id, .. } => {
+                Some(project_id)
+            }
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
             Self::CreateWork { work } => Some(&work.project_id),
@@ -184,6 +200,7 @@ impl Operation {
         matches!(
             self,
             Self::CreateWork { .. }
+                | Self::ReplaceBinding { .. }
                 | Self::ReplaceTeam { .. }
                 | Self::ChangeWork { .. }
                 | Self::AssignTaskOrigin { .. }
@@ -203,6 +220,20 @@ impl Request {
             return Err(ProtocolError::new(ErrorCode::UnsupportedVersion));
         }
         match &self.operation {
+            Operation::ReplaceBinding {
+                configuration,
+                expected_revision,
+            } => {
+                configuration.validate().map_err(|_| invalid())?;
+                let revision = match expected_revision {
+                    None => 0,
+                    Some(revision) => revision.0.checked_add(1).ok_or_else(invalid)?,
+                };
+                if configuration.binding.revision.0 != revision {
+                    return Err(invalid());
+                }
+                Ok(())
+            }
             Operation::ReplaceTeam {
                 team,
                 expected_revision,
@@ -263,6 +294,7 @@ pub fn parse_request(bytes: &[u8]) -> Result<Request, ProtocolError> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProjectPermission {
+    ManageBindings,
     ManageTeam,
     ManageWork,
     Register,
@@ -313,6 +345,14 @@ impl Principal {
 pub fn authorize(principal: &Principal, request: &Request) -> Result<(), ProtocolError> {
     request.validate()?;
     let permitted = match &request.operation {
+        Operation::ReplaceBinding { configuration, .. } => principal.permits(
+            &configuration.binding.project_id,
+            ProjectPermission::ManageBindings,
+        ),
+        Operation::GetBinding { project_id, .. } => {
+            principal.permits(project_id, ProjectPermission::Read)
+        }
+        Operation::GetBindingReadiness { .. } => principal.local_owner,
         Operation::ReplaceTeam { team, .. } => {
             principal.permits(&team.project_id, ProjectPermission::ManageTeam)
         }
@@ -581,6 +621,9 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    BindingReadiness,
+    BindingConfiguration,
+    BindingRead,
     HostPulseRead,
     TeamConfiguration,
     TeamRead,
@@ -618,6 +661,9 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::BindingReadiness,
+            Capability::BindingConfiguration,
+            Capability::BindingRead,
             Capability::HostPulseRead,
             Capability::TeamConfiguration,
             Capability::TeamRead,
@@ -659,6 +705,12 @@ pub struct Receipt {
     deny_unknown_fields
 )]
 pub enum EventPayload {
+    BindingReplaced {
+        configuration: Box<symbiote_workforce::BindingConfiguration>,
+        expected_revision: Option<Revision>,
+        actor: UserId,
+        at: Timestamp,
+    },
     TeamReplaced {
         team: Box<TeamConfiguration>,
         expected_revision: Option<Revision>,
@@ -708,6 +760,7 @@ pub enum EventPayload {
 impl EventPayload {
     fn project_id(&self) -> &ProjectId {
         match self {
+            Self::BindingReplaced { configuration, .. } => &configuration.binding.project_id,
             Self::TeamReplaced { team, .. } => &team.project_id,
             Self::WorkItemCreated { item } | Self::WorkItemChanged { item, .. } => {
                 item.project_id()
@@ -721,6 +774,20 @@ impl EventPayload {
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
         match self {
+            Self::BindingReplaced {
+                configuration,
+                expected_revision,
+                ..
+            } => {
+                &configuration.binding.project_id == project_id
+                    && configuration.validate().is_ok()
+                    && match expected_revision {
+                        None => configuration.binding.revision == Revision(0),
+                        Some(revision) => {
+                            revision.0.checked_add(1) == Some(configuration.binding.revision.0)
+                        }
+                    }
+            }
             Self::TeamReplaced {
                 team,
                 expected_revision,
@@ -840,6 +907,8 @@ impl JournalPage {
     deny_unknown_fields
 )]
 pub enum ResponseBody {
+    BindingReadiness(Box<symbiote_workforce::ReadinessReport>),
+    Binding(Box<symbiote_workforce::BindingConfiguration>),
     HostPulse(Box<symbiote_host_inventory::HostPulse>),
     Team(Box<TeamConfiguration>),
     Work(Box<WorkItem>),

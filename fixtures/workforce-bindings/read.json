@@ -1,0 +1,13 @@
+{
+  "version": {
+    "major": 1,
+    "minor": 5
+  },
+  "correlation_id": "read-binding",
+  "command_id": "read-binding",
+  "operation": {
+    "kind": "get_binding",
+    "project_id": "staffing-demo",
+    "binding_id": "engineer-binding"
+  }
+}
