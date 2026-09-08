@@ -1,4 +1,18 @@
-# Takeover and first Change Stream
+# Engineering handoff
+
+## Executable foundation batch — 2026-09-08 UTC
+
+PR #472 was reviewed and merged as `d2c5d300652e3733ec0172c4b0ef0690fa168e37`. Current worktree `/mnt/data/projects/Symbiote-worktrees/issue-36-176-foundations`, branch `issue-36-176-foundations`, starts from that merged revision. Owners are #36/#170 domain/constitutional contracts, #176/#179 configuration/portable manifests, and #173 architecture decision/proof contracts. The first usable release must prove both native Rust/OpenAI API and external Codex execution under shared canonical controls; none of this batch calls paid inference or claims those integrations.
+
+Three pure Rust crates replace the absence of application contracts: typed identities/dispatch/lifecycle evidence; scoped configuration/portable manifest and conflict previews; immutable accepted architecture decisions/version pins and selective invalidation. See `docs/contracts/` for acceptance coverage and remaining integration obligations. `README.md` documents reproducible build/test/schema commands. A Cargo lockfile pins dependencies; CI adds stable and Rust 1.85 contract verification. No unsafe code is permitted in these crates.
+
+The baseline planning suites passed before changes. Independent review identified forged deserialization/dispatch-context/freshness defects in the domain boundary, invalid portable paths, and incomplete affected-artifact reporting in decision acceptance. All were fixed with regression tests and independently re-reviewed. Final local checks: 42 Rust tests pass (18 domain, 12 configuration, 12 architecture), strict all-target Clippy passes, formatting/diff checks pass and all three schema generators run. The domain reviewer also verified six independent adversarial probes including history tampering. CI/MSRV and merge evidence belong to the containing PR; no GitHub approval is inferred from separate-agent review.
+
+The #38 environment probe found GTK3/WebKitGTK4.1, Tauri CLI and Xvfb. Native display is KDE Wayland; its `:1` X11 connection is XWayland, not standalone X11 certification. The Linux shell spike is prepared separately under `issue-38-linux-proof`; it must not be represented as a chosen desktop architecture. Windows/macOS, minimum-target resource budgets, Preview authority isolation, signed updates and full representative workload remain proof gates. Prototype preparation is independent; execution follows the reviewed #173 foundational contract. Graph storage and transactional control-plane storage remain separate candidates.
+
+Next: integrate reviewed/current-head foundation checks, execute the bounded #38 Linux spike and publish raw evidence/failures, then advance #43/#181/#180 only after their explicit schema/persistence/proof requirements are supported. Keep broad issues open for later Host authentication, durable recovery, runtime, graph, full ontology and cross-platform acceptance. Never mark code-level enforcement authenticated solely because a test supplies an `Actor::Host` or an evidence record.
+
+## Initial takeover record
 
 Recorded 2026-09-08 UTC. Canonical owners: #170 (constitution), #470 (roadmap integrity); #173/#38 own remaining governance/proof. Branch `issue-170-470-takeover-integrity`, worktree `/mnt/data/projects/Symbiote` (also `/home/birdman/Projects/Symbiote`). Base and inspected target: `772fe8446f4ba42d9ad037de76acc3d792fc1d07`. The containing PR's head is the exact implementation revision; this record does not certify a later head.
 
