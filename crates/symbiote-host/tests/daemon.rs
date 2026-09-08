@@ -130,7 +130,69 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":4},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":5},"correlation_id":"test-request","command_id":command,"operation":operation})
+}
+
+#[test]
+fn bindings_replay_after_crash_and_survive_team_drift_as_desired_history() {
+    let mut host = Host::new();
+    for input in [
+        include_str!("../../../fixtures/project-team/register.json"),
+        include_str!("../../../fixtures/project-team/configure.json"),
+    ] {
+        ok(&host.call(serde_json::from_str(input).unwrap()));
+    }
+    let create: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/configure.json"
+    ))
+    .unwrap();
+    ok(&host.call(create.clone()));
+    host.crash();
+    host.start();
+    assert_eq!(ok(&host.call(create.clone()))["data"]["replayed"], true);
+    let mut update = create.clone();
+    update["command_id"] = json!("binding-update");
+    update["operation"]["expected_revision"] = json!(0);
+    update["operation"]["configuration"]["binding"]["revision"] = json!(1);
+    update["operation"]["configuration"]["policies"]["root_effort"] = json!("high");
+    ok(&host.call(update.clone()));
+    update["command_id"] = json!("binding-stale");
+    assert_eq!(host.call(update)["result"]["Err"]["code"], "stale_revision");
+    let mut team: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/project-team/configure.json"
+    ))
+    .unwrap();
+    team["command_id"] = json!("team-drift");
+    team["operation"]["expected_revision"] = json!(0);
+    team["operation"]["team"]["revision"] = json!(1);
+    ok(&host.call(team));
+    host.crash();
+    host.start();
+    let read: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/read.json"
+    ))
+    .unwrap();
+    let result = host.call(read);
+    assert_eq!(ok(&result)["data"]["team_revision"], 0);
+    assert_eq!(ok(&result)["data"]["binding"]["revision"], 1);
+    let readiness: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/readiness.json"
+    ))
+    .unwrap();
+    let status = host.call(readiness);
+    assert_eq!(ok(&status)["data"]["status"], "not_ready");
+    assert!(
+        !ok(&status)["data"]["activation_pending"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(ok(&host.call(create))["data"]["replayed"], true);
+    let wrong = request(
+        "wrong-project",
+        json!({"kind":"get_binding","project_id":"other","binding_id":"engineer-binding"}),
+    );
+    assert_eq!(host.call(wrong)["result"]["Err"]["code"], "not_found");
 }
 
 fn team(project: &str, revision: u64) -> Value {
@@ -527,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":4},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":5},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")

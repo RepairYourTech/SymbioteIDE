@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "binding": {
+    "id": "engineer-binding",
+    "revision": 0,
+    "project_id": "staffing-demo",
+    "role_id": "engineer",
+    "profile_id": "native-worker",
+    "profile_revision": 1,
+    "protocol": {
+      "id": "workforce-protocol",
+      "revision": 1
+    },
+    "access": {
+      "project_id": "staffing-demo",
+      "roots": [
+        "staffing-root"
+      ],
+      "grants": [
+        "read_root",
+        "execute_process"
+      ],
+      "policy_revision": 1
+    },
+    "required_controls": [
+      "completion_authority"
+    ],
+    "context": {
+      "bundle": "coding-context",
+      "revision": 1,
+      "max_input_tokens": 8000,
+      "reserved_output_tokens": 2000
+    },
+    "required_tools": [],
+    "required_skills": [],
+    "escalation": "return_to_lead"
+  },
+  "team_revision": 0,
+  "primary": {
+    "profile": {
+      "id": "native-worker",
+      "revision": 1,
+      "runtime": "NATIVE_SYMBIOTE",
+      "adapter": "native-agent",
+      "installation": null,
+      "provider": "native-openai",
+      "credential": "native-vault-ref",
+      "billing_entitlement": "native-api-entitlement",
+      "model": "coding-model",
+      "eligible_hosts": [
+        "configured-host"
+      ]
+    },
+    "config_identity": "native-default",
+    "access": {
+      "project_id": "staffing-demo",
+      "roots": [
+        "staffing-root"
+      ],
+      "grants": [
+        "read_root",
+        "execute_process"
+      ],
+      "policy_revision": 1
+    },
+    "tools": [],
+    "skills": [],
+    "secret_scopes": [],
+    "context": {
+      "bundle": "coding-context",
+      "revision": 1,
+      "max_input_tokens": 8000,
+      "reserved_output_tokens": 2000
+    },
+    "limits": {
+      "max_total_tokens": 10000,
+      "max_wall_time_ms": 60000,
+      "max_concurrency": 1,
+      "max_memory_bytes": 268435456
+    }
+  },
+  "fallbacks": [],
+  "policies": {
+    "environment": {
+      "id": "environment-policy",
+      "revision": 1
+    },
+    "worktree": {
+      "id": "worktree-policy",
+      "revision": 1
+    },
+    "verification": {
+      "id": "verification-policy",
+      "revision": 1
+    },
+    "documentation": {
+      "id": "documentation-policy",
+      "revision": 1
+    },
+    "artifacts": {
+      "id": "artifacts-policy",
+      "revision": 1
+    },
+    "mcp": {
+      "id": "mcp-policy",
+      "revision": 1
+    },
+    "escalation": {
+      "id": "escalation-policy",
+      "revision": 1
+    },
+    "root_effort": "medium",
+    "local_children": {
+      "kind": "disabled"
+    },
+    "fallback_consent": "explicit_required",
+    "minimum_enforcement": {
+      "completion_authority": "host_enforced"
+    },
+    "required_capabilities": []
+  }
+}

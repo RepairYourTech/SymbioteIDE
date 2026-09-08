@@ -112,6 +112,64 @@ fn request(operation: Operation) -> Request {
 }
 
 #[test]
+fn binding_management_is_separate_from_team_work_and_read_permissions() {
+    let config: symbiote_workforce::BindingConfiguration = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/binding.json"
+    ))
+    .unwrap();
+    let req = request(Operation::ReplaceBinding {
+        expected_revision: None,
+        configuration: Box::new(config.clone()),
+    });
+    let project = config.binding.project_id;
+    let permissions = |set| {
+        Principal::restricted(
+            UserId::new("staff-admin").unwrap(),
+            BTreeMap::from([(project.clone(), set)]),
+        )
+    };
+    let reader = permissions(BTreeSet::from([
+        ProjectPermission::ManageTeam,
+        ProjectPermission::ManageWork,
+        ProjectPermission::Read,
+    ]));
+    assert_eq!(
+        authorize(&reader, &req).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    let admin = permissions(BTreeSet::from([ProjectPermission::ManageBindings]));
+    assert!(authorize(&admin, &req).is_ok());
+    let readiness = request(Operation::GetBindingReadiness {
+        project_id: project.clone(),
+        binding_id: config.binding.id.clone(),
+    });
+    assert_eq!(
+        authorize(&reader, &readiness).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    assert!(
+        authorize(
+            &Principal::local_owner(UserId::new("owner").unwrap()),
+            &readiness
+        )
+        .is_ok()
+    );
+    assert!(
+        authorize(
+            &reader,
+            &request(Operation::GetBinding {
+                project_id: project,
+                binding_id: config.binding.id
+            })
+        )
+        .is_ok()
+    );
+    let mut spoofed = serde_json::to_value(req).unwrap();
+    spoofed["operation"]["actor"] = json!("host");
+    assert!(parse_request(&serde_json::to_vec(&spoofed).unwrap()).is_err());
+}
+
+#[test]
 fn host_pulse_requires_host_owner_even_with_project_permissions() {
     let req = request(Operation::GetHostPulse {});
     assert_eq!(
@@ -264,7 +322,7 @@ fn work_references_require_read_access_even_after_reference_is_removed() {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":4},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":5},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -273,7 +331,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor":4},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor":5},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 
@@ -375,7 +433,8 @@ fn versions_negotiate_only_explicitly_supported_versions() {
         ProtocolVersion { major: 1, minor: 1 },
         ProtocolVersion { major: 1, minor: 2 },
         ProtocolVersion { major: 1, minor: 3 },
-        ProtocolVersion { major: 1, minor: 5 },
+        ProtocolVersion { major: 1, minor: 4 },
+        ProtocolVersion { major: 1, minor: 6 },
         ProtocolVersion { major: 2, minor: 0 },
     ] {
         assert_eq!(

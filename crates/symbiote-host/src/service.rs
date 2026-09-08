@@ -9,6 +9,8 @@ fn storage_error(error: StoreError) -> ProtocolError {
         StoreError::AlreadyExists => ErrorCode::Conflict,
         StoreError::IdempotencyConflict => ErrorCode::IdempotencyConflict,
         StoreError::TeamRevisionConflict => ErrorCode::StaleRevision,
+        StoreError::BindingRevisionConflict => ErrorCode::StaleRevision,
+        StoreError::InvalidBinding => ErrorCode::InvalidRequest,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
         StoreError::InvalidPage => ErrorCode::InvalidCursor,
         StoreError::InvalidInitialState
@@ -78,6 +80,63 @@ fn execute(
 ) -> Result<ResponseBody, ProtocolError> {
     authorize(principal, request)?;
     match &request.operation {
+        Operation::ReplaceBinding {
+            expected_revision,
+            configuration,
+        } => {
+            let at = match store
+                .binding_command_timestamp(&request.command_id)
+                .map_err(storage_error)?
+            {
+                Some(at) => at,
+                None => Timestamp(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                        .as_millis()
+                        .try_into()
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+                ),
+            };
+            store
+                .replace_binding(
+                    request.command_id.clone(),
+                    *expected_revision,
+                    *configuration.clone(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::GetBinding {
+            project_id,
+            binding_id,
+        } => store
+            .get_binding(project_id, binding_id)
+            .map(|binding| ResponseBody::Binding(Box::new(binding)))
+            .map_err(storage_error),
+        Operation::GetBindingReadiness {
+            project_id,
+            binding_id,
+        } => {
+            let binding = store
+                .get_binding(project_id, binding_id)
+                .map_err(storage_error)?;
+            let team = store.get_team(project_id).map_err(storage_error)?;
+            let pulse = inventory.pulse()?;
+            let now = Timestamp(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                    .as_millis()
+                    .try_into()
+                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+            );
+            Ok(ResponseBody::BindingReadiness(Box::new(
+                symbiote_workforce::assess_readiness(&binding, &team, Some(&pulse), None, now),
+            )))
+        }
         Operation::GetHostPulse {} => inventory
             .pulse()
             .map(|pulse| ResponseBody::HostPulse(Box::new(pulse))),
@@ -286,6 +345,17 @@ fn execute(
                         command_id: event.command_id,
                         revision: event.revision,
                         payload: match event.payload {
+                            symbiote_store::EventPayload::BindingReplaced {
+                                configuration,
+                                expected_revision,
+                                actor,
+                                at,
+                            } => EventPayload::BindingReplaced {
+                                configuration,
+                                expected_revision,
+                                actor,
+                                at,
+                            },
                             symbiote_store::EventPayload::TeamReplaced {
                                 team,
                                 expected_revision,

@@ -1,23 +1,17 @@
 [package]
-name = "symbiote-protocol"
+name = "symbiote-workforce"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-autoexamples = false
-
-[[example]]
-name = "protocol_schema"
-path = "examples/schema.rs"
 
 [dependencies]
-symbiote-workforce = { path = "../symbiote-workforce" }
+symbiote-domain = { path = "../symbiote-domain" }
+symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
 symbiote-host-inventory = { path = "../symbiote-host-inventory" }
-symbiote-trust = { path = "../symbiote-trust" }
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
-symbiote-domain = { path = "../symbiote-domain" }
 
 [lints]
 workspace = true

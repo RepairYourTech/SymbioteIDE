@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 symbiote-domain = { path = "../symbiote-domain" }
 symbiote-trust = { path = "../symbiote-trust" }
+symbiote-workforce = { path = "../symbiote-workforce" }
 
 [lints]
 workspace = true

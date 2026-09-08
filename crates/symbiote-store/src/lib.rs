@@ -10,11 +10,13 @@ use std::{
 };
 use symbiote_domain::*;
 use symbiote_trust::ResourceConsent;
+use symbiote_workforce::BindingConfiguration;
+mod binding;
 mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 4;
+const DATABASE_VERSION: i64 = 5;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -44,6 +46,8 @@ pub enum StoreError {
     UnclassifiedTask,
     InvalidTeam,
     TeamRevisionConflict,
+    InvalidBinding,
+    BindingRevisionConflict,
 }
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -90,6 +94,12 @@ pub struct Receipt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum EventPayload {
+    BindingReplaced {
+        configuration: Box<BindingConfiguration>,
+        expected_revision: Option<Revision>,
+        actor: UserId,
+        at: Timestamp,
+    },
     TeamReplaced {
         team: Box<TeamConfiguration>,
         expected_revision: Option<Revision>,
@@ -211,6 +221,9 @@ impl Store {
         }
         if version < 4 {
             transaction.execute_batch(team::MIGRATION_V4)?;
+        }
+        if version < 5 {
+            transaction.execute_batch(binding::MIGRATION_V5)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -818,6 +831,7 @@ fn mutation_request(task_id: &TaskId, command: &TaskCommand) -> Result<String> {
 fn audit_journal(connection: &Connection) -> Result<()> {
     let mut work_audit = work::Audit::default();
     let mut team_audit = team::Audit::default();
+    let mut binding_audit = binding::Audit::default();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -846,6 +860,21 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             .ok_or_else(|| StoreError::Integrity("journal sequence exhausted".into()))?;
         let event: EventPayload = serde_json::from_str(&body)?;
         match &event {
+            EventPayload::BindingReplaced {
+                configuration,
+                expected_revision,
+                actor,
+                at,
+            } => {
+                binding_audit.replaced(
+                    configuration,
+                    *expected_revision,
+                    actor,
+                    *at,
+                    (&project_key, revision, &request),
+                    &team_audit,
+                )?;
+            }
             EventPayload::TeamReplaced {
                 team,
                 expected_revision,
@@ -1008,6 +1037,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     }
     work_audit.finish(connection)?;
     team_audit.finish(connection)?;
+    binding_audit.finish(connection)?;
     for (query, expected) in [
         ("SELECT count(*) FROM projects", projects.len()),
         ("SELECT count(*) FROM tasks", tasks.len()),

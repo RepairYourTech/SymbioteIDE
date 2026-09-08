@@ -1,5 +1,14 @@
 # Engineering handoff
 
+## Durable workforce bindings — 2026-09-08 UTC
+
+Change Stream `issue-203-workforce-bindings` starts from merged #485 at `7dadbefe`.
+The Host persists staffing intent around canonical WorkforceBinding identity and
+reports incomplete readiness without authorizing execution. See
+[workforce bindings](contracts/workforce-bindings.md) for schema v5, protocol v1.5,
+historical Team validation and the remaining activation gates. #203 and the full
+build goal remain open.
+
 ## Live Host inventory — 2026-09-08 UTC
 
 Change Stream `issue-193-host-inventory` starts from merged #484 at `0d6c65a`.
