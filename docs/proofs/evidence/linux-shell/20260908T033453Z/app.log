@@ -1,0 +1,15 @@
+PROOF_PTY_START id=0 pid=Some(3164586)
+PROOF_PTY_START id=1 pid=Some(3164588)
+PROOF_PTY_START id=2 pid=Some(3164590)
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+PROOF_READY preview_origin=http://127.0.0.1:40379 pid=3164547 synthetic_streams=4 real_ptys=3
+PROOF_PREVIEW_REPORT snapshot: denied
+PROOF_PREVIEW_REPORT stop_ptys: denied
+PROOF_PTY_STOP id=0 status=ExitStatus { code: 1, signal: Some("Hangup") }
+PROOF_PTY_STOP id=1 status=ExitStatus { code: 1, signal: Some("Hangup") }
+PROOF_PTY_STOP id=2 status=ExitStatus { code: 1, signal: Some("Hangup") }
+PROOF_PTY_STOP id=0 status=ExitStatus { code: 1, signal: Some("Hangup") }
+PROOF_PTY_STOP id=1 status=ExitStatus { code: 1, signal: Some("Hangup") }
+PROOF_PTY_STOP id=2 status=ExitStatus { code: 1, signal: Some("Hangup") }
+PROOF_EXIT

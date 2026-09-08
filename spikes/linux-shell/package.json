@@ -1,0 +1,20 @@
+{
+  "name": "symbiote-linux-shell-proof",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"build": "tsc --noEmit && vite build"},
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "monaco-editor": "0.56.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "overrides": {"dompurify": "3.4.15"},
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "typescript": "7.0.2",
+    "vite": "8.2.2"
+  }
+}

@@ -1,0 +1,40 @@
+name: Bounded Linux proofs
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  host-lifetime:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["1.85.0", stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - run: cargo test --locked --manifest-path spikes/host-lifecycle/Cargo.toml
+      - if: matrix.toolchain == 'stable'
+        run: cargo fmt --manifest-path spikes/host-lifecycle/Cargo.toml --check
+      - if: matrix.toolchain == 'stable'
+        run: cargo clippy --locked --manifest-path spikes/host-lifecycle/Cargo.toml --all-targets -- -D warnings
+  shell-client-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spikes/linux-shell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: python3 -m py_compile run-proof.py

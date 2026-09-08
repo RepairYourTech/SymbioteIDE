@@ -1,0 +1,2734 @@
+{
+  "platform": "Linux Xvfb X11 only",
+  "display_dimensions": "1440x960",
+  "window_dimensions": "1400x900",
+  "app_exit": 0,
+  "elapsed_seconds": 36.108,
+  "preview_probes_denied": true,
+  "max_sum_rss_kib": 1225752,
+  "rss_caveat": "RSS sum double-counts shared pages; not PSS or complete product measurement; Xvfb is instrumentation outside app tree",
+  "observed_survivors_before_cleanup": [],
+  "screenshot": true,
+  "interaction_captures": [
+    {
+      "screenshot": "interaction-alpha.png",
+      "result": "commands delivered; inspect rendered values, not automatic assertion"
+    },
+    {
+      "screenshot": "interaction-beta.png",
+      "result": "commands delivered; inspect rendered values, not automatic assertion"
+    },
+    {
+      "screenshot": "interaction-alpha-restored.png",
+      "result": "commands delivered; inspect rendered values, not automatic assertion"
+    },
+    {
+      "screenshot": "interaction-ptys-stopped.png",
+      "result": "commands delivered; inspect rendered values, not automatic assertion"
+    }
+  ],
+  "samples": [
+    {
+      "seconds": 0.069,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 73812
+        }
+      ],
+      "sum_rss_kib": 73812,
+      "xvfb_instrumentation_rss_kib": 41580
+    },
+    {
+      "seconds": 0.598,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 167260
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 50100
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 42508
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 42552
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 42688
+        }
+      ],
+      "sum_rss_kib": 385740,
+      "xvfb_instrumentation_rss_kib": 41900
+    },
+    {
+      "seconds": 1.136,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 180324
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54596
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 220340
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 184268
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 192616
+        }
+      ],
+      "sum_rss_kib": 872776,
+      "xvfb_instrumentation_rss_kib": 41900
+    },
+    {
+      "seconds": 1.664,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206288
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54508
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 319904
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208072
+        }
+      ],
+      "sum_rss_kib": 1091568,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 2.192,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206252
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54504
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 314344
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208072
+        }
+      ],
+      "sum_rss_kib": 1085968,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 2.719,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206256
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54508
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 312484
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208072
+        }
+      ],
+      "sum_rss_kib": 1084116,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 3.247,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206260
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54512
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 311788
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208072
+        }
+      ],
+      "sum_rss_kib": 1083428,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 3.776,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206260
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54512
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 318284
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208072
+        }
+      ],
+      "sum_rss_kib": 1089924,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 4.315,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206264
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54524
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 315496
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208836
+        }
+      ],
+      "sum_rss_kib": 1087916,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 4.845,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206264
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54524
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 317700
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208724
+        }
+      ],
+      "sum_rss_kib": 1090008,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 5.379,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206276
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 316748
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208724
+        }
+      ],
+      "sum_rss_kib": 1089132,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 5.91,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206280
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 315184
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208724
+        }
+      ],
+      "sum_rss_kib": 1087572,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 6.442,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206276
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 315264
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208724
+        }
+      ],
+      "sum_rss_kib": 1087648,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 6.975,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206272
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 315240
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208724
+        }
+      ],
+      "sum_rss_kib": 1087620,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 7.504,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 206284
+        },
+        {
+          "pid": 3164586,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13564
+        },
+        {
+          "pid": 3164588,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13532
+        },
+        {
+          "pid": 3164590,
+          "ppid": 3164547,
+          "name": "python3",
+          "start_ticks": 22129533,
+          "rss_kib": 13536
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 317440
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 262164
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 208724
+        }
+      ],
+      "sum_rss_kib": 1089832,
+      "xvfb_instrumentation_rss_kib": 51864
+    },
+    {
+      "seconds": 12.81,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207508
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54592
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 392320
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265584
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275276
+        }
+      ],
+      "sum_rss_kib": 1195280,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 13.338,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 392228
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265584
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275276
+        }
+      ],
+      "sum_rss_kib": 1195192,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 13.865,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 392396
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265584
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275276
+        }
+      ],
+      "sum_rss_kib": 1195360,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 14.404,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 392292
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265584
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1195384,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 14.931,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 392608
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265584
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1195700,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 15.461,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 392176
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265584
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1195268,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 16.006,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54588
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 392292
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265584
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1195384,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 16.531,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 387244
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1190592,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 17.064,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 387700
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1191048,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 17.594,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 388392
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1191740,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 18.127,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 388984
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275404
+        }
+      ],
+      "sum_rss_kib": 1192332,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 18.655,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 388440
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275380
+        }
+      ],
+      "sum_rss_kib": 1191764,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 19.184,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 388580
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275224
+        }
+      ],
+      "sum_rss_kib": 1191748,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 19.711,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 388676
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275224
+        }
+      ],
+      "sum_rss_kib": 1191844,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 20.239,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 388880
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275224
+        }
+      ],
+      "sum_rss_kib": 1192048,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 20.768,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 390908
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265712
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275224
+        }
+      ],
+      "sum_rss_kib": 1194076,
+      "xvfb_instrumentation_rss_kib": 58184
+    },
+    {
+      "seconds": 21.296,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 390620
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265648
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275224
+        }
+      ],
+      "sum_rss_kib": 1193724,
+      "xvfb_instrumentation_rss_kib": 55700
+    },
+    {
+      "seconds": 21.826,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 402672
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265648
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275196
+        }
+      ],
+      "sum_rss_kib": 1205748,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 22.352,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207500
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 397164
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 275196
+        }
+      ],
+      "sum_rss_kib": 1200212,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 22.878,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 404304
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273812
+        }
+      ],
+      "sum_rss_kib": 1205984,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 23.407,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 395900
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1197504,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 23.936,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 390484
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1192088,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 24.463,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 388856
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1190460,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 24.991,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 389200
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1190804,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 25.519,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 389236
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1190840,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 26.056,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 389220
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1190824,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 26.587,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 389452
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1191056,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 27.117,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 395696
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1197300,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 27.648,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 393780
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1195384,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 28.181,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391024
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1192628,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 28.708,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 390844
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1192448,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 29.238,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 390792
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1192396,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 29.767,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391420
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1193024,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 30.3,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391512
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1193116,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 30.828,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391172
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1192776,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 31.355,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391280
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1192884,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 31.89,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391380
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1192984,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 32.416,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391492
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273736
+        }
+      ],
+      "sum_rss_kib": 1193096,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 32.963,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391580
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273700
+        }
+      ],
+      "sum_rss_kib": 1193148,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 33.494,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391640
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273700
+        }
+      ],
+      "sum_rss_kib": 1193208,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 34.025,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391748
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273688
+        }
+      ],
+      "sum_rss_kib": 1193304,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 34.554,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 391876
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273688
+        }
+      ],
+      "sum_rss_kib": 1193432,
+      "xvfb_instrumentation_rss_kib": 52276
+    },
+    {
+      "seconds": 35.083,
+      "processes": [
+        {
+          "pid": 3164547,
+          "ppid": 3164483,
+          "name": "symbiote-linux-",
+          "start_ticks": 22129525,
+          "rss_kib": 207516
+        },
+        {
+          "pid": 3164596,
+          "ppid": 3164547,
+          "name": "WebKitNetworkPr",
+          "start_ticks": 22129537,
+          "rss_kib": 54716
+        },
+        {
+          "pid": 3164633,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 424196
+        },
+        {
+          "pid": 3164640,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 265636
+        },
+        {
+          "pid": 3164641,
+          "ppid": 3164547,
+          "name": "WebKitWebProces",
+          "start_ticks": 22129540,
+          "rss_kib": 273688
+        }
+      ],
+      "sum_rss_kib": 1225752,
+      "xvfb_instrumentation_rss_kib": 52276
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+[package]
+name = "symbiote-host-lifetime-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace]
+
+[dependencies]
+nix = { version = "=0.30.1", features = ["signal", "process", "user", "fs"] }
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.140"
+
+[lints.rust]
+unsafe_code = "forbid"
