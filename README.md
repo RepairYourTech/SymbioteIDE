@@ -16,6 +16,8 @@ The [local runtime transport](docs/contracts/runtime-transport.md) adds bounded 
 
 [Configuration projection](docs/contracts/projection.md) now reconciles managed TOML keys and publishes verifiable inactive profile generations while preserving existing profiles. Actual harness activation and reload verification remain pending.
 
+The Host records [resource consent and revocation](docs/contracts/resource-consent.md) against exact fingerprints and scope. The [trust boundary baseline](docs/security/trust-boundaries.md) keeps OS worker isolation and other release requirements explicit; consent metadata does not activate a resource.
+
 ```sh
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings

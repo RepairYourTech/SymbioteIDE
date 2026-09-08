@@ -9,9 +9,19 @@ use std::{
     time::Duration,
 };
 use symbiote_domain::*;
+use symbiote_trust::ResourceConsent;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 1;
+const DATABASE_VERSION: i64 = 2;
+const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    role_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision IN (0,1)),
+    body TEXT NOT NULL CHECK(json_valid(body)),
+    FOREIGN KEY(role_id, project_id) REFERENCES roles(id, project_id)
+) STRICT;
+PRAGMA user_version = 2;";
 pub const MAX_EVENT_PAGE: u32 = 256;
 
 #[derive(Debug)]
@@ -27,6 +37,7 @@ pub enum StoreError {
     InvalidInitialState,
     RelationshipMismatch,
     InvalidPage,
+    InvalidConsent,
 }
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -81,6 +92,13 @@ pub enum EventPayload {
         task_id: TaskId,
         command: Box<TaskCommand>,
         task: Box<Task>,
+    },
+    ResourceConsentRecorded {
+        consent: Box<ResourceConsent>,
+    },
+    ResourceConsentRevoked {
+        consent: Box<ResourceConsent>,
+        revoked_by: UserId,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,9 +165,15 @@ impl Store {
             transaction.execute_batch(include_str!("schema.sql"))?;
             #[cfg(test)]
             tests::fault_boundary("migration_before_commit");
-        } else if version != DATABASE_VERSION || application != APPLICATION_ID {
+        } else if !(1..=DATABASE_VERSION).contains(&version) || application != APPLICATION_ID {
             return Err(StoreError::UnsupportedVersion);
         }
+        if version < 2 {
+            transaction.execute_batch(MIGRATION_V2)?;
+        }
+        // Refuse corrupt input before committing any schema migration. A failed
+        // audit must roll back the version and schema as well as record changes.
+        audit_connection(&transaction)?;
         transaction.commit()?;
         // WAL remains local to this bounded adapter; it is not the System Graph.
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -453,6 +477,113 @@ impl Store {
         Ok(receipt)
     }
 
+    /// Rebuild server-assigned timestamps for identical command retries.
+    pub fn consent_command_timestamp(&self, command_id: &CommandId) -> Result<Option<Timestamp>> {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [command_id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::ResourceConsentRecorded { consent } => Ok(Some(consent.issued_at)),
+                EventPayload::ResourceConsentRevoked { consent, .. } => consent
+                    .revoked_at
+                    .map(Some)
+                    .ok_or(StoreError::InvalidConsent),
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
+    /// Internal trusted service: authentication is the Host's responsibility.
+    /// Profile and Host ids are bound in the snapshot but have no registry in this adapter.
+    pub fn record_resource_consent(
+        &mut self,
+        command_id: CommandId,
+        consent: ResourceConsent,
+    ) -> Result<Receipt> {
+        consent.validate().map_err(|_| StoreError::InvalidConsent)?;
+        if consent.id != command_id || consent.revoked_at.is_some() {
+            return Err(StoreError::InvalidConsent);
+        }
+        let payload = EventPayload::ResourceConsentRecorded {
+            consent: Box::new(consent.clone()),
+        };
+        let request = serde_json::to_string(&payload)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(receipt) = replay(&transaction, &command_id, &request)? {
+            return Ok(receipt);
+        }
+        validate_consent_relationships(&transaction, &consent)?;
+        transaction.execute("INSERT INTO resource_consents(id,project_id,role_id,revision,body) VALUES (?1,?2,?3,0,?4)", params![consent.id.as_str(),consent.snapshot.project_id.as_str(),consent.snapshot.role_id.as_str(),serde_json::to_string(&consent)?])?;
+        let receipt = append(
+            &transaction,
+            &consent.snapshot.project_id,
+            &command_id,
+            Revision(0),
+            &request,
+            &payload,
+        )?;
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
+    pub fn revoke_resource_consent(
+        &mut self,
+        command_id: CommandId,
+        project_id: &ProjectId,
+        consent_id: &CommandId,
+        user_id: &UserId,
+        at: Timestamp,
+    ) -> Result<Receipt> {
+        let request = revocation_request(project_id, consent_id, user_id, at)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(receipt) = replay(&transaction, &command_id, &request)? {
+            return Ok(receipt);
+        }
+        let mut consent = read_consent(&transaction, project_id, consent_id)?;
+        if consent.revoked_at.is_some() {
+            return Err(StoreError::InvalidConsent);
+        }
+        consent.revoked_at = Some(at);
+        consent.validate().map_err(|_| StoreError::InvalidConsent)?;
+        let count = transaction.execute("UPDATE resource_consents SET body=?1,revision=1 WHERE id=?2 AND project_id=?3 AND revision=0", params![serde_json::to_string(&consent)?,consent_id.as_str(),project_id.as_str()])?;
+        if count != 1 {
+            return Err(StoreError::InvalidConsent);
+        }
+        let payload = EventPayload::ResourceConsentRevoked {
+            consent: Box::new(consent),
+            revoked_by: user_id.clone(),
+        };
+        let receipt = append(
+            &transaction,
+            project_id,
+            &command_id,
+            Revision(1),
+            &request,
+            &payload,
+        )?;
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
+    pub fn resource_consent(
+        &self,
+        project_id: &ProjectId,
+        consent_id: &CommandId,
+    ) -> Result<ResourceConsent> {
+        read_consent(&self.connection, project_id, consent_id)
+    }
+
     pub fn project(&self, id: &ProjectId) -> Result<Project> {
         let body: String = self
             .connection
@@ -526,17 +657,96 @@ impl Store {
 
     pub fn integrity_check(&self) -> Result<()> {
         let snapshot = self.connection.unchecked_transaction()?;
-        let check: String = snapshot.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-        if check != "ok" {
-            return Err(StoreError::Integrity(check));
-        }
-        if snapshot.prepare("PRAGMA foreign_key_check")?.exists([])? {
-            return Err(StoreError::Integrity("foreign key check failed".into()));
-        }
-        audit_journal(&snapshot)?;
+        audit_connection(&snapshot)?;
         snapshot.commit()?;
         Ok(())
     }
+}
+
+fn audit_connection(connection: &Connection) -> Result<()> {
+    let check: String = connection.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    if check != "ok" {
+        return Err(StoreError::Integrity(check));
+    }
+    if connection.prepare("PRAGMA foreign_key_check")?.exists([])? {
+        return Err(StoreError::Integrity("foreign key check failed".into()));
+    }
+    audit_journal(connection)
+}
+
+fn validate_consent_relationships(
+    connection: &Connection,
+    consent: &ResourceConsent,
+) -> Result<()> {
+    let snapshot = &consent.snapshot;
+    let role_exists = connection
+        .query_row(
+            "SELECT 1 FROM roles WHERE id=?1 AND project_id=?2",
+            params![snapshot.role_id.as_str(), snapshot.project_id.as_str()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !role_exists {
+        return Err(StoreError::RelationshipMismatch);
+    }
+    for root in &snapshot.access.roots {
+        if connection
+            .query_row(
+                "SELECT 1 FROM roots WHERE id=?1 AND project_id=?2",
+                params![root.as_str(), snapshot.project_id.as_str()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_none()
+        {
+            return Err(StoreError::RelationshipMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn read_consent(
+    connection: &Connection,
+    project_id: &ProjectId,
+    id: &CommandId,
+) -> Result<ResourceConsent> {
+    let (role, revision, body): (String, u64, String) = connection
+        .query_row(
+            "SELECT role_id,revision,body FROM resource_consents WHERE id=?1 AND project_id=?2",
+            params![id.as_str(), project_id.as_str()],
+            |r| Ok((r.get(0)?, sql_u64(r, 1)?, r.get(2)?)),
+        )
+        .optional()?
+        .ok_or(StoreError::NotFound)?;
+    let consent: ResourceConsent = serde_json::from_str(&body)?;
+    consent.validate().map_err(|_| StoreError::InvalidConsent)?;
+    if &consent.id != id
+        || &consent.snapshot.project_id != project_id
+        || consent.snapshot.role_id.as_str() != role
+        || revision != u64::from(consent.revoked_at.is_some())
+    {
+        return Err(StoreError::Integrity(
+            "consent indexed state differs from body".into(),
+        ));
+    }
+    validate_consent_relationships(connection, &consent)?;
+    Ok(consent)
+}
+
+fn revocation_request(
+    project: &ProjectId,
+    consent: &CommandId,
+    user: &UserId,
+    at: Timestamp,
+) -> Result<String> {
+    Ok(serde_json::to_string(&(
+        "revoke_resource_consent",
+        project,
+        consent,
+        user,
+        at,
+    ))?)
 }
 
 fn mutation_request(task_id: &TaskId, command: &TaskCommand) -> Result<String> {
@@ -559,6 +769,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
+    let mut consents: BTreeMap<CommandId, ResourceConsent> = BTreeMap::new();
     let mut statement = connection.prepare("SELECT sequence,project_id,command_id,revision,request,payload FROM journal ORDER BY sequence")?;
     let rows = statement.query_map([], |r| {
         Ok((
@@ -583,6 +794,55 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             .ok_or_else(|| StoreError::Integrity("journal sequence exhausted".into()))?;
         let event: EventPayload = serde_json::from_str(&body)?;
         match &event {
+            EventPayload::ResourceConsentRecorded { consent } => {
+                consent.validate().map_err(|_| StoreError::InvalidConsent)?;
+                validate_consent_relationships(connection, consent)?;
+                if consent.id.as_str() != command_key
+                    || consent.snapshot.project_id.as_str() != project_key
+                    || revision != 0
+                    || consent.revoked_at.is_some()
+                    || !projects.contains_key(&consent.snapshot.project_id)
+                    || request != serde_json::to_string(&event)?
+                    || consents
+                        .insert(consent.id.clone(), *consent.clone())
+                        .is_some()
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid consent registration lineage".into(),
+                    ));
+                }
+            }
+            EventPayload::ResourceConsentRevoked {
+                consent,
+                revoked_by,
+            } => {
+                let at = consent.revoked_at.ok_or(StoreError::InvalidConsent)?;
+                let previous = consents
+                    .get_mut(&consent.id)
+                    .ok_or_else(|| StoreError::Integrity("revocation precedes consent".into()))?;
+                if previous.revoked_at.is_some() {
+                    return Err(StoreError::Integrity("consent already revoked".into()));
+                }
+                previous.revoked_at = Some(at);
+                previous
+                    .validate()
+                    .map_err(|_| StoreError::InvalidConsent)?;
+                if previous != consent.as_ref()
+                    || consent.snapshot.project_id.as_str() != project_key
+                    || revision != 1
+                    || request
+                        != revocation_request(
+                            &consent.snapshot.project_id,
+                            &consent.id,
+                            revoked_by,
+                            at,
+                        )?
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid consent revocation lineage".into(),
+                    ));
+                }
+            }
             EventPayload::ProjectRegistered {
                 project,
                 roots,
@@ -643,6 +903,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         ("SELECT count(*) FROM projects", projects.len()),
         ("SELECT count(*) FROM tasks", tasks.len()),
         ("SELECT count(*) FROM streams", streams.len()),
+        ("SELECT count(*) FROM resource_consents", consents.len()),
     ] {
         if connection.query_row(query, [], |r| sql_usize(r, 0))? != expected {
             return Err(StoreError::Integrity(
@@ -720,6 +981,13 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         if read_stream(connection, &id)? != stream {
             return Err(StoreError::Integrity(
                 "stream state differs from journal".into(),
+            ));
+        }
+    }
+    for (id, consent) in consents {
+        if read_consent(connection, &consent.snapshot.project_id, &id)? != consent {
+            return Err(StoreError::Integrity(
+                "consent state differs from journal".into(),
             ));
         }
     }

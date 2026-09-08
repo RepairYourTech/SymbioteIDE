@@ -3,11 +3,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use symbiote_domain::*;
+pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 0 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 1 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -108,6 +109,18 @@ pub enum Operation {
         project_id: ProjectId,
         task_id: TaskId,
     },
+    RecordResourceConsent {
+        snapshot: ResourceSnapshot,
+        expires_at: Timestamp,
+    },
+    RevokeResourceConsent {
+        project_id: ProjectId,
+        consent_id: CommandId,
+    },
+    GetResourceConsent {
+        project_id: ProjectId,
+        consent_id: CommandId,
+    },
     ReadJournal {
         project_id: ProjectId,
         after: JournalCursor,
@@ -119,7 +132,10 @@ impl Operation {
         match self {
             Self::RegisterProject { project } => Some(&project.id),
             Self::CreateTask { task } => Some(&task.project_id),
+            Self::RecordResourceConsent { snapshot, .. } => Some(&snapshot.project_id),
             Self::GetProject { project_id }
+            | Self::RevokeResourceConsent { project_id, .. }
+            | Self::GetResourceConsent { project_id, .. }
             | Self::GetTask { project_id, .. }
             | Self::ReadJournal { project_id, .. } => Some(project_id),
             Self::Hello { .. } | Self::Health {} | Self::Shutdown {} => None,
@@ -128,7 +144,11 @@ impl Operation {
     pub fn is_mutation(&self) -> bool {
         matches!(
             self,
-            Self::RegisterProject { .. } | Self::CreateTask { .. } | Self::Shutdown {}
+            Self::RegisterProject { .. }
+                | Self::CreateTask { .. }
+                | Self::Shutdown {}
+                | Self::RecordResourceConsent { .. }
+                | Self::RevokeResourceConsent { .. }
         )
     }
 }
@@ -147,6 +167,9 @@ impl Request {
             }
             Operation::RegisterProject { project } => project.validate(),
             Operation::CreateTask { task } => task.validate(),
+            Operation::RecordResourceConsent { snapshot, .. } => {
+                snapshot.validate().map_err(|_| invalid())
+            }
             Operation::ReadJournal { limit, .. } if *limit == 0 || *limit > MAX_PAGE_SIZE => {
                 Err(invalid())
             }
@@ -218,10 +241,15 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
     let permitted = match &request.operation {
         Operation::Hello { .. } | Operation::Health {} => true,
         Operation::Shutdown {} => principal.local_owner,
+        Operation::RecordResourceConsent { .. } | Operation::RevokeResourceConsent { .. } => {
+            principal.local_owner
+        }
         Operation::RegisterProject { project } => {
             principal.permits(&project.id, ProjectPermission::Register)
         }
-        Operation::GetProject { project_id } | Operation::GetTask { project_id, .. } => {
+        Operation::GetProject { project_id }
+        | Operation::GetTask { project_id, .. }
+        | Operation::GetResourceConsent { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::CreateTask { task } => {
@@ -400,6 +428,9 @@ pub enum Capability {
     TaskRead,
     JournalPagination,
     LocalShutdown,
+    ResourceConsentRecord,
+    ResourceConsentRead,
+    ResourceConsentRevoke,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -426,6 +457,9 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::TaskRead,
             Capability::JournalPagination,
             Capability::LocalShutdown,
+            Capability::ResourceConsentRecord,
+            Capability::ResourceConsentRead,
+            Capability::ResourceConsentRevoke,
         ]
         .into(),
         max_request_bytes: MAX_REQUEST_BYTES as u32,
@@ -450,6 +484,13 @@ pub struct Receipt {
     deny_unknown_fields
 )]
 pub enum EventPayload {
+    ResourceConsentRecorded {
+        consent: Box<ResourceConsent>,
+    },
+    ResourceConsentRevoked {
+        consent: Box<ResourceConsent>,
+        revoked_by: UserId,
+    },
     ProjectRegistered {
         project: Project,
         roots: Vec<Root>,
@@ -468,12 +509,24 @@ pub enum EventPayload {
 impl EventPayload {
     fn project_id(&self) -> &ProjectId {
         match self {
+            Self::ResourceConsentRecorded { consent }
+            | Self::ResourceConsentRevoked { consent, .. } => &consent.snapshot.project_id,
             Self::ProjectRegistered { project, .. } => &project.id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
         }
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
         match self {
+            Self::ResourceConsentRecorded { consent } => {
+                consent.validate().is_ok()
+                    && &consent.snapshot.project_id == project_id
+                    && consent.revoked_at.is_none()
+            }
+            Self::ResourceConsentRevoked { consent, .. } => {
+                consent.validate().is_ok()
+                    && &consent.snapshot.project_id == project_id
+                    && consent.revoked_at.is_some()
+            }
             Self::ProjectRegistered {
                 project,
                 roots,
@@ -555,6 +608,7 @@ pub enum ResponseBody {
     Hello(ServerHello),
     Project(Project),
     Task(Box<Task>),
+    ResourceConsent(Box<ResourceConsent>),
     Receipt(Receipt),
     Journal(JournalPage),
     Shutdown {},

@@ -20,6 +20,36 @@ fn principal() -> Principal {
         )]),
     )
 }
+
+#[test]
+fn project_grants_do_not_authorize_resource_consent_or_revocation() {
+    let snapshot = serde_json::from_value(json!({"project_id":"project-a","role_id":"lead","profile_id":"profile",
+        "host_id":"host","resource_ref":"tool","fingerprint":"a".repeat(64),
+        "access":{"project_id":"project-a","roots":["root-a"],"grants":["read_root"],"policy_revision":1}})).unwrap();
+    for operation in [
+        Operation::RecordResourceConsent {
+            snapshot,
+            expires_at: Timestamp(100),
+        },
+        Operation::RevokeResourceConsent {
+            project_id: project_id(),
+            consent_id: CommandId::new("consent").unwrap(),
+        },
+    ] {
+        let request = request(operation);
+        assert_eq!(
+            authorize(&principal(), &request).unwrap_err().code,
+            ErrorCode::PermissionDenied
+        );
+        assert!(
+            authorize(
+                &Principal::local_owner(UserId::new("owner").unwrap()),
+                &request
+            )
+            .is_ok()
+        );
+    }
+}
 fn request(operation: Operation) -> Request {
     Request {
         version: CURRENT_VERSION,
@@ -75,7 +105,7 @@ fn task_draft() -> TaskDraft {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":0},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":1},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -84,7 +114,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor":0},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor":1},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 
@@ -182,7 +212,8 @@ fn versions_negotiate_only_explicitly_supported_versions() {
     );
     for version in [
         ProtocolVersion { major: 0, minor: 9 },
-        ProtocolVersion { major: 1, minor: 1 },
+        ProtocolVersion { major: 1, minor: 0 },
+        ProtocolVersion { major: 1, minor: 2 },
         ProtocolVersion { major: 2, minor: 0 },
     ] {
         assert_eq!(
