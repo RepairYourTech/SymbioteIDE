@@ -319,12 +319,15 @@ impl JsonlTransport {
             .checked_add(timeout)
             .ok_or(TransportError::DeadlineExceeded)?;
         loop {
+            // Observe EOF before inspecting the fault/queue it publishes. If
+            // EOF arrives later, the next iteration must inspect them again.
+            let stdout_eof = self.stdout_eof.load(Ordering::Acquire);
             self.check_open()?;
             match self.frames.try_recv() {
                 Ok(frame) => return Ok(frame),
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
             }
-            if self.stdout_eof.load(Ordering::Acquire) {
+            if stdout_eof {
                 return match self.try_wait()? {
                     Some(exit) => Err(TransportError::ProcessExited(exit)),
                     None => Err(TransportError::StdoutClosed),
