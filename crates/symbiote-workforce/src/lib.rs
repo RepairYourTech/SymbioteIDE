@@ -10,7 +10,9 @@ use symbiote_domain::*;
 pub const BINDING_VERSION: u32 = 1;
 pub const MAX_BINDING_BYTES: usize = 32 * 1024;
 mod readiness;
+mod routing;
 pub use readiness::*;
+pub use routing::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

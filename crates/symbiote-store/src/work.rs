@@ -310,6 +310,11 @@ pub(super) struct Audit {
     origins: BTreeMap<TaskId, TaskOrigin>,
 }
 impl Audit {
+    pub(super) fn item(&self, id: &WorkId) -> Option<&WorkItem> {
+        self.items.get(id)
+    }
+}
+impl Audit {
     pub(super) fn created(
         &mut self,
         item: &WorkItem,

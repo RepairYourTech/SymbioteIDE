@@ -1,0 +1,1 @@
+{"version":{"major":1,"minor":6},"correlation_id":"routing-resolve-noroute","command_id":"routing-resolve-noroute","operation":{"kind":"resolve_route","request":{"project_id":"routing-demo","work_id":{"kind":"request","id":"routing-request"},"requested":null,"domains":["frontend"]}}}
