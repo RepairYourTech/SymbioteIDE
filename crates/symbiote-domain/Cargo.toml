@@ -1,0 +1,18 @@
+[package]
+name = "symbiote-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+
+[lints]
+workspace = true
+
+[[example]]
+name = "domain_schema"
+path = "examples/export_schema.rs"

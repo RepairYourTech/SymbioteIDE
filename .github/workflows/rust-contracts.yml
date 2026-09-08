@@ -1,0 +1,27 @@
+name: Rust contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["1.85.0", stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - if: matrix.toolchain == 'stable'
+        run: cargo fmt --all --check
+      - if: matrix.toolchain == 'stable'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
