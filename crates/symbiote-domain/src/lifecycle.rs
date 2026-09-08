@@ -25,6 +25,9 @@ pub enum DomainError {
     InvalidTimestamp,
     InvalidStream,
     EmptyReport,
+    Cycle,
+    MissingReference,
+    ResourceLimit,
 }
 impl fmt::Display for DomainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

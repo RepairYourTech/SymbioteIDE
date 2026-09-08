@@ -12,12 +12,13 @@ use symbiote_domain::*;
 use symbiote_trust::ResourceConsent;
 use symbiote_workforce::{BindingConfiguration, RouteDecision};
 mod binding;
+mod dependency;
 mod route;
 mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 6;
+const DATABASE_VERSION: i64 = 7;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -50,6 +51,8 @@ pub enum StoreError {
     InvalidBinding,
     BindingRevisionConflict,
     InvalidRoute,
+    InvalidDependency,
+    DependenciesUnresolved,
     ResourceExhausted,
 }
 impl fmt::Display for StoreError {
@@ -133,6 +136,13 @@ pub enum EventPayload {
         task_id: TaskId,
         project_id: ProjectId,
         origin: TaskOrigin,
+        actor: UserId,
+        at: Timestamp,
+    },
+    TaskDependenciesSet {
+        task_id: TaskId,
+        project_id: ProjectId,
+        edges: Vec<TaskDependencyEdge>,
         actor: UserId,
         at: Timestamp,
     },
@@ -235,6 +245,9 @@ impl Store {
         }
         if version < 6 {
             transaction.execute_batch(route::MIGRATION_V6)?;
+        }
+        if version < 7 {
+            transaction.execute_batch(dependency::MIGRATION_V7)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -519,6 +532,8 @@ impl Store {
             if **stream != read_stream(&transaction, task.stream_id())? {
                 return Err(StoreError::RelationshipMismatch);
             }
+            // Completion never bypasses unresolved blocking dependencies.
+            dependency::completion_gate(&transaction, task.project_id(), task_id)?;
         }
         let old_revision = task.revision();
         task.apply(command.clone())?;
@@ -844,6 +859,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut team_audit = team::Audit::default();
     let mut binding_audit = binding::Audit::default();
     let mut route_audit = route::Audit::default();
+    let mut dependency_audit = dependency::Audit::default();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -1039,6 +1055,22 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     &team_audit,
                 )?;
             }
+            EventPayload::TaskDependenciesSet {
+                task_id,
+                project_id,
+                edges,
+                actor,
+                at,
+            } => {
+                dependency_audit.set(
+                    task_id,
+                    project_id,
+                    edges,
+                    actor,
+                    *at,
+                    (&project_key, revision, &request),
+                )?;
+            }
             EventPayload::TaskChanged {
                 task_id,
                 command,
@@ -1061,10 +1093,17 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             }
         }
     }
+    let dependency_targets = |project: &ProjectId, task: &TaskId| {
+        tasks
+            .get(task)
+            .is_some_and(|task| task.project_id() == project)
+    };
+    dependency_audit.validate_graph(dependency_targets)?;
     work_audit.finish(connection)?;
     team_audit.finish(connection)?;
     binding_audit.finish(connection)?;
     route_audit.finish(connection)?;
+    dependency_audit.finish(connection)?;
     for (query, expected) in [
         ("SELECT count(*) FROM projects", projects.len()),
         ("SELECT count(*) FROM tasks", tasks.len()),

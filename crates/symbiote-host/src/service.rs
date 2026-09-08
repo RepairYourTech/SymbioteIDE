@@ -10,7 +10,10 @@ fn storage_error(error: StoreError) -> ProtocolError {
         StoreError::IdempotencyConflict => ErrorCode::IdempotencyConflict,
         StoreError::TeamRevisionConflict => ErrorCode::StaleRevision,
         StoreError::BindingRevisionConflict => ErrorCode::StaleRevision,
-        StoreError::InvalidBinding | StoreError::InvalidRoute => ErrorCode::InvalidRequest,
+        StoreError::InvalidBinding | StoreError::InvalidRoute | StoreError::InvalidDependency => {
+            ErrorCode::InvalidRequest
+        }
+        StoreError::DependenciesUnresolved => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
         StoreError::InvalidPage => ErrorCode::InvalidCursor,
@@ -18,6 +21,8 @@ fn storage_error(error: StoreError) -> ProtocolError {
         | StoreError::RelationshipMismatch
         | StoreError::InvalidConsent => ErrorCode::InvalidRequest,
         StoreError::Domain(DomainError::RevisionConflict) => ErrorCode::StaleRevision,
+        StoreError::Domain(DomainError::Cycle)
+        | StoreError::Domain(DomainError::MissingReference) => ErrorCode::Conflict,
         StoreError::Work(WorkError::RevisionConflict) => ErrorCode::StaleRevision,
         StoreError::Work(WorkError::IdempotencyConflict) => ErrorCode::IdempotencyConflict,
         StoreError::Work(WorkError::ResourceLimit) => ErrorCode::ResourceExhausted,
@@ -58,6 +63,24 @@ fn consent_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Prot
 fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .route_command_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+        .as_millis();
+    Ok(Timestamp(
+        millis
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    ))
+}
+
+fn dependency_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .dependency_command_timestamp(&request.command_id)
         .map_err(storage_error)?
     {
         return Ok(at);
@@ -156,6 +179,31 @@ fn execute(
         } => store
             .get_route(project_id, work_id)
             .map(|decision| ResponseBody::RouteDecision(Box::new(decision)))
+            .map_err(storage_error),
+        Operation::SetTaskDependencies {
+            project_id,
+            task_id,
+            dependencies,
+        } => {
+            let at = dependency_timestamp(store, request)?;
+            store
+                .set_task_dependencies(
+                    request.command_id.clone(),
+                    project_id.clone(),
+                    task_id.clone(),
+                    dependencies.iter().cloned().collect(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::GetTaskDependencies {
+            project_id,
+            task_id,
+        } => store
+            .task_dependencies(project_id, task_id)
+            .map(|edges| ResponseBody::TaskDependencies(edges.into_iter().collect()))
             .map_err(storage_error),
         Operation::GetBindingReadiness {
             project_id,
@@ -414,6 +462,19 @@ fn execute(
                                 at,
                             } => EventPayload::WorkRouted {
                                 decision,
+                                actor,
+                                at,
+                            },
+                            symbiote_store::EventPayload::TaskDependenciesSet {
+                                task_id,
+                                project_id,
+                                edges,
+                                actor,
+                                at,
+                            } => EventPayload::TaskDependenciesSet {
+                                task_id,
+                                project_id,
+                                edges,
                                 actor,
                                 at,
                             },

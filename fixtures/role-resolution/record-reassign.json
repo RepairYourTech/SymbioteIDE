@@ -1,1 +1,1 @@
-{"version":{"major":1,"minor":6},"correlation_id":"routing-record-reassign","command_id":"routing-record-reassign","operation":{"kind":"record_route","request":{"project_id":"routing-demo","work_id":{"kind":"request","id":"routing-request"},"requested":"routing-lead","domains":[]}}}
+{"version":{"major":1,"minor":7},"correlation_id":"routing-record-reassign","command_id":"routing-record-reassign","operation":{"kind":"record_route","request":{"project_id":"routing-demo","work_id":{"kind":"request","id":"routing-request"},"requested":"routing-lead","domains":[]}}}
