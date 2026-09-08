@@ -10,6 +10,7 @@ Safety properties:
 - Can be run repeatedly after interruption.
 """
 from __future__ import annotations
+raise SystemExit("RETIRED_STALE_IMPORTER: historical payload predates accepted amendments; see #470. No remote writes permitted.")
 import argparse
 import json
 import re

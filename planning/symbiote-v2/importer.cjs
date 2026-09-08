@@ -1,4 +1,5 @@
 'use strict';
+throw new Error('RETIRED_STALE_IMPORTER: historical payload predates accepted amendments; see #470. No remote writes permitted.');
 
 const REVISION = '2026-09-03-v2';
 const PLAN_LABEL = 'symbiote:plan-v2';
