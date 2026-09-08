@@ -73,10 +73,14 @@ fn work_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Protoco
 fn execute(
     store: &mut Store,
     principal: &Principal,
+    inventory: &mut crate::inventory::InventoryService,
     request: &Request,
 ) -> Result<ResponseBody, ProtocolError> {
     authorize(principal, request)?;
     match &request.operation {
+        Operation::GetHostPulse {} => inventory
+            .pulse()
+            .map(|pulse| ResponseBody::HostPulse(Box::new(pulse))),
         Operation::ReplaceTeam {
             expected_revision,
             team,
@@ -372,8 +376,13 @@ fn execute(
     }
 }
 
-pub fn handle(store: &mut Store, principal: &Principal, request: Request) -> (Response, bool) {
-    let result = execute(store, principal, &request);
+pub fn handle(
+    store: &mut Store,
+    principal: &Principal,
+    inventory: &mut crate::inventory::InventoryService,
+    request: Request,
+) -> (Response, bool) {
+    let result = execute(store, principal, inventory, &request);
     let shutdown = result.is_ok() && matches!(request.operation, Operation::Shutdown {});
     (
         Response {

@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 3 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 4 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -91,6 +91,7 @@ pub struct Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    GetHostPulse {},
     ReplaceTeam {
         expected_revision: Option<Revision>,
         team: Box<TeamConfiguration>,
@@ -174,7 +175,9 @@ impl Operation {
             | Self::GetResourceConsent { project_id, .. }
             | Self::GetTask { project_id, .. }
             | Self::ReadJournal { project_id, .. } => Some(project_id),
-            Self::Hello { .. } | Self::Health {} | Self::Shutdown {} => None,
+            Self::Hello { .. } | Self::Health {} | Self::Shutdown {} | Self::GetHostPulse {} => {
+                None
+            }
         }
     }
     pub fn is_mutation(&self) -> bool {
@@ -333,6 +336,7 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::Hello { .. } | Operation::Health {} => true,
+        Operation::GetHostPulse {} => principal.local_owner,
         Operation::Shutdown {} => principal.local_owner,
         Operation::RecordResourceConsent { .. } | Operation::RevokeResourceConsent { .. } => {
             principal.local_owner
@@ -577,6 +581,7 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    HostPulseRead,
     TeamConfiguration,
     TeamRead,
     WorkCreation,
@@ -613,6 +618,7 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::HostPulseRead,
             Capability::TeamConfiguration,
             Capability::TeamRead,
             Capability::WorkCreation,
@@ -834,6 +840,7 @@ impl JournalPage {
     deny_unknown_fields
 )]
 pub enum ResponseBody {
+    HostPulse(Box<symbiote_host_inventory::HostPulse>),
     Team(Box<TeamConfiguration>),
     Work(Box<WorkItem>),
     TaskOrigin(Option<TaskOrigin>),

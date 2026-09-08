@@ -4,6 +4,8 @@ compile_error!(
     "symbiote-host currently requires Linux SO_PEERCRED; other transports remain unimplemented"
 );
 
+mod identity;
+mod inventory;
 mod service;
 pub mod transport;
 
@@ -15,7 +17,15 @@ use symbiote_protocol::{
 use symbiote_store::Store;
 
 pub fn serve(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    serve_with_telemetry(directory, true)
+}
+
+pub fn serve_with_telemetry(
+    directory: &Path,
+    telemetry: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let local = transport::LocalListener::bind(directory)?;
+    let mut inventory = inventory::InventoryService::new(identity::load(directory)?, telemetry)?;
     // The same authenticated OS owner is the explicit bootstrap policy. This
     // adapter must never be exposed as an unauthenticated remote or Preview API.
     let principal = Principal::local_owner(UserId::new(format!(
@@ -33,7 +43,7 @@ pub fn serve(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
             .and_then(|bytes| parse_request(&bytes));
         let (response, shutdown) = match request {
-            Ok(request) => service::handle(&mut store, &principal, request),
+            Ok(request) => service::handle(&mut store, &principal, &mut inventory, request),
             Err(error) => (
                 Response {
                     version: CURRENT_VERSION,

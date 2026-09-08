@@ -17,7 +17,7 @@ Host preflight must separately resolve current access and enforce it.
 
 ## Durable Host operations
 
-Protocol v1.3 adds `replace_team` and `get_team`. A replacement requires the
+Protocol v1.4 supports `replace_team` and `get_team`, introduced in v1.3. A replacement requires the
 separate authenticated `ManageTeam` Project grant. Read access does not confer
 management. Actor and timestamp come from the Host, never client JSON.
 

@@ -11,6 +11,7 @@ name = "protocol_schema"
 path = "examples/schema.rs"
 
 [dependencies]
+symbiote-host-inventory = { path = "../symbiote-host-inventory" }
 symbiote-trust = { path = "../symbiote-trust" }
 serde.workspace = true
 serde_json.workspace = true

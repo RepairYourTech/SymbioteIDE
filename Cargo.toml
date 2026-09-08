@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/symbiote-domain", "crates/symbiote-config", "crates/symbiote-architecture", "crates/symbiote-store", "crates/symbiote-protocol", "crates/symbiote-host", "crates/symbiote-runtime-sdk", "crates/symbiote-runtime-transport", "crates/symbiote-projection", "crates/symbiote-trust", "crates/symbiote-sandbox", "crates/symbiote-runtime-discovery"]
+members = ["crates/symbiote-domain", "crates/symbiote-config", "crates/symbiote-architecture", "crates/symbiote-store", "crates/symbiote-protocol", "crates/symbiote-host", "crates/symbiote-runtime-sdk", "crates/symbiote-runtime-transport", "crates/symbiote-projection", "crates/symbiote-trust", "crates/symbiote-sandbox", "crates/symbiote-runtime-discovery", "crates/symbiote-host-inventory"]
 
 [workspace.package]
 version = "0.1.0"

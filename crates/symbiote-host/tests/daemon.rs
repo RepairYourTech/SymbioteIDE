@@ -11,9 +11,13 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Host {
     directory: PathBuf,
     child: Option<Child>,
+    telemetry: bool,
 }
 impl Host {
     fn new() -> Self {
+        Self::with_telemetry(true)
+    }
+    fn with_telemetry(telemetry: bool) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "symbiote-daemon-{}-{}",
             std::process::id(),
@@ -24,15 +28,19 @@ impl Host {
         let mut host = Self {
             directory,
             child: None,
+            telemetry,
         };
         host.start();
         host
     }
     fn start(&mut self) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_symbioted"));
+        command.arg("--state-dir").arg(&self.directory);
+        if !self.telemetry {
+            command.arg("--no-telemetry");
+        }
         self.child = Some(
-            Command::new(env!("CARGO_BIN_EXE_symbioted"))
-                .arg("--state-dir")
-                .arg(&self.directory)
+            command
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -73,6 +81,45 @@ impl Host {
         .unwrap()
     }
 }
+
+#[test]
+fn pulse_is_cached_identity_survives_restart_and_disabled_telemetry_stays_unknown() {
+    let mut host = Host::new();
+    let request_pulse = || request("pulse", json!({"kind":"get_host_pulse"}));
+    let first = host.call(request_pulse());
+    let pulse = ok(&first)["data"].clone();
+    assert_eq!(ok(&first)["kind"], "host_pulse");
+    assert_eq!(
+        pulse["resources"]["effective_memory_available_bytes"]["status"],
+        "unknown"
+    );
+    assert_eq!(
+        pulse["resources"]["effective_cpu_millicores"]["status"],
+        "unknown"
+    );
+    assert_eq!(ok(&host.call(request_pulse()))["data"], pulse);
+    host.crash();
+    host.start();
+    let fresh = host.call(request_pulse());
+    assert_eq!(ok(&fresh)["data"]["host_id"], pulse["host_id"]);
+    assert_ne!(
+        ok(&fresh)["data"]["observation_id"],
+        pulse["observation_id"]
+    );
+    host.crash();
+    host.telemetry = false;
+    host.start();
+    let disabled = host.call(request_pulse());
+    assert_eq!(ok(&disabled)["data"]["telemetry"], "disabled");
+    for fact in ok(&disabled)["data"]["resources"]
+        .as_object()
+        .unwrap()
+        .values()
+    {
+        assert_eq!(fact["status"], "unknown");
+    }
+    assert_eq!(ok(&disabled)["data"]["host_id"], pulse["host_id"]);
+}
 impl Drop for Host {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
@@ -83,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":3},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":4},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 fn team(project: &str, revision: u64) -> Value {
@@ -480,7 +527,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":3},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":4},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")

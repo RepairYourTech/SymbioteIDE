@@ -376,8 +376,20 @@ dependencies = [
  "serde",
  "serde_json",
  "symbiote-domain",
+ "symbiote-host-inventory",
  "symbiote-protocol",
  "symbiote-store",
+]
+
+[[package]]
+name = "symbiote-host-inventory"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "symbiote-domain",
+ "symbiote-runtime-discovery",
 ]
 
 [[package]]
@@ -400,6 +412,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symbiote-domain",
+ "symbiote-host-inventory",
  "symbiote-trust",
 ]
 
