@@ -5,7 +5,11 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 pub use symbiote_domain::RuntimeKind;
 
+pub mod environment;
+mod json;
+
 pub const SCHEMA_VERSION: u32 = 1;
+pub const MAX_MANIFEST_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -276,6 +280,9 @@ pub struct ProjectManifest {
     pub harness_requirements: BTreeSet<String>,
     #[serde(default)]
     pub environment_requirements: BTreeSet<String>,
+    /// Canonical runtime intent; native files and local credential bindings are not embedded.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_environments: BTreeMap<String, environment::EnvironmentDocument>,
     #[serde(default)]
     pub policies: Policies,
     pub graph_profile_ref: Option<String>,
@@ -332,10 +339,10 @@ fn portable_root(path: &str) -> bool {
 
 impl ProjectManifest {
     pub fn parse(json: &str) -> Result<Self, Diagnostic> {
-        let value: Self = serde_json::from_str(json).map_err(|_| {
+        let value: Self = crate::json::parse(json, MAX_MANIFEST_BYTES).map_err(|_| {
             diagnostic(
                 "manifest",
-                "invalid manifest shape; use the v1 schema (unknown core fields are rejected)",
+                "invalid manifest: size, duplicate fields or schema shape rejected",
             )
         })?;
         value.validate()?;
@@ -387,6 +394,20 @@ impl ProjectManifest {
                 ));
             }
         }
+        for (name, environment) in &self.agent_environments {
+            if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+                return Err(diagnostic("agent_environments", "invalid environment name"));
+            }
+            environment.validate().map_err(|_| {
+                diagnostic("agent_environments", "invalid desired environment contract")
+            })?;
+            if environment.project_id.as_str() != self.project_id {
+                return Err(diagnostic(
+                    "agent_environments",
+                    "desired environment belongs to a different Project",
+                ));
+            }
+        }
         for namespace in self.extensions.keys() {
             if !namespace.contains('.') || namespace.split('.').any(str::is_empty) {
                 return Err(diagnostic(
@@ -407,8 +428,24 @@ impl ProjectManifest {
     }
     pub fn canonical_json(&self) -> Result<String, Diagnostic> {
         self.validate()?;
-        serde_json::to_string_pretty(self)
-            .map_err(|_| diagnostic("manifest", "serialization failed"))
+        let mut output = ManifestOutput(Vec::new());
+        serde_json::to_writer_pretty(&mut output, self)
+            .map_err(|_| diagnostic("manifest", "serialized manifest exceeds size limit"))?;
+        String::from_utf8(output.0).map_err(|_| diagnostic("manifest", "serialization failed"))
+    }
+}
+
+struct ManifestOutput(Vec<u8>);
+impl std::io::Write for ManifestOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_MANIFEST_BYTES.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other("manifest size limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

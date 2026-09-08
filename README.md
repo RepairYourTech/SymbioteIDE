@@ -12,6 +12,8 @@ The [runtime SDK](docs/contracts/runtime-sdk.md) now defines capability-qualifie
 
 The [local runtime transport](docs/contracts/runtime-transport.md) adds bounded subprocess JSONL I/O and explicit JSON-RPC response correlation. Its deterministic harness fixtures exercise process failures; real runtime packs and sandbox enforcement remain pending.
 
+[Agent environments](docs/contracts/agent-environment.md) describe portable resource intent and resolve Role/profile settings before native configuration is projected. Host permission and credential gates remain separate from read-only configuration resolution.
+
 ```sh
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings

@@ -1,0 +1,11 @@
+{
+  "project_id": "example-project",
+  "user_id": "example-user",
+  "role_id": "lead",
+  "binding_id": null,
+  "task_id": null,
+  "dispatch_id": null,
+  "profile_id": "example-native-profile",
+  "host_id": "example-host",
+  "runtime_kind": "NATIVE_SYMBIOTE"
+}
