@@ -1,0 +1,47 @@
+{
+  "version": {
+    "major": 1,
+    "minor": 3
+  },
+  "correlation_id": "register-staffing",
+  "command_id": "register-staffing",
+  "operation": {
+    "kind": "register_project",
+    "project": {
+      "id": "staffing-demo",
+      "name": "Staffing demo",
+      "lead": "lead",
+      "roots": [
+        {
+          "id": "staffing-root",
+          "project_id": "staffing-demo",
+          "revision": 0,
+          "repository": null,
+          "host_paths": {}
+        }
+      ],
+      "roles": [
+        {
+          "id": "lead",
+          "project_id": "staffing-demo",
+          "revision": 0,
+          "name": "lead",
+          "operating_contract": {
+            "id": "lead-contract",
+            "revision": 1
+          }
+        },
+        {
+          "id": "engineer",
+          "project_id": "staffing-demo",
+          "revision": 0,
+          "name": "engineer",
+          "operating_contract": {
+            "id": "engineer-contract",
+            "revision": 1
+          }
+        }
+      ]
+    }
+  }
+}

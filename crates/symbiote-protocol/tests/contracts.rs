@@ -22,6 +22,58 @@ fn principal() -> Principal {
 }
 
 #[test]
+fn team_management_requires_its_own_project_grant_and_rejects_authority_injection() {
+    let team: TeamConfiguration =
+        serde_json::from_str(include_str!("../../../fixtures/project-team/team.json")).unwrap();
+    let req = request(Operation::ReplaceTeam {
+        expected_revision: None,
+        team: Box::new(team.clone()),
+    });
+    let grants = |permissions| {
+        Principal::restricted(
+            UserId::new("staff-admin").unwrap(),
+            BTreeMap::from([(team.project_id.clone(), permissions)]),
+        )
+    };
+    let ordinary = grants(BTreeSet::from([
+        ProjectPermission::Read,
+        ProjectPermission::Register,
+        ProjectPermission::ManageWork,
+        ProjectPermission::CreateTask,
+    ]));
+    assert_eq!(
+        authorize(&ordinary, &req).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    assert!(
+        authorize(
+            &ordinary,
+            &request(Operation::GetTeam {
+                project_id: team.project_id.clone()
+            })
+        )
+        .is_ok()
+    );
+    let admin = grants(BTreeSet::from([ProjectPermission::ManageTeam]));
+    assert!(authorize(&admin, &req).is_ok());
+    let mut spoofed = serde_json::to_value(&req).unwrap();
+    spoofed["operation"]["actor"] = json!("host");
+    assert!(parse_request(&serde_json::to_vec(&spoofed).unwrap()).is_err());
+    let mut foreign = req.clone();
+    if let Operation::ReplaceTeam { team, .. } = &mut foreign.operation {
+        team.project_id = ProjectId::new("foreign").unwrap();
+        team.access_ceiling.project_id = team.project_id.clone();
+        for member in &mut team.members {
+            member.access.project_id = team.project_id.clone();
+        }
+    }
+    assert_eq!(
+        authorize(&admin, &foreign).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+}
+
+#[test]
 fn project_grants_do_not_authorize_resource_consent_or_revocation() {
     let snapshot = serde_json::from_value(json!({"project_id":"project-a","role_id":"lead","profile_id":"profile",
         "host_id":"host","resource_ref":"tool","fingerprint":"a".repeat(64),
@@ -199,7 +251,7 @@ fn work_references_require_read_access_even_after_reference_is_removed() {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":2},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":3},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -208,7 +260,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor":2},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor":3},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 
@@ -308,7 +360,8 @@ fn versions_negotiate_only_explicitly_supported_versions() {
         ProtocolVersion { major: 0, minor: 9 },
         ProtocolVersion { major: 1, minor: 0 },
         ProtocolVersion { major: 1, minor: 1 },
-        ProtocolVersion { major: 1, minor: 3 },
+        ProtocolVersion { major: 1, minor: 2 },
+        ProtocolVersion { major: 1, minor: 4 },
         ProtocolVersion { major: 2, minor: 0 },
     ] {
         assert_eq!(

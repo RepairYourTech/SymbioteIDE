@@ -6,12 +6,14 @@ mod dispatch;
 mod ids;
 mod lifecycle;
 mod model;
+mod team;
 mod work;
 
 pub use dispatch::*;
 pub use ids::*;
 pub use lifecycle::*;
 pub use model::*;
+pub use team::*;
 pub use work::*;
 
 /// Bump for incompatible wire changes. Version one has no persistent migration yet.

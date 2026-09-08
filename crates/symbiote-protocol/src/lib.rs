@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 2 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 3 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -91,6 +91,13 @@ pub struct Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    ReplaceTeam {
+        expected_revision: Option<Revision>,
+        team: Box<TeamConfiguration>,
+    },
+    GetTeam {
+        project_id: ProjectId,
+    },
     CreateWork {
         work: WorkSpec,
     },
@@ -152,6 +159,8 @@ pub enum Operation {
 impl Operation {
     pub fn project_id(&self) -> Option<&ProjectId> {
         match self {
+            Self::ReplaceTeam { team, .. } => Some(&team.project_id),
+            Self::GetTeam { project_id } => Some(project_id),
             Self::CreateWork { work } => Some(&work.project_id),
             Self::ChangeWork { project_id, .. }
             | Self::GetWork { project_id, .. }
@@ -172,6 +181,7 @@ impl Operation {
         matches!(
             self,
             Self::CreateWork { .. }
+                | Self::ReplaceTeam { .. }
                 | Self::ChangeWork { .. }
                 | Self::AssignTaskOrigin { .. }
                 | Self::RegisterProject { .. }
@@ -190,6 +200,20 @@ impl Request {
             return Err(ProtocolError::new(ErrorCode::UnsupportedVersion));
         }
         match &self.operation {
+            Operation::ReplaceTeam {
+                team,
+                expected_revision,
+            } => {
+                team.validate().map_err(|_| invalid())?;
+                let revision = match expected_revision {
+                    None => 0,
+                    Some(revision) => revision.0.checked_add(1).ok_or_else(invalid)?,
+                };
+                if team.revision.0 != revision {
+                    return Err(invalid());
+                }
+                Ok(())
+            }
             Operation::AssignTaskOrigin {
                 project_id, origin, ..
             } if &origin.reference().project_id != project_id => Err(invalid()),
@@ -236,6 +260,7 @@ pub fn parse_request(bytes: &[u8]) -> Result<Request, ProtocolError> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProjectPermission {
+    ManageTeam,
     ManageWork,
     Register,
     Read,
@@ -285,6 +310,10 @@ impl Principal {
 pub fn authorize(principal: &Principal, request: &Request) -> Result<(), ProtocolError> {
     request.validate()?;
     let permitted = match &request.operation {
+        Operation::ReplaceTeam { team, .. } => {
+            principal.permits(&team.project_id, ProjectPermission::ManageTeam)
+        }
+        Operation::GetTeam { project_id } => principal.permits(project_id, ProjectPermission::Read),
         Operation::CreateWork { work } => {
             authorize_work_spec(principal, work, ProjectPermission::ManageWork)?;
             true
@@ -548,6 +577,8 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    TeamConfiguration,
+    TeamRead,
     WorkCreation,
     WorkChange,
     WorkRead,
@@ -582,6 +613,8 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::TeamConfiguration,
+            Capability::TeamRead,
             Capability::WorkCreation,
             Capability::WorkChange,
             Capability::WorkRead,
@@ -620,6 +653,12 @@ pub struct Receipt {
     deny_unknown_fields
 )]
 pub enum EventPayload {
+    TeamReplaced {
+        team: Box<TeamConfiguration>,
+        expected_revision: Option<Revision>,
+        actor: UserId,
+        at: Timestamp,
+    },
     WorkItemCreated {
         item: Box<WorkItem>,
     },
@@ -663,6 +702,7 @@ pub enum EventPayload {
 impl EventPayload {
     fn project_id(&self) -> &ProjectId {
         match self {
+            Self::TeamReplaced { team, .. } => &team.project_id,
             Self::WorkItemCreated { item } | Self::WorkItemChanged { item, .. } => {
                 item.project_id()
             }
@@ -675,6 +715,18 @@ impl EventPayload {
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
         match self {
+            Self::TeamReplaced {
+                team,
+                expected_revision,
+                ..
+            } => {
+                &team.project_id == project_id
+                    && team.validate().is_ok()
+                    && match expected_revision {
+                        None => team.revision == Revision(0),
+                        Some(revision) => revision.0.checked_add(1) == Some(team.revision.0),
+                    }
+            }
             Self::WorkItemCreated { item } => item.project_id() == project_id,
             Self::WorkItemChanged {
                 project_id: declared,
@@ -782,6 +834,7 @@ impl JournalPage {
     deny_unknown_fields
 )]
 pub enum ResponseBody {
+    Team(Box<TeamConfiguration>),
     Work(Box<WorkItem>),
     TaskOrigin(Option<TaskOrigin>),
     Hello(ServerHello),

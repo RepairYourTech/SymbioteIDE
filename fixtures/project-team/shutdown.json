@@ -1,0 +1,11 @@
+{
+  "version": {
+    "major": 1,
+    "minor": 3
+  },
+  "correlation_id": "stop-staffing",
+  "command_id": "stop-staffing",
+  "operation": {
+    "kind": "shutdown"
+  }
+}

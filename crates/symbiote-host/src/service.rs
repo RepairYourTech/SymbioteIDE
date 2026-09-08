@@ -8,6 +8,8 @@ fn storage_error(error: StoreError) -> ProtocolError {
         StoreError::NotFound => ErrorCode::NotFound,
         StoreError::AlreadyExists => ErrorCode::Conflict,
         StoreError::IdempotencyConflict => ErrorCode::IdempotencyConflict,
+        StoreError::TeamRevisionConflict => ErrorCode::StaleRevision,
+        StoreError::InvalidTeam => ErrorCode::InvalidRequest,
         StoreError::InvalidPage => ErrorCode::InvalidCursor,
         StoreError::InvalidInitialState
         | StoreError::RelationshipMismatch
@@ -75,6 +77,39 @@ fn execute(
 ) -> Result<ResponseBody, ProtocolError> {
     authorize(principal, request)?;
     match &request.operation {
+        Operation::ReplaceTeam {
+            expected_revision,
+            team,
+        } => {
+            let at = match store
+                .team_command_timestamp(&request.command_id)
+                .map_err(storage_error)?
+            {
+                Some(at) => at,
+                None => Timestamp(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                        .as_millis()
+                        .try_into()
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+                ),
+            };
+            store
+                .replace_team(
+                    request.command_id.clone(),
+                    *expected_revision,
+                    *team.clone(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::GetTeam { project_id } => store
+            .get_team(project_id)
+            .map(|team| ResponseBody::Team(Box::new(team)))
+            .map_err(storage_error),
         Operation::CreateWork { work } => {
             let at = work_timestamp(store, request)?;
             let item = WorkItem::new(work.clone(), principal.user_id().clone(), at)
@@ -247,6 +282,17 @@ fn execute(
                         command_id: event.command_id,
                         revision: event.revision,
                         payload: match event.payload {
+                            symbiote_store::EventPayload::TeamReplaced {
+                                team,
+                                expected_revision,
+                                actor,
+                                at,
+                            } => EventPayload::TeamReplaced {
+                                team,
+                                expected_revision,
+                                actor,
+                                at,
+                            },
                             symbiote_store::EventPayload::WorkItemCreated { item } => {
                                 EventPayload::WorkItemCreated { item }
                             }

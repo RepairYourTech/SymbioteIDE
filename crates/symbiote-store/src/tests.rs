@@ -17,6 +17,336 @@ fn sha(c: char) -> CommitSha {
     CommitSha::new(c.to_string().repeat(40)).unwrap()
 }
 
+fn team_fixture(store: &mut Store) -> TeamConfiguration {
+    let (project, roots, mut roles) = records("team");
+    let mut worker = roles[0].clone();
+    worker.id = id!(RoleId, "team-worker");
+    worker.name = "General execution".into();
+    roles.push(worker);
+    store
+        .register_project(
+            id!(CommandId, "register-team"),
+            project.clone(),
+            roots,
+            roles.clone(),
+        )
+        .unwrap();
+    let access = AccessSnapshot {
+        project_id: project.id.clone(),
+        roots: project.roots.clone(),
+        grants: BTreeSet::from([Permission::ReadRoot, Permission::ExecuteProcess]),
+        policy_revision: Revision(1),
+    };
+    let members = roles
+        .iter()
+        .enumerate()
+        .map(|(index, role)| RolePolicy {
+            role_id: role.id.clone(),
+            function: if index == 0 {
+                RoleFunction::LeadOrchestrator
+            } else {
+                RoleFunction::GeneralExecution
+            },
+            responsibilities: vec!["Bounded fixture responsibility".into()],
+            task_domains: BTreeSet::from(["implementation".into()]),
+            access: access.clone(),
+            context_policy_ref: "context-v1".into(),
+            tool_policy_ref: "tools-v1".into(),
+            skill_policy_ref: "skills-v1".into(),
+            execution_policy_ref: "execution-v1".into(),
+            independent_reviewers: BTreeSet::from([roles[1 - index].id.clone()]),
+            fallbacks: vec![],
+        })
+        .collect();
+    TeamConfiguration {
+        schema_version: 1,
+        project_id: project.id,
+        revision: Revision(0),
+        lead_role_id: project.lead,
+        members,
+        access_ceiling: access,
+    }
+}
+
+#[test]
+fn team_replacements_reopen_retry_and_preserve_role_records() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let team = team_fixture(&mut store);
+    let before_roles: Vec<String> = store
+        .connection
+        .prepare("SELECT body FROM roles ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let first = store
+        .replace_team(
+            id!(CommandId, "team-initial"),
+            None,
+            team.clone(),
+            id!(UserId, "owner"),
+            Timestamp(10),
+        )
+        .unwrap();
+    assert!(
+        store
+            .replace_team(
+                id!(CommandId, "team-initial"),
+                None,
+                team.clone(),
+                id!(UserId, "owner"),
+                Timestamp(10)
+            )
+            .unwrap()
+            .replayed
+    );
+    assert_eq!(
+        store
+            .team_command_timestamp(&id!(CommandId, "team-initial"))
+            .unwrap(),
+        Some(Timestamp(10))
+    );
+    let mut updated = team.clone();
+    updated.revision = Revision(1);
+    updated.members[0].responsibilities = vec!["Revised responsibility".into()];
+    let second = store
+        .replace_team(
+            id!(CommandId, "team-update"),
+            Some(Revision(0)),
+            updated.clone(),
+            id!(UserId, "another-owner"),
+            Timestamp(11),
+        )
+        .unwrap();
+    assert!(second.sequence > first.sequence);
+    assert!(
+        store
+            .replace_team(
+                id!(CommandId, "team-initial"),
+                None,
+                team.clone(),
+                id!(UserId, "owner"),
+                Timestamp(10)
+            )
+            .unwrap()
+            .replayed
+    );
+    assert!(matches!(
+        store.replace_team(
+            id!(CommandId, "team-initial"),
+            None,
+            team,
+            id!(UserId, "different"),
+            Timestamp(10)
+        ),
+        Err(StoreError::IdempotencyConflict)
+    ));
+    drop(store);
+    let store = Store::open(temp.database()).unwrap();
+    assert_eq!(store.get_team(&updated.project_id).unwrap(), updated);
+    let after_roles: Vec<String> = store
+        .connection
+        .prepare("SELECT body FROM roles ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(before_roles, after_roles);
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn team_relationship_time_and_journal_failures_never_commit() {
+    let mut store = Store::memory().unwrap();
+    let team = team_fixture(&mut store);
+    let mut missing = team.clone();
+    missing.members[1].role_id = id!(RoleId, "missing");
+    missing.members[0].independent_reviewers = BTreeSet::from([missing.members[1].role_id.clone()]);
+    assert!(
+        store
+            .replace_team(
+                id!(CommandId, "missing"),
+                None,
+                missing,
+                id!(UserId, "owner"),
+                Timestamp(10)
+            )
+            .is_err()
+    );
+    let mut wrong_lead = team.clone();
+    wrong_lead.lead_role_id = wrong_lead.members[1].role_id.clone();
+    wrong_lead.members[0].function = RoleFunction::GeneralExecution;
+    wrong_lead.members[1].function = RoleFunction::LeadOrchestrator;
+    assert!(matches!(
+        store.replace_team(
+            id!(CommandId, "lead"),
+            None,
+            wrong_lead,
+            id!(UserId, "owner"),
+            Timestamp(10)
+        ),
+        Err(StoreError::RelationshipMismatch)
+    ));
+    store
+        .replace_team(
+            id!(CommandId, "initial"),
+            None,
+            team.clone(),
+            id!(UserId, "owner"),
+            Timestamp(10),
+        )
+        .unwrap();
+    let mut updated = team.clone();
+    updated.revision = Revision(1);
+    assert!(matches!(
+        store.replace_team(
+            id!(CommandId, "old-time"),
+            Some(Revision(0)),
+            updated.clone(),
+            id!(UserId, "owner"),
+            Timestamp(9)
+        ),
+        Err(StoreError::InvalidTeam)
+    ));
+    store.connection.execute_batch("CREATE TRIGGER fail_team_journal BEFORE INSERT ON journal BEGIN SELECT RAISE(ABORT,'fixture journal failure'); END;").unwrap();
+    assert!(
+        store
+            .replace_team(
+                id!(CommandId, "journal-failure"),
+                Some(Revision(0)),
+                updated,
+                id!(UserId, "owner"),
+                Timestamp(11)
+            )
+            .is_err()
+    );
+    assert_eq!(store.get_team(&team.project_id).unwrap(), team);
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn team_compare_and_swap_has_one_concurrent_winner() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let team = team_fixture(&mut store);
+    store
+        .replace_team(
+            id!(CommandId, "initial"),
+            None,
+            team.clone(),
+            id!(UserId, "owner"),
+            Timestamp(10),
+        )
+        .unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|n| {
+            let path = temp.database();
+            let mut team = team.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                let mut store = Store::open(path).unwrap();
+                team.revision = Revision(1);
+                team.members[0].responsibilities = vec![format!("candidate{n}")];
+                barrier.wait();
+                store.replace_team(
+                    id!(CommandId, format!("candidate{n}")),
+                    Some(Revision(0)),
+                    team,
+                    id!(UserId, "owner"),
+                    Timestamp(11),
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(StoreError::TeamRevisionConflict)))
+            .count(),
+        1
+    );
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn team_materialization_missing_tampered_and_forged_rows_are_rejected() {
+    for tamper in [
+        "DELETE FROM team_configurations",
+        "UPDATE team_configurations SET revision=99",
+        "UPDATE team_configurations SET actor='forged'",
+        "UPDATE team_configurations SET updated_at=99",
+    ] {
+        let temp = Temporary::new();
+        let mut store = Store::open(temp.database()).unwrap();
+        let team = team_fixture(&mut store);
+        store
+            .replace_team(
+                id!(CommandId, "initial"),
+                None,
+                team,
+                id!(UserId, "owner"),
+                Timestamp(10),
+            )
+            .unwrap();
+        store.connection.execute(tamper, []).unwrap();
+        drop(store);
+        assert!(Store::open(temp.database()).is_err());
+    }
+}
+
+#[test]
+fn team_v3_migration_preserves_data_and_corrupt_upgrade_rolls_back() {
+    for corrupt in [false, true] {
+        let temp = Temporary::new();
+        let mut store = Store::open(temp.database()).unwrap();
+        let team = team_fixture(&mut store);
+        let before = store.events(&team.project_id, 0, 10).unwrap();
+        store
+            .connection
+            .execute_batch("DROP TABLE team_configurations; PRAGMA user_version=3;")
+            .unwrap();
+        if corrupt {
+            store
+                .connection
+                .execute("UPDATE projects SET revision=9", [])
+                .unwrap();
+        }
+        drop(store);
+        if corrupt {
+            assert!(Store::open(temp.database()).is_err());
+            let db = Connection::open(temp.database()).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                3
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='team_configurations'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        } else {
+            let store = Store::open(temp.database()).unwrap();
+            assert_eq!(store.events(&team.project_id, 0, 10).unwrap(), before);
+            assert!(matches!(
+                store.get_team(&team.project_id),
+                Err(StoreError::NotFound)
+            ));
+            store.integrity_check().unwrap();
+        }
+    }
+}
+
 fn work_spec(project: ProjectId, role: RoleId, name: &str) -> WorkSpec {
     WorkSpec {
         id: WorkId::Objective(id!(ObjectiveId, name)),
@@ -228,7 +558,7 @@ fn v2_legacy_tasks_remain_unclassified_until_explicit_durable_assignment() {
     let before = store.events(&project.id, 0, 10).unwrap();
     store
         .connection
-        .execute_batch("DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2;")
+        .execute_batch("DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2;")
         .unwrap();
     drop(store);
     let mut store = Store::open(temp.database()).unwrap();
@@ -304,7 +634,7 @@ fn materialization_tampering_and_corrupt_v2_upgrade_are_not_repaired() {
     let temp = Temporary::new();
     let mut store = Store::open(temp.database()).unwrap();
     register(&mut store, "one");
-    store.connection.execute_batch("DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2; UPDATE projects SET revision=9;").unwrap();
+    store.connection.execute_batch("DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2; UPDATE projects SET revision=9;").unwrap();
     drop(store);
     assert!(Store::open(temp.database()).is_err());
     let connection = Connection::open(temp.database()).unwrap();
@@ -812,7 +1142,7 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
     let store = Store::open(temporary.database()).unwrap();
     store
         .connection
-        .pragma_update(None, "user_version", 4)
+        .pragma_update(None, "user_version", 5)
         .unwrap();
     drop(store);
     assert!(matches!(
@@ -824,7 +1154,7 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
         connection
             .pragma_query_value(None, "user_version", |r| sql_u64(r, 0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -1022,7 +1352,7 @@ fn v1_migration_preserves_existing_records_and_journal() {
     // Exact v1 layout: v2 only adds this table and bumps user_version.
     store
         .connection
-        .execute_batch("DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
+        .execute_batch("DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
         .unwrap();
     drop(store);
     let mut store = Store::open(temporary.database()).unwrap();
@@ -1035,7 +1365,7 @@ fn v1_migration_preserves_existing_records_and_journal() {
             .connection
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
     let consent = consent_fixture("consent-after-migration");
     store
@@ -1130,7 +1460,7 @@ fn corrupt_v1_migration_rolls_back_schema_and_version() {
         register(&mut store, "one");
         store
             .connection
-            .execute_batch("DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
+            .execute_batch("DROP TABLE team_configurations; DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
             .unwrap();
         if semantic_only {
             store
