@@ -25,7 +25,10 @@ pub const MARKER_NAME: &str = ".symbiote-reservation.json";
 const MAX_SEED_BYTES: usize = 64;
 const MAX_BASE_BYTES: usize = 3072;
 const BRANCH_PREFIX: &str = "symbiote";
-const BRANCH_SUFFIX_BYTES: usize = 12;
+/// Branch suffix carries 96 bits of digest; the worktree id carries 64 bits.
+/// Both are truncated hashes, not unique encodings.
+const BRANCH_SUFFIX_DIGEST_BYTES: usize = 12;
+const WORKTREE_ID_DIGEST_BYTES: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeError {
@@ -35,7 +38,6 @@ pub enum WorktreeError {
     UnsafePath,
     NotPrivate,
     AlreadyReserved,
-    Collision,
     NotFound,
     IdentityMismatch,
     NotEmpty,
@@ -80,18 +82,22 @@ pub struct Derived {
     pub root_id: RootId,
     pub stream_id: ChangeStreamId,
     pub seed: String,
-    /// Bounded canonical WorktreeId: identity-hash based, never a filesystem path.
-    pub worktree_id: String,
+    /// Canonical bounded WorktreeId newtype: a 64-bit digest truncation, never
+    /// a filesystem path.
+    pub worktree_id: WorktreeId,
     /// Git-ref-safe branch under the reserved `symbiote/` prefix namespace.
     pub branch: String,
 }
 
-fn hex(bytes: &[u8], take: usize) -> String {
-    bytes
-        .iter()
-        .take(take)
-        .map(|b| format!("{b:02x}"))
+fn digest_bytes(fingerprint: &symbiote_trust::Fingerprint) -> Vec<u8> {
+    let hex = fingerprint.as_str();
+    (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0))
         .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Git check-ref-format rules relevant to the derived charset, enforced so a
@@ -135,8 +141,13 @@ impl Derived {
                 .map_err(|_| WorktreeError::InvalidIdentity)?
                 .as_slice(),
         );
-        let suffix = hex(fingerprint.as_str().as_bytes(), BRANCH_SUFFIX_BYTES);
-        let worktree_id = format!("st-{}", hex(fingerprint.as_str().as_bytes(), 16));
+        let digest = digest_bytes(&fingerprint);
+        if digest.len() < BRANCH_SUFFIX_DIGEST_BYTES {
+            return Err(WorktreeError::Io);
+        }
+        let suffix = hex(&digest[..BRANCH_SUFFIX_DIGEST_BYTES]);
+        let identity = WorktreeId::new(format!("st-{}", hex(&digest[..WORKTREE_ID_DIGEST_BYTES])))
+            .map_err(|_| WorktreeError::InvalidIdentity)?;
         let (project, stream) = (inputs.project_id.as_str(), inputs.stream_id.as_str());
         if !ref_component(project) || !ref_component(stream) {
             return Err(WorktreeError::InvalidIdentity);
@@ -150,18 +161,14 @@ impl Derived {
             root_id: inputs.root_id.clone(),
             stream_id: inputs.stream_id.clone(),
             seed: seed.to_owned(),
-            worktree_id,
+            worktree_id: identity,
             branch,
         })
     }
 
-    fn directory_name(&self) -> &str {
-        &self.worktree_id
-    }
-
     pub fn worktree_path(&self, base: &Path) -> PathBuf {
         base.join(self.project_id.as_str())
-            .join(self.directory_name())
+            .join(self.worktree_id.as_str())
     }
 }
 
@@ -220,7 +227,7 @@ fn euid() -> u32 {
 
 /// Walks each component without following symlinks and returns the final fd,
 /// mirroring the sandbox's path-walk discipline.
-fn walk_private(path: &Path, exact_private: bool) -> Result<(), WorktreeError> {
+fn walk_private(path: &Path) -> Result<(), WorktreeError> {
     use nix::sys::stat::SFlag;
     let mut fd = nix::fcntl::open(
         Path::new("/"),
@@ -253,17 +260,26 @@ fn walk_private(path: &Path, exact_private: bool) -> Result<(), WorktreeError> {
         {
             return Err(WorktreeError::NotPrivate);
         }
-        if exact_private && stat.st_mode & 0o7777 != 0o700 {
-            return Err(WorktreeError::NotPrivate);
-        }
     }
     Ok(())
 }
 
+fn sync_dir(path: &Path) -> Result<(), WorktreeError> {
+    fs::File::open(path)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|_| WorktreeError::Io)
+}
+
+/// Creates the directory with mode 0700, or accepts an existing directory that
+/// already satisfies the private-premise checks. Racing creators fall through
+/// to the checks instead of failing.
 fn create_private_dir(path: &Path) -> Result<(), WorktreeError> {
     match nix::unistd::mkdir(path, Mode::from_bits_truncate(0o700)) {
-        Ok(()) => Ok(()),
-        Err(nix::errno::Errno::EEXIST) => Err(WorktreeError::AlreadyReserved),
+        Ok(()) => {
+            sync_dir(path.parent().ok_or(WorktreeError::UnsafePath)?)?;
+            check_private_dir(path, true)
+        }
+        Err(nix::errno::Errno::EEXIST) => check_private_dir(path, true),
         Err(_) => Err(WorktreeError::UnsafePath),
     }
 }
@@ -281,8 +297,15 @@ fn write_marker(marker_path: &Path, marker: &Marker) -> Result<(), WorktreeError
         _ => WorktreeError::UnsafePath,
     })?;
     let mut file = std::fs::File::from(fd);
-    std::io::Write::write_all(&mut file, &body).map_err(|_| WorktreeError::Io)?;
-    file.sync_all().map_err(|_| WorktreeError::Io)?;
+    let written = std::io::Write::write_all(&mut file, &body).and_then(|_| file.sync_all());
+    if written.is_err() {
+        // A half-written marker would permanently brick this identity:
+        // reserve would hit EEXIST while verify could never read it. Remove
+        // the marker we created so the identity stays reservable.
+        let _ = unlink(marker_path);
+        return Err(WorktreeError::Io);
+    }
+    sync_dir(marker_path.parent().ok_or(WorktreeError::UnsafePath)?)?;
     Ok(())
 }
 
@@ -322,15 +345,15 @@ fn ensure_base(base: &Path) -> Result<(), WorktreeError> {
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .ok_or(WorktreeError::InvalidBase)?;
-            walk_private(parent, false)?;
-            create_private_dir(base).map_err(|error| match error {
-                WorktreeError::AlreadyReserved => WorktreeError::NotPrivate,
-                other => other,
-            })?;
+            walk_private(parent)?;
+            // A racing creator may have made it exist between the metadata
+            // check and mkdir; create_private_dir falls through to the same
+            // private-premise checks for EEXIST instead of failing.
+            create_private_dir(base)?;
         }
         Err(_) => return Err(WorktreeError::UnsafePath),
     }
-    walk_private(base, false)
+    walk_private(base)
 }
 
 /// Reserves the derived location: `<base>/<project>/<worktree_id>` with a
@@ -362,12 +385,18 @@ pub fn reserve(
         }
         Ok(_) => return Err(WorktreeError::UnsafePath),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // EEXIST from a racing sibling stream's creator falls through to
+            // the same checks rather than failing this reservation.
             create_private_dir(&project_dir)?;
         }
         Err(_) => return Err(WorktreeError::UnsafePath),
     }
     let worktree = derived.worktree_path(base);
-    create_private_dir(&worktree)?;
+    create_private_dir(&worktree).map_err(|error| match error {
+        // Only an existing location can mean a real double reservation.
+        WorktreeError::AlreadyReserved => WorktreeError::AlreadyReserved,
+        other => other,
+    })?;
     let marker = Marker {
         version: RESERVATION_VERSION,
         derived: derived.clone(),
@@ -408,7 +437,14 @@ pub fn verify(reservation: &Reservation) -> Result<Marker, WorktreeError> {
     let base = &reservation.base;
     // Verification never creates state: a missing or non-private base fails.
     validate_absolute(base, MAX_BASE_BYTES)?;
-    walk_private(base, false)?;
+    for protected in [
+        "/usr", "/etc", "/dev", "/proc", "/sys", "/run", "/boot", "/var",
+    ] {
+        if base.starts_with(protected) {
+            return Err(WorktreeError::InvalidBase);
+        }
+    }
+    walk_private(base)?;
     let project_dir = base.join(reservation.derived.project_id.as_str());
     check_private_dir(&project_dir, true)?;
     let worktree = reservation.derived.worktree_path(base);
@@ -450,8 +486,12 @@ pub fn release(reservation: &Reservation, policy: ReleasePolicy) -> Result<Outco
             if entries.next().is_some() {
                 return Err(WorktreeError::NotEmpty);
             }
-            unlink(&marker_path).map_err(|_| WorktreeError::Io)?;
+            // Remove the directory first: remove_dir fails closed on any
+            // content, and a failure here keeps the marker as the source of
+            // truth instead of downgrading the reservation to abandoned.
             fs::remove_dir(&worktree).map_err(|_| WorktreeError::Io)?;
+            unlink(&marker_path).map_err(|_| WorktreeError::Io)?;
+            sync_dir(&project_dir)?;
             // Removing the project directory is best-effort; concurrent
             // reservations of the same project keep it alive.
             let _ = fs::remove_dir(&project_dir);
@@ -475,13 +515,17 @@ pub fn list(base: &Path, project: &ProjectId) -> Result<Vec<Marker>, WorktreeErr
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             continue;
         }
-        markers.push(read_marker(&entry.path())?);
+        // One unreadable or foreign marker does not hide the others; callers
+        // verify individual reservations for integrity.
+        if let Ok(marker) = read_marker(&entry.path()) {
+            markers.push(marker);
+        }
     }
     markers.sort_by(|a, b| a.derived.worktree_id.cmp(&b.derived.worktree_id));
     Ok(markers)
 }
 
-use symbiote_domain::{ChangeStreamId, ProjectId, RootId, Timestamp};
+use symbiote_domain::{ChangeStreamId, ProjectId, RootId, Timestamp, WorktreeId};
 
 #[cfg(test)]
 mod tests {
@@ -526,11 +570,18 @@ mod tests {
         for component in a.branch.split('/') {
             assert!(ref_component(component), "bad component: {component}");
         }
-        assert_eq!(a.branch.len() + a.worktree_id.len(), {
-            let again = derived("stream-a", "policy-1");
-            again.branch.len() + again.worktree_id.len()
-        });
-        assert!(a.worktree_id.starts_with("st-"));
+        assert!(a.worktree_id.as_str().starts_with("st-"));
+        assert!(a.worktree_id.as_str().len() == 3 + 2 * WORKTREE_ID_DIGEST_BYTES);
+        assert_eq!(
+            a.branch.len() - a.project_id.as_str().len() - a.stream_id.as_str().len(),
+            {
+                // The invariant part of the branch (prefix + separators + suffix) is fixed-length.
+                let again = derived("stream-a", "policy-1");
+                again.branch.len()
+                    - again.project_id.as_str().len()
+                    - again.stream_id.as_str().len()
+            }
+        );
     }
 
     #[test]

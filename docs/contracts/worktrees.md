@@ -6,10 +6,10 @@ Canonical owner: [#211](https://github.com/RepairYourTech/SymbioteIDE/issues/211
 
 `Derived::derive(DeriveInputs)` is a pure function of canonical Project/Root/Change Stream identities plus a trusted policy seed (1–64 characters of `[A-Za-z0-9_-]`, supplied by Host state, never client JSON). The same recorded identities and seed always derive the same names:
 
-- `worktree_id`: `st-` plus 16 hash-hex characters. This is a bounded identity string, never a path; it is suitable for the canonical `WorktreeId` reference the store already treats as globally unique.
-- `branch`: `symbiote/<project>/<stream>/<12-hex>` — a Git-ref-safe branch in a reserved namespace. Every component passes check-ref-format rules (no leading dot, no `.lock`, no `..`, no `@{`, safe charset), and branch length is bounded to 256 bytes.
+- `worktree_id`: the canonical `WorktreeId` newtype, `st-` plus 16 hex characters carrying a 64-bit digest truncation. It is a bounded identity string, never a path.
+- `branch`: `symbiote/<project>/<stream>/<24-hex>` — a Git-ref-safe branch in a reserved namespace; the suffix carries a 96-bit digest truncation. Every component passes check-ref-format rules (no leading dot, no `.lock`, no `..`, no `@{`, safe charset), and branch length is bounded to 256 bytes.
 
-Different seeds or identities derive different names. `derived(seed, ids)` feeds the store's existing worktree/branch uniqueness enforcement at Task creation; the seed choice is durable policy, because changing it changes every subsequent derived name.
+Both suffixes are truncated hashes: collision-resistant for any realistic stream count (a birthday collision on the branch suffix needs on the order of 2^48 derived names), not mathematically impossible. `derived(seed, ids)` feeds the store's existing worktree/branch uniqueness enforcement at Task creation, which remains the durable backstop; the seed choice is durable policy, because changing it changes every subsequent derived name.
 
 ## Reservation premises
 
@@ -32,7 +32,9 @@ The marker lives in the private project directory, never inside the worktree, so
 
 ## Evidence and remaining acceptance
 
-Covered by unit tests: determinism/collision resistance, seed/ref-safety rejection, reserve-verify-release round trip (both release policies, mode checks), single-winner reservation, tamper detection (foreign content, swapped marker identity, missing base not recreated), refusal to delete nonempty work, unsafe base rejection (system trees, relative paths, writable base, symlink components), and eight concurrent reservations without collision.
+Covered by unit tests: determinism, seed/ref-safety rejection, reserve-verify-release round trip (both release policies, mode checks), single-winner reservation, tamper detection (foreign content, swapped marker identity, missing base not recreated), refusal to delete nonempty work, unsafe base rejection (system trees, relative paths, writable base, symlink components), and repeated runs of eight concurrent reservations — including concurrent first-time creation of the shared project directory, which falls through to the private-premise checks rather than failing.
+
+Marker writes are fsynced together with their parent directory entries; a failed or interrupted marker write removes the marker it created so the identity stays reservable. `release(DeleteIfEmpty)` removes the directory before unlinking the marker, so any failure leaves the marker as the source of truth. `list` skips unreadable or foreign marker entries rather than failing the whole enumeration; call `verify` per reservation for integrity.
 
 Pending #211 acceptance, tracked in the issue: actual `git worktree add` materialization against #190's repository abstraction, base-commit validation before dispatch, read-only vs sole-mutation vs parallel-mutation policy, no-worktree verified read-only tasks, synchronization/rebase/restack preparation, integration state, and evidence-confirmed cleanup. Store integration for recorded stream identity is exercised through the existing `create_task` worktree/branch uniqueness tests.
 
