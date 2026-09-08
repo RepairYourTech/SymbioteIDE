@@ -426,6 +426,22 @@ fn execute(
                         | symbiote_store::EventPayload::WorkItemChanged { item, .. } => {
                             authorize_work_resource(principal, project_id, item)?
                         }
+                        symbiote_store::EventPayload::TaskDependenciesSet {
+                            edges,
+                            project_id: owner,
+                            ..
+                        } => {
+                            if owner != project_id {
+                                return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+                            }
+                            for edge in edges {
+                                if !principal
+                                    .permits(&edge.target.project_id, ProjectPermission::Read)
+                                {
+                                    return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                     Ok(JournalEvent {

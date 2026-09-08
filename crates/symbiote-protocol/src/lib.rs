@@ -431,6 +431,9 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
                     .all(|edge| principal.permits(&edge.target.project_id, ProjectPermission::Read))
         }
         Operation::GetTaskDependencies { project_id, .. } => {
+            // Target-project Read is re-checked by the Host against the stored
+            // edges before the response is built; the owning-Project check
+            // here bounds the lookup itself.
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::GetRoute { project_id, .. } => {
@@ -966,7 +969,6 @@ impl EventPayload {
                     && edges.iter().all(|edge| {
                         (edge.target.project_id.clone(), edge.target.task_id.clone())
                             != (declared.clone(), task_id.clone())
-                            && &edge.target.project_id == declared
                     })
             }
             Self::TaskChanged { task_id, task, .. } => {

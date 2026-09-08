@@ -301,6 +301,79 @@ fn completion_blocks_on_unresolved_dependencies_and_incoming_blocks() {
 }
 
 #[test]
+fn blocks_edges_gate_only_the_blocked_target_and_clearing_reopens() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, task) = register_task(&mut store, "g1");
+    let (other_project, other_task) = register_task(&mut store, "g2");
+    // owner blocks other: other waits on owner, owner does NOT wait on other.
+    set_edges(
+        &mut store,
+        "dep-gate",
+        &project,
+        &task,
+        &[edge(
+            TaskDependencyKind::Blocks,
+            other_project.as_str(),
+            other_task.as_str(),
+        )],
+        11,
+    )
+    .unwrap();
+    assert!(
+        store
+            .dependencies_satisfied_for_completion(&project, &task)
+            .is_ok()
+    );
+    assert!(matches!(
+        store.dependencies_satisfied_for_completion(&other_project, &other_task),
+        Err(StoreError::DependenciesUnresolved)
+    ));
+    // Clearing to the empty set is a legal write and the store reopens. The
+    // blocks edge is owned by the blocker, so clearing it releases the
+    // blocked target too.
+    set_edges(&mut store, "dep-clear-all", &project, &task, &[], 12).unwrap();
+    assert!(store.task_dependencies(&project, &task).unwrap().is_empty());
+    assert!(
+        store
+            .dependencies_satisfied_for_completion(&other_project, &other_task)
+            .is_ok()
+    );
+    drop(store);
+    let mut store = Store::open(temp.database()).unwrap();
+    assert!(store.task_dependencies(&project, &task).unwrap().is_empty());
+    assert!(
+        store
+            .task_dependencies(&other_project, &other_task)
+            .unwrap()
+            .is_empty()
+    );
+    // Journal replay preserved the empty-set event: a fresh blocked pair
+    // still gates after reopen.
+    let (third_project, third_task) = register_task(&mut store, "g3");
+    let (fourth_project, fourth_task) = register_task(&mut store, "g4");
+    set_edges(
+        &mut store,
+        "dep-gate-2",
+        &third_project,
+        &third_task,
+        &[edge(
+            TaskDependencyKind::Blocks,
+            fourth_project.as_str(),
+            fourth_task.as_str(),
+        )],
+        13,
+    )
+    .unwrap();
+    drop(store);
+    let store = Store::open(temp.database()).unwrap();
+    assert!(matches!(
+        store.dependencies_satisfied_for_completion(&fourth_project, &fourth_task),
+        Err(StoreError::DependenciesUnresolved)
+    ));
+}
+
+#[test]
 fn tampered_dependency_rows_are_refused_on_reopen() {
     let temp = Temporary::new();
     let mut store = Store::open(temp.database()).unwrap();

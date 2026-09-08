@@ -269,7 +269,14 @@ pub(super) fn completion_gate(
         for row in outgoing {
             let (kind, target_project, target_task) = row?;
             let kind: TaskDependencyKind = serde_json::from_str(&kind)?;
-            if completion_blocking(&kind) {
+            // Outgoing direction: only these kinds mean "owner waits on
+            // target". A `blocks` edge means the TARGET waits on the owner,
+            // so it gates through the incoming scan below only — gating both
+            // directions would deadlock every blocks pair.
+            if matches!(
+                kind,
+                TaskDependencyKind::Requires | TaskDependencyKind::ConsumesContractFrom
+            ) {
                 blocking.push((target_project, target_task));
             }
         }
@@ -316,7 +323,6 @@ impl Audit {
     pub(super) fn set(
         &mut self,
         task: &TaskId,
-        _project: &ProjectId,
         edges: &[TaskDependencyEdge],
         actor: &UserId,
         at: Timestamp,
@@ -356,16 +362,9 @@ impl Audit {
     }
 
     pub(super) fn finish(self, connection: &Connection) -> Result<()> {
-        let count: usize = connection.query_row(
-            "SELECT count(DISTINCT project_id || ':' || task_id) FROM task_dependencies",
-            [],
-            |r| sql_usize(r, 0),
-        )?;
-        if count != self.graph.len() {
-            return Err(StoreError::Integrity(
-                "dependency task count differs from journal".into(),
-            ));
-        }
+        // Owners whose final set is empty have no rows; the per-key
+        // comparison below is the authoritative check, so a count-based
+        // rejection would wrongly refuse a legitimately cleared task.
         for (key, expected) in self.graph {
             if read(connection, &key)? != expected.edges {
                 return Err(StoreError::Integrity(
