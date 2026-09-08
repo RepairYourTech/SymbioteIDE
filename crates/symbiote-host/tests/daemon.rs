@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":6},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":7},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":6},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":7},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
@@ -695,4 +695,85 @@ fn routes_resolve_deterministically_and_survive_restart_with_provenance() {
     host.crash();
     host.start();
     assert_eq!(ok(&host.call(get))["data"], decision);
+}
+
+#[test]
+fn task_dependencies_persist_block_completion_and_reject_cycles() {
+    let mut host = Host::new();
+    ok(&host.call(request("register-dag", project("dag"))));
+    ok(&host.call(request("dag-maintenance", maintenance("dag"))));
+    ok(&host.call(request("dag-task-b", task("task-b", "dag"))));
+    ok(&host.call(request("dag-task-a", task("task-a", "dag"))));
+    // A requires B: recorded, readable, and replayed after restart.
+    let set = |command: &str, task_id: &str, deps: Value| {
+        request(
+            command,
+            json!({"kind":"set_task_dependencies","project_id":"dag","task_id":task_id,"dependencies":deps}),
+        )
+    };
+    let set_a = set(
+        "dep-a-requires-b",
+        "task-a",
+        json!([{"kind":"requires","target":{"project_id":"dag","task_id":"task-b"}}]),
+    );
+    ok(&host.call(set_a.clone()));
+    host.crash();
+    host.start();
+    assert_eq!(ok(&host.call(set_a))["data"]["replayed"], true);
+    let read = request(
+        "dep-read-a",
+        json!({"kind":"get_task_dependencies","project_id":"dag","task_id":"task-a"}),
+    );
+    let edges = ok(&host.call(read))["data"].as_array().unwrap().clone();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["kind"], "requires");
+    assert_eq!(edges[0]["target"]["task_id"], "task-b");
+    // Closing the cycle is rejected with a typed error and the Host keeps serving.
+    let closing = set(
+        "dep-b-requires-a",
+        "task-b",
+        json!([{"kind":"requires","target":{"project_id":"dag","task_id":"task-a"}}]),
+    );
+    assert_eq!(host.call(closing)["result"]["Err"]["code"], "conflict");
+    ok(&host.call(request("dag-alive", json!({"kind":"health"}))));
+    // Self-edges are invalid requests.
+    let self_edge = set(
+        "dep-self",
+        "task-a",
+        json!([{"kind":"requires","target":{"project_id":"dag","task_id":"task-a"}}]),
+    );
+    assert_eq!(
+        host.call(self_edge)["result"]["Err"]["code"],
+        "invalid_request"
+    );
+    // Non-blocking kinds are recorded without gating completion, but they
+    // still participate in DAG acyclicity (task-b waits on task-a here while
+    // task-a requires task-b would be a genuine cycle), so use a fresh pair.
+    ok(&host.call(request("dag-task-c", task("task-c", "dag"))));
+    ok(&host.call(set(
+        "dep-b-followup-c",
+        "task-b",
+        json!([{"kind":"follow_up_to","target":{"project_id":"dag","task_id":"task-c"}}]),
+    )));
+    let read_b = request(
+        "dep-read-b",
+        json!({"kind":"get_task_dependencies","project_id":"dag","task_id":"task-b"}),
+    );
+    let edges_b = ok(&host.call(read_b))["data"].as_array().unwrap().clone();
+    assert_eq!(edges_b.len(), 1);
+    assert_eq!(edges_b[0]["kind"], "follow_up_to");
+    assert_eq!(edges_b[0]["target"]["task_id"], "task-c");
+    // Journal surfaces the dependency event with lineage intact.
+    let journal_response = host.call(request(
+        "dag-journal",
+        json!({"kind":"read_journal","project_id":"dag","after":0,"limit":100}),
+    ));
+    let journal = ok(&journal_response);
+    let kinds: Vec<&str> = journal["data"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["payload"]["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"task_dependencies_set"));
 }

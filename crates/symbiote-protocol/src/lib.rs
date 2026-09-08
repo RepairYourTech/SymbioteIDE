@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 6 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 7 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -109,6 +109,15 @@ pub enum Operation {
     RecordRoute {
         request: symbiote_workforce::RouteRequest,
     },
+    SetTaskDependencies {
+        project_id: ProjectId,
+        task_id: TaskId,
+        dependencies: Vec<symbiote_domain::TaskDependencyEdge>,
+    },
+    GetTaskDependencies {
+        project_id: ProjectId,
+        task_id: TaskId,
+    },
     GetRoute {
         project_id: ProjectId,
         work_id: WorkId,
@@ -189,6 +198,8 @@ impl Operation {
             Self::ResolveRoute { request } | Self::RecordRoute { request } => {
                 Some(&request.project_id)
             }
+            Self::SetTaskDependencies { project_id, .. }
+            | Self::GetTaskDependencies { project_id, .. } => Some(project_id),
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -219,6 +230,7 @@ impl Operation {
                 | Self::ChangeWork { .. }
                 | Self::AssignTaskOrigin { .. }
                 | Self::RecordRoute { .. }
+                | Self::SetTaskDependencies { .. }
                 | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
@@ -265,6 +277,36 @@ impl Request {
             }
             Operation::ResolveRoute { request } | Operation::RecordRoute { request } => {
                 request.validate().map_err(|_| invalid())?;
+                Ok(())
+            }
+            Operation::SetTaskDependencies {
+                project_id,
+                task_id,
+                dependencies,
+            } => {
+                if dependencies.len() > symbiote_domain::MAX_TASK_EDGES {
+                    return Err(invalid());
+                }
+                for edge in dependencies {
+                    if edge.target.task_id == *task_id && edge.target.project_id == *project_id {
+                        return Err(invalid());
+                    }
+                    if &edge.target.project_id != project_id
+                        && !matches!(
+                            edge.kind,
+                            symbiote_domain::TaskDependencyKind::Requires
+                                | symbiote_domain::TaskDependencyKind::ConsumesContractFrom
+                                | symbiote_domain::TaskDependencyKind::Blocks
+                                | symbiote_domain::TaskDependencyKind::Reviews
+                                | symbiote_domain::TaskDependencyKind::Verifies
+                                | symbiote_domain::TaskDependencyKind::Supersedes
+                                | symbiote_domain::TaskDependencyKind::ConflictsWith
+                                | symbiote_domain::TaskDependencyKind::FollowUpTo
+                        )
+                    {
+                        return Err(invalid());
+                    }
+                }
                 Ok(())
             }
             Operation::AssignTaskOrigin {
@@ -377,6 +419,22 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         }
         Operation::RecordRoute { request } => {
             principal.permits(&request.project_id, ProjectPermission::ManageWork)
+        }
+        Operation::SetTaskDependencies {
+            project_id,
+            dependencies,
+            ..
+        } => {
+            principal.permits(project_id, ProjectPermission::ManageWork)
+                && dependencies
+                    .iter()
+                    .all(|edge| principal.permits(&edge.target.project_id, ProjectPermission::Read))
+        }
+        Operation::GetTaskDependencies { project_id, .. } => {
+            // Target-project Read is re-checked by the Host against the stored
+            // edges before the response is built; the owning-Project check
+            // here bounds the lookup itself.
+            principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::GetRoute { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
@@ -649,6 +707,8 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    TaskDependencyWrite,
+    TaskDependencyRead,
     RouteResolution,
     RouteRecording,
     RouteRead,
@@ -692,6 +752,8 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::TaskDependencyWrite,
+            Capability::TaskDependencyRead,
             Capability::RouteResolution,
             Capability::RouteRecording,
             Capability::RouteRead,
@@ -772,6 +834,13 @@ pub enum EventPayload {
         actor: UserId,
         at: Timestamp,
     },
+    TaskDependenciesSet {
+        task_id: TaskId,
+        project_id: ProjectId,
+        edges: Vec<symbiote_domain::TaskDependencyEdge>,
+        actor: UserId,
+        at: Timestamp,
+    },
     ResourceConsentRecorded {
         consent: Box<ResourceConsent>,
     },
@@ -810,6 +879,7 @@ impl EventPayload {
             Self::ProjectRegistered { project, .. } => &project.id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
             Self::WorkRouted { decision, .. } => &decision.project_id,
+            Self::TaskDependenciesSet { project_id, .. } => project_id,
         }
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
@@ -888,6 +958,19 @@ impl EventPayload {
             Self::WorkRouted { decision, .. } => {
                 &decision.project_id == project_id && decision.validate().is_ok()
             }
+            Self::TaskDependenciesSet {
+                project_id: declared,
+                task_id,
+                edges,
+                ..
+            } => {
+                declared == project_id
+                    && edges.len() <= symbiote_domain::MAX_TASK_EDGES
+                    && edges.iter().all(|edge| {
+                        (edge.target.project_id.clone(), edge.target.task_id.clone())
+                            != (declared.clone(), task_id.clone())
+                    })
+            }
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }
@@ -952,6 +1035,7 @@ impl JournalPage {
 pub enum ResponseBody {
     BindingReadiness(Box<symbiote_workforce::ReadinessReport>),
     RouteDecision(Box<symbiote_workforce::RouteDecision>),
+    TaskDependencies(Vec<symbiote_domain::TaskDependencyEdge>),
     Binding(Box<symbiote_workforce::BindingConfiguration>),
     HostPulse(Box<symbiote_host_inventory::HostPulse>),
     Team(Box<TeamConfiguration>),

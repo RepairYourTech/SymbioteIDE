@@ -49,6 +49,34 @@ errors are explicit. Durable paged aggregate history and larger graph operation
 are future work; no history is silently discarded. Server responses retain the
 existing 1 MiB bound, and clients can reduce journal page size when necessary.
 
+## Task dependency graph
+
+Tasks carry typed dependency edges as separate first-class records (not Task
+fields), owned by one Task and replaced as a whole set per task. Eight kinds
+exist: `requires`, `consumes_contract_from`, `blocks`, `reviews`, `verifies`,
+`supersedes`, `conflicts_with` and `follow_up_to`. Direction: every kind reads
+"this task waits on the target" except `blocks`, which is stored on the
+blocking task and read as an incoming dependency of the blocked target.
+
+Completion gating is enforced by the store for exactly the blocking kinds —
+`requires`, `consumes_contract_from` and incoming `blocks` — and only when
+every such target Task is `Completed`; a blocked completion returns a typed
+conflict and the journal is untouched. The remaining kinds are recorded with
+provenance but not yet enforced, because their policy depends on review/merge
+and supersession states that do not exist yet; this is a documented gap, not a
+silent one.
+
+Graph validation is global (one graph across Projects, bounded to 16,384
+tasks) and rejects self-edges, dangling targets and cycles through Kahn's
+algorithm at every write and during journal replay. Per-task edge sets are
+bounded to 64. Protocol v1.7 adds `set_task_dependencies` (`ManageWork` on the
+owning Project plus `Read` on every target Project), `get_task_dependencies`
+(read) and the `task_dependencies_set` journal payload. SQLite schema v7 adds
+the `task_dependencies` table whose indexed columns are tamper-evident
+projections of the edge bodies. Foreign runtime links, DAG readiness/critical-
+path queries, and the remaining #94 state machine (blocked/queued/assigned
+states, leases) remain pending.
+
 ## Task traceability and migration
 
 Every new stored Task requires a `TaskOrigin`: an existing Capability or an
