@@ -444,6 +444,10 @@ impl Principal {
     pub fn user_id(&self) -> &UserId {
         &self.user
     }
+    /// True only for the explicit bootstrap local-owner policy.
+    pub fn is_local_owner(&self) -> bool {
+        self.local_owner
+    }
     pub fn permits(&self, project: &ProjectId, permission: ProjectPermission) -> bool {
         self.local_owner
             || self
@@ -1081,11 +1085,15 @@ impl EventPayload {
                     && lease.fencing_token > 0
             }
             // Provider registry events are attributed to a real Project but
-            // describe global identity records.
-            Self::ProviderRegistered { connection, .. } => {
-                !connection.endpoint_reference.trim().is_empty()
+            // describe global identity records. Standalone descriptor and
+            // timestamp guarantees mirror the store's write-path checks.
+            Self::ProviderRegistered { connection, at, .. } => {
+                at.0 <= i64::MAX as u64 && !connection.endpoint_reference.trim().is_empty()
             }
-            Self::EntitlementRegistered { .. } | Self::ModelRegistered { .. } => true,
+            Self::EntitlementRegistered { at, .. } => at.0 <= i64::MAX as u64,
+            Self::ModelRegistered { descriptor, at, .. } => {
+                at.0 <= i64::MAX as u64 && descriptor.validate().is_ok()
+            }
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }

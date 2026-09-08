@@ -76,7 +76,7 @@ fn read_connection(connection: &Connection, id: &str) -> Result<Option<Connectio
         None => return Ok(None),
     };
     let record: ConnectionRecord = serde_json::from_str(&body)?;
-    if record.adapter.as_str() != adapter {
+    if record.adapter.as_str() != adapter || record.id.as_str() != id {
         return Err(StoreError::Integrity(
             "provider connection indexed state differs from body".into(),
         ));
@@ -97,7 +97,7 @@ fn read_entitlement(connection: &Connection, id: &str) -> Result<Option<Entitlem
         None => return Ok(None),
     };
     let record: EntitlementRecord = serde_json::from_str(&body)?;
-    if record.provider.as_str() != provider {
+    if record.provider.as_str() != provider || record.id.as_str() != id {
         return Err(StoreError::Integrity(
             "entitlement indexed state differs from body".into(),
         ));
@@ -118,7 +118,7 @@ fn read_model(connection: &Connection, id: &str) -> Result<Option<ModelRecord>> 
         None => return Ok(None),
     };
     let record: ModelRecord = serde_json::from_str(&body)?;
-    if record.provider_id.as_str() != provider {
+    if record.provider_id.as_str() != provider || record.id.as_str() != id {
         return Err(StoreError::Integrity(
             "model indexed state differs from body".into(),
         ));

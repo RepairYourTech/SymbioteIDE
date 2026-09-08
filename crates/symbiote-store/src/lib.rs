@@ -1198,7 +1198,8 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                 actor,
                 at,
             } => {
-                if attribution.as_str() != project_key
+                if revision != 0
+                    || attribution.as_str() != project_key
                     || at.0 > i64::MAX as u64
                     || connection.endpoint_reference.trim().is_empty()
                     || request
@@ -1208,6 +1209,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                             actor,
                             *at,
                         ))?
+                    || !projects.contains_key(attribution)
                 {
                     return Err(StoreError::Integrity(
                         "invalid provider journal lineage".into(),
@@ -1222,7 +1224,8 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                 at,
             } => {
                 let entitlement = entitlement.as_ref();
-                if attribution.as_str() != project_key
+                if revision != 0
+                    || attribution.as_str() != project_key
                     || at.0 > i64::MAX as u64
                     || request
                         != serde_json::to_string(&provider::entitlement_event(
@@ -1231,6 +1234,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                             actor,
                             *at,
                         ))?
+                    || !projects.contains_key(attribution)
                     || !providers.contains_key(&entitlement.provider)
                 {
                     return Err(StoreError::Integrity(
@@ -1249,7 +1253,8 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                 descriptor
                     .validate()
                     .map_err(|_| StoreError::InvalidProvider)?;
-                if attribution.as_str() != project_key
+                if revision != 0
+                    || attribution.as_str() != project_key
                     || at.0 > i64::MAX as u64
                     || request
                         != serde_json::to_string(&provider::model_event(
@@ -1258,6 +1263,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                             actor,
                             *at,
                         ))?
+                    || !projects.contains_key(attribution)
                     || !providers.contains_key(&descriptor.provider_id)
                 {
                     return Err(StoreError::Integrity(

@@ -674,39 +674,56 @@ fn execute(
                                 actor,
                                 at,
                             },
-                            symbiote_store::EventPayload::ProviderRegistered {
-                                attribution,
-                                connection,
-                                actor,
-                                at,
-                            } => EventPayload::ProviderRegistered {
-                                attribution,
-                                connection,
-                                actor,
-                                at,
-                            },
-                            symbiote_store::EventPayload::EntitlementRegistered {
-                                attribution,
-                                entitlement,
-                                actor,
-                                at,
-                            } => EventPayload::EntitlementRegistered {
-                                attribution,
-                                entitlement,
-                                actor,
-                                at,
-                            },
-                            symbiote_store::EventPayload::ModelRegistered {
-                                attribution,
-                                descriptor,
-                                actor,
-                                at,
-                            } => EventPayload::ModelRegistered {
-                                attribution,
-                                descriptor,
-                                actor,
-                                at,
-                            },
+                            registry_payload @ (
+                                symbiote_store::EventPayload::ProviderRegistered { .. }
+                                | symbiote_store::EventPayload::EntitlementRegistered { .. }
+                                | symbiote_store::EventPayload::ModelRegistered { .. }
+                            ) => {
+                                // Registry records are global identity
+                                // disclosed only to the owner authority; a
+                                // project's journal reader learns that
+                                // *something* was registered, never the
+                                // record contents.
+                                if !principal.is_local_owner() {
+                                    return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+                                }
+                                match registry_payload {
+                                    symbiote_store::EventPayload::ProviderRegistered {
+                                        attribution,
+                                        connection,
+                                        actor,
+                                        at,
+                                    } => EventPayload::ProviderRegistered {
+                                        attribution,
+                                        connection,
+                                        actor,
+                                        at,
+                                    },
+                                    symbiote_store::EventPayload::EntitlementRegistered {
+                                        attribution,
+                                        entitlement,
+                                        actor,
+                                        at,
+                                    } => EventPayload::EntitlementRegistered {
+                                        attribution,
+                                        entitlement,
+                                        actor,
+                                        at,
+                                    },
+                                    symbiote_store::EventPayload::ModelRegistered {
+                                        attribution,
+                                        descriptor,
+                                        actor,
+                                        at,
+                                    } => EventPayload::ModelRegistered {
+                                        attribution,
+                                        descriptor,
+                                        actor,
+                                        at,
+                                    },
+                                    _ => unreachable!("matched above"),
+                                }
+                            }
                             symbiote_store::EventPayload::TaskLeased { lease, actor, at } => {
                                 EventPayload::TaskLeased { lease, actor, at }
                             }
