@@ -13,12 +13,13 @@ use symbiote_trust::ResourceConsent;
 use symbiote_workforce::{BindingConfiguration, RouteDecision};
 mod binding;
 mod dependency;
+mod lease;
 mod route;
 mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 7;
+const DATABASE_VERSION: i64 = 8;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -53,6 +54,8 @@ pub enum StoreError {
     InvalidRoute,
     InvalidDependency,
     DependenciesUnresolved,
+    InvalidLease,
+    LeaseConflict(symbiote_domain::LeaseError),
     ResourceExhausted,
 }
 impl fmt::Display for StoreError {
@@ -143,6 +146,11 @@ pub enum EventPayload {
         task_id: TaskId,
         project_id: ProjectId,
         edges: Vec<TaskDependencyEdge>,
+        actor: UserId,
+        at: Timestamp,
+    },
+    TaskLeased {
+        lease: Box<symbiote_domain::TaskLease>,
         actor: UserId,
         at: Timestamp,
     },
@@ -248,6 +256,9 @@ impl Store {
         }
         if version < 7 {
             transaction.execute_batch(dependency::MIGRATION_V7)?;
+        }
+        if version < 8 {
+            transaction.execute_batch(lease::MIGRATION_V8)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -752,6 +763,13 @@ impl Store {
     }
 }
 
+fn read_lease_snapshot(
+    connection: &Connection,
+    task: &TaskId,
+) -> Result<Option<symbiote_domain::TaskLease>> {
+    lease::read(connection, task)
+}
+
 fn audit_connection(connection: &Connection) -> Result<()> {
     let check: String = connection.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if check != "ok" {
@@ -860,6 +878,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut binding_audit = binding::Audit::default();
     let mut route_audit = route::Audit::default();
     let mut dependency_audit = dependency::Audit::default();
+    let mut leases: BTreeMap<TaskId, symbiote_domain::TaskLease> = BTreeMap::new();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -1055,6 +1074,31 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     &team_audit,
                 )?;
             }
+            EventPayload::TaskLeased { lease, actor, at } => {
+                let lease = lease.as_ref();
+                lease
+                    .validate_shape()
+                    .map_err(|_| StoreError::InvalidLease)?;
+                if lease.project_id.as_str() != project_key
+                    || at.0 > i64::MAX as u64
+                    || request != serde_json::to_string(&lease::event(lease, actor, *at))?
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid lease journal lineage".into(),
+                    ));
+                }
+                let task = tasks.get(&lease.task_id).ok_or(StoreError::NotFound)?;
+                if task.project_id() != &lease.project_id
+                    || task.state() != &TaskState::Running
+                    || task
+                        .current_dispatch()
+                        .map(|d| d.id() != &lease.dispatch_id)
+                        .unwrap_or(true)
+                {
+                    return Err(StoreError::Integrity("lease task lineage mismatch".into()));
+                }
+                leases.insert(lease.task_id.clone(), lease.clone());
+            }
             EventPayload::TaskDependenciesSet {
                 task_id,
                 project_id,
@@ -1099,6 +1143,13 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             .is_some_and(|task| task.project_id() == project)
     };
     dependency_audit.validate_graph(dependency_targets)?;
+    for (task, lease) in leases {
+        if read_lease_snapshot(connection, &task)?.as_ref() != Some(&lease) {
+            return Err(StoreError::Integrity(
+                "lease state differs from journal".into(),
+            ));
+        }
+    }
     work_audit.finish(connection)?;
     team_audit.finish(connection)?;
     binding_audit.finish(connection)?;

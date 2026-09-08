@@ -209,6 +209,11 @@ impl Task {
     pub fn revision(&self) -> Revision {
         self.revision
     }
+    /// The current dispatch binding, if the task was started. Leases and
+    /// recovery flows read this instead of reaching into task internals.
+    pub fn current_dispatch(&self) -> Option<&Dispatch> {
+        self.dispatch.as_ref()
+    }
     pub fn state(&self) -> &TaskState {
         &self.state
     }

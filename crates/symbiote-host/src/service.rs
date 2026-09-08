@@ -10,10 +10,12 @@ fn storage_error(error: StoreError) -> ProtocolError {
         StoreError::IdempotencyConflict => ErrorCode::IdempotencyConflict,
         StoreError::TeamRevisionConflict => ErrorCode::StaleRevision,
         StoreError::BindingRevisionConflict => ErrorCode::StaleRevision,
-        StoreError::InvalidBinding | StoreError::InvalidRoute | StoreError::InvalidDependency => {
-            ErrorCode::InvalidRequest
-        }
+        StoreError::InvalidBinding
+        | StoreError::InvalidRoute
+        | StoreError::InvalidDependency
+        | StoreError::InvalidLease => ErrorCode::InvalidRequest,
         StoreError::DependenciesUnresolved => ErrorCode::Conflict,
+        StoreError::LeaseConflict(_) => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
         StoreError::InvalidPage => ErrorCode::InvalidCursor,
@@ -63,6 +65,24 @@ fn consent_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Prot
 fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .route_command_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+        .as_millis();
+    Ok(Timestamp(
+        millis
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    ))
+}
+
+fn lease_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .lease_command_timestamp(&request.command_id)
         .map_err(storage_error)?
     {
         return Ok(at);
@@ -201,10 +221,93 @@ fn execute(
         Operation::GetTaskDependencies {
             project_id,
             task_id,
-        } => store
-            .task_dependencies(project_id, task_id)
-            .map(|edges| ResponseBody::TaskDependencies(edges.into_iter().collect()))
-            .map_err(storage_error),
+        } => {
+            let edges = store
+                .task_dependencies(project_id, task_id)
+                .map_err(storage_error)?;
+            for edge in &edges {
+                if !principal.permits(&edge.target.project_id, ProjectPermission::Read) {
+                    return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+                }
+            }
+            Ok(ResponseBody::TaskDependencies(edges.into_iter().collect()))
+        }
+        Operation::AcquireTaskLease {
+            task_id,
+            dispatch_id,
+            host_id,
+            duration_ms,
+        } => {
+            let at = lease_timestamp(store, request)?;
+            store
+                .acquire_lease(
+                    request.command_id.clone(),
+                    task_id.clone(),
+                    dispatch_id.clone(),
+                    host_id.clone(),
+                    *duration_ms,
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::ReleaseTaskLease {
+            task_id,
+            dispatch_id,
+            fencing_token,
+        } => {
+            let at = lease_timestamp(store, request)?;
+            store
+                .release_lease(
+                    request.command_id.clone(),
+                    task_id.clone(),
+                    dispatch_id.clone(),
+                    *fencing_token,
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::ExpireStaleLeases {} => {
+            let now = Timestamp(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                    .as_millis()
+                    .try_into()
+                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+            );
+            let expired = store.expire_stale_leases(now).map_err(storage_error)?;
+            let projection = store.scheduling_projection(now).map_err(storage_error)?;
+            Ok(ResponseBody::SchedulerSweep {
+                expired: expired
+                    .into_iter()
+                    .map(|(task_id, fencing_token)| ExpiredLease {
+                        task_id,
+                        fencing_token,
+                    })
+                    .collect(),
+                schedulable: projection.schedulable,
+                blocked: projection.blocked,
+            })
+        }
+        Operation::GetSchedulingProjection {} => {
+            let now = Timestamp(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                    .as_millis()
+                    .try_into()
+                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+            );
+            let projection = store.scheduling_projection(now).map_err(storage_error)?;
+            Ok(ResponseBody::SchedulerSweep {
+                expired: Vec::new(),
+                schedulable: projection.schedulable,
+                blocked: projection.blocked,
+            })
+        }
         Operation::GetBindingReadiness {
             project_id,
             binding_id,
@@ -481,6 +584,9 @@ fn execute(
                                 actor,
                                 at,
                             },
+                            symbiote_store::EventPayload::TaskLeased { lease, actor, at } => {
+                                EventPayload::TaskLeased { lease, actor, at }
+                            }
                             symbiote_store::EventPayload::TaskDependenciesSet {
                                 task_id,
                                 project_id,

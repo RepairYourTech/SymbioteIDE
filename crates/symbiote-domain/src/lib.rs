@@ -5,6 +5,7 @@
 mod dependency;
 mod dispatch;
 mod ids;
+mod lease;
 mod lifecycle;
 mod model;
 mod team;
@@ -13,6 +14,7 @@ mod work;
 pub use dependency::*;
 pub use dispatch::*;
 pub use ids::*;
+pub use lease::*;
 pub use lifecycle::*;
 pub use model::*;
 pub use team::*;

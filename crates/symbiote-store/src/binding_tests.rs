@@ -221,7 +221,7 @@ fn v4_binding_migration_preserves_history_and_rolls_back_corrupt_input() {
         store
             .connection
             .execute_batch(
-                "DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; PRAGMA user_version=4;",
+                "DROP TABLE task_leases; DROP TABLE task_dependencies; DROP TABLE work_routes; DROP TABLE workforce_bindings; PRAGMA user_version=4;",
             )
             .unwrap();
         if corrupt {

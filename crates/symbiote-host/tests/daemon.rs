@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":7},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":8},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":7},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":8},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
@@ -776,4 +776,48 @@ fn task_dependencies_persist_block_completion_and_reject_cycles() {
         .map(|event| event["payload"]["kind"].as_str().unwrap())
         .collect();
     assert!(kinds.contains(&"task_dependencies_set"));
+}
+
+#[test]
+fn leases_fence_stale_owners_and_the_projection_is_explainable() {
+    let mut host = Host::new();
+    ok(&host.call(request("register-lease", project("lease"))));
+    ok(&host.call(request("lease-maintenance", maintenance("lease"))));
+    ok(&host.call(request("lease-task", task("lease-task", "lease"))));
+    // The projection over a fresh Ready task explains it as schedulable.
+    let sweep = |command: &str| request(command, json!({"kind":"get_scheduling_projection"}));
+    let first_projection = host.call(sweep("project-1"));
+    let schedulable = ok(&first_projection)["data"]["schedulable"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(schedulable.len(), 1);
+    assert_eq!(schedulable[0]["task_id"], "lease-task");
+    assert_eq!(schedulable[0]["reason"], "no_blocking_dependencies");
+    // Without an active dispatch no lease can be acquired yet; the attempt
+    // fails as an invalid request and the host keeps serving.
+    let lease_attempt = request(
+        "lease-too-early",
+        json!({"kind":"acquire_task_lease","task_id":"lease-task","dispatch_id":"no-dispatch",
+               "host_id":"lease","duration_ms":60000}),
+    );
+    assert_eq!(
+        host.call(lease_attempt)["result"]["Err"]["code"],
+        "invalid_request"
+    );
+    // The sweep endpoint expires nothing and still reports the projection.
+    let sweep_response = host.call(request("sweep-1", json!({"kind":"expire_stale_leases"})));
+    let swept = ok(&sweep_response);
+    assert_eq!(swept["data"]["expired"].as_array().unwrap().len(), 0);
+    assert_eq!(swept["data"]["schedulable"].as_array().unwrap().len(), 1);
+    host.crash();
+    host.start();
+    let second_projection = host.call(sweep("project-2"));
+    assert_eq!(
+        ok(&second_projection)["data"]["schedulable"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
