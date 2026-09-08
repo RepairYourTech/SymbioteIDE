@@ -10,9 +10,10 @@ use std::{
 };
 use symbiote_domain::*;
 use symbiote_trust::ResourceConsent;
+mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 2;
+const DATABASE_VERSION: i64 = 3;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -38,6 +39,8 @@ pub enum StoreError {
     RelationshipMismatch,
     InvalidPage,
     InvalidConsent,
+    Work(WorkError),
+    UnclassifiedTask,
 }
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -66,6 +69,11 @@ impl From<DomainError> for StoreError {
         Self::Domain(e)
     }
 }
+impl From<WorkError> for StoreError {
+    fn from(error: WorkError) -> Self {
+        Self::Work(error)
+    }
+}
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +95,24 @@ pub enum EventPayload {
     TaskCreated {
         task: Box<Task>,
         stream: Box<ChangeStream>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<TaskOrigin>,
+    },
+    WorkItemCreated {
+        item: Box<WorkItem>,
+    },
+    WorkItemChanged {
+        project_id: ProjectId,
+        work_id: WorkId,
+        command: Box<WorkCommand>,
+        item: Box<WorkItem>,
+    },
+    TaskOriginAssigned {
+        task_id: TaskId,
+        project_id: ProjectId,
+        origin: TaskOrigin,
+        actor: UserId,
+        at: Timestamp,
     },
     TaskChanged {
         task_id: TaskId,
@@ -170,6 +196,9 @@ impl Store {
         }
         if version < 2 {
             transaction.execute_batch(MIGRATION_V2)?;
+        }
+        if version < 3 {
+            transaction.execute_batch(work::MIGRATION_V3)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -323,10 +352,12 @@ impl Store {
         command_id: CommandId,
         task: Task,
         stream: ChangeStream,
+        origin: TaskOrigin,
     ) -> Result<Receipt> {
         let payload = EventPayload::TaskCreated {
             task: Box::new(task.clone()),
             stream: Box::new(stream.clone()),
+            origin: Some(origin.clone()),
         };
         let request = serde_json::to_string(&payload)?;
         let transaction = self
@@ -335,6 +366,7 @@ impl Store {
         if let Some(receipt) = replay(&transaction, &command_id, &request)? {
             return Ok(receipt);
         }
+        work::validate_origin(&transaction, task.project_id(), &origin)?;
         if task.revision() != Revision(0)
             || task.state() != &TaskState::Ready
             || !task.history().is_empty()
@@ -418,6 +450,7 @@ impl Store {
             params![stream.id().as_str(), task.project_id().as_str(), task.root_id().as_str(), stream.worktree.as_str(), stream.branch, serde_json::to_string(&stream)?])?;
         transaction.execute("INSERT INTO tasks(id,project_id,root_id,role_id,stream_id,revision,body) VALUES (?1,?2,?3,?4,?5,0,?6)",
             params![task.id().as_str(), task.project_id().as_str(), task.root_id().as_str(), task.role_id().as_str(), task.stream_id().as_str(), serde_json::to_string(&task)?])?;
+        work::insert_origin(&transaction, task.id(), task.project_id(), &origin)?;
         let receipt = append(
             &transaction,
             task.project_id(),
@@ -441,6 +474,11 @@ impl Store {
             return Ok(receipt);
         }
         let mut task = read_task(&transaction, task_id)?;
+        if matches!(command.action, TaskAction::Start { .. })
+            && work::read_origin(&transaction, task.project_id(), task_id)?.is_none()
+        {
+            return Err(StoreError::UnclassifiedTask);
+        }
         if let TaskAction::Complete { stream, .. } = &command.action {
             if **stream != read_stream(&transaction, task.stream_id())? {
                 return Err(StoreError::RelationshipMismatch);
@@ -766,6 +804,7 @@ fn mutation_request(task_id: &TaskId, command: &TaskCommand) -> Result<String> {
 /// Reconstruct the supported records in a read snapshot, then compare them to
 /// indexed current state. Never repair or reset a mismatched record automatically.
 fn audit_journal(connection: &Connection) -> Result<()> {
+    let mut work_audit = work::Audit::default();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -794,6 +833,39 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             .ok_or_else(|| StoreError::Integrity("journal sequence exhausted".into()))?;
         let event: EventPayload = serde_json::from_str(&body)?;
         match &event {
+            EventPayload::WorkItemCreated { item } => {
+                work_audit.created(item, &project_key, revision, &request, &event, &projects)?;
+            }
+            EventPayload::WorkItemChanged {
+                project_id,
+                work_id,
+                command,
+                item,
+            } => {
+                work_audit.changed(
+                    project_id,
+                    work_id,
+                    command,
+                    item,
+                    (&project_key, &command_key, revision, &request),
+                )?;
+            }
+            EventPayload::TaskOriginAssigned {
+                task_id,
+                project_id,
+                origin,
+                ..
+            } => {
+                let task = tasks.get(task_id).ok_or(StoreError::NotFound)?;
+                if task.project_id() != project_id
+                    || project_id.as_str() != project_key
+                    || revision != task.revision().0
+                    || request != serde_json::to_string(&event)?
+                {
+                    return Err(StoreError::RelationshipMismatch);
+                }
+                work_audit.origin(task, origin)?;
+            }
             EventPayload::ResourceConsentRecorded { consent } => {
                 consent.validate().map_err(|_| StoreError::InvalidConsent)?;
                 validate_consent_relationships(connection, consent)?;
@@ -863,7 +935,14 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     ));
                 }
             }
-            EventPayload::TaskCreated { task, stream } => {
+            EventPayload::TaskCreated {
+                task,
+                stream,
+                origin,
+            } => {
+                if let Some(origin) = origin {
+                    work_audit.origin(task, origin)?;
+                }
                 if task.project_id().as_str() != project_key
                     || task.revision().0 != revision
                     || request != serde_json::to_string(&event)?
@@ -899,6 +978,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             }
         }
     }
+    work_audit.finish(connection)?;
     for (query, expected) in [
         ("SELECT count(*) FROM projects", projects.len()),
         ("SELECT count(*) FROM tasks", tasks.len()),

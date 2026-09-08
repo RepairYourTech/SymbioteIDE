@@ -1,5 +1,11 @@
 # Transactional control-plane adapter
 
+The current database schema is v3. [Work hierarchy](work-hierarchy.md) documents
+work records, Task origins and transactional v1/v2 upgrades. New `create_task`
+calls require a fourth `TaskOrigin` argument; legacy unclassified Tasks remain
+readable but cannot start until explicitly classified. The original API and
+schema notes below describe the earlier foundation where not superseded here.
+
 Owner: [#43](https://github.com/RepairYourTech/SymbioteIDE/issues/43). `symbiote-store` is a bounded internal SQLite adapter for canonical Project/Root/Role registration, initial Task/Change Stream creation, trusted task transitions and event replay. It consumes `symbiote-domain` records and transitions rather than introducing a second ontology. It does not complete #43 or select the System Graph database.
 
 The adapter pins `rusqlite = 0.40.2` with its bundled SQLite feature; the workspace lockfile pins `libsqlite3-sys = 0.38.2`, whose bundled SQLite is 3.53.2. `Store::sqlite_version()` exposes the linked runtime version. The initial 3.50.2 bundle was rejected because SQLite documents a [WAL-reset corruption bug](https://www.sqlite.org/wal.html#walresetbug) fixed in 3.51.3 and selected backports. Initialization requires SQLite 3.51.3 or newer. The package declares Rust 1.85; local tests used the installed stable toolchain, while the workspace CI MSRV job must verify 1.85 compatibility. API reference: [rusqlite 0.40.2](https://docs.rs/rusqlite/0.40.2/rusqlite/). SQLite transaction durability still depends on its documented filesystem/locking assumptions; a process-kill test is not a power-loss test. See [SQLite atomic commit](https://www.sqlite.org/atomiccommit.html) and [WAL](https://www.sqlite.org/wal.html).

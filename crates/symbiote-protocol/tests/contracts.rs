@@ -84,6 +84,10 @@ fn project_draft() -> ProjectDraft {
 }
 fn task_draft() -> TaskDraft {
     TaskDraft {
+        origin: TaskOrigin::Objective(WorkRef {
+            project_id: project_id(),
+            id: WorkId::Objective(ObjectiveId::new("maintenance").unwrap()),
+        }),
         id: TaskId::new("task-a").unwrap(),
         project_id: project_id(),
         root_id: RootId::new("root-a").unwrap(),
@@ -103,9 +107,99 @@ fn task_draft() -> TaskDraft {
     }
 }
 
+fn work_spec() -> WorkSpec {
+    WorkSpec {
+        id: WorkId::Objective(ObjectiveId::new("maintenance").unwrap()),
+        project_id: project_id(),
+        role_id: RoleId::new("lead").unwrap(),
+        title: "Maintenance".into(),
+        description: "Explicit purpose".into(),
+        utterance: None,
+        objective_class: Some(ObjectiveClass::Maintenance),
+        parent: None,
+        dependencies: BTreeSet::new(),
+        requirements: vec![],
+        constraints: vec![],
+        risks: vec![],
+        acceptance: vec!["verified result".into()],
+        priority: 2,
+        budget: None,
+        external_references: vec![],
+    }
+}
+
+#[test]
+fn work_wire_never_accepts_host_completion_or_claimed_authority() {
+    for edit in [
+        json!({"kind":"complete","evidence":{}}),
+        json!({"kind":"approve","actor":{"host":"forged"}}),
+    ] {
+        let bytes = serde_json::to_vec(&json!({"version":CURRENT_VERSION,"correlation_id":"request","command_id":"command",
+            "operation":{"kind":"change_work","project_id":"project-a","id":{"kind":"objective","id":"maintenance"},"expected_revision":0,"edit":edit}})).unwrap();
+        assert!(parse_request(&bytes).is_err());
+    }
+    let mut value = serde_json::to_value(task_draft()).unwrap();
+    value.as_object_mut().unwrap().remove("origin");
+    assert!(serde_json::from_value::<TaskDraft>(value).is_err());
+}
+
+#[test]
+fn work_references_require_read_access_even_after_reference_is_removed() {
+    let foreign = ProjectId::new("foreign").unwrap();
+    let user = UserId::new("user-a").unwrap();
+    let restricted = Principal::restricted(
+        user.clone(),
+        BTreeMap::from([(
+            project_id(),
+            BTreeSet::from([ProjectPermission::ManageWork, ProjectPermission::Read]),
+        )]),
+    );
+    let mut spec = work_spec();
+    spec.dependencies.insert(WorkRef {
+        project_id: foreign.clone(),
+        id: WorkId::Objective(ObjectiveId::new("foreign-objective").unwrap()),
+    });
+    assert_eq!(
+        authorize_work_spec(&restricted, &spec, ProjectPermission::ManageWork)
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    let linked = Principal::restricted(
+        user.clone(),
+        BTreeMap::from([
+            (
+                project_id(),
+                BTreeSet::from([ProjectPermission::ManageWork, ProjectPermission::Read]),
+            ),
+            (foreign, BTreeSet::from([ProjectPermission::Read])),
+        ]),
+    );
+    authorize_work_spec(&linked, &spec, ProjectPermission::ManageWork).unwrap();
+    let mut item = WorkItem::new(spec.clone(), user.clone(), Timestamp(1)).unwrap();
+    spec.dependencies.clear();
+    item.apply(WorkCommand {
+        id: CommandId::new("revise").unwrap(),
+        expected_revision: Revision(0),
+        actor: Actor::User(user),
+        at: Timestamp(2),
+        action: WorkAction::Revise {
+            spec: Box::new(spec),
+        },
+    })
+    .unwrap();
+    authorize_work_resource(&linked, &project_id(), &item).unwrap();
+    assert_eq!(
+        authorize_work_resource(&restricted, &project_id(), &item)
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+}
+
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":1},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":2},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -114,7 +208,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor":1},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor":2},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 
@@ -213,7 +307,8 @@ fn versions_negotiate_only_explicitly_supported_versions() {
     for version in [
         ProtocolVersion { major: 0, minor: 9 },
         ProtocolVersion { major: 1, minor: 0 },
-        ProtocolVersion { major: 1, minor: 2 },
+        ProtocolVersion { major: 1, minor: 1 },
+        ProtocolVersion { major: 1, minor: 3 },
         ProtocolVersion { major: 2, minor: 0 },
     ] {
         assert_eq!(

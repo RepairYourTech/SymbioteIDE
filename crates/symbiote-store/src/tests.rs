@@ -17,6 +17,344 @@ fn sha(c: char) -> CommitSha {
     CommitSha::new(c.to_string().repeat(40)).unwrap()
 }
 
+fn work_spec(project: ProjectId, role: RoleId, name: &str) -> WorkSpec {
+    WorkSpec {
+        id: WorkId::Objective(id!(ObjectiveId, name)),
+        project_id: project,
+        role_id: role,
+        title: "Explicit fixture maintenance".into(),
+        description: "Classified fixture task origin".into(),
+        utterance: None,
+        objective_class: Some(ObjectiveClass::Maintenance),
+        parent: None,
+        dependencies: BTreeSet::new(),
+        requirements: vec![],
+        constraints: vec![],
+        risks: vec![],
+        acceptance: vec!["fixture verified".into()],
+        priority: 1,
+        budget: None,
+        external_references: vec![],
+    }
+}
+fn register_work_target(store: &mut Store, task: &Task) -> Result<TaskOrigin> {
+    let spec = work_spec(
+        task.project_id().clone(),
+        task.role_id().clone(),
+        task.project_id().as_str(),
+    );
+    let origin = TaskOrigin::Objective(spec.reference());
+    let item = WorkItem::new(spec, id!(UserId, "owner"), Timestamp(10))?;
+    store.create_work_item(
+        id!(CommandId, format!("work-{}", task.project_id().as_str())),
+        item,
+    )?;
+    Ok(origin)
+}
+trait FixtureTaskCreation {
+    fn create_fixture_task(
+        &mut self,
+        id: CommandId,
+        task: Task,
+        stream: ChangeStream,
+    ) -> Result<Receipt>;
+}
+impl FixtureTaskCreation for Store {
+    fn create_fixture_task(
+        &mut self,
+        id: CommandId,
+        task: Task,
+        stream: ChangeStream,
+    ) -> Result<Receipt> {
+        let origin = register_work_target(self, &task)?;
+        self.create_task(id, task, stream, origin)
+    }
+}
+
+fn new_work(project: &Project, role: &Role, name: &str) -> WorkItem {
+    WorkItem::new(
+        work_spec(project.id.clone(), role.id.clone(), name),
+        id!(UserId, "owner"),
+        Timestamp(10),
+    )
+    .unwrap()
+}
+fn revise_work(item: &WorkItem, name: &str, spec: WorkSpec) -> WorkCommand {
+    WorkCommand {
+        id: id!(CommandId, name),
+        expected_revision: item.revision(),
+        actor: Actor::User(id!(UserId, "owner")),
+        at: Timestamp(11),
+        action: WorkAction::Revise {
+            spec: Box::new(spec),
+        },
+    }
+}
+
+#[test]
+fn work_graph_reopens_retries_and_rejects_global_cycles_and_missing_references() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, roles) = register(&mut store, "one");
+    let (other, _, other_roles) = register(&mut store, "two");
+    let a = new_work(&project, &roles[0], "a");
+    let first = store
+        .create_work_item(id!(CommandId, "work-a"), a.clone())
+        .unwrap();
+    assert!(
+        store
+            .create_work_item(id!(CommandId, "work-a"), a.clone())
+            .unwrap()
+            .replayed
+    );
+    assert_eq!(
+        store
+            .work_command_timestamp(&id!(CommandId, "work-a"))
+            .unwrap(),
+        Some(Timestamp(10))
+    );
+    let mut b_spec = work_spec(other.id.clone(), other_roles[0].id.clone(), "b");
+    b_spec.dependencies.insert(a.spec().reference());
+    let b = WorkItem::new(b_spec, id!(UserId, "owner"), Timestamp(10)).unwrap();
+    store
+        .create_work_item(id!(CommandId, "work-b"), b.clone())
+        .unwrap();
+    let mut cycle = a.spec().clone();
+    cycle.dependencies.insert(b.spec().reference());
+    assert!(matches!(
+        store.apply_work_command(&project.id, a.id(), revise_work(&a, "cycle", cycle)),
+        Err(StoreError::Work(WorkError::Cycle))
+    ));
+    let mut missing = a.spec().clone();
+    missing.dependencies.insert(WorkRef {
+        project_id: project.id.clone(),
+        id: WorkId::Objective(id!(ObjectiveId, "absent")),
+    });
+    assert!(matches!(
+        store.apply_work_command(&project.id, a.id(), revise_work(&a, "missing", missing)),
+        Err(StoreError::Work(WorkError::MissingReference))
+    ));
+    let mut changed = a.spec().clone();
+    changed.title = "Changed".into();
+    let command = revise_work(&a, "revise", changed);
+    let receipt = store
+        .apply_work_command(&project.id, a.id(), command.clone())
+        .unwrap();
+    assert!(receipt.sequence > first.sequence);
+    assert!(
+        store
+            .apply_work_command(&project.id, a.id(), command)
+            .unwrap()
+            .replayed
+    );
+    assert!(matches!(
+        store.work_item(&other.id, a.id()),
+        Err(StoreError::NotFound)
+    ));
+    drop(store);
+    let store = Store::open(temp.database()).unwrap();
+    assert_eq!(
+        store.work_item(&project.id, a.id()).unwrap().spec().title,
+        "Changed"
+    );
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn concurrent_work_revisions_commit_once() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, roles) = register(&mut store, "one");
+    let item = new_work(&project, &roles[0], "work");
+    store
+        .create_work_item(id!(CommandId, "work"), item.clone())
+        .unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|n| {
+            let path = temp.database();
+            let barrier = barrier.clone();
+            let item = item.clone();
+            thread::spawn(move || {
+                let mut store = Store::open(path).unwrap();
+                let mut spec = item.spec().clone();
+                spec.title = format!("winner{n}");
+                let command = revise_work(&item, &format!("revise{n}"), spec);
+                barrier.wait();
+                store.apply_work_command(item.project_id(), item.id(), command)
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(StoreError::Work(WorkError::RevisionConflict))))
+            .count(),
+        1
+    );
+    store.integrity_check().unwrap();
+}
+
+fn insert_legacy_task(store: &mut Store, task: &Task, stream: &ChangeStream) {
+    let tx = store.connection.transaction().unwrap();
+    tx.execute("INSERT INTO streams(id,project_id,root_id,worktree_id,branch,body) VALUES (?1,?2,?3,?4,?5,?6)",params![stream.id().as_str(),task.project_id().as_str(),task.root_id().as_str(),stream.worktree.as_str(),stream.branch,serde_json::to_string(stream).unwrap()]).unwrap();
+    tx.execute("INSERT INTO tasks(id,project_id,root_id,role_id,stream_id,revision,body) VALUES (?1,?2,?3,?4,?5,0,?6)",params![task.id().as_str(),task.project_id().as_str(),task.root_id().as_str(),task.role_id().as_str(),task.stream_id().as_str(),serde_json::to_string(task).unwrap()]).unwrap();
+    let event = EventPayload::TaskCreated {
+        task: Box::new(task.clone()),
+        stream: Box::new(stream.clone()),
+        origin: None,
+    };
+    append(
+        &tx,
+        task.project_id(),
+        &id!(CommandId, "legacy-task"),
+        Revision(0),
+        &serde_json::to_string(&event).unwrap(),
+        &event,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
+fn v2_legacy_tasks_remain_unclassified_until_explicit_durable_assignment() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, roles) = register(&mut store, "one");
+    let (task, stream) = task_records("one");
+    insert_legacy_task(&mut store, &task, &stream);
+    let before = store.events(&project.id, 0, 10).unwrap();
+    store
+        .connection
+        .execute_batch("DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2;")
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(temp.database()).unwrap();
+    assert_eq!(store.events(&project.id, 0, 10).unwrap(), before);
+    assert_eq!(store.task_origin(&project.id, task.id()).unwrap(), None);
+    assert!(matches!(
+        store.apply_task(task.id(), start_command(&task, &roles[0])),
+        Err(StoreError::UnclassifiedTask)
+    ));
+    let origin = register_work_target(&mut store, &task).unwrap();
+    let receipt = store
+        .assign_task_origin(
+            id!(CommandId, "classify"),
+            &project.id,
+            task.id(),
+            origin.clone(),
+            id!(UserId, "owner"),
+            Timestamp(12),
+        )
+        .unwrap();
+    assert!(
+        store
+            .assign_task_origin(
+                id!(CommandId, "classify"),
+                &project.id,
+                task.id(),
+                origin.clone(),
+                id!(UserId, "owner"),
+                Timestamp(12)
+            )
+            .unwrap()
+            .replayed
+    );
+    assert!(matches!(
+        store.assign_task_origin(
+            id!(CommandId, "replace"),
+            &project.id,
+            task.id(),
+            origin.clone(),
+            id!(UserId, "owner"),
+            Timestamp(13)
+        ),
+        Err(StoreError::AlreadyExists)
+    ));
+    assert_eq!(receipt.revision, Revision(0));
+    store
+        .apply_task(task.id(), start_command(&task, &roles[0]))
+        .unwrap();
+    drop(store);
+    let store = Store::open(temp.database()).unwrap();
+    assert_eq!(
+        store.task_origin(&project.id, task.id()).unwrap(),
+        Some(origin)
+    );
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn materialization_tampering_and_corrupt_v2_upgrade_are_not_repaired() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, roles) = register(&mut store, "one");
+    let item = new_work(&project, &roles[0], "work");
+    store
+        .create_work_item(id!(CommandId, "work"), item.clone())
+        .unwrap();
+    store
+        .connection
+        .execute("UPDATE work_items SET revision=42", [])
+        .unwrap();
+    drop(store);
+    assert!(Store::open(temp.database()).is_err());
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    register(&mut store, "one");
+    store.connection.execute_batch("DROP TABLE task_origins; DROP TABLE work_items; PRAGMA user_version=2; UPDATE projects SET revision=9;").unwrap();
+    drop(store);
+    assert!(Store::open(temp.database()).is_err());
+    let connection = Connection::open(temp.database()).unwrap();
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='work_items'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn task_origin_target_cannot_be_invalidated_or_forged() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    let (task, stream) = task_records("one");
+    store
+        .create_fixture_task(id!(CommandId, "task"), task.clone(), stream)
+        .unwrap();
+    let origin = store.task_origin(&project.id, task.id()).unwrap().unwrap();
+    let item = store.work_item(&project.id, &origin.work_ref().id).unwrap();
+    let mut spec = item.spec().clone();
+    spec.objective_class = Some(ObjectiveClass::Outcome);
+    assert!(matches!(
+        store.apply_work_command(
+            &project.id,
+            item.id(),
+            revise_work(&item, "invalidate", spec)
+        ),
+        Err(StoreError::Work(WorkError::InvalidTaskOrigin))
+    ));
+    store
+        .connection
+        .execute("DELETE FROM task_origins", [])
+        .unwrap();
+    drop(store);
+    assert!(Store::open(temp.database()).is_err());
+}
+
 struct Temporary {
     directory: std::path::PathBuf,
 }
@@ -282,23 +620,23 @@ fn task_creation_rejects_cross_project_foreign_keys_and_shared_workspace() {
         task.task_contract().clone(),
     );
     assert!(matches!(
-        store.create_task(id!(CommandId, "bad"), wrong_task, wrong_stream),
+        store.create_fixture_task(id!(CommandId, "bad"), wrong_task, wrong_stream),
         Err(StoreError::RelationshipMismatch)
     ));
     store
-        .create_task(id!(CommandId, "create"), task.clone(), stream.clone())
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream.clone())
         .unwrap();
     let (second, mut second_stream) = task_records("two");
     second_stream.worktree = stream.worktree;
     assert!(
         store
-            .create_task(id!(CommandId, "shared"), second.clone(), second_stream)
+            .create_fixture_task(id!(CommandId, "shared"), second.clone(), second_stream)
             .is_err()
     );
     assert!(matches!(store.task(second.id()), Err(StoreError::NotFound)));
     assert_eq!(
         store.events(task.project_id(), 0, 10).unwrap().events.len(),
-        2
+        3
     );
     assert!(matches!(
         store.registration_timestamp(&id!(CommandId, "create")),
@@ -316,7 +654,7 @@ fn reconnect_persists_state_and_bounded_project_scoped_replay() {
         register(&mut store, "two");
         let (task, stream) = task_records("one");
         store
-            .create_task(id!(CommandId, "create"), task, stream)
+            .create_fixture_task(id!(CommandId, "create"), task, stream)
             .unwrap();
     }
     let store = Store::open(temporary.database()).unwrap();
@@ -325,7 +663,13 @@ fn reconnect_persists_state_and_bounded_project_scoped_replay() {
     assert!(first.has_more);
     assert_eq!(first.events.len(), 1);
     let second = store.events(&project.id, first.next_cursor, 1).unwrap();
-    assert!(!second.has_more);
+    assert!(second.has_more);
+    let third = store.events(&project.id, second.next_cursor, 1).unwrap();
+    assert!(!third.has_more);
+    assert!(matches!(
+        third.events[0].payload,
+        EventPayload::TaskCreated { .. }
+    ));
     assert_eq!(second.events.len(), 1);
     assert!(
         second.events[0].sequence > first.events[0].sequence + 1,
@@ -345,7 +689,7 @@ fn lifecycle_updates_journal_once_and_denied_worker_does_not_mutate() {
     let (_, _, roles) = register(&mut store, "one");
     let (task, stream) = task_records("one");
     store
-        .create_task(id!(CommandId, "create"), task.clone(), stream)
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
         .unwrap();
     let command = start_command(&task, &roles[0]);
     let first = store.apply_task(task.id(), command.clone()).unwrap();
@@ -366,7 +710,7 @@ fn lifecycle_updates_journal_once_and_denied_worker_does_not_mutate() {
     assert_eq!(store.task(task.id()).unwrap().state(), &TaskState::Running);
     assert_eq!(
         store.events(task.project_id(), 0, 10).unwrap().events.len(),
-        3
+        4
     );
 }
 
@@ -377,7 +721,7 @@ fn two_connections_racing_terminal_transitions_have_one_winner() {
     let (_, _, roles) = register(&mut store, "one");
     let (task, stream) = task_records("one");
     store
-        .create_task(id!(CommandId, "create"), task.clone(), stream)
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
         .unwrap();
     store
         .apply_task(task.id(), start_command(&task, &roles[0]))
@@ -425,7 +769,7 @@ fn two_connections_racing_terminal_transitions_have_one_winner() {
     assert_eq!(store.task(task.id()).unwrap().revision(), Revision(2));
     assert_eq!(
         store.events(task.project_id(), 0, 10).unwrap().events.len(),
-        4
+        5
     );
 }
 
@@ -440,11 +784,12 @@ fn journal_refuses_update_delete_and_failed_late_insert_rolls_back_current_state
             .execute("UPDATE journal SET revision=99", [])
             .is_err()
     );
-    store.connection.execute_batch("CREATE TRIGGER fail_new_event BEFORE INSERT ON journal BEGIN SELECT RAISE(ABORT,'injected journal failure'); END;").unwrap();
     let (task, stream) = task_records("one");
+    register_work_target(&mut store, &task).unwrap();
+    store.connection.execute_batch("CREATE TRIGGER fail_new_event BEFORE INSERT ON journal BEGIN SELECT RAISE(ABORT,'injected journal failure'); END;").unwrap();
     assert!(
         store
-            .create_task(id!(CommandId, "create"), task.clone(), stream)
+            .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
             .is_err()
     );
     assert!(matches!(store.task(task.id()), Err(StoreError::NotFound)));
@@ -467,7 +812,7 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
     let store = Store::open(temporary.database()).unwrap();
     store
         .connection
-        .pragma_update(None, "user_version", 3)
+        .pragma_update(None, "user_version", 4)
         .unwrap();
     drop(store);
     assert!(matches!(
@@ -479,7 +824,7 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
         connection
             .pragma_query_value(None, "user_version", |r| sql_u64(r, 0))
             .unwrap(),
-        3
+        4
     );
 }
 
@@ -677,7 +1022,7 @@ fn v1_migration_preserves_existing_records_and_journal() {
     // Exact v1 layout: v2 only adds this table and bumps user_version.
     store
         .connection
-        .execute_batch("DROP TABLE resource_consents; PRAGMA user_version=1;")
+        .execute_batch("DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
         .unwrap();
     drop(store);
     let mut store = Store::open(temporary.database()).unwrap();
@@ -690,7 +1035,7 @@ fn v1_migration_preserves_existing_records_and_journal() {
             .connection
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
     let consent = consent_fixture("consent-after-migration");
     store
@@ -785,7 +1130,7 @@ fn corrupt_v1_migration_rolls_back_schema_and_version() {
         register(&mut store, "one");
         store
             .connection
-            .execute_batch("DROP TABLE resource_consents; PRAGMA user_version=1;")
+            .execute_batch("DROP TABLE task_origins; DROP TABLE work_items; DROP TABLE resource_consents; PRAGMA user_version=1;")
             .unwrap();
         if semantic_only {
             store
@@ -830,7 +1175,7 @@ fn invalid_domain_snapshot_is_detected_on_reopen() {
     register(&mut store, "one");
     let (task, stream) = task_records("one");
     store
-        .create_task(id!(CommandId, "create"), task.clone(), stream)
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
         .unwrap();
     store
         .connection

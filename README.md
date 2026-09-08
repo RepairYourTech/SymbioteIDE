@@ -4,6 +4,11 @@ Symbiote is an open-source AI software-development firm with a human client. The
 
 ## Current implementation
 
+The [canonical work hierarchy](docs/contracts/work-hierarchy.md) now records
+requests, objectives, capabilities and plans through the Host. Tasks require an
+explicit origin, and user edits preserve history across restarts; worker
+execution and verified capability closure remain separate gates.
+
 The Rust workspace now includes a local `symbioted` service and `symbiote` CLI backed by a transactional SQLite store. Clients register Projects and ready Tasks, read canonical records and replay the journal across daemon restarts. Domain/lifecycle, configuration/portable-manifest and architecture-decision contracts remain shared libraries. Agent execution and the complete desktop application are not implemented yet; native Rust/OpenAI API and external Codex execution are both required for the first usable release. No paid inference is performed by these tests.
 
 Start the local service using the [Host run instructions](docs/contracts/host.md). The Host currently targets Linux and authenticates local clients using OS peer credentials. The separate [Linux shell experiment](docs/proofs/linux-shell.md) remains a proof workload, not the production workbench.

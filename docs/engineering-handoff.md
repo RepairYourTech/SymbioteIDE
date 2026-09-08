@@ -1,5 +1,19 @@
 # Engineering handoff
 
+## Canonical work hierarchy — 2026-09-08 UTC
+
+Change Stream `issue-189-work-hierarchy` starts from merged #481 at `bb95e49`.
+Owner #189 adds replay-validated work aggregates, transactional graph/origin
+storage and Host protocol v1.2. See [the hierarchy contract](contracts/work-hierarchy.md)
+for schema v3 migration, authority, bounds and remaining acceptance. Existing
+unclassified Tasks cannot start until explicitly assigned an origin.
+
+Domain and storage authors independently cross-review each other's modules and
+the Host integration. A separate review task was stopped by an automatic
+security filter and is not counted as completed review. Current-head checks,
+merge and issue evidence remain separate gates. #189 and the persistent build
+goal remain open for the full product integration.
+
 ## Linux process sandbox — 2026-09-08 UTC
 
 Change Stream `issue-218-linux-sandbox` starts from merged #480 at `06c81f9`.

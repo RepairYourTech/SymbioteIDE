@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 1 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 2 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -91,6 +91,28 @@ pub struct Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    CreateWork {
+        work: WorkSpec,
+    },
+    ChangeWork {
+        project_id: ProjectId,
+        id: WorkId,
+        expected_revision: Revision,
+        edit: WorkEdit,
+    },
+    GetWork {
+        project_id: ProjectId,
+        id: WorkId,
+    },
+    AssignTaskOrigin {
+        project_id: ProjectId,
+        task_id: TaskId,
+        origin: TaskOrigin,
+    },
+    GetTaskOrigin {
+        project_id: ProjectId,
+        task_id: TaskId,
+    },
     Hello {
         supported_versions: Vec<ProtocolVersion>,
     },
@@ -130,6 +152,11 @@ pub enum Operation {
 impl Operation {
     pub fn project_id(&self) -> Option<&ProjectId> {
         match self {
+            Self::CreateWork { work } => Some(&work.project_id),
+            Self::ChangeWork { project_id, .. }
+            | Self::GetWork { project_id, .. }
+            | Self::AssignTaskOrigin { project_id, .. }
+            | Self::GetTaskOrigin { project_id, .. } => Some(project_id),
             Self::RegisterProject { project } => Some(&project.id),
             Self::CreateTask { task } => Some(&task.project_id),
             Self::RecordResourceConsent { snapshot, .. } => Some(&snapshot.project_id),
@@ -144,7 +171,10 @@ impl Operation {
     pub fn is_mutation(&self) -> bool {
         matches!(
             self,
-            Self::RegisterProject { .. }
+            Self::CreateWork { .. }
+                | Self::ChangeWork { .. }
+                | Self::AssignTaskOrigin { .. }
+                | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
                 | Self::RecordResourceConsent { .. }
@@ -160,6 +190,21 @@ impl Request {
             return Err(ProtocolError::new(ErrorCode::UnsupportedVersion));
         }
         match &self.operation {
+            Operation::AssignTaskOrigin {
+                project_id, origin, ..
+            } if &origin.reference().project_id != project_id => Err(invalid()),
+            Operation::CreateWork { work } => work.validate().map_err(|_| invalid()),
+            Operation::ChangeWork {
+                project_id,
+                id,
+                edit: WorkEdit::Revise { spec },
+                ..
+            } => {
+                if &spec.project_id != project_id || &spec.id != id {
+                    return Err(invalid());
+                }
+                spec.validate().map_err(|_| invalid())
+            }
             Operation::Hello { supported_versions }
                 if supported_versions.is_empty() || supported_versions.len() > 16 =>
             {
@@ -191,6 +236,7 @@ pub fn parse_request(bytes: &[u8]) -> Result<Request, ProtocolError> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProjectPermission {
+    ManageWork,
     Register,
     Read,
     CreateTask,
@@ -239,6 +285,24 @@ impl Principal {
 pub fn authorize(principal: &Principal, request: &Request) -> Result<(), ProtocolError> {
     request.validate()?;
     let permitted = match &request.operation {
+        Operation::CreateWork { work } => {
+            authorize_work_spec(principal, work, ProjectPermission::ManageWork)?;
+            true
+        }
+        Operation::ChangeWork {
+            project_id, edit, ..
+        } => {
+            if let WorkEdit::Revise { spec } = edit {
+                authorize_work_spec(principal, spec, ProjectPermission::ManageWork)?;
+            }
+            principal.permits(project_id, ProjectPermission::ManageWork)
+        }
+        Operation::AssignTaskOrigin { project_id, .. } => {
+            principal.permits(project_id, ProjectPermission::ManageWork)
+        }
+        Operation::GetWork { project_id, .. } | Operation::GetTaskOrigin { project_id, .. } => {
+            principal.permits(project_id, ProjectPermission::Read)
+        }
         Operation::Hello { .. } | Operation::Health {} => true,
         Operation::Shutdown {} => principal.local_owner,
         Operation::RecordResourceConsent { .. } | Operation::RevokeResourceConsent { .. } => {
@@ -264,6 +328,66 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
     } else {
         Err(ProtocolError::new(ErrorCode::PermissionDenied))
     }
+}
+
+/// Canonical completion is deliberately absent from client operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WorkEdit {
+    Revise { spec: Box<WorkSpec> },
+    Clarify { question: String },
+    RequestApproval {},
+    Approve {},
+    Start {},
+    RequestCompletion {},
+    Cancel { reason: String },
+    Reopen { reason: String },
+}
+impl WorkEdit {
+    pub fn into_action(self) -> WorkAction {
+        match self {
+            Self::Revise { spec } => WorkAction::Revise { spec },
+            Self::Clarify { question } => WorkAction::Clarify { question },
+            Self::RequestApproval {} => WorkAction::RequestApproval {},
+            Self::Approve {} => WorkAction::Approve {},
+            Self::Start {} => WorkAction::Start {},
+            Self::RequestCompletion {} => WorkAction::RequestCompletion {},
+            Self::Cancel { reason } => WorkAction::Cancel { reason },
+            Self::Reopen { reason } => WorkAction::Reopen { reason },
+        }
+    }
+}
+
+pub fn authorize_work_spec(
+    principal: &Principal,
+    spec: &WorkSpec,
+    permission: ProjectPermission,
+) -> Result<(), ProtocolError> {
+    if !principal.permits(&spec.project_id, permission)
+        || spec
+            .references()
+            .iter()
+            .any(|reference| !principal.permits(&reference.project_id, ProjectPermission::Read))
+    {
+        return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+    }
+    Ok(())
+}
+pub fn authorize_work_resource(
+    principal: &Principal,
+    project_id: &ProjectId,
+    item: &WorkItem,
+) -> Result<(), ProtocolError> {
+    if item.project_id() != project_id
+        || !principal.permits(project_id, ProjectPermission::Read)
+        || item
+            .references()
+            .iter()
+            .any(|reference| !principal.permits(&reference.project_id, ProjectPermission::Read))
+    {
+        return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+    }
+    Ok(())
 }
 
 /// After fetching by task identity, bind the stored resource to the authorized
@@ -367,6 +491,7 @@ pub struct InitialStream {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskDraft {
+    pub origin: TaskOrigin,
     pub id: TaskId,
     pub project_id: ProjectId,
     pub root_id: RootId,
@@ -376,7 +501,8 @@ pub struct TaskDraft {
 }
 impl TaskDraft {
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        if self.stream.branch.trim().is_empty()
+        if self.origin.reference().project_id != self.project_id
+            || self.stream.branch.trim().is_empty()
             || self.stream.branch.len() > 256
             || self.stream.branch.chars().any(char::is_control)
         {
@@ -422,6 +548,11 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    WorkCreation,
+    WorkChange,
+    WorkRead,
+    TaskOriginAssignment,
+    TaskOriginRead,
     ProjectRegistration,
     ProjectRead,
     TaskCreation,
@@ -451,6 +582,11 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::WorkCreation,
+            Capability::WorkChange,
+            Capability::WorkRead,
+            Capability::TaskOriginAssignment,
+            Capability::TaskOriginRead,
             Capability::ProjectRegistration,
             Capability::ProjectRead,
             Capability::TaskCreation,
@@ -484,6 +620,22 @@ pub struct Receipt {
     deny_unknown_fields
 )]
 pub enum EventPayload {
+    WorkItemCreated {
+        item: Box<WorkItem>,
+    },
+    WorkItemChanged {
+        project_id: ProjectId,
+        work_id: WorkId,
+        command: Box<WorkCommand>,
+        item: Box<WorkItem>,
+    },
+    TaskOriginAssigned {
+        task_id: TaskId,
+        project_id: ProjectId,
+        origin: TaskOrigin,
+        actor: UserId,
+        at: Timestamp,
+    },
     ResourceConsentRecorded {
         consent: Box<ResourceConsent>,
     },
@@ -498,7 +650,9 @@ pub enum EventPayload {
     },
     TaskCreated {
         task: Box<Task>,
-        stream: ChangeStream,
+        stream: Box<ChangeStream>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<TaskOrigin>,
     },
     TaskChanged {
         task_id: TaskId,
@@ -509,6 +663,10 @@ pub enum EventPayload {
 impl EventPayload {
     fn project_id(&self) -> &ProjectId {
         match self {
+            Self::WorkItemCreated { item } | Self::WorkItemChanged { item, .. } => {
+                item.project_id()
+            }
+            Self::TaskOriginAssigned { project_id, .. } => project_id,
             Self::ResourceConsentRecorded { consent }
             | Self::ResourceConsentRevoked { consent, .. } => &consent.snapshot.project_id,
             Self::ProjectRegistered { project, .. } => &project.id,
@@ -517,6 +675,18 @@ impl EventPayload {
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
         match self {
+            Self::WorkItemCreated { item } => item.project_id() == project_id,
+            Self::WorkItemChanged {
+                project_id: declared,
+                work_id,
+                item,
+                ..
+            } => declared == project_id && item.project_id() == project_id && item.id() == work_id,
+            Self::TaskOriginAssigned {
+                project_id: declared,
+                origin,
+                ..
+            } => declared == project_id && &origin.reference().project_id == project_id,
             Self::ResourceConsentRecorded { consent } => {
                 consent.validate().is_ok()
                     && &consent.snapshot.project_id == project_id
@@ -536,8 +706,15 @@ impl EventPayload {
                     && roots.iter().all(|root| &root.project_id == project_id)
                     && roles.iter().all(|role| &role.project_id == project_id)
             }
-            Self::TaskCreated { task, stream } => {
+            Self::TaskCreated {
+                task,
+                stream,
+                origin,
+            } => {
                 task.project_id() == project_id
+                    && origin
+                        .as_ref()
+                        .is_none_or(|o| &o.reference().project_id == project_id)
                     && stream.project_id() == project_id
                     && task.stream_id() == stream.id()
                     && task.root_id() == stream.root_id()
@@ -605,6 +782,8 @@ impl JournalPage {
     deny_unknown_fields
 )]
 pub enum ResponseBody {
+    Work(Box<WorkItem>),
+    TaskOrigin(Option<TaskOrigin>),
     Hello(ServerHello),
     Project(Project),
     Task(Box<Task>),
