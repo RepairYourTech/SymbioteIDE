@@ -16,6 +16,11 @@ jobs:
         toolchain: ["1.85.0", stable]
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux sandbox runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          bwrap --version
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}

@@ -1,5 +1,29 @@
 # Engineering handoff
 
+## Linux process sandbox — 2026-09-08 UTC
+
+Change Stream `issue-218-linux-sandbox` starts from merged #480 at `06c81f9`.
+Owner #218 consumes the runtime and resource-consent foundations. The new
+launcher is a bounded internal Linux execution boundary, with read-only and
+worktree-write profiles, isolated networking and a trusted helper for closing
+inherited descriptors. It is not an authenticated Host worker endpoint.
+
+See [the sandbox contract](security/linux-sandbox.md) and
+[the live alias probes](proofs/linux-sandbox-aliases.md). Review identified
+pathname socket, hardlink and inherited-descriptor hazards; these require
+preventive checks in addition to namespace flags. One separate review agent's
+test-writing turn was stopped by an automatic security filter citing possible
+cybersecurity risk. That turn is not counted as completed review. Another
+independent reviewer completed the full crate, helper, test and documentation
+review with no blocking findings under the documented trust boundary. Heartbeat
+assertions were tightened and fixtures bounded to ten seconds; the example now
+asserts its report and exit.
+
+Current-head verification and integration evidence must be recorded before
+claiming this slice delivered. Full #218, production worktree provisioning,
+authenticated dispatch, both live runtimes and the first usable release remain
+open. The persistent build goal is not complete.
+
 ## Durable resource consent — 2026-09-08 UTC
 
 Change Stream `issue-174-191-trust` starts from merged #479 at `615e483`. Owners #174/#191 establish the trust/threat baseline and a durable exact-resource consent boundary. New `symbiote-trust` checks snapshots, expiry/revocation and current policy; Host protocol v1.1 records/reads/revokes consent using server-derived authority, and store schema v2 journals those decisions transactionally.
