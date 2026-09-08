@@ -1,1 +1,1 @@
-{"version":{"major":1,"minor":7},"correlation_id":"routing-resolve-classify","command_id":"routing-resolve-classify","operation":{"kind":"resolve_route","request":{"project_id":"routing-demo","work_id":{"kind":"request","id":"routing-request"},"requested":null,"domains":["coding"]}}}
+{"version":{"major":1,"minor":8},"correlation_id":"routing-resolve-classify","command_id":"routing-resolve-classify","operation":{"kind":"resolve_route","request":{"project_id":"routing-demo","work_id":{"kind":"request","id":"routing-request"},"requested":null,"domains":["coding"]}}}

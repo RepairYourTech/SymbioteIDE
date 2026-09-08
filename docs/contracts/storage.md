@@ -1,7 +1,7 @@
 # Transactional control-plane adapter
 
-The current database schema is v7. [Work hierarchy](work-hierarchy.md) documents
-work records, Task origins and transactional v1/v2 upgrades; [Project Team](project-team.md) documents v4 team state; [workforce bindings](workforce-bindings.md) documents v5 binding state; [Role routing](role-resolution.md) documents the v6 `work_routes` table and `work_routed` journal events; [work hierarchy](work-hierarchy.md) documents the v7 `task_dependencies` table, its journal replay audit and the completion gate. Legacy unclassified Tasks remain readable but cannot start until explicitly classified. The original API and schema notes below describe the earlier foundation where not superseded here.
+The current database schema is v8. [Work hierarchy](work-hierarchy.md) documents
+work records, Task origins and transactional v1/v2 upgrades; [Project Team](project-team.md) documents v4 team state; [workforce bindings](workforce-bindings.md) documents v5 binding state; [Role routing](role-resolution.md) documents the v6 `work_routes` table and `work_routed` journal events; [work hierarchy](work-hierarchy.md) documents the v7 `task_dependencies` table, its journal replay audit and the completion gate; [scheduling and leases](scheduling-leases.md) documents the v8 `task_leases` table with fencing tokens. Legacy unclassified Tasks remain readable but cannot start until explicitly classified. The original API and schema notes below describe the earlier foundation where not superseded here.
 
 Owner: [#43](https://github.com/RepairYourTech/SymbioteIDE/issues/43). `symbiote-store` is a bounded internal SQLite adapter for canonical Project/Root/Role registration, initial Task/Change Stream creation, trusted task transitions and event replay. It consumes `symbiote-domain` records and transitions rather than introducing a second ontology. It does not complete #43 or select the System Graph database.
 

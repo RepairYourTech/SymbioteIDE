@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 7 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 8 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -118,6 +118,19 @@ pub enum Operation {
         project_id: ProjectId,
         task_id: TaskId,
     },
+    AcquireTaskLease {
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+        host_id: HostId,
+        duration_ms: u64,
+    },
+    ReleaseTaskLease {
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+        fencing_token: u64,
+    },
+    ExpireStaleLeases {},
+    GetSchedulingProjection {},
     GetRoute {
         project_id: ProjectId,
         work_id: WorkId,
@@ -200,6 +213,10 @@ impl Operation {
             }
             Self::SetTaskDependencies { project_id, .. }
             | Self::GetTaskDependencies { project_id, .. } => Some(project_id),
+            Self::AcquireTaskLease { .. }
+            | Self::ReleaseTaskLease { .. }
+            | Self::ExpireStaleLeases {}
+            | Self::GetSchedulingProjection {} => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -231,6 +248,9 @@ impl Operation {
                 | Self::AssignTaskOrigin { .. }
                 | Self::RecordRoute { .. }
                 | Self::SetTaskDependencies { .. }
+                | Self::AcquireTaskLease { .. }
+                | Self::ReleaseTaskLease { .. }
+                | Self::ExpireStaleLeases {}
                 | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
@@ -435,6 +455,15 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // edges before the response is built; the owning-Project check
             // here bounds the lookup itself.
             principal.permits(project_id, ProjectPermission::Read)
+        }
+        Operation::AcquireTaskLease { .. } | Operation::ReleaseTaskLease { .. } => {
+            // Lease authority belongs to the authenticated Host; the local
+            // owner bootstrap policy is not a worker identity, but only the
+            // Host process holds dispatch identity today.
+            principal.local_owner
+        }
+        Operation::ExpireStaleLeases {} | Operation::GetSchedulingProjection {} => {
+            principal.local_owner
         }
         Operation::GetRoute { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
@@ -707,6 +736,8 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    TaskLeaseManagement,
+    SchedulingProjection,
     TaskDependencyWrite,
     TaskDependencyRead,
     RouteResolution,
@@ -752,6 +783,8 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::TaskLeaseManagement,
+            Capability::SchedulingProjection,
             Capability::TaskDependencyWrite,
             Capability::TaskDependencyRead,
             Capability::RouteResolution,
@@ -841,6 +874,11 @@ pub enum EventPayload {
         actor: UserId,
         at: Timestamp,
     },
+    TaskLeased {
+        lease: Box<symbiote_domain::TaskLease>,
+        actor: UserId,
+        at: Timestamp,
+    },
     ResourceConsentRecorded {
         consent: Box<ResourceConsent>,
     },
@@ -880,6 +918,7 @@ impl EventPayload {
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
             Self::WorkRouted { decision, .. } => &decision.project_id,
             Self::TaskDependenciesSet { project_id, .. } => project_id,
+            Self::TaskLeased { lease, .. } => &lease.project_id,
         }
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
@@ -971,6 +1010,11 @@ impl EventPayload {
                             != (declared.clone(), task_id.clone())
                     })
             }
+            Self::TaskLeased { lease, .. } => {
+                &lease.project_id == project_id
+                    && lease.validate_shape().is_ok()
+                    && lease.fencing_token > 0
+            }
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }
@@ -1026,6 +1070,13 @@ impl JournalPage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExpiredLease {
+    pub task_id: TaskId,
+    pub fencing_token: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -1036,6 +1087,11 @@ pub enum ResponseBody {
     BindingReadiness(Box<symbiote_workforce::ReadinessReport>),
     RouteDecision(Box<symbiote_workforce::RouteDecision>),
     TaskDependencies(Vec<symbiote_domain::TaskDependencyEdge>),
+    SchedulerSweep {
+        expired: Vec<ExpiredLease>,
+        schedulable: Vec<symbiote_domain::SchedulableTask>,
+        blocked: Vec<symbiote_domain::BlockedTask>,
+    },
     Binding(Box<symbiote_workforce::BindingConfiguration>),
     HostPulse(Box<symbiote_host_inventory::HostPulse>),
     Team(Box<TeamConfiguration>),
@@ -1046,6 +1102,7 @@ pub enum ResponseBody {
     Task(Box<Task>),
     ResourceConsent(Box<ResourceConsent>),
     Receipt(Receipt),
+    TaskLease(Box<symbiote_domain::TaskLease>),
     Journal(JournalPage),
     Shutdown {},
 }
