@@ -10,13 +10,14 @@ use std::{
 };
 use symbiote_domain::*;
 use symbiote_trust::ResourceConsent;
-use symbiote_workforce::BindingConfiguration;
+use symbiote_workforce::{BindingConfiguration, RouteDecision};
 mod binding;
+mod route;
 mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 5;
+const DATABASE_VERSION: i64 = 6;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -48,6 +49,8 @@ pub enum StoreError {
     TeamRevisionConflict,
     InvalidBinding,
     BindingRevisionConflict,
+    InvalidRoute,
+    ResourceExhausted,
 }
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -138,6 +141,11 @@ pub enum EventPayload {
         command: Box<TaskCommand>,
         task: Box<Task>,
     },
+    WorkRouted {
+        decision: Box<RouteDecision>,
+        actor: UserId,
+        at: Timestamp,
+    },
     ResourceConsentRecorded {
         consent: Box<ResourceConsent>,
     },
@@ -224,6 +232,9 @@ impl Store {
         }
         if version < 5 {
             transaction.execute_batch(binding::MIGRATION_V5)?;
+        }
+        if version < 6 {
+            transaction.execute_batch(route::MIGRATION_V6)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -832,6 +843,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut work_audit = work::Audit::default();
     let mut team_audit = team::Audit::default();
     let mut binding_audit = binding::Audit::default();
+    let mut route_audit = route::Audit::default();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -1013,6 +1025,20 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     ));
                 }
             }
+            EventPayload::WorkRouted {
+                decision,
+                actor,
+                at,
+            } => {
+                route_audit.routed(
+                    decision,
+                    actor,
+                    *at,
+                    (&project_key, revision, &request),
+                    &work_audit,
+                    &team_audit,
+                )?;
+            }
             EventPayload::TaskChanged {
                 task_id,
                 command,
@@ -1038,6 +1064,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     work_audit.finish(connection)?;
     team_audit.finish(connection)?;
     binding_audit.finish(connection)?;
+    route_audit.finish(connection)?;
     for (query, expected) in [
         ("SELECT count(*) FROM projects", projects.len()),
         ("SELECT count(*) FROM tasks", tasks.len()),

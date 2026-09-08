@@ -1,10 +1,7 @@
 # Transactional control-plane adapter
 
-The current database schema is v3. [Work hierarchy](work-hierarchy.md) documents
-work records, Task origins and transactional v1/v2 upgrades. New `create_task`
-calls require a fourth `TaskOrigin` argument; legacy unclassified Tasks remain
-readable but cannot start until explicitly classified. The original API and
-schema notes below describe the earlier foundation where not superseded here.
+The current database schema is v6. [Work hierarchy](work-hierarchy.md) documents
+work records, Task origins and transactional v1/v2 upgrades; [Project Team](project-team.md) documents v4 team state; [workforce bindings](workforce-bindings.md) documents v5 binding state; [Role routing](role-resolution.md) documents the v6 `work_routes` table and `work_routed` journal events. Legacy unclassified Tasks remain readable but cannot start until explicitly classified. The original API and schema notes below describe the earlier foundation where not superseded here.
 
 Owner: [#43](https://github.com/RepairYourTech/SymbioteIDE/issues/43). `symbiote-store` is a bounded internal SQLite adapter for canonical Project/Root/Role registration, initial Task/Change Stream creation, trusted task transitions and event replay. It consumes `symbiote-domain` records and transitions rather than introducing a second ontology. It does not complete #43 or select the System Graph database.
 
@@ -22,6 +19,8 @@ The adapter pins `rusqlite = 0.40.2` with its bundled SQLite feature; the worksp
 | `apply_task(task_id, command)` | Loads canonical current state inside a writer transaction, invokes `Task::apply`, updates the indexed snapshot and appends its journal record in the same commit. |
 | `project(id)`, `task(id)` | Return typed canonical records; malformed snapshots fail rather than becoming defaults. |
 | `events(project_id, after, limit)` | Returns only that Project's events, exclusively after a global cursor, with a 1–256 record limit, `next_cursor` and `has_more`. Future global cursors fail. |
+| `record_route(command_id, decision, actor, at)` | Persists the latest deterministic routing decision for a canonical work item; the journal keeps the full history. Requires the work item and, for resolutions, a current Team member Role. |
+| `get_route(project, work_id)` | Returns the latest stored decision; malformed snapshots fail rather than becoming defaults. |
 | `integrity_check()` | Checks SQLite integrity and foreign keys, reconstructs supported state from the journal in one read snapshot, and compares it with indexed current records. |
 
 No method accepts arbitrary SQL or generic JSON mutations. `TaskCommand` is an **internal trusted service value**, not an authenticated wire command. Domain Host/Worker identity checks still require an authenticated caller upstream. A completion command's supplied stream must equal the stored stream; a caller cannot invent a newly validated stream snapshot. There is no stream mutation API in this slice, so full durable completion is not yet enabled by this adapter. Multi-task stream membership, stream integration, qualifications, authenticated verifier provenance and other entity lifecycles remain pending.

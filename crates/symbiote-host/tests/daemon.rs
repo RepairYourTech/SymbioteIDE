@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":5},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":6},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":5},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":6},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
@@ -613,4 +613,86 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         }
     }
     ok(&host.call(request("still-alive", json!({"kind":"health"}))));
+}
+
+#[test]
+fn routes_resolve_deterministically_and_survive_restart_with_provenance() {
+    let mut host = Host::new();
+    for input in [
+        include_str!("../../../fixtures/role-resolution/register.json"),
+        include_str!("../../../fixtures/role-resolution/team.json"),
+        include_str!("../../../fixtures/role-resolution/work.json"),
+    ] {
+        ok(&host.call(serde_json::from_str(input).unwrap()));
+    }
+    let classify: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/role-resolution/resolve-classify.json"
+    ))
+    .unwrap();
+    let resolved = ok(&host.call(classify.clone()))["data"].clone();
+    assert_eq!(resolved["resolved"], "routing-engineer");
+    assert_eq!(resolved["reason"], "exact_domain_match");
+    assert_eq!(resolved["confidence"], "deterministic");
+    assert_eq!(resolved["requested"], Value::Null);
+    // Deterministic: the same request yields the same decision.
+    assert_eq!(ok(&host.call(classify.clone()))["data"], resolved);
+    let explicit: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/role-resolution/resolve-explicit.json"
+    ))
+    .unwrap();
+    let explicit_decision = ok(&host.call(explicit.clone()))["data"].clone();
+    assert_eq!(explicit_decision["resolved"], "routing-engineer");
+    assert_eq!(explicit_decision["reason"], "explicit_request");
+    assert_eq!(explicit_decision["requested"], "routing-engineer");
+    // An explicit Lead assignment is honored regardless of domain coverage.
+    let mut lead_assignment = explicit.clone();
+    lead_assignment["command_id"] = json!("resolve-lead");
+    lead_assignment["operation"]["request"]["requested"] = json!("routing-lead");
+    let lead_decision = ok(&host.call(lead_assignment))["data"].clone();
+    assert_eq!(lead_decision["resolved"], "routing-lead");
+    assert_eq!(lead_decision["reason"], "explicit_request");
+    // Unknown Roles are diagnosed, never silently substituted.
+    let mut unknown = explicit.clone();
+    unknown["command_id"] = json!("resolve-unknown");
+    unknown["operation"]["request"]["requested"] = json!("ghost");
+    let diagnosed = ok(&host.call(unknown))["data"].clone();
+    assert_eq!(diagnosed["resolved"], Value::Null);
+    assert_eq!(diagnosed["diagnosis"]["kind"], "requested_role_not_member");
+    // No executable Role covers frontend; the diagnosis names the gap.
+    let noroute: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/role-resolution/resolve-noroute.json"
+    ))
+    .unwrap();
+    let diagnosed = ok(&host.call(noroute))["data"].clone();
+    assert_eq!(diagnosed["resolved"], Value::Null);
+    assert_eq!(diagnosed["diagnosis"]["kind"], "no_executable_role");
+    assert_eq!(
+        diagnosed["diagnosis"]["domains"].as_array().unwrap().len(),
+        1
+    );
+    // Recording persists the host-computed decision.
+    let record: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/role-resolution/record.json"
+    ))
+    .unwrap();
+    let first_receipt = ok(&host.call(record.clone()))["data"].clone();
+    assert_eq!(first_receipt["replayed"], false);
+    assert_eq!(ok(&host.call(record))["data"]["replayed"], true);
+    host.crash();
+    host.start();
+    // Reassignment supersedes the classified route with an explicit one.
+    let reassign: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/role-resolution/record-reassign.json"
+    ))
+    .unwrap();
+    ok(&host.call(reassign));
+    let get: Value =
+        serde_json::from_str(include_str!("../../../fixtures/role-resolution/get.json")).unwrap();
+    let decision = ok(&host.call(get.clone()))["data"].clone();
+    assert_eq!(decision["resolved"], "routing-lead");
+    assert_eq!(decision["reason"], "explicit_request");
+    assert_eq!(decision["requested"], "routing-lead");
+    host.crash();
+    host.start();
+    assert_eq!(ok(&host.call(get))["data"], decision);
 }

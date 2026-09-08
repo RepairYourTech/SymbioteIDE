@@ -10,7 +10,8 @@ fn storage_error(error: StoreError) -> ProtocolError {
         StoreError::IdempotencyConflict => ErrorCode::IdempotencyConflict,
         StoreError::TeamRevisionConflict => ErrorCode::StaleRevision,
         StoreError::BindingRevisionConflict => ErrorCode::StaleRevision,
-        StoreError::InvalidBinding => ErrorCode::InvalidRequest,
+        StoreError::InvalidBinding | StoreError::InvalidRoute => ErrorCode::InvalidRequest,
+        StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
         StoreError::InvalidPage => ErrorCode::InvalidCursor,
         StoreError::InvalidInitialState
@@ -39,6 +40,24 @@ fn receipt(receipt: symbiote_store::Receipt) -> ResponseBody {
 fn consent_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .consent_command_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+        .as_millis();
+    Ok(Timestamp(
+        millis
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    ))
+}
+
+fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .route_command_timestamp(&request.command_id)
         .map_err(storage_error)?
     {
         return Ok(at);
@@ -115,6 +134,28 @@ fn execute(
         } => store
             .get_binding(project_id, binding_id)
             .map(|binding| ResponseBody::Binding(Box::new(binding)))
+            .map_err(storage_error),
+        Operation::ResolveRoute { request } => resolve_route(store, request)
+            .map(|decision| ResponseBody::RouteDecision(Box::new(decision))),
+        Operation::RecordRoute { request: route } => {
+            let at = route_timestamp(store, request)?;
+            let decision = resolve_route(store, route)?;
+            store
+                .record_route(
+                    request.command_id.clone(),
+                    decision,
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::GetRoute {
+            project_id,
+            work_id,
+        } => store
+            .get_route(project_id, work_id)
+            .map(|decision| ResponseBody::RouteDecision(Box::new(decision)))
             .map_err(storage_error),
         Operation::GetBindingReadiness {
             project_id,
@@ -367,6 +408,15 @@ fn execute(
                                 actor,
                                 at,
                             },
+                            symbiote_store::EventPayload::WorkRouted {
+                                decision,
+                                actor,
+                                at,
+                            } => EventPayload::WorkRouted {
+                                decision,
+                                actor,
+                                at,
+                            },
                             symbiote_store::EventPayload::WorkItemCreated { item } => {
                                 EventPayload::WorkItemCreated { item }
                             }
@@ -462,4 +512,19 @@ pub fn handle(
         },
         shutdown,
     )
+}
+
+/// Resolves routing against the stored Team for the referenced canonical work
+/// item. The Host never accepts a client-supplied decision; inputs are the
+/// authenticated request only.
+fn resolve_route(
+    store: &Store,
+    request: &symbiote_workforce::RouteRequest,
+) -> Result<symbiote_workforce::RouteDecision, ProtocolError> {
+    store
+        .work_item(&request.project_id, &request.work_id)
+        .map_err(storage_error)?;
+    let team = store.get_team(&request.project_id).map_err(storage_error)?;
+    symbiote_workforce::resolve_route(&team, request)
+        .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
 }

@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 5 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 6 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -103,6 +103,16 @@ pub enum Operation {
         project_id: ProjectId,
         binding_id: BindingId,
     },
+    ResolveRoute {
+        request: symbiote_workforce::RouteRequest,
+    },
+    RecordRoute {
+        request: symbiote_workforce::RouteRequest,
+    },
+    GetRoute {
+        project_id: ProjectId,
+        work_id: WorkId,
+    },
     GetHostPulse {},
     ReplaceTeam {
         expected_revision: Option<Revision>,
@@ -176,6 +186,10 @@ impl Operation {
             Self::GetBinding { project_id, .. } | Self::GetBindingReadiness { project_id, .. } => {
                 Some(project_id)
             }
+            Self::ResolveRoute { request } | Self::RecordRoute { request } => {
+                Some(&request.project_id)
+            }
+            Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
             Self::CreateWork { work } => Some(&work.project_id),
@@ -204,6 +218,7 @@ impl Operation {
                 | Self::ReplaceTeam { .. }
                 | Self::ChangeWork { .. }
                 | Self::AssignTaskOrigin { .. }
+                | Self::RecordRoute { .. }
                 | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
@@ -246,6 +261,10 @@ impl Request {
                 if team.revision.0 != revision {
                     return Err(invalid());
                 }
+                Ok(())
+            }
+            Operation::ResolveRoute { request } | Operation::RecordRoute { request } => {
+                request.validate().map_err(|_| invalid())?;
                 Ok(())
             }
             Operation::AssignTaskOrigin {
@@ -353,6 +372,15 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::GetBindingReadiness { .. } => principal.local_owner,
+        Operation::ResolveRoute { request } => {
+            principal.permits(&request.project_id, ProjectPermission::Read)
+        }
+        Operation::RecordRoute { request } => {
+            principal.permits(&request.project_id, ProjectPermission::ManageWork)
+        }
+        Operation::GetRoute { project_id, .. } => {
+            principal.permits(project_id, ProjectPermission::Read)
+        }
         Operation::ReplaceTeam { team, .. } => {
             principal.permits(&team.project_id, ProjectPermission::ManageTeam)
         }
@@ -621,6 +649,9 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    RouteResolution,
+    RouteRecording,
+    RouteRead,
     BindingReadiness,
     BindingConfiguration,
     BindingRead,
@@ -661,6 +692,9 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::RouteResolution,
+            Capability::RouteRecording,
+            Capability::RouteRead,
             Capability::BindingReadiness,
             Capability::BindingConfiguration,
             Capability::BindingRead,
@@ -733,6 +767,11 @@ pub enum EventPayload {
         actor: UserId,
         at: Timestamp,
     },
+    WorkRouted {
+        decision: Box<symbiote_workforce::RouteDecision>,
+        actor: UserId,
+        at: Timestamp,
+    },
     ResourceConsentRecorded {
         consent: Box<ResourceConsent>,
     },
@@ -770,6 +809,7 @@ impl EventPayload {
             | Self::ResourceConsentRevoked { consent, .. } => &consent.snapshot.project_id,
             Self::ProjectRegistered { project, .. } => &project.id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
+            Self::WorkRouted { decision, .. } => &decision.project_id,
         }
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
@@ -845,6 +885,9 @@ impl EventPayload {
                     && task.root_id() == stream.root_id()
                     && stream.tasks().contains(task.id())
             }
+            Self::WorkRouted { decision, .. } => {
+                &decision.project_id == project_id && decision.validate().is_ok()
+            }
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }
@@ -908,6 +951,7 @@ impl JournalPage {
 )]
 pub enum ResponseBody {
     BindingReadiness(Box<symbiote_workforce::ReadinessReport>),
+    RouteDecision(Box<symbiote_workforce::RouteDecision>),
     Binding(Box<symbiote_workforce::BindingConfiguration>),
     HostPulse(Box<symbiote_host_inventory::HostPulse>),
     Team(Box<TeamConfiguration>),
