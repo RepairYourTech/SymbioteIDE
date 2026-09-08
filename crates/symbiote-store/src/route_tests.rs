@@ -109,8 +109,18 @@ fn routes_persist_replay_and_reroute_with_journal_provenance() {
             .unwrap(),
         decision
     );
-    // Reassignment supersedes while the journal keeps the earlier decision.
+    // Reassignment supersedes while the journal keeps the earlier decision,
+    // and never rewinds the recorded decision time.
     let reassigned = explicit(&team, &team.lead_role_id);
+    assert!(matches!(
+        store.record_route(
+            id!(CommandId, "route-early"),
+            reassigned.clone(),
+            id!(UserId, "owner"),
+            Timestamp(10),
+        ),
+        Err(StoreError::InvalidRoute)
+    ));
     store
         .record_route(
             id!(CommandId, "route-2"),
@@ -157,6 +167,37 @@ fn routes_persist_replay_and_reroute_with_journal_provenance() {
             .unwrap(),
         reassigned
     );
+}
+
+#[test]
+fn tampered_route_rows_are_refused_on_reopen() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let team = staffed(&mut store);
+    create_work(&mut store, &team);
+    store
+        .record_route(
+            id!(CommandId, "route-tamper"),
+            classify(&team),
+            id!(UserId, "owner"),
+            Timestamp(11),
+        )
+        .unwrap();
+    drop(store);
+    // Flip the indexed resolved flag without touching the journal; the body
+    // still says resolved=team-worker, so reopen must refuse the database.
+    let connection = Connection::open(temp.database()).unwrap();
+    connection
+        .execute(
+            "UPDATE work_routes SET resolved=1-resolved WHERE work_key='request:route-request'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        Store::open(temp.database()),
+        Err(StoreError::Integrity(_))
+    ));
 }
 
 #[test]

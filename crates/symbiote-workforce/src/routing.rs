@@ -25,7 +25,7 @@ pub enum RouteReason {
     ExplicitRequest,
     /// Every requested domain is covered by the resolved Role's task domains.
     ExactDomainMatch,
-    /// Partial domain coverage from the closest executable Role.
+    /// First partial domain coverage in deterministic Role order, not maximal coverage.
     PartialDomainMatch,
 }
 

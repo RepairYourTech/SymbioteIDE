@@ -5,6 +5,7 @@ pub(super) const MIGRATION_V6: &str = "CREATE TABLE work_routes (
  project_id TEXT NOT NULL REFERENCES projects(id),
  role_id TEXT,
  resolved INTEGER NOT NULL CHECK(resolved IN (0,1)),
+ updated_at INTEGER NOT NULL CHECK(updated_at>=0),
  decision TEXT NOT NULL CHECK(json_valid(decision)),
  FOREIGN KEY(role_id,project_id) REFERENCES roles(id,project_id)
 ) STRICT;
@@ -28,16 +29,26 @@ fn work_key(work: &WorkId) -> String {
 }
 
 fn read(connection: &Connection, key: &str) -> Result<Option<RouteDecision>> {
-    let row: Option<String> = connection
+    let row: Option<(String, Option<String>, i64, String)> = connection
         .query_row(
-            "SELECT decision FROM work_routes WHERE work_key=?1",
+            "SELECT project_id,role_id,resolved,decision FROM work_routes WHERE work_key=?1",
             [key],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    row.map(|body| {
+    row.map(|(project, role, resolved, body)| {
         let decision: RouteDecision = serde_json::from_str(&body)?;
         decision.validate().map_err(|_| StoreError::InvalidRoute)?;
+        // Indexed columns are tamper-evident projections of the body, matching
+        // the binding/team/work convention.
+        let indexed_ok = decision.project_id.as_str() == project
+            && decision.resolved.as_ref().map(|r| r.as_str()) == role.as_deref()
+            && i64::from(decision.resolved.is_some()) == resolved;
+        if !indexed_ok {
+            return Err(StoreError::Integrity(
+                "route indexed state differs from body".into(),
+            ));
+        }
         Ok(decision)
     })
     .transpose()
@@ -97,6 +108,18 @@ impl Store {
                 return Err(StoreError::InvalidRoute);
             }
         }
+        // Replacement decisions never move backward in time, matching the
+        // team/binding replacement convention.
+        let previous_at: Option<u64> = transaction
+            .query_row(
+                "SELECT updated_at FROM work_routes WHERE work_key=?1",
+                [&key],
+                |r| sql_u64(r, 0),
+            )
+            .optional()?;
+        if previous_at.is_some_and(|old| at.0 < old) {
+            return Err(StoreError::InvalidRoute);
+        }
         let exists = transaction
             .query_row(
                 "SELECT 1 FROM work_routes WHERE work_key=?1",
@@ -114,13 +137,14 @@ impl Store {
         }
         let body = serde_json::to_string(&decision)?;
         transaction.execute(
-            "INSERT INTO work_routes(work_key,project_id,role_id,resolved,decision) VALUES (?1,?2,?3,?4,?5)
-             ON CONFLICT(work_key) DO UPDATE SET role_id=excluded.role_id, resolved=excluded.resolved, decision=excluded.decision",
+            "INSERT INTO work_routes(work_key,project_id,role_id,resolved,updated_at,decision) VALUES (?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(work_key) DO UPDATE SET role_id=excluded.role_id, resolved=excluded.resolved, updated_at=excluded.updated_at, decision=excluded.decision",
             params![
                 key,
                 decision.project_id.as_str(),
                 decision.resolved.as_ref().map(|r| r.as_str()),
                 i64::from(decision.resolved.is_some()),
+                at.0 as i64,
                 body
             ],
         )?;
@@ -163,7 +187,7 @@ impl Store {
 
 #[derive(Default)]
 pub(super) struct Audit {
-    decisions: BTreeMap<String, RouteDecision>,
+    decisions: BTreeMap<String, (RouteDecision, Timestamp)>,
 }
 impl Audit {
     pub(super) fn routed(
@@ -202,8 +226,13 @@ impl Audit {
                 return Err(StoreError::InvalidRoute);
             }
         }
-        self.decisions
-            .insert(work_key(&decision.work_id), decision.clone());
+        let key = work_key(&decision.work_id);
+        if let Some((_, old)) = self.decisions.get(&key) {
+            if at.0 < old.0 {
+                return Err(StoreError::InvalidRoute);
+            }
+        }
+        self.decisions.insert(key, (decision.clone(), at));
         Ok(())
     }
 
@@ -215,7 +244,7 @@ impl Audit {
                 "route count differs from journal".into(),
             ));
         }
-        for (key, expected) in self.decisions {
+        for (key, (expected, _)) in self.decisions {
             if read(connection, &key)?.as_ref() != Some(&expected) {
                 return Err(StoreError::Integrity(
                     "route state differs from journal".into(),
