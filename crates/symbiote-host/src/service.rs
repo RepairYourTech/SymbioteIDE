@@ -249,7 +249,11 @@ fn execute(
                     principal.user_id().clone(),
                     at,
                 )
-                .map(receipt)
+                .and_then(|_| {
+                    store
+                        .task_lease(task_id)
+                        .map(|lease| ResponseBody::TaskLease(Box::new(lease)))
+                })
                 .map_err(storage_error)
         }
         Operation::ReleaseTaskLease {
@@ -264,9 +268,14 @@ fn execute(
                     task_id.clone(),
                     dispatch_id.clone(),
                     *fencing_token,
+                    principal.user_id().clone(),
                     at,
                 )
-                .map(receipt)
+                .and_then(|_| {
+                    store
+                        .task_lease(task_id)
+                        .map(|lease| ResponseBody::TaskLease(Box::new(lease)))
+                })
                 .map_err(storage_error)
         }
         Operation::ExpireStaleLeases {} => {

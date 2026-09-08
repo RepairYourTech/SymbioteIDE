@@ -1088,14 +1088,78 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     ));
                 }
                 let task = tasks.get(&lease.task_id).ok_or(StoreError::NotFound)?;
-                if task.project_id() != &lease.project_id
-                    || task.state() != &TaskState::Running
-                    || task
-                        .current_dispatch()
-                        .map(|d| d.id() != &lease.dispatch_id)
-                        .unwrap_or(true)
-                {
+                if task.project_id() != &lease.project_id {
                     return Err(StoreError::Integrity("lease task lineage mismatch".into()));
+                }
+                // The full binding invariant applies only to Held events:
+                // release and expiry legitimately journal after lifecycle
+                // recovery moved the task out of Running, and requiring
+                // Running there would brick replay on the documented
+                // interrupt-then-sweep recovery path.
+                if lease.state == symbiote_domain::LeaseState::Held {
+                    let dispatch = task
+                        .current_dispatch()
+                        .ok_or(StoreError::Integrity("held lease without dispatch".into()))?;
+                    if dispatch.id() != &lease.dispatch_id
+                        || dispatch.contract().host_id() != &lease.host_id
+                        || dispatch.contract().stream_id() != &lease.stream_id
+                        || task.state() != &TaskState::Running
+                    {
+                        return Err(StoreError::Integrity(
+                            "lease binding differs from dispatch".into(),
+                        ));
+                    }
+                }
+                // Replay is a state machine: first acquisition is token 1;
+                // same-generation transitions keep the token; only a
+                // post-terminal acquisition takes the strictly next one.
+                let valid = match leases.get(&lease.task_id) {
+                    None => {
+                        lease.state == symbiote_domain::LeaseState::Held && lease.fencing_token == 1
+                    }
+                    Some(old) => {
+                        old.task_id == lease.task_id
+                            && old.project_id == lease.project_id
+                            && old.stream_id == lease.stream_id
+                            && old.dispatch_id == lease.dispatch_id
+                            && old.host_id == lease.host_id
+                            && match (old.state, lease.state) {
+                                (
+                                    symbiote_domain::LeaseState::Held,
+                                    symbiote_domain::LeaseState::Held,
+                                ) => lease.fencing_token == old.fencing_token,
+                                (
+                                    symbiote_domain::LeaseState::Held,
+                                    symbiote_domain::LeaseState::Released,
+                                )
+                                | (
+                                    symbiote_domain::LeaseState::Held,
+                                    symbiote_domain::LeaseState::Expired,
+                                )
+                                | (
+                                    symbiote_domain::LeaseState::Held,
+                                    symbiote_domain::LeaseState::Fenced,
+                                ) => lease.fencing_token == old.fencing_token,
+                                (
+                                    symbiote_domain::LeaseState::Released,
+                                    symbiote_domain::LeaseState::Held,
+                                )
+                                | (
+                                    symbiote_domain::LeaseState::Expired,
+                                    symbiote_domain::LeaseState::Held,
+                                )
+                                | (
+                                    symbiote_domain::LeaseState::Fenced,
+                                    symbiote_domain::LeaseState::Held,
+                                ) => lease.fencing_token == old.fencing_token + 1,
+                                _ => false,
+                            }
+                    }
+                };
+                if !valid {
+                    return Err(StoreError::Integrity(
+                        "impossible lease state transition".into(),
+                    ));
                 }
                 leases.insert(lease.task_id.clone(), lease.clone());
             }
@@ -1143,12 +1207,21 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             .is_some_and(|task| task.project_id() == project)
     };
     dependency_audit.validate_graph(dependency_targets)?;
-    for (task, lease) in leases {
-        if read_lease_snapshot(connection, &task)?.as_ref() != Some(&lease) {
+    for (task, lease) in &leases {
+        if read_lease_snapshot(connection, task)?.as_ref() != Some(lease) {
             return Err(StoreError::Integrity(
                 "lease state differs from journal".into(),
             ));
         }
+    }
+    // The inverse direction: a materialized lease row with no journal
+    // provenance is corruption even when well-formed.
+    let mut statement = connection.prepare("SELECT count(*) FROM task_leases")?;
+    let materialized: usize = statement.query_row([], |r| sql_usize(r, 0))?;
+    if materialized != leases.len() {
+        return Err(StoreError::Integrity(
+            "lease count differs from journal".into(),
+        ));
     }
     work_audit.finish(connection)?;
     team_audit.finish(connection)?;

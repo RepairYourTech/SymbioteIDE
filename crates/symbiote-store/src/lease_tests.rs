@@ -239,6 +239,7 @@ fn leases_acquire_renew_expire_and_refuse_stale_tokens() {
             task.clone(),
             DispatchId::new("dispatch-one").unwrap(),
             1,
+            id!(UserId, "owner"),
             Timestamp(1_001),
         ),
         Err(StoreError::LeaseConflict(LeaseError::Fenced))
@@ -250,6 +251,7 @@ fn leases_acquire_renew_expire_and_refuse_stale_tokens() {
             task.clone(),
             DispatchId::new("dispatch-one").unwrap(),
             2,
+            id!(UserId, "owner"),
             Timestamp(1_002),
         )
         .unwrap();
@@ -260,6 +262,7 @@ fn leases_acquire_renew_expire_and_refuse_stale_tokens() {
             task.clone(),
             DispatchId::new("dispatch-one").unwrap(),
             2,
+            id!(UserId, "owner"),
             Timestamp(1_003),
         ),
         Err(StoreError::LeaseConflict(LeaseError::NotHeld))
@@ -339,6 +342,70 @@ fn leases_replay_across_restart_and_reject_foreign_dispatches() {
         Err(StoreError::LeaseConflict(LeaseError::TaskState))
     ));
 }
+
+#[test]
+fn interrupt_then_sweep_replays_and_reserved_ids_are_refused() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (_project, task, dispatch, host) = started_task(&mut store, "rec");
+    acquire(
+        &mut store,
+        "lease-rec",
+        &task,
+        &dispatch,
+        &host,
+        MAX_LEASE_MS,
+        100,
+    )
+    .unwrap();
+    // Lifecycle recovery moves the task out of Running while the lease is
+    // live; the sweep must still journal the expiry and the store must
+    // reopen (the documented recovery path must not brick replay).
+    store
+        .apply_task(
+            &task,
+            TaskCommand {
+                id: id!(CommandId, "interrupt-rec"),
+                expected_revision: Revision(1),
+                actor: Actor::Host(host.clone()),
+                at: Timestamp(110),
+                action: TaskAction::Interrupt {
+                    reason: "recovery test".into(),
+                },
+            },
+        )
+        .unwrap();
+    let expired = store
+        .expire_stale_leases(Timestamp(100 + MAX_LEASE_MS + 1))
+        .unwrap();
+    assert_eq!(expired.len(), 1);
+    drop(store);
+    let mut store = Store::open(temp.database()).unwrap();
+    assert_eq!(
+        store.task_lease(&task).unwrap().state,
+        symbiote_domain::LeaseState::Expired
+    );
+    // The reserved sweep namespace is refused for caller-initiated writes.
+    let (p2, t2, d2, h2) = started_task(&mut store, "res");
+    assert!(matches!(
+        store.acquire_lease(
+            id!(
+                CommandId,
+                &format!("{}{}-1", RESERVED_LEASE_PREFIX_TEST, "task-res")
+            ),
+            t2.clone(),
+            d2.clone(),
+            h2.clone(),
+            MIN_LEASE_MS,
+            id!(UserId, "owner"),
+            Timestamp(200),
+        ),
+        Err(StoreError::InvalidLease)
+    ));
+    let _ = (p2,);
+}
+
+const RESERVED_LEASE_PREFIX_TEST: &str = "symbiote-sweep-";
 
 #[test]
 fn scheduling_projection_explains_ready_blocked_and_leased_tasks() {

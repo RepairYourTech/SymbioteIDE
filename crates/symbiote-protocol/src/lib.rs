@@ -1013,8 +1013,7 @@ impl EventPayload {
             Self::TaskLeased { lease, .. } => {
                 &lease.project_id == project_id
                     && lease.validate_shape().is_ok()
-                    && lease.state == symbiote_domain::LeaseState::Held
-                    && lease.expires_at.0 > lease.acquired_at.0
+                    && lease.fencing_token > 0
             }
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
@@ -1103,6 +1102,7 @@ pub enum ResponseBody {
     Task(Box<Task>),
     ResourceConsent(Box<ResourceConsent>),
     Receipt(Receipt),
+    TaskLease(Box<symbiote_domain::TaskLease>),
     Journal(JournalPage),
     Shutdown {},
 }

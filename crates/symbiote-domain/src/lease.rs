@@ -121,11 +121,17 @@ pub fn lease_expiry(acquired_at: Timestamp, duration_ms: u64) -> Result<Timestam
 }
 
 impl TaskLease {
-    /// Structural validity: version, nonzero token, and a sane window.
+    /// Structural validity: version, nonzero token, and a window inside the
+    /// declared bounds. Replay relies on this, so a journal payload with a
+    /// window acquisition itself would reject fails here too.
     pub fn validate_shape(&self) -> Result<(), LeaseError> {
         if self.version != LEASE_VERSION
             || self.fencing_token == 0
-            || self.expires_at.0 <= self.acquired_at.0
+            || lease_expiry(
+                self.acquired_at,
+                self.expires_at.0.saturating_sub(self.acquired_at.0),
+            )
+            .is_err()
         {
             return Err(LeaseError::InvalidRequest);
         }

@@ -1,5 +1,10 @@
 use super::*;
 
+/// Reserved command-ID namespace for system sweeps. Callers may not lease,
+/// release, or otherwise journal under it, so a poisoned ID can never pre-
+/// commit bytes that block the sweep.
+pub(super) const RESERVED_LEASE_PREFIX: &str = "symbiote-sweep-";
+
 pub(super) const MIGRATION_V8: &str = "CREATE TABLE task_leases (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),
  project_id TEXT NOT NULL REFERENCES projects(id),
@@ -107,6 +112,9 @@ impl Store {
         if at.0 > i64::MAX as u64 {
             return Err(StoreError::InvalidLease);
         }
+        if command_id.as_str().starts_with(RESERVED_LEASE_PREFIX) {
+            return Err(StoreError::InvalidLease);
+        }
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -199,9 +207,13 @@ impl Store {
         task: TaskId,
         dispatch_id: DispatchId,
         fencing_token: u64,
+        actor: UserId,
         at: Timestamp,
     ) -> Result<Receipt> {
         if at.0 > i64::MAX as u64 {
+            return Err(StoreError::InvalidLease);
+        }
+        if command_id.as_str().starts_with(RESERVED_LEASE_PREFIX) {
             return Err(StoreError::InvalidLease);
         }
         let transaction = self
@@ -212,12 +224,22 @@ impl Store {
         if existing.dispatch_id != dispatch_id || existing.fencing_token != fencing_token {
             return Err(StoreError::LeaseConflict(LeaseError::Fenced));
         }
-        if existing.state != LeaseState::Held {
+        if existing.state != LeaseState::Held || !lease_holds(&existing, at) {
+            // An expired lease is terminal for its generation: the sweep owns
+            // its expiration record, and a late release must not erase it.
+            // A retry of the original release replays below first.
+            let mut replayed_lease = existing;
+            replayed_lease.state = LeaseState::Released;
+            let payload = event(&replayed_lease, &actor, at);
+            let request = serde_json::to_string(&payload)?;
+            if let Some(receipt) = replay(&transaction, &command_id, &request)? {
+                return Ok(receipt);
+            }
             return Err(StoreError::LeaseConflict(LeaseError::NotHeld));
         }
         let mut lease = existing;
         lease.state = LeaseState::Released;
-        let payload = event(&lease, &UserId::new("host").expect("static id"), at);
+        let payload = event(&lease, &actor, at);
         let request = serde_json::to_string(&payload)?;
         if let Some(receipt) = replay(&transaction, &command_id, &request)? {
             return Ok(receipt);
@@ -328,25 +350,11 @@ impl Store {
         Ok(expired)
     }
 
-    /// Marks a lease fenced by a newer token generation. Used by recovery
-    /// after stale-lease expiry: the old owner's token must never re-gate.
-    pub fn fence_lease(&mut self, task: &TaskId, fencing_token: u64) -> Result<()> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing = read(&transaction, task)?.ok_or(StoreError::NotFound)?;
-        if existing.fencing_token >= fencing_token {
-            return Err(StoreError::LeaseConflict(LeaseError::Fenced));
-        }
-        let mut lease = existing;
-        lease.state = LeaseState::Fenced;
-        transaction.execute(
-            "UPDATE task_leases SET state='fenced', body=?2 WHERE task_id=?1",
-            params![task.as_str(), serde_json::to_string(&lease)?],
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
+    // Fencing an older generation is implicit: every post-terminal
+    // acquisition takes the next token and the replayed state machine refuses
+    // any transition that is not strictly increasing. There is deliberately no
+    // externally callable fence mutation: unjournaled materialized changes
+    // would fail startup audit (learned from the #490 review).
 
     pub fn lease_command_timestamp(&self, id: &CommandId) -> Result<Option<Timestamp>> {
         let body: Option<String> = self
@@ -437,8 +445,7 @@ impl Store {
                     params![stream.as_str(), now.0 as i64, task.as_str()],
                     |r| r.get(0),
                 )
-                .optional()
-                .unwrap_or(None);
+                .optional()?;
             if leased.is_some() {
                 blocked.push(BlockedTask {
                     project_id: project_id.clone(),
