@@ -311,7 +311,16 @@ fn write_marker(marker_path: &Path, marker: &Marker) -> Result<(), WorktreeError
         };
     }
     if persisted.is_err() {
-        let _ = unlink(marker_path);
+        // Unlink only when the path still names the inode this call created:
+        // a concurrent release-plus-re-reservation may have replaced the path
+        // with a new valid marker, which is never ours to remove.
+        if let Ok(created) = file.metadata() {
+            if let Ok(current) = fs::symlink_metadata(marker_path) {
+                if current.ino() == created.ino() && current.dev() == created.dev() {
+                    let _ = unlink(marker_path);
+                }
+            }
+        }
         return Err(WorktreeError::Io);
     }
     Ok(())
