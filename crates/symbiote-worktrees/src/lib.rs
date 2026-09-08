@@ -392,11 +392,25 @@ pub fn reserve(
         Err(_) => return Err(WorktreeError::UnsafePath),
     }
     let worktree = derived.worktree_path(base);
-    create_private_dir(&worktree).map_err(|error| match error {
-        // Only an existing location can mean a real double reservation.
-        WorktreeError::AlreadyReserved => WorktreeError::AlreadyReserved,
-        other => other,
-    })?;
+    // The identity-specific location is exclusive: an existing directory is
+    // reclaimable only while it is empty (an orphan from an interrupted
+    // attempt, or a Retain-released location with no data). Any content means
+    // retained or materialized work and is never reclaimed.
+    let created = match nix::unistd::mkdir(&worktree, Mode::from_bits_truncate(0o700)) {
+        Ok(()) => {
+            sync_dir(&project_dir)?;
+            true
+        }
+        Err(nix::errno::Errno::EEXIST) => {
+            check_private_dir(&worktree, true)?;
+            let mut entries = fs::read_dir(&worktree).map_err(|_| WorktreeError::NotFound)?;
+            if entries.next().is_some() {
+                return Err(WorktreeError::NotEmpty);
+            }
+            false
+        }
+        Err(_) => return Err(WorktreeError::UnsafePath),
+    };
     let marker = Marker {
         version: RESERVATION_VERSION,
         derived: derived.clone(),
@@ -411,8 +425,11 @@ pub fn reserve(
             base: base.to_path_buf(),
         }),
         Err(error) => {
-            // Do not leave an unreserved directory behind a failed marker write.
-            let _ = fs::remove_dir(&worktree);
+            // Never touch a location owned by another reservation: only this
+            // call's own freshly created directory is cleaned up.
+            if created {
+                let _ = fs::remove_dir(&worktree);
+            }
             Err(error)
         }
     }
@@ -472,8 +489,13 @@ pub fn release(reservation: &Reservation, policy: ReleasePolicy) -> Result<Outco
         .join(reservation.derived.project_id.as_str());
     let worktree = reservation.derived.worktree_path(&reservation.base);
     let marker_path = project_dir.join(format!("{}.json", reservation.derived.worktree_id));
-    // Confirm the marker still binds this identity before touching anything.
-    read_marker(&marker_path)?;
+    // Confirm the marker still binds this identity before touching anything:
+    // a syntactically valid marker for a different identity is rejected here
+    // exactly as verify rejects it.
+    let marker = read_marker(&marker_path)?;
+    if marker.derived != reservation.derived {
+        return Err(WorktreeError::IdentityMismatch);
+    }
     match policy {
         ReleasePolicy::Retain => {
             unlink(&marker_path).map_err(|_| WorktreeError::Io)?;
@@ -694,6 +716,58 @@ mod tests {
         assert!(d.worktree_path(&base).join("uncommitted.txt").is_file());
         assert!(verify(&reservation).is_err()); // content present
         assert!(read_marker(&base.join("demo").join(format!("{}.json", d.worktree_id))).is_ok());
+    }
+
+    #[test]
+    fn retained_and_populated_locations_are_never_reclaimed() {
+        let base = temp_base("reclaim");
+        let d = derived("stream-6", "seed");
+        let reservation = reserve(&d, &base, Timestamp(1)).unwrap();
+        // Retain detaches the marker but keeps the directory.
+        release(&reservation, ReleasePolicy::Retain).unwrap();
+        // Retained content is never silently reclaimed by a fresh reservation.
+        fs::write(d.worktree_path(&base).join("recovery"), b"data").unwrap();
+        assert_eq!(
+            reserve(&d, &base, Timestamp(2)).unwrap_err(),
+            WorktreeError::NotEmpty
+        );
+        assert!(d.worktree_path(&base).join("recovery").is_file());
+        // An empty orphan location may be reclaimed by its identity.
+        fs::remove_file(d.worktree_path(&base).join("recovery")).unwrap();
+        let reclaimed = reserve(&d, &base, Timestamp(3)).unwrap();
+        verify(&reclaimed).unwrap();
+    }
+
+    #[test]
+    fn failed_reservation_cleanup_never_touches_a_live_reservation() {
+        let base = temp_base("live");
+        let d = derived("stream-7", "seed");
+        let live = reserve(&d, &base, Timestamp(1)).unwrap();
+        // A racing duplicate must not delete the live reservation's directory.
+        assert_eq!(
+            reserve(&d, &base, Timestamp(2)).unwrap_err(),
+            WorktreeError::AlreadyReserved
+        );
+        verify(&live).unwrap();
+        // A swapped marker cannot release someone else's reservation.
+        let other = derived("stream-8", "seed");
+        reserve(&other, &base, Timestamp(3)).unwrap();
+        let marker_path = base
+            .join("demo")
+            .join(format!("{}.json", other.worktree_id));
+        let mut marker: Marker = serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
+        marker.derived.stream_id = symbiote_domain::ChangeStreamId::new("stream-7").unwrap();
+        fs::write(&marker_path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        let swapped = Reservation {
+            derived: other,
+            base: base.clone(),
+        };
+        assert!(matches!(
+            release(&swapped, ReleasePolicy::Retain).unwrap_err(),
+            WorktreeError::IdentityMismatch
+        ));
+        // Both live reservations survive.
+        verify(&live).unwrap();
     }
 
     #[test]
