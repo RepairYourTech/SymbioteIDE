@@ -1,5 +1,14 @@
 # Engineering handoff
 
+## Runtime discovery — 2026-09-08 UTC
+
+Change Stream `issue-186-runtime-discovery` starts from merged #482 at `1735a48`.
+The versioned inventory and read-only Codex probe distinguish observations from
+activation authority. See [runtime discovery](contracts/runtime-discovery.md)
+for the real offline sandbox proof, pinned compatibility and pending acceptance.
+The application is not ready to ship: discovery is not worker execution, and both
+native and external coding workflows still need end-to-end integration.
+
 ## Canonical work hierarchy — 2026-09-08 UTC
 
 Change Stream `issue-189-work-hierarchy` starts from merged #481 at `bb95e49`.
