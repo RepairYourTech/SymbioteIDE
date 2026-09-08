@@ -1,5 +1,11 @@
 # Engineering handoff
 
+## Inactive profile projection — 2026-09-08 UTC
+
+Change Stream `issue-187-projection` starts from merged #478 at `76ab590`. Owner #187 consumes #184/#179/#214 foundations. `symbiote-projection` reconciles explicit managed TOML primitives, binds pack mappings to exact eligible environment resources and publishes fresh private profile generations with readiness/content verification. Existing generations and native homes are never overwritten.
+
+See `docs/contracts/projection.md` for tests, demo and remaining acceptance. This is inactive profile preparation, not native/Codex compatibility or activation. Next execution prerequisites still include #174/#191/#218 trust/threat/preventive enforcement, worktree/context/dispatch integration and real runtime packs. Broad #187 and the persistent build goal remain incomplete.
+
 ## Agent environment contracts — 2026-09-08 UTC
 
 Change Stream `issue-214-environment` starts from merged #477 at `18fd58c`. Owner #214 consumes the #179/#184 foundations. Versioned desired resource declarations enter the portable Project manifest, with read-only environment resolution and explicit scope, trust, ownership and compatibility boundaries. Native files remain projections; this batch performs no resource installation or worker activation.

@@ -1,0 +1,17 @@
+[package]
+name = "symbiote-projection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+symbiote-config = { path = "../symbiote-config" }
+serde.workspace = true
+serde_json.workspace = true
+toml_edit = "=0.22.27"
+nix = { version = "=0.30.1", features = ["fs", "dir", "user"] }
+sha2 = "=0.10.9"
+
+[lints]
+workspace = true

@@ -14,6 +14,8 @@ The [local runtime transport](docs/contracts/runtime-transport.md) adds bounded 
 
 [Agent environments](docs/contracts/agent-environment.md) describe portable resource intent and resolve Role/profile settings before native configuration is projected. Host permission and credential gates remain separate from read-only configuration resolution.
 
+[Configuration projection](docs/contracts/projection.md) now reconciles managed TOML keys and publishes verifiable inactive profile generations while preserving existing profiles. Actual harness activation and reload verification remain pending.
+
 ```sh
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
