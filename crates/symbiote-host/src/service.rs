@@ -15,6 +15,7 @@ fn storage_error(error: StoreError) -> ProtocolError {
         | StoreError::InvalidDependency
         | StoreError::InvalidLease => ErrorCode::InvalidRequest,
         StoreError::DependenciesUnresolved => ErrorCode::Conflict,
+        StoreError::InvalidProvider => ErrorCode::InvalidRequest,
         StoreError::LeaseConflict(_) => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
@@ -65,6 +66,24 @@ fn consent_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Prot
 fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .route_command_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+        .as_millis();
+    Ok(Timestamp(
+        millis
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    ))
+}
+
+fn provider_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .provider_command_timestamp(&request.command_id)
         .map_err(storage_error)?
     {
         return Ok(at);
@@ -303,6 +322,66 @@ fn execute(
                 blocked: projection.blocked,
             })
         }
+        Operation::ReplaceProviderConnection {
+            attribution,
+            connection,
+        } => {
+            let at = provider_timestamp(store, request)?;
+            store
+                .replace_provider_connection(
+                    request.command_id.clone(),
+                    attribution.clone(),
+                    connection.clone(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::ReplaceBillingEntitlement {
+            attribution,
+            entitlement,
+        } => {
+            let at = provider_timestamp(store, request)?;
+            store
+                .replace_billing_entitlement(
+                    request.command_id.clone(),
+                    attribution.clone(),
+                    (**entitlement).clone(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::ReplaceModelDescriptor {
+            attribution,
+            descriptor,
+        } => {
+            let at = provider_timestamp(store, request)?;
+            store
+                .replace_model_descriptor(
+                    request.command_id.clone(),
+                    attribution.clone(),
+                    (**descriptor).clone(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::GetProviderConnection { provider_id } => store
+            .provider_connection(provider_id)
+            .map(|connection| ResponseBody::ProviderConnection(Box::new(connection)))
+            .map_err(storage_error),
+        Operation::GetBillingEntitlement { entitlement_id } => store
+            .billing_entitlement(entitlement_id)
+            .map(|entitlement| ResponseBody::BillingEntitlement(Box::new(entitlement)))
+            .map_err(storage_error),
+        Operation::GetModelDescriptor { model_id } => store
+            .model_descriptor(model_id)
+            .map(|descriptor| ResponseBody::ModelDescriptor(Box::new(descriptor)))
+            .map_err(storage_error),
         Operation::GetSchedulingProjection {} => {
             let now = Timestamp(
                 SystemTime::now()
@@ -595,6 +674,56 @@ fn execute(
                                 actor,
                                 at,
                             },
+                            registry_payload @ (
+                                symbiote_store::EventPayload::ProviderRegistered { .. }
+                                | symbiote_store::EventPayload::EntitlementRegistered { .. }
+                                | symbiote_store::EventPayload::ModelRegistered { .. }
+                            ) => {
+                                // Registry records are global identity
+                                // disclosed only to the owner authority; a
+                                // project's journal reader learns that
+                                // *something* was registered, never the
+                                // record contents.
+                                if !principal.is_local_owner() {
+                                    return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+                                }
+                                match registry_payload {
+                                    symbiote_store::EventPayload::ProviderRegistered {
+                                        attribution,
+                                        connection,
+                                        actor,
+                                        at,
+                                    } => EventPayload::ProviderRegistered {
+                                        attribution,
+                                        connection,
+                                        actor,
+                                        at,
+                                    },
+                                    symbiote_store::EventPayload::EntitlementRegistered {
+                                        attribution,
+                                        entitlement,
+                                        actor,
+                                        at,
+                                    } => EventPayload::EntitlementRegistered {
+                                        attribution,
+                                        entitlement,
+                                        actor,
+                                        at,
+                                    },
+                                    symbiote_store::EventPayload::ModelRegistered {
+                                        attribution,
+                                        descriptor,
+                                        actor,
+                                        at,
+                                    } => EventPayload::ModelRegistered {
+                                        attribution,
+                                        descriptor,
+                                        actor,
+                                        at,
+                                    },
+                                    _ => unreachable!("matched above"),
+                                }
+                            }
                             symbiote_store::EventPayload::TaskLeased { lease, actor, at } => {
                                 EventPayload::TaskLeased { lease, actor, at }
                             }

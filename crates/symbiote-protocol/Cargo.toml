@@ -18,6 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 symbiote-domain = { path = "../symbiote-domain" }
+symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
 
 [lints]
 workspace = true

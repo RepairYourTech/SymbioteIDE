@@ -8,7 +8,7 @@ pub use symbiote_trust::{ResourceConsent, ResourceSnapshot};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
-pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 8 };
+pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 9 };
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -131,6 +131,27 @@ pub enum Operation {
     },
     ExpireStaleLeases {},
     GetSchedulingProjection {},
+    ReplaceProviderConnection {
+        attribution: ProjectId,
+        connection: symbiote_domain::ProviderConnection,
+    },
+    ReplaceBillingEntitlement {
+        attribution: ProjectId,
+        entitlement: Box<symbiote_domain::BillingEntitlement>,
+    },
+    ReplaceModelDescriptor {
+        attribution: ProjectId,
+        descriptor: Box<symbiote_runtime_sdk::provider::ModelDescriptor>,
+    },
+    GetProviderConnection {
+        provider_id: ProviderConnectionId,
+    },
+    GetBillingEntitlement {
+        entitlement_id: BillingEntitlementId,
+    },
+    GetModelDescriptor {
+        model_id: ModelId,
+    },
     GetRoute {
         project_id: ProjectId,
         work_id: WorkId,
@@ -217,6 +238,12 @@ impl Operation {
             | Self::ReleaseTaskLease { .. }
             | Self::ExpireStaleLeases {}
             | Self::GetSchedulingProjection {} => None,
+            Self::ReplaceProviderConnection { attribution, .. }
+            | Self::ReplaceBillingEntitlement { attribution, .. }
+            | Self::ReplaceModelDescriptor { attribution, .. } => Some(attribution),
+            Self::GetProviderConnection { .. }
+            | Self::GetBillingEntitlement { .. }
+            | Self::GetModelDescriptor { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -251,6 +278,9 @@ impl Operation {
                 | Self::AcquireTaskLease { .. }
                 | Self::ReleaseTaskLease { .. }
                 | Self::ExpireStaleLeases {}
+                | Self::ReplaceProviderConnection { .. }
+                | Self::ReplaceBillingEntitlement { .. }
+                | Self::ReplaceModelDescriptor { .. }
                 | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
@@ -414,6 +444,10 @@ impl Principal {
     pub fn user_id(&self) -> &UserId {
         &self.user
     }
+    /// True only for the explicit bootstrap local-owner policy.
+    pub fn is_local_owner(&self) -> bool {
+        self.local_owner
+    }
     pub fn permits(&self, project: &ProjectId, permission: ProjectPermission) -> bool {
         self.local_owner
             || self
@@ -465,6 +499,18 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::ExpireStaleLeases {} | Operation::GetSchedulingProjection {} => {
             principal.local_owner
         }
+        Operation::ReplaceProviderConnection { .. }
+        | Operation::ReplaceBillingEntitlement { .. }
+        | Operation::ReplaceModelDescriptor { .. } => {
+            // Provider identity is Host-owned infrastructure; the local owner
+            // bootstrap policy registers it. The attribution project is
+            // provenance only and scopes nothing (the store separately
+            // verifies the project exists).
+            principal.local_owner
+        }
+        Operation::GetProviderConnection { .. }
+        | Operation::GetBillingEntitlement { .. }
+        | Operation::GetModelDescriptor { .. } => principal.local_owner,
         Operation::GetRoute { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
@@ -736,6 +782,8 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    ProviderRegistryWrite,
+    ProviderRegistryRead,
     TaskLeaseManagement,
     SchedulingProjection,
     TaskDependencyWrite,
@@ -783,6 +831,8 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::ProviderRegistryWrite,
+            Capability::ProviderRegistryRead,
             Capability::TaskLeaseManagement,
             Capability::SchedulingProjection,
             Capability::TaskDependencyWrite,
@@ -879,6 +929,24 @@ pub enum EventPayload {
         actor: UserId,
         at: Timestamp,
     },
+    ProviderRegistered {
+        attribution: ProjectId,
+        connection: symbiote_domain::ProviderConnection,
+        actor: UserId,
+        at: Timestamp,
+    },
+    EntitlementRegistered {
+        attribution: ProjectId,
+        entitlement: Box<symbiote_domain::BillingEntitlement>,
+        actor: UserId,
+        at: Timestamp,
+    },
+    ModelRegistered {
+        attribution: ProjectId,
+        descriptor: Box<symbiote_runtime_sdk::provider::ModelDescriptor>,
+        actor: UserId,
+        at: Timestamp,
+    },
     ResourceConsentRecorded {
         consent: Box<ResourceConsent>,
     },
@@ -919,6 +987,9 @@ impl EventPayload {
             Self::WorkRouted { decision, .. } => &decision.project_id,
             Self::TaskDependenciesSet { project_id, .. } => project_id,
             Self::TaskLeased { lease, .. } => &lease.project_id,
+            Self::ProviderRegistered { attribution, .. }
+            | Self::EntitlementRegistered { attribution, .. }
+            | Self::ModelRegistered { attribution, .. } => attribution,
         }
     }
     fn lineage_matches(&self, project_id: &ProjectId) -> bool {
@@ -1015,6 +1086,22 @@ impl EventPayload {
                     && lease.validate_shape().is_ok()
                     && lease.fencing_token > 0
             }
+            // Provider registry events are attributed to a real Project but
+            // describe global identity records. Standalone descriptor and
+            // timestamp guarantees mirror the store's write-path checks.
+            Self::ProviderRegistered { connection, at, .. } => {
+                at.0 <= i64::MAX as u64 && !connection.endpoint_reference.trim().is_empty()
+            }
+            Self::EntitlementRegistered {
+                entitlement, at, ..
+            } => {
+                at.0 <= i64::MAX as u64
+                    && !entitlement.provider.as_str().is_empty()
+                    && entitlement.expires_at.0 > 0
+            }
+            Self::ModelRegistered { descriptor, at, .. } => {
+                at.0 <= i64::MAX as u64 && descriptor.validate().is_ok()
+            }
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }
@@ -1103,6 +1190,9 @@ pub enum ResponseBody {
     ResourceConsent(Box<ResourceConsent>),
     Receipt(Receipt),
     TaskLease(Box<symbiote_domain::TaskLease>),
+    ProviderConnection(Box<symbiote_domain::ProviderConnection>),
+    BillingEntitlement(Box<symbiote_domain::BillingEntitlement>),
+    ModelDescriptor(Box<symbiote_runtime_sdk::provider::ModelDescriptor>),
     Journal(JournalPage),
     Shutdown {},
 }

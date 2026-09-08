@@ -14,12 +14,13 @@ use symbiote_workforce::{BindingConfiguration, RouteDecision};
 mod binding;
 mod dependency;
 mod lease;
+mod provider;
 mod route;
 mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 8;
+const DATABASE_VERSION: i64 = 9;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -56,6 +57,7 @@ pub enum StoreError {
     DependenciesUnresolved,
     InvalidLease,
     LeaseConflict(symbiote_domain::LeaseError),
+    InvalidProvider,
     ResourceExhausted,
 }
 impl fmt::Display for StoreError {
@@ -151,6 +153,24 @@ pub enum EventPayload {
     },
     TaskLeased {
         lease: Box<symbiote_domain::TaskLease>,
+        actor: UserId,
+        at: Timestamp,
+    },
+    ProviderRegistered {
+        attribution: ProjectId,
+        connection: symbiote_domain::ProviderConnection,
+        actor: UserId,
+        at: Timestamp,
+    },
+    EntitlementRegistered {
+        attribution: ProjectId,
+        entitlement: Box<symbiote_domain::BillingEntitlement>,
+        actor: UserId,
+        at: Timestamp,
+    },
+    ModelRegistered {
+        attribution: ProjectId,
+        descriptor: Box<symbiote_runtime_sdk::provider::ModelDescriptor>,
         actor: UserId,
         at: Timestamp,
     },
@@ -259,6 +279,9 @@ impl Store {
         }
         if version < 8 {
             transaction.execute_batch(lease::MIGRATION_V8)?;
+        }
+        if version < 9 {
+            transaction.execute_batch(provider::MIGRATION_V9)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -879,6 +902,12 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut route_audit = route::Audit::default();
     let mut dependency_audit = dependency::Audit::default();
     let mut leases: BTreeMap<TaskId, symbiote_domain::TaskLease> = BTreeMap::new();
+    let mut providers: BTreeMap<ProviderConnectionId, symbiote_domain::ProviderConnection> =
+        BTreeMap::new();
+    let mut entitlements: BTreeMap<BillingEntitlementId, symbiote_domain::BillingEntitlement> =
+        BTreeMap::new();
+    let mut models: BTreeMap<ModelId, symbiote_runtime_sdk::provider::ModelDescriptor> =
+        BTreeMap::new();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -1163,6 +1192,86 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                 }
                 leases.insert(lease.task_id.clone(), lease.clone());
             }
+            EventPayload::ProviderRegistered {
+                attribution,
+                connection,
+                actor,
+                at,
+            } => {
+                if revision != 0
+                    || attribution.as_str() != project_key
+                    || at.0 > i64::MAX as u64
+                    || connection.endpoint_reference.trim().is_empty()
+                    || request
+                        != serde_json::to_string(&provider::connection_event(
+                            attribution,
+                            connection,
+                            actor,
+                            *at,
+                        ))?
+                    || !projects.contains_key(attribution)
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid provider journal lineage".into(),
+                    ));
+                }
+                providers.insert(connection.id.clone(), connection.clone());
+            }
+            EventPayload::EntitlementRegistered {
+                attribution,
+                entitlement,
+                actor,
+                at,
+            } => {
+                let entitlement = entitlement.as_ref();
+                if revision != 0
+                    || attribution.as_str() != project_key
+                    || at.0 > i64::MAX as u64
+                    || request
+                        != serde_json::to_string(&provider::entitlement_event(
+                            attribution,
+                            entitlement,
+                            actor,
+                            *at,
+                        ))?
+                    || !projects.contains_key(attribution)
+                    || !providers.contains_key(&entitlement.provider)
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid entitlement journal lineage".into(),
+                    ));
+                }
+                entitlements.insert(entitlement.id.clone(), entitlement.clone());
+            }
+            EventPayload::ModelRegistered {
+                attribution,
+                descriptor,
+                actor,
+                at,
+            } => {
+                let descriptor = descriptor.as_ref();
+                descriptor
+                    .validate()
+                    .map_err(|_| StoreError::Integrity("invalid journaled descriptor".into()))?;
+                if revision != 0
+                    || attribution.as_str() != project_key
+                    || at.0 > i64::MAX as u64
+                    || request
+                        != serde_json::to_string(&provider::model_event(
+                            attribution,
+                            descriptor,
+                            actor,
+                            *at,
+                        ))?
+                    || !projects.contains_key(attribution)
+                    || !providers.contains_key(&descriptor.provider_id)
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid model journal lineage".into(),
+                    ));
+                }
+                models.insert(descriptor.id.clone(), descriptor.clone());
+            }
             EventPayload::TaskDependenciesSet {
                 task_id,
                 project_id,
@@ -1223,6 +1332,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             "lease count differs from journal".into(),
         ));
     }
+    provider::audit_finish(connection, &providers, &entitlements, &models)?;
     work_audit.finish(connection)?;
     team_audit.finish(connection)?;
     binding_audit.finish(connection)?;

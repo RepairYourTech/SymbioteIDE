@@ -1,1 +1,1 @@
-{"version":{"major":1,"minor":8},"correlation_id":"routing-shutdown","command_id":"routing-shutdown","operation":{"kind":"shutdown"}}
+{"version":{"major":1,"minor":9},"correlation_id":"routing-shutdown","command_id":"routing-shutdown","operation":{"kind":"shutdown"}}
