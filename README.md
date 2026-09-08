@@ -4,7 +4,9 @@ Symbiote is an open-source AI software-development firm with a human client. The
 
 ## Current implementation
 
-The Rust workspace implements foundational domain/lifecycle, configuration/portable-manifest, and architecture-decision contracts. These are usable pure libraries with executable validation and failure tests, not yet a Host daemon or desktop application. Native Rust/OpenAI API and external Codex execution are both required for the first usable release. No paid inference is performed by these tests.
+The Rust workspace now includes a local `symbioted` service and `symbiote` CLI backed by a transactional SQLite store. Clients register Projects and ready Tasks, read canonical records and replay the journal across daemon restarts. Domain/lifecycle, configuration/portable-manifest and architecture-decision contracts remain shared libraries. Agent execution and the complete desktop application are not implemented yet; native Rust/OpenAI API and external Codex execution are both required for the first usable release. No paid inference is performed by these tests.
+
+Start the local service using the [Host run instructions](docs/contracts/host.md). The Host currently targets Linux and authenticates local clients using OS peer credentials. The separate [Linux shell experiment](docs/proofs/linux-shell.md) remains a proof workload, not the production workbench.
 
 ```sh
 cargo test --workspace --locked
@@ -13,11 +15,12 @@ cargo fmt --all --check
 cargo run -p symbiote-domain --example domain_schema
 cargo run -p symbiote-config --example config_schema
 cargo run -p symbiote-architecture --example architecture_schema
+cargo run -p symbiote-protocol --example protocol_schema
 ```
 
 Schema examples emit JSON to stdout. The generated structural schemas do not replace runtime cross-field checks. Rust 1.85 is the declared minimum; Cargo.lock pins dependencies. CI tests the minimum and current stable toolchain. Workspace code forbids unsafe Rust.
 
-Contract documentation: [domain](docs/contracts/domain.md), [configuration](docs/contracts/configuration.md), [architecture governance](docs/contracts/architecture.md). Each records implemented behavior and pending integration acceptance. [Engineering handoff](docs/engineering-handoff.md) tracks the current Change Stream and next gates.
+Contract documentation: [domain](docs/contracts/domain.md), [configuration](docs/contracts/configuration.md), [architecture governance](docs/contracts/architecture.md), [storage](docs/contracts/storage.md), [protocol](docs/contracts/protocol.md), [Host](docs/contracts/host.md). Each records implemented behavior and pending integration acceptance. [Engineering handoff](docs/engineering-handoff.md) tracks the current Change Stream and next gates.
 
 ## Architecture
 

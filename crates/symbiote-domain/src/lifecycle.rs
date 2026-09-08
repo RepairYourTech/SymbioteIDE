@@ -676,6 +676,15 @@ impl ChangeStream {
     pub fn id(&self) -> &ChangeStreamId {
         &self.id
     }
+    pub fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+    pub fn root_id(&self) -> &RootId {
+        &self.root_id
+    }
+    pub fn tasks(&self) -> &BTreeSet<TaskId> {
+        &self.tasks
+    }
     pub fn head(&self) -> &CommitSha {
         &self.head
     }
