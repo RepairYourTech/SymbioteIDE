@@ -404,8 +404,12 @@ pub fn reserve(
     // reclaimable only while it is empty (an orphan from an interrupted
     // attempt, or a Retain-released location with no data). Any content means
     // retained or materialized work and is never reclaimed.
+    let mut owned_dir: Option<(u64, u64)> = None;
     let created = match nix::unistd::mkdir(&worktree, Mode::from_bits_truncate(0o700)) {
         Ok(()) => {
+            owned_dir = fs::symlink_metadata(&worktree)
+                .ok()
+                .map(|meta| (meta.dev(), meta.ino()));
             sync_dir(&project_dir)?;
             true
         }
@@ -433,10 +437,19 @@ pub fn reserve(
             base: base.to_path_buf(),
         }),
         Err(error) => {
-            // Never touch a location owned by another reservation: only this
-            // call's own freshly created directory is cleaned up.
-            if created {
-                let _ = fs::remove_dir(&worktree);
+            // Never touch a location owned by another reservation. The
+            // directory is removed only when this call created it, no marker
+            // has since claimed the identity, and the location still holds
+            // the inode this call created.
+            let marker_path = project_dir.join(format!("{}.json", derived.worktree_id));
+            if created && matches!(read_marker(&marker_path), Err(WorktreeError::NotFound)) {
+                let still_ours = fs::symlink_metadata(&worktree)
+                    .ok()
+                    .zip(owned_dir.as_ref())
+                    .is_some_and(|(meta, (dev, ino))| meta.dev() == *dev && meta.ino() == *ino);
+                if still_ours {
+                    let _ = fs::remove_dir(&worktree);
+                }
             }
             Err(error)
         }
