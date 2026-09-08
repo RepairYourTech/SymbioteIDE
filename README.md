@@ -18,6 +18,12 @@ The [local runtime transport](docs/contracts/runtime-transport.md) adds bounded 
 
 The Host records [resource consent and revocation](docs/contracts/resource-consent.md) against exact fingerprints and scope. The [trust boundary baseline](docs/security/trust-boundaries.md) keeps OS worker isolation and other release requirements explicit; consent metadata does not activate a resource.
 
+The [Linux sandbox](docs/security/linux-sandbox.md) develops preventive process
+isolation for read-only and worktree-write execution. Real hostile-process tests
+cover its boundary; authenticated worker launch and full runtime integration
+remain separate acceptance gates. Linux test runs require an installed,
+operational `bwrap` and enabled unprivileged namespaces.
+
 ```sh
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings

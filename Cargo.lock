@@ -423,6 +423,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-sandbox"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+ "symbiote-domain",
+ "symbiote-runtime-transport",
+ "symbiote-trust",
+]
+
+[[package]]
 name = "symbiote-store"
 version = "0.1.0"
 dependencies = [
