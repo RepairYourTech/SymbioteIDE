@@ -467,7 +467,7 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
     let store = Store::open(temporary.database()).unwrap();
     store
         .connection
-        .pragma_update(None, "user_version", 2)
+        .pragma_update(None, "user_version", 3)
         .unwrap();
     drop(store);
     assert!(matches!(
@@ -479,8 +479,348 @@ fn corruption_and_future_or_unknown_schema_are_refused_without_reset() {
         connection
             .pragma_query_value(None, "user_version", |r| sql_u64(r, 0))
             .unwrap(),
+        3
+    );
+}
+
+fn consent_fixture(name: &str) -> ResourceConsent {
+    ResourceConsent {
+        id: id!(CommandId, name),
+        snapshot: symbiote_trust::ResourceSnapshot {
+            project_id: id!(ProjectId, "project-one"),
+            role_id: id!(RoleId, "role-one"),
+            profile_id: id!(RuntimeProfileId, "profile-one"),
+            host_id: id!(HostId, "host-one"),
+            resource_ref: "fixture-skill".into(),
+            fingerprint: symbiote_trust::Fingerprint::of(b"fixture"),
+            access: AccessSnapshot {
+                project_id: id!(ProjectId, "project-one"),
+                roots: BTreeSet::from([id!(RootId, "root-one")]),
+                grants: BTreeSet::new(),
+                policy_revision: Revision(0),
+            },
+        },
+        user_id: id!(UserId, "owner"),
+        issued_at: Timestamp(10),
+        expires_at: Timestamp(100),
+        revoked_at: None,
+    }
+}
+
+#[test]
+fn resource_consents_reopen_revoke_and_exact_retries_are_durable() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(temporary.database()).unwrap();
+    register(&mut store, "one");
+    let consent = consent_fixture("consent-one");
+    let receipt = store
+        .record_resource_consent(consent.id.clone(), consent.clone())
+        .unwrap();
+    assert_eq!(receipt.revision, Revision(0));
+    assert!(
+        store
+            .record_resource_consent(consent.id.clone(), consent.clone())
+            .unwrap()
+            .replayed
+    );
+    assert_eq!(
+        store.consent_command_timestamp(&consent.id).unwrap(),
+        Some(Timestamp(10))
+    );
+    let mut changed = consent.clone();
+    changed.expires_at = Timestamp(101);
+    assert!(matches!(
+        store.record_resource_consent(changed.id.clone(), changed),
+        Err(StoreError::IdempotencyConflict)
+    ));
+    drop(store);
+    let mut store = Store::open(temporary.database()).unwrap();
+    assert_eq!(
+        store
+            .resource_consent(&consent.snapshot.project_id, &consent.id)
+            .unwrap(),
+        consent
+    );
+    let revoke = id!(CommandId, "revoke-one");
+    let actor = id!(UserId, "revoker");
+    assert_eq!(
+        store
+            .revoke_resource_consent(
+                revoke.clone(),
+                &consent.snapshot.project_id,
+                &consent.id,
+                &actor,
+                Timestamp(20)
+            )
+            .unwrap()
+            .revision,
+        Revision(1)
+    );
+    assert!(
+        store
+            .revoke_resource_consent(
+                revoke.clone(),
+                &consent.snapshot.project_id,
+                &consent.id,
+                &actor,
+                Timestamp(20)
+            )
+            .unwrap()
+            .replayed
+    );
+    assert!(matches!(
+        store.revoke_resource_consent(
+            revoke.clone(),
+            &consent.snapshot.project_id,
+            &consent.id,
+            &consent.user_id,
+            Timestamp(20)
+        ),
+        Err(StoreError::IdempotencyConflict)
+    ));
+    assert_eq!(
+        store.consent_command_timestamp(&revoke).unwrap(),
+        Some(Timestamp(20))
+    );
+    drop(store);
+    let store = Store::open(temporary.database()).unwrap();
+    assert_eq!(
+        store
+            .resource_consent(&consent.snapshot.project_id, &consent.id)
+            .unwrap()
+            .revoked_at,
+        Some(Timestamp(20))
+    );
+    let events = store.events(&consent.snapshot.project_id, 0, 10).unwrap();
+    assert_eq!(events.events.len(), 3);
+    assert!(
+        matches!(&events.events[2].payload,EventPayload::ResourceConsentRevoked{revoked_by,..} if revoked_by==&actor)
+    );
+}
+
+#[test]
+fn consent_relationships_invalid_times_and_cross_project_revocation_roll_back() {
+    let mut store = Store::memory().unwrap();
+    register(&mut store, "one");
+    register(&mut store, "two");
+    let consent = consent_fixture("consent-one");
+    let mut invalid = consent.clone();
+    invalid.snapshot.access.roots = BTreeSet::from([id!(RootId, "root-two")]);
+    assert!(matches!(
+        store.record_resource_consent(invalid.id.clone(), invalid),
+        Err(StoreError::RelationshipMismatch)
+    ));
+    let mut invalid = consent.clone();
+    invalid.snapshot.role_id = id!(RoleId, "role-two");
+    assert!(matches!(
+        store.record_resource_consent(invalid.id.clone(), invalid),
+        Err(StoreError::RelationshipMismatch)
+    ));
+    let mut invalid = consent.clone();
+    invalid.expires_at = invalid.issued_at;
+    assert!(matches!(
+        store.record_resource_consent(invalid.id.clone(), invalid),
+        Err(StoreError::InvalidConsent)
+    ));
+    assert!(matches!(
+        store.record_resource_consent(id!(CommandId, "different"), consent.clone()),
+        Err(StoreError::InvalidConsent)
+    ));
+    assert_eq!(
+        store
+            .events(&consent.snapshot.project_id, 0, 10)
+            .unwrap()
+            .events
+            .len(),
+        1
+    );
+    store
+        .record_resource_consent(consent.id.clone(), consent.clone())
+        .unwrap();
+    let revoke = id!(CommandId, "revoke");
+    assert!(matches!(
+        store.revoke_resource_consent(
+            revoke.clone(),
+            &id!(ProjectId, "project-two"),
+            &consent.id,
+            &consent.user_id,
+            Timestamp(20)
+        ),
+        Err(StoreError::NotFound)
+    ));
+    assert!(matches!(
+        store.revoke_resource_consent(
+            revoke.clone(),
+            &consent.snapshot.project_id,
+            &consent.id,
+            &consent.user_id,
+            Timestamp(9)
+        ),
+        Err(StoreError::InvalidConsent)
+    ));
+    assert_eq!(store.consent_command_timestamp(&revoke).unwrap(), None);
+    assert_eq!(
+        store
+            .resource_consent(&consent.snapshot.project_id, &consent.id)
+            .unwrap(),
+        consent
+    );
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn v1_migration_preserves_existing_records_and_journal() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(temporary.database()).unwrap();
+    register(&mut store, "one");
+    let before = store.events(&id!(ProjectId, "project-one"), 0, 10).unwrap();
+    // Exact v1 layout: v2 only adds this table and bumps user_version.
+    store
+        .connection
+        .execute_batch("DROP TABLE resource_consents; PRAGMA user_version=1;")
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(temporary.database()).unwrap();
+    assert_eq!(
+        store.events(&id!(ProjectId, "project-one"), 0, 10).unwrap(),
+        before
+    );
+    assert_eq!(
+        store
+            .connection
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
         2
     );
+    let consent = consent_fixture("consent-after-migration");
+    store
+        .record_resource_consent(consent.id.clone(), consent)
+        .unwrap();
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn consent_state_and_revocation_journal_tampering_are_refused() {
+    for journal_tamper in [false, true] {
+        let temporary = Temporary::new();
+        let mut store = Store::open(temporary.database()).unwrap();
+        register(&mut store, "one");
+        let consent = consent_fixture("consent-one");
+        store
+            .record_resource_consent(consent.id.clone(), consent.clone())
+            .unwrap();
+        store
+            .revoke_resource_consent(
+                id!(CommandId, "revoke"),
+                &consent.snapshot.project_id,
+                &consent.id,
+                &consent.user_id,
+                Timestamp(20),
+            )
+            .unwrap();
+        if journal_tamper {
+            store.connection.execute_batch("DROP TRIGGER journal_no_update; UPDATE journal SET payload=json_set(payload,'$.data.consent.revoked_at',21) WHERE command_id='revoke'; CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal BEGIN SELECT RAISE(ABORT, 'append-only journal'); END;").unwrap();
+        } else {
+            store.connection.execute("UPDATE resource_consents SET body=json_set(body,'$.expires_at',101) WHERE id=?1",[consent.id.as_str()]).unwrap();
+        }
+        drop(store);
+        assert!(Store::open(temporary.database()).is_err());
+    }
+}
+
+#[test]
+fn consent_journal_failure_rolls_back_insert_and_revocation() {
+    let mut store = Store::memory().unwrap();
+    register(&mut store, "one");
+    let consent = consent_fixture("consent-one");
+    store.connection.execute_batch("CREATE TRIGGER deny_consent BEFORE INSERT ON journal WHEN NEW.command_id='consent-one' BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+    assert!(
+        store
+            .record_resource_consent(consent.id.clone(), consent.clone())
+            .is_err()
+    );
+    assert!(matches!(
+        store.resource_consent(&consent.snapshot.project_id, &consent.id),
+        Err(StoreError::NotFound)
+    ));
+    store
+        .connection
+        .execute_batch("DROP TRIGGER deny_consent")
+        .unwrap();
+    store
+        .record_resource_consent(consent.id.clone(), consent.clone())
+        .unwrap();
+    store.connection.execute_batch("CREATE TRIGGER deny_revoke BEFORE INSERT ON journal WHEN NEW.command_id='revoke' BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+    assert!(
+        store
+            .revoke_resource_consent(
+                id!(CommandId, "revoke"),
+                &consent.snapshot.project_id,
+                &consent.id,
+                &consent.user_id,
+                Timestamp(20)
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .resource_consent(&consent.snapshot.project_id, &consent.id)
+            .unwrap(),
+        consent
+    );
+    assert_eq!(
+        store
+            .consent_command_timestamp(&id!(CommandId, "revoke"))
+            .unwrap(),
+        None
+    );
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn corrupt_v1_migration_rolls_back_schema_and_version() {
+    for semantic_only in [false, true] {
+        let temporary = Temporary::new();
+        let mut store = Store::open(temporary.database()).unwrap();
+        register(&mut store, "one");
+        store
+            .connection
+            .execute_batch("DROP TABLE resource_consents; PRAGMA user_version=1;")
+            .unwrap();
+        if semantic_only {
+            store
+                .connection
+                .execute_batch("UPDATE projects SET body=json_set(body,'$.name','changed');")
+                .unwrap();
+        } else {
+            store.connection.execute_batch("PRAGMA foreign_keys=OFF; INSERT INTO roots(id,project_id,body) VALUES('orphan','missing','{}');").unwrap();
+        }
+        drop(store);
+        assert!(Store::open(temporary.database()).is_err());
+        let connection = Connection::open(temporary.database()).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='resource_consents'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM journal", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
 }
 
 #[test]

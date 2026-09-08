@@ -83,7 +83,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":0},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":1},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 fn project(id: &str) -> Value {
     json!({"kind":"register_project","project":{"id":id,"name":id,"lead":format!("lead-{id}"),
@@ -101,6 +101,90 @@ fn ok(response: &Value) -> &Value {
         .unwrap()
         .get("Ok")
         .unwrap_or_else(|| panic!("unexpected response: {response}"))
+}
+
+fn resource_consent(project: &str) -> Value {
+    json!({"kind":"record_resource_consent","expires_at":4_102_444_800_000_u64,
+        "snapshot":{"project_id":project,"role_id":format!("lead-{project}"),"profile_id":"profile-fixture",
+        "host_id":"host-fixture","resource_ref":"tool-fixture","fingerprint":"a".repeat(64),
+        "access":{"project_id":project,"roots":[format!("root-{project}")],"grants":["read_root"],"policy_revision":1}}})
+}
+
+#[test]
+fn resource_consent_and_revocation_survive_daemon_death_with_original_receipts() {
+    let mut host = Host::new();
+    ok(&host.call(request(
+        "register-consent-project",
+        project("consent-project"),
+    )));
+    let command = request("approve-fixture", resource_consent("consent-project"));
+    let first = host.call(command.clone());
+    assert_eq!(ok(&first)["kind"], "receipt");
+    host.crash();
+    host.start();
+    let replay = host.call(command);
+    assert_eq!(
+        ok(&replay)["data"]["sequence"],
+        ok(&first)["data"]["sequence"]
+    );
+    assert_eq!(ok(&replay)["data"]["replayed"], true);
+    let query = request(
+        "read-consent",
+        json!({"kind":"get_resource_consent","project_id":"consent-project","consent_id":"approve-fixture"}),
+    );
+    let stored = host.call(query.clone());
+    assert_eq!(ok(&stored)["kind"], "resource_consent");
+    assert!(ok(&stored)["data"]["issued_at"].as_u64().unwrap() > 0);
+    assert!(ok(&stored)["data"]["user_id"].is_string());
+    let revoke = request(
+        "revoke-fixture",
+        json!({"kind":"revoke_resource_consent","project_id":"consent-project","consent_id":"approve-fixture"}),
+    );
+    let revoked = host.call(revoke.clone());
+    ok(&revoked);
+    host.crash();
+    host.start();
+    assert_eq!(ok(&host.call(revoke))["data"]["replayed"], true);
+    assert!(ok(&host.call(query))["data"]["revoked_at"].is_number());
+    let journal = host.call(request(
+        "read-consent-events",
+        json!({"kind":"read_journal","project_id":"consent-project","after":0,"limit":10}),
+    ));
+    let events = ok(&journal)["data"]["events"].as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[1]["payload"]["kind"], "resource_consent_recorded");
+    assert_eq!(events[2]["payload"]["kind"], "resource_consent_revoked");
+    assert!(events[2]["payload"]["data"]["revoked_by"].is_string());
+}
+
+#[test]
+fn resource_consent_rejects_spoofed_authority_cross_project_and_expired_requests() {
+    let host = Host::new();
+    ok(&host.call(request("register-rc-a", project("rc-a"))));
+    ok(&host.call(request("register-rc-b", project("rc-b"))));
+    for field in ["user_id", "issued_at", "revoked_at"] {
+        let mut operation = resource_consent("rc-a");
+        operation[field] = json!("forged");
+        assert!(
+            host.call(request(&format!("spoof-{field}"), operation))["result"]["Err"].is_object()
+        );
+    }
+    let mut operation = resource_consent("rc-a");
+    operation["snapshot"]["access"]["roots"] = json!(["root-rc-b"]);
+    assert!(host.call(request("foreign-root", operation))["result"]["Err"].is_object());
+    let mut expired = resource_consent("rc-a");
+    expired["expires_at"] = json!(1);
+    assert!(host.call(request("expired", expired))["result"]["Err"].is_object());
+    ok(&host.call(request("rc-approved", resource_consent("rc-a"))));
+    for kind in ["get_resource_consent", "revoke_resource_consent"] {
+        assert!(
+            host.call(request(
+                kind,
+                json!({"kind":kind,"project_id":"rc-b","consent_id":"rc-approved"})
+            ))["result"]["Err"]
+                .is_object()
+        );
+    }
 }
 
 #[test]
@@ -235,7 +319,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":0},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":1},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")

@@ -1,4 +1,4 @@
-# Transactional control-plane adapter v1
+# Transactional control-plane adapter
 
 Owner: [#43](https://github.com/RepairYourTech/SymbioteIDE/issues/43). `symbiote-store` is a bounded internal SQLite adapter for canonical Project/Root/Role registration, initial Task/Change Stream creation, trusted task transitions and event replay. It consumes `symbiote-domain` records and transitions rather than introducing a second ontology. It does not complete #43 or select the System Graph database.
 
@@ -32,9 +32,9 @@ This journal is an audit/query boundary, **not an external-effect executor**. Re
 
 ## Migration, recovery and security limits
 
-The v1 migration sets an application ID and `user_version=1` and creates all tables, relationship constraints, cursor index and append-only triggers in one transaction. A truly empty, unidentified SQLite database can initialize. A nonempty unversioned database, foreign application ID, future version, invalid domain snapshot, journal sequence gap or corrupt SQLite file refuses open. Migration is repeatable by reopening an already valid v1 database; it never resets an incompatible database.
+The v1 migration creates the original tables and journal. Schema v2 adds durable resource consents and their journal reconstruction. Fresh initialization and v1-to-v2 upgrades validate physical, foreign-key and semantic integrity inside the migration transaction before commit. A corrupt v1 store is rejected without persisting its upgrade. A nonempty unversioned database, foreign application ID, future version, invalid snapshot or journal gap refuses open; no incompatible database is reset.
 
-Transaction rollback is supported. There is **no promised schema downgrade**: do not open a newer database with an older binary or edit its version pragma to bypass refusal. The initial migration has no predecessor user data to transform. Future migrations require explicit compatibility, backup, tested upgrade and rollback policy before release. Restore/export, managed backup, corruption repair workflow, compaction and retention are still pending #43 scope. Do not copy an open WAL database's main file alone as a backup; its associated WAL may contain committed data.
+Transaction rollback is supported. There is **no promised schema downgrade**: do not edit the version pragma to bypass an older binary's refusal. Preserve a consistent stopped-Host backup before upgrading valuable state; rollback requires the complete prior database and matching binary. The v1-to-v2 fixture verifies retained records and journal. Restore/export, managed backup, corruption repair, compaction and retention remain pending #43 scope. Do not copy an open WAL database's main file alone as a backup; its WAL may contain committed data. See [resource consent](resource-consent.md) for the new operations.
 
 The DB is not encrypted by this adapter. The owning Host must enforce private filesystem access; deployment/device encryption and managed encryption-at-rest policy remain pending. Actual secret values belong in a vault. This API stores supplied Project text and trusted Task reports, so upstream callers must avoid embedding secrets in them; it does not redact arbitrary prose or claim encrypted storage. It makes no vault calls and stores no network credentials on its own.
 

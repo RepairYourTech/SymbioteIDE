@@ -1,5 +1,11 @@
 # Engineering handoff
 
+## Durable resource consent — 2026-09-08 UTC
+
+Change Stream `issue-174-191-trust` starts from merged #479 at `615e483`. Owners #174/#191 establish the trust/threat baseline and a durable exact-resource consent boundary. New `symbiote-trust` checks snapshots, expiry/revocation and current policy; Host protocol v1.1 records/reads/revokes consent using server-derived authority, and store schema v2 journals those decisions transactionally.
+
+See `docs/contracts/resource-consent.md` and `docs/security/trust-boundaries.md` for migration and remaining acceptance. Same-UID local-owner bootstrap is not a worker sandbox: #218 must prove preventive isolation before native/external workers launch. Licensing, publisher signatures, active revocation, complete trust tests and the first usable release remain pending. Broad #174/#191 and the persistent build goal stay open.
+
 ## Inactive profile projection — 2026-09-08 UTC
 
 Change Stream `issue-187-projection` starts from merged #478 at `76ab590`. Owner #187 consumes #184/#179/#214 foundations. `symbiote-projection` reconciles explicit managed TOML primitives, binds pack mappings to exact eligible environment resources and publishes fresh private profile generations with readiness/content verification. Existing generations and native homes are never overwritten.
