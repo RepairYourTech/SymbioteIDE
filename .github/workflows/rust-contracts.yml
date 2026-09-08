@@ -21,6 +21,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
           bwrap --version
+          bwrap --unshare-all --unshare-user --disable-userns --assert-userns-disabled \
+            --die-with-parent --new-session --clearenv --cap-drop ALL \
+            --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib \
+            --symlink usr/lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp \
+            -- /usr/bin/true
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
