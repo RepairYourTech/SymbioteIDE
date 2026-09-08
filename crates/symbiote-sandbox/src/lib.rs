@@ -45,7 +45,77 @@ pub enum SandboxError {
     UnsupportedEntry,
     ResourceLimit,
     Unavailable,
+    SetupFailed(SetupFailure),
     Transport(TransportError),
+}
+/// Bounded setup stderr is available only through explicit inspection.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SetupFailure {
+    cause: Option<TransportError>,
+    diagnostics: Vec<String>,
+    truncated: bool,
+}
+impl SetupFailure {
+    pub fn cause(&self) -> Option<&TransportError> {
+        self.cause.as_ref()
+    }
+    pub fn diagnostics(&self) -> &[String] {
+        &self.diagnostics
+    }
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+}
+impl fmt::Debug for SetupFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SetupFailure")
+            .field("cause", &self.cause)
+            .field("diagnostic_count", &self.diagnostics.len())
+            .field("truncated", &self.truncated)
+            .finish()
+    }
+}
+impl SandboxError {
+    pub fn setup_failure(&self) -> Option<&SetupFailure> {
+        match self {
+            Self::SetupFailed(failure) => Some(failure),
+            _ => None,
+        }
+    }
+}
+
+fn setup_failure(transport: &mut JsonlTransport, cause: Option<TransportError>) -> SandboxError {
+    let deadline = std::time::Instant::now() + Duration::from_millis(200);
+    while !transport.diagnostics_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Acquire completion before draining: a true observation guarantees the
+    // producer's final entry is already published into the diagnostic queue.
+    let finished = transport.diagnostics_finished();
+    let batch = transport.diagnostics();
+    let mut truncated = !finished || batch.dropped > 0 || batch.entries.len() > 8;
+    let diagnostics = batch
+        .entries
+        .into_iter()
+        .take(8)
+        .map(|entry| {
+            let mut text = entry.text;
+            truncated |= entry.truncated || text.len() > 1024;
+            if text.len() > 1024 {
+                let mut boundary = 1024;
+                while !text.is_char_boundary(boundary) {
+                    boundary -= 1;
+                }
+                text.truncate(boundary);
+            }
+            text
+        })
+        .collect();
+    SandboxError::SetupFailed(SetupFailure {
+        cause,
+        diagnostics,
+        truncated,
+    })
 }
 impl fmt::Display for SandboxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -373,12 +443,13 @@ pub fn launch(request: LaunchRequest<'_>) -> Result<SandboxProcess> {
         },
         request.limits,
     )
-    .map_err(|_| SandboxError::Unavailable)?;
-    let ready = transport
-        .recv(Duration::from_secs(5))
-        .map_err(|_| SandboxError::Unavailable)?;
+    .map_err(SandboxError::Transport)?;
+    let ready = match transport.recv(Duration::from_secs(5)) {
+        Ok(ready) => ready,
+        Err(error) => return Err(setup_failure(&mut transport, Some(error))),
+    };
     if ready != serde_json::json!({"symbiote_sandbox_ready":1}) {
-        return Err(SandboxError::Unavailable);
+        return Err(setup_failure(&mut transport, None));
     }
     Ok(SandboxProcess { transport })
 }

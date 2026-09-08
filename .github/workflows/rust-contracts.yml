@@ -10,16 +10,23 @@ permissions:
 
 jobs:
   contracts:
-    runs-on: ubuntu-latest
+    # Noble's default runner rejects isolated loopback setup. Keep that failure
+    # documented; do not disable AppArmor or relax the invocation to pass tests.
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         toolchain: ["1.85.0", stable]
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux sandbox runtime
+      - name: Build pinned Linux sandbox runtime
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes meson ninja-build libcap-dev pkg-config
+          git clone --no-checkout https://github.com/containers/bubblewrap.git "$RUNNER_TEMP/bubblewrap"
+          git -C "$RUNNER_TEMP/bubblewrap" checkout --detach 2a76602a8c71f36c1527cf9fc3417d9149822e0c
+          meson setup "$RUNNER_TEMP/bubblewrap/build" "$RUNNER_TEMP/bubblewrap" -Dman=disabled -Dbash_completion=disabled -Dzsh_completion=disabled
+          meson compile -C "$RUNNER_TEMP/bubblewrap/build" bwrap
+          sudo install -m 0755 "$RUNNER_TEMP/bubblewrap/build/bwrap" /usr/bin/bwrap
           bwrap --version
           bwrap --unshare-all --unshare-user --disable-userns --assert-userns-disabled \
             --die-with-parent --new-session --clearenv --cap-drop ALL \

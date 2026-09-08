@@ -16,6 +16,7 @@ use symbiote_sandbox::*;
 use symbiote_trust::*;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture {
+    owns_directory: bool,
     base: PathBuf,
     worktree: PathBuf,
     protected: Vec<PathBuf>,
@@ -40,6 +41,7 @@ impl Fixture {
             DirBuilder::new().mode(0o700).create(path).unwrap();
         }
         Self {
+            owns_directory: true,
             base,
             worktree,
             protected: vec![host],
@@ -106,8 +108,25 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.base).unwrap();
+        if self.owns_directory {
+            // Cleanup must not turn an original setup failure into a double panic.
+            let _ = fs::remove_dir_all(&self.base);
+        }
     }
+}
+
+fn launch_ready(request: LaunchRequest<'_>) -> SandboxProcess {
+    launch(request).unwrap_or_else(|error| {
+        if let Some(setup) = error.setup_failure() {
+            for line in setup.diagnostics() {
+                eprintln!("sandbox setup stderr: {line}");
+            }
+            if setup.truncated() {
+                eprintln!("sandbox setup stderr truncated");
+            }
+        }
+        panic!("sandbox setup failed: {error}");
+    })
 }
 
 #[test]
@@ -138,7 +157,7 @@ print(json.dumps(result),flush=True)
         tcp.local_addr().unwrap().port().to_string(),
     ];
     let consent = fixture.consent(Profile::ReadOnly, &args);
-    let mut child = launch(fixture.request(&consent, Profile::ReadOnly, &args)).unwrap();
+    let mut child = launch_ready(fixture.request(&consent, Profile::ReadOnly, &args));
     let report = child.recv(Duration::from_secs(5)).unwrap();
     for key in [
         "credential_denied",
@@ -177,7 +196,7 @@ time.sleep(10)
 "#;
     let args = vec!["-c".into(), script.into()];
     let consent = fixture.consent(Profile::WorktreeWrite, &args);
-    let mut child = launch(fixture.request(&consent, Profile::WorktreeWrite, &args)).unwrap();
+    let mut child = launch_ready(fixture.request(&consent, Profile::WorktreeWrite, &args));
     assert_eq!(child.recv(Duration::from_secs(5)).unwrap()["started"], true);
     let deadline = Instant::now() + Duration::from_secs(3);
     while !fs::metadata(fixture.worktree.join("heartbeat")).is_ok_and(|m| m.len() > 0) {
@@ -313,7 +332,7 @@ fn inherited_descriptor_boundary_child() {
         socket.as_raw_fd().to_string(),
     ];
     let consent = fixture.consent(Profile::ReadOnly, &args);
-    let mut child = launch(fixture.request(&consent, Profile::ReadOnly, &args)).unwrap();
+    let mut child = launch_ready(fixture.request(&consent, Profile::ReadOnly, &args));
     assert_eq!(child.recv(Duration::from_secs(5)).unwrap()["closed"], true);
 }
 
@@ -376,13 +395,14 @@ fn sandbox_owner_death_child() {
     };
     let base = PathBuf::from(base);
     let fixture = Fixture {
+        owns_directory: false,
         worktree: base.join("worktree"),
         protected: vec![base.join("host")],
         base,
     };
     let args=vec!["-c".into(),"import os,time\nif os.fork()==0:\n os.setsid()\n deadline=time.monotonic()+10\n while time.monotonic()<deadline:\n  with open('/workspace/owner-heartbeat','ab') as f:f.write(b'x')\n  time.sleep(.01)\n os._exit(0)\ntime.sleep(10)".into()];
     let consent = fixture.consent(Profile::WorktreeWrite, &args);
-    let _child = launch(fixture.request(&consent, Profile::WorktreeWrite, &args)).unwrap();
+    let _child = launch_ready(fixture.request(&consent, Profile::WorktreeWrite, &args));
     std::thread::sleep(Duration::from_secs(60));
 }
 
@@ -420,4 +440,53 @@ fn setsid_descendant_heartbeat_stops_after_launcher_owner_dies() {
     let before = fs::metadata(&heartbeat).unwrap().len();
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(fs::metadata(&heartbeat).unwrap().len(), before);
+}
+
+#[test]
+fn setup_failure_stderr_is_bounded_explicit_and_debug_redacted() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    // Deliberate trusted fixture helper that fails before executing any workload.
+    let helper = fixture.base.join("failing-helper");
+    fs::write(
+        &helper,
+        "#!/usr/bin/sh\nprintf 'fixture-private-detail\\n' >&2\nexit 42\n",
+    )
+    .unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    let args = vec!["-c".into(), "print('{}')".into()];
+    let consent = fixture.consent(Profile::ReadOnly, &args);
+    let mut request = fixture.request(&consent, Profile::ReadOnly, &args);
+    request.helper_path = &helper;
+    let error = match launch(request) {
+        Err(error) => error,
+        Ok(_) => panic!("failing helper was accepted"),
+    };
+    let setup = error.setup_failure().expect("structured setup failure");
+    assert!(
+        setup
+            .diagnostics()
+            .iter()
+            .any(|line| line.contains("fixture-private-detail"))
+    );
+    assert!(!format!("{error:?}").contains("fixture-private-detail"));
+    assert!(!format!("{error}").contains("fixture-private-detail"));
+    assert!(setup.diagnostics().len() <= 8);
+    assert!(setup.diagnostics().iter().all(|line| line.len() <= 1024));
+    assert!(!setup.truncated());
+    assert!(fixture.worktree.exists());
+    fs::write(
+        &helper,
+        "#!/usr/bin/sh\nprintf '%02000d\\n' 0 >&2\nexit 42\n",
+    )
+    .unwrap();
+    let mut request = fixture.request(&consent, Profile::ReadOnly, &args);
+    request.helper_path = &helper;
+    let error = match launch(request) {
+        Err(error) => error,
+        Ok(_) => panic!("failing helper was accepted"),
+    };
+    let setup = error.setup_failure().unwrap();
+    assert!(setup.truncated());
+    assert_eq!(setup.diagnostics()[0].len(), 1024);
 }

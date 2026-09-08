@@ -70,9 +70,18 @@ not a project-supplied executable or a resource selected by a prompt.
 ## Verification and remaining gates
 
 Tests must execute the real installed bubblewrap. An unavailable or rejected
-namespace setup is a failure, not a skipped security test. CI installs the
-distribution bubblewrap package and records its version without disabling host
-security policy. The local starting environment provides bubblewrap 0.12.0.
+namespace setup is a failure, not a skipped security test. CI builds bubblewrap
+0.12.0 from upstream commit `2a76602a8c71f36c1527cf9fc3417d9149822e0c` on Ubuntu
+22.04 and records its version without disabling host security policy. The local
+starting environment also provides bubblewrap 0.12.0. The upstream source is
+[pinned here](https://github.com/containers/bubblewrap/commit/2a76602a8c71f36c1527cf9fc3417d9149822e0c).
+
+The initial Ubuntu 24.04 runner with distribution bubblewrap 0.9.0 failed actual
+namespace setup: `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
+[The failed setup run](https://github.com/RepairYourTech/SymbioteIDE/actions/runs/34194047726)
+remains evidence of unsupported configuration, not a passing platform result.
+No AppArmor/sysctl policy was disabled, and no invocation flags were relaxed.
+Ubuntu 24.04 compatibility needs a separate verified installation configuration.
 
 Run the focused verification with:
 
@@ -92,7 +101,7 @@ evidence must distinguish the launcher exit from descendant termination; process
 group signalling alone cannot prove that a setsid child is gone. Owner-death
 tests must cover that distinction before making a namespace cleanup claim.
 
-Local verification on 2026-09-08 passed all nine sandbox test entries (including
+Local verification on 2026-09-08 passed all ten sandbox test entries (including
 two subprocess fixture entry points), the workspace suite, strict workspace
 Clippy and formatting. Tests exercise consent changes/expiry/revocation and
 permission denial, aliases, command/path bounds, inaccessible Host files and
@@ -100,6 +109,12 @@ network, inherited fixture descriptors, permitted writes, cancellation and
 owner death. The last two observe a positive heartbeat stop; the public
 descendant-cleanup result deliberately remains `Unknown`. They do not certify
 every possible descendant or outstanding privileged side effect.
+
+Setup failures retain at most eight diagnostic lines of 1,024 UTF-8 bytes each,
+with truncation/incomplete-drain status. Debug and Display redact those lines;
+trusted callers must explicitly request them for troubleshooting and apply their
+own disclosure policy. This preserves the reason for a rejected namespace setup
+without automatically logging potentially sensitive child text.
 
 The `sandbox_probe` example was also executed with a private temporary fixture.
 It requires the exact report below and a successful target exit; it uses fixture
