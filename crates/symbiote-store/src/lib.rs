@@ -10,10 +10,11 @@ use std::{
 };
 use symbiote_domain::*;
 use symbiote_trust::ResourceConsent;
+mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 3;
+const DATABASE_VERSION: i64 = 4;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -41,6 +42,8 @@ pub enum StoreError {
     InvalidConsent,
     Work(WorkError),
     UnclassifiedTask,
+    InvalidTeam,
+    TeamRevisionConflict,
 }
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -87,6 +90,12 @@ pub struct Receipt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum EventPayload {
+    TeamReplaced {
+        team: Box<TeamConfiguration>,
+        expected_revision: Option<Revision>,
+        actor: UserId,
+        at: Timestamp,
+    },
     ProjectRegistered {
         project: Box<Project>,
         roots: Vec<Root>,
@@ -199,6 +208,9 @@ impl Store {
         }
         if version < 3 {
             transaction.execute_batch(work::MIGRATION_V3)?;
+        }
+        if version < 4 {
+            transaction.execute_batch(team::MIGRATION_V4)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -805,6 +817,7 @@ fn mutation_request(task_id: &TaskId, command: &TaskCommand) -> Result<String> {
 /// indexed current state. Never repair or reset a mismatched record automatically.
 fn audit_journal(connection: &Connection) -> Result<()> {
     let mut work_audit = work::Audit::default();
+    let mut team_audit = team::Audit::default();
     let mut projects = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
@@ -833,6 +846,21 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             .ok_or_else(|| StoreError::Integrity("journal sequence exhausted".into()))?;
         let event: EventPayload = serde_json::from_str(&body)?;
         match &event {
+            EventPayload::TeamReplaced {
+                team,
+                expected_revision,
+                actor,
+                at,
+            } => {
+                team_audit.replaced(
+                    team,
+                    *expected_revision,
+                    actor,
+                    *at,
+                    (&project_key, revision, &request),
+                    &projects,
+                )?;
+            }
             EventPayload::WorkItemCreated { item } => {
                 work_audit.created(item, &project_key, revision, &request, &event, &projects)?;
             }
@@ -979,6 +1007,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         }
     }
     work_audit.finish(connection)?;
+    team_audit.finish(connection)?;
     for (query, expected) in [
         ("SELECT count(*) FROM projects", projects.len()),
         ("SELECT count(*) FROM tasks", tasks.len()),

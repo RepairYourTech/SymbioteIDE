@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "project_id": "staffing-demo",
+  "revision": 0,
+  "lead_role_id": "lead",
+  "access_ceiling": {
+    "project_id": "staffing-demo",
+    "roots": [
+      "staffing-root"
+    ],
+    "grants": [
+      "read_root",
+      "execute_process"
+    ],
+    "policy_revision": 1
+  },
+  "members": [
+    {
+      "role_id": "lead",
+      "function": "lead_orchestrator",
+      "responsibilities": [
+        "Plan work and verify delivery"
+      ],
+      "task_domains": [
+        "coding"
+      ],
+      "access": {
+        "project_id": "staffing-demo",
+        "roots": [
+          "staffing-root"
+        ],
+        "grants": [
+          "read_root",
+          "execute_process"
+        ],
+        "policy_revision": 1
+      },
+      "context_policy_ref": "default-context",
+      "tool_policy_ref": "default-tools",
+      "skill_policy_ref": "default-skills",
+      "execution_policy_ref": "bounded-execution",
+      "independent_reviewers": [
+        "engineer"
+      ],
+      "fallbacks": []
+    },
+    {
+      "role_id": "engineer",
+      "function": "general_execution",
+      "responsibilities": [
+        "Implement bounded coding tasks"
+      ],
+      "task_domains": [
+        "coding"
+      ],
+      "access": {
+        "project_id": "staffing-demo",
+        "roots": [
+          "staffing-root"
+        ],
+        "grants": [
+          "read_root",
+          "execute_process"
+        ],
+        "policy_revision": 1
+      },
+      "context_policy_ref": "default-context",
+      "tool_policy_ref": "default-tools",
+      "skill_policy_ref": "default-skills",
+      "execution_policy_ref": "bounded-execution",
+      "independent_reviewers": [
+        "lead"
+      ],
+      "fallbacks": []
+    }
+  ]
+}

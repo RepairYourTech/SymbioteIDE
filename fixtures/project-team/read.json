@@ -1,0 +1,12 @@
+{
+  "version": {
+    "major": 1,
+    "minor": 3
+  },
+  "correlation_id": "read-staffing",
+  "command_id": "read-staffing",
+  "operation": {
+    "kind": "get_team",
+    "project_id": "staffing-demo"
+  }
+}

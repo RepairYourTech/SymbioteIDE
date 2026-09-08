@@ -83,7 +83,85 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":2},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":3},"correlation_id":"test-request","command_id":command,"operation":operation})
+}
+
+fn team(project: &str, revision: u64) -> Value {
+    let access = json!({"project_id":project,"roots":[format!("root-{project}")],"grants":["read_root","execute_process"],"policy_revision":1});
+    let member = |prefix: &str, function: &str, reviewer: &str| {
+        json!({
+            "role_id":format!("{prefix}-{project}"),"function":function,
+            "responsibilities":["Implement and verify bounded work"],"task_domains":["coding"],
+            "access":access,"context_policy_ref":"context","tool_policy_ref":"tools",
+            "skill_policy_ref":"skills","execution_policy_ref":"execution",
+            "independent_reviewers":[format!("{reviewer}-{project}")],"fallbacks":[]
+        })
+    };
+    json!({"schema_version":1,"project_id":project,"revision":revision,
+        "lead_role_id":format!("lead-{project}"),"access_ceiling":access,
+        "members":[member("lead","lead_orchestrator","worker"),member("worker","general_execution","lead")]})
+}
+
+#[test]
+fn team_revisions_survive_crash_and_do_not_leak_between_projects() {
+    let mut host = Host::new();
+    for id in ["staff-a", "staff-b"] {
+        let mut registration = project(id);
+        registration["project"]["roles"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id":format!("worker-{id}"),"project_id":id,"revision":0,"name":"Engineer",
+                "operating_contract":{"id":"worker-contract","revision":1}
+            }));
+        ok(&host.call(request(&format!("register-{id}"), registration)));
+    }
+    let replace = |command: &str, revision: Option<u64>, configuration: Value| {
+        request(
+            command,
+            json!({"kind":"replace_team","expected_revision":revision,"team":configuration}),
+        )
+    };
+    let first = replace("team-initial", None, team("staff-a", 0));
+    ok(&host.call(first.clone()));
+    host.crash();
+    host.start();
+    assert_eq!(ok(&host.call(first))["data"]["replayed"], true);
+    assert_eq!(
+        host.call(request(
+            "other",
+            json!({"kind":"get_team","project_id":"staff-b"})
+        ))["result"]["Err"]["code"],
+        "not_found"
+    );
+    let mut update = team("staff-a", 1);
+    update["members"][1]["responsibilities"] = json!(["Review and implement scoped changes"]);
+    ok(&host.call(replace("team-update", Some(0), update.clone())));
+    assert_eq!(
+        host.call(replace("stale-team", Some(0), update.clone()))["result"]["Err"]["code"],
+        "stale_revision"
+    );
+    let mut foreign = team("staff-a", 2);
+    foreign["access_ceiling"]["roots"] = json!(["root-staff-b"]);
+    for member in foreign["members"].as_array_mut().unwrap() {
+        member["access"]["roots"] = json!(["root-staff-b"]);
+    }
+    assert_eq!(
+        host.call(replace("foreign-root", Some(1), foreign))["result"]["Err"]["code"],
+        "invalid_request"
+    );
+    host.crash();
+    host.start();
+    let read = host.call(request(
+        "read-team",
+        json!({"kind":"get_team","project_id":"staff-a"}),
+    ));
+    assert_eq!(ok(&read)["data"], update);
+    let journal = host.call(request(
+        "team-events",
+        json!({"kind":"read_journal","project_id":"staff-a","after":0,"limit":100}),
+    ));
+    assert_eq!(ok(&journal)["data"]["events"].as_array().unwrap().len(), 3);
 }
 fn project(id: &str) -> Value {
     json!({"kind":"register_project","project":{"id":id,"name":id,"lead":format!("lead-{id}"),
@@ -402,7 +480,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":2},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":3},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")

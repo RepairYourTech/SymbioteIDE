@@ -21,7 +21,7 @@ preserve actor/time provenance and exact retries. Revising scope invalidates
 approval; reopening returns to Draft and retains history. Illegal transitions,
 stale revisions and command-ID reuse for different intent fail atomically.
 
-Workers cannot mutate canonical WorkItems. Host protocol v1.2 exposes creation,
+Workers cannot mutate canonical WorkItems. Host protocol v1.3 exposes creation,
 reading and explicit user edits, but no completion operation and no caller-set
 actor, creation time or history. The Host derives identity from the authenticated
 principal and reuses persisted command timestamps on retries. Older protocol

@@ -1,5 +1,14 @@
 # Engineering handoff
 
+## Durable Project Team — 2026-09-08 UTC
+
+Change Stream `issue-200-project-team` starts from merged #483 at `8383a6b`.
+The Host stores Team configuration with revision checks, journal replay and
+separate management authority. See [Project Team](contracts/project-team.md)
+for schema v4 migration, protocol v1.3 and the executable CLI demonstration.
+This establishes staffing intent; qualified native/external bindings and worker
+execution remain pending. #200 and the full build goal remain open.
+
 ## Runtime discovery — 2026-09-08 UTC
 
 Change Stream `issue-186-runtime-discovery` starts from merged #482 at `1735a48`.
