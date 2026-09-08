@@ -1,5 +1,13 @@
 # Engineering handoff
 
+## Runtime SDK foundation — 2026-09-08 UTC
+
+Change Stream `issue-184-runtime-sdk` starts from merged #475 at `c1b7f2f6d7adcbe7c50377d1ff9e990b11019ebe`. Owners #184/#464 consume the reviewed #181/#36 contracts. `symbiote-runtime-sdk` separates agent-loop adapters from inference providers, qualifies immutable dispatches against current identity-bound capability/control evidence, and defines bounded session events and native/external auth/billing checks.
+
+Independent review covers adapter capability/activation logic separately from provider/event logic. New failure fixtures cover proof substitution, stale controls, context bounds, native/external ownership, absent CLI/local endpoint metadata, false completion, replay gaps, cancellation uncertainty and impossible/over-budget usage. Conformance fixtures are not real runtimes; the Host has no SDK activation endpoint or implementation of its ActivationJournal callback yet.
+
+Next: implement dependency-ready runtime profile/configuration and trust/enforcement foundations, then actual adapter transport and dispatch integration under the canonical queue. #184/#464 remain open for real reference transports, compatibility dossiers, process isolation and full native/Codex operation. See `docs/contracts/runtime-sdk.md`, `runtime-events.md` and `providers.md`. Overall first usable release remains incomplete; do not mark the persistent build goal achieved.
+
 ## Durable metadata Host — 2026-09-08 UTC
 
 Current Change Stream: `issue-43-durable-host`, isolated from merged #474 at `42eda51a7e4955cb5f44aa85833e8a313a6ae3a7`. Owners #43/#181/#180 consume the reviewed #36/#176 foundational contracts. New Rust workspace crates implement SQLite current-state/journal transactions, typed transport-neutral requests, and an actual Linux daemon/CLI using private same-UID IPC. The GUI has no canonical state ownership. No agent subprocess or model billing is enabled.
