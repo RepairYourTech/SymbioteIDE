@@ -1,5 +1,14 @@
 # Engineering handoff
 
+## Live Host inventory — 2026-09-08 UTC
+
+Change Stream `issue-193-host-inventory` starts from merged #484 at `0d6c65a`.
+The local Host exposes bounded passive resource observations with private stable
+identity, expiry and explicit telemetry disablement. See [Host inventory](contracts/host-inventory.md)
+for protocol v1.4, actual probe scope and remaining scheduling acceptance.
+Effective capacity and reservations remain unproven, so they cannot authorize
+worker launch. #193 and the full build goal remain open.
+
 ## Durable Project Team — 2026-09-08 UTC
 
 Change Stream `issue-200-project-team` starts from merged #483 at `8383a6b`.

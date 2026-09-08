@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+symbiote-host-inventory = { path = "../symbiote-host-inventory" }
 symbiote-domain = { path = "../symbiote-domain" }
 symbiote-protocol = { path = "../symbiote-protocol" }
 symbiote-store = { path = "../symbiote-store" }

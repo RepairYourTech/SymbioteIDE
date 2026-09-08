@@ -1,0 +1,16 @@
+[package]
+name = "symbiote-host-inventory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+symbiote-domain = { path = "../symbiote-domain" }
+symbiote-runtime-discovery = { path = "../symbiote-runtime-discovery" }
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+
+[lints]
+workspace = true
