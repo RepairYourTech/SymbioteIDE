@@ -1,0 +1,12 @@
+[package]
+name = "symbiote-client-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+symbiote-protocol = { path = "../symbiote-protocol" }
+symbiote-domain = { path = "../symbiote-domain" }
+serde.workspace = true
+serde_json.workspace = true
