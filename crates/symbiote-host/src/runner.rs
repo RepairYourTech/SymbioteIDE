@@ -47,7 +47,7 @@ pub struct WorkerOutcome {
     pub completion_filed: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerError {
     /// The dispatch's runtime kind does not match the loop being run.
     RuntimeMismatch,
@@ -55,12 +55,17 @@ pub enum RunnerError {
     NotRunning,
     /// The dispatch contract no longer validates at the run time.
     InvalidContract,
-    /// The loop halted without a completed turn; nothing was filed.
-    LoopFailed,
+    /// The loop halted without a completed turn; nothing was filed. The
+    /// payload is the loop's own halt/error identity, so a caller-sequence
+    /// bug (`invalid_input`, `already_complete`, `unknown_tool`) is never
+    /// misread as a retryable transient failure.
+    LoopFailed(&'static str),
     /// The loop completed but produced no reportable final message.
     NoReport,
-    /// The store refused the completion (illegal transition, CAS, etc.).
-    Store,
+    /// The store refused the filing. The payload names the store's own
+    /// error (display form) so an idempotency collision is distinguishable
+    /// from a state move.
+    Store(String),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -81,7 +86,9 @@ fn check_runnable(
     if dispatch.contract().profile().runtime != expected {
         return Err(RunnerError::RuntimeMismatch);
     }
-    let task = store.task(task_id).map_err(|_| RunnerError::Store)?;
+    let task = store
+        .task(task_id)
+        .map_err(|error| RunnerError::Store(error.to_string()))?;
     if task.state() != &TaskState::Running {
         return Err(RunnerError::NotRunning);
     }
@@ -100,10 +107,21 @@ fn file_completion(
     report: &str,
     at: Timestamp,
 ) -> Result<(), RunnerError> {
-    let task = store.task(task_id).map_err(|_| RunnerError::Store)?;
+    let task = store
+        .task(task_id)
+        .map_err(|error| RunnerError::Store(error.to_string()))?;
+    // The command id carries the dispatch id and the filing time: a Host
+    // retry of the SAME observed run replays honestly (byte-identical
+    // request), while a NEW run of the task gets a fresh id and can never
+    // be silently swallowed by the old receipt.
+    let id = CommandId::new(format!(
+        "worker-completion-{}-{}",
+        dispatch.id().as_str(),
+        at.0
+    ))
+    .map_err(|error| RunnerError::Store(error.to_string()))?;
     let command = TaskCommand {
-        id: CommandId::new(format!("worker-completion-{}", task_id.as_str()))
-            .map_err(|_| RunnerError::Store)?,
+        id,
         expected_revision: task.revision(),
         actor: Actor::Worker(dispatch.id().clone()),
         at,
@@ -115,11 +133,12 @@ fn file_completion(
     store
         .apply_task(task_id, command)
         .map_err(|error: symbiote_store::StoreError| {
-            // An illegal transition here means the state moved under us
-            // (lease expiry, concurrent edit, replay). The loop's evidence
-            // stays in the run summary; the Host decides the retry.
-            let _ = error;
-            RunnerError::Store
+            // Surfaced, never swallowed: an illegal transition means the
+            // state moved under us (lease expiry, concurrent edit); an
+            // idempotency conflict means a different command already used
+            // this id. The loop's evidence stays with the caller; the Host
+            // decides the retry.
+            RunnerError::Store(error.to_string())
         })?;
     Ok(())
 }
@@ -142,11 +161,24 @@ pub fn run_native(
     // keyed by the contract's profile model — never from loop input.
     let model = store
         .model_descriptor(&dispatch.contract().profile().model)
-        .map_err(|_| RunnerError::Store)?;
+        .map_err(|error| RunnerError::Store(error.to_string()))?;
     let mut session = NativeSession::new(dispatch, model, at).map_err(native_error)?;
     let summary = session.run(task_prompt, transport).map_err(native_error)?;
-    if summary.halted != Some(symbiote_native_agent::HaltReason::Stop) {
-        return Err(RunnerError::LoopFailed);
+    // Only a model-finished turn is a clean stop. The native loop maps
+    // FinishReason::Cancelled to the same HaltReason::Stop as a normal
+    // finish, so a cancelled turn is recognized by its terminal event: it
+    // records CancelAcknowledged, not Exit(0). Filing a cancelled turn
+    // would make an unfinished turn look worker-complete.
+    let cancelled = session
+        .events()
+        .iter()
+        .any(|event| matches!(event.payload(), RuntimeEventKind::CancelAcknowledged {}));
+    if cancelled || summary.halted != Some(symbiote_native_agent::HaltReason::Stop) {
+        let reason = match summary.halted {
+            Some(halt) => halt_name(halt),
+            None => "none",
+        };
+        return Err(RunnerError::LoopFailed(reason));
     }
     // The final assistant message is the worker's report; it is recorded in
     // the event stream as the last Message before Exit.
@@ -170,7 +202,36 @@ pub fn run_native(
 fn native_error(error: LoopError) -> RunnerError {
     match error {
         LoopError::InvalidContract => RunnerError::InvalidContract,
-        _ => RunnerError::LoopFailed,
+        other => RunnerError::LoopFailed(native_error_name(other)),
+    }
+}
+
+/// The loop error's own identity, so caller-sequencing bugs
+/// (`invalid_input`, `already_complete`) are never misread as retryable
+/// transient failures like `provider_failed`.
+fn native_error_name(error: LoopError) -> &'static str {
+    match error {
+        LoopError::InvalidContract => "invalid_contract",
+        LoopError::BudgetExhausted => "budget_exhausted",
+        LoopError::TurnCapReached => "turn_cap_reached",
+        LoopError::ProviderFailed => "provider_failed",
+        LoopError::EnvelopeMismatch => "envelope_mismatch",
+        LoopError::UnknownTool => "unknown_tool",
+        LoopError::AlreadyComplete => "already_complete",
+        LoopError::InvalidInput => "invalid_input",
+    }
+}
+
+fn halt_name(halt: symbiote_native_agent::HaltReason) -> &'static str {
+    match halt {
+        symbiote_native_agent::HaltReason::Stop => "stop",
+        symbiote_native_agent::HaltReason::Length => "length",
+        symbiote_native_agent::HaltReason::BudgetExhausted => "budget_exhausted",
+        symbiote_native_agent::HaltReason::TurnCapReached => "turn_cap_reached",
+        symbiote_native_agent::HaltReason::ProviderFailed => "provider_failed",
+        symbiote_native_agent::HaltReason::EnvelopeMismatch => "envelope_mismatch",
+        symbiote_native_agent::HaltReason::UnknownTool => "unknown_tool",
+        symbiote_native_agent::HaltReason::OutputBackstop => "output_backstop",
     }
 }
 
@@ -188,18 +249,23 @@ pub fn run_external(
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
     check_runnable(store, task_id, dispatch, RuntimeKind::ExternalHarness)?;
-    let mut session = ExternalSession::new(dispatch, at).map_err(|error| match error {
-        symbiote_external_agent::DriverError::InvalidContract => RunnerError::InvalidContract,
-        _ => RunnerError::LoopFailed,
-    })?;
+    let mut session = ExternalSession::new(dispatch, at).map_err(external_error)?;
     session
         .begin_thread(worktree_cwd, transport)
         .map_err(external_error)?;
     session
         .turn(task_prompt, transport)
         .map_err(external_error)?;
-    if session.run_summary().stopped != Some(StopKind::Completed) {
-        return Err(RunnerError::LoopFailed);
+    let stopped = session.run_summary().stopped;
+    if stopped != Some(StopKind::Completed) {
+        let name = match stopped {
+            Some(StopKind::Completed) => "completed",
+            Some(StopKind::Failed) => "failed",
+            Some(StopKind::Interrupted) => "interrupted",
+            Some(StopKind::TransportLost) => "transport_lost",
+            None => "none",
+        };
+        return Err(RunnerError::LoopFailed(name));
     }
     let report = session
         .events()
@@ -219,18 +285,27 @@ pub fn run_external(
 }
 
 fn external_error(error: symbiote_external_agent::DriverError) -> RunnerError {
+    use symbiote_external_agent::DriverError;
     match error {
-        symbiote_external_agent::DriverError::InvalidContract => RunnerError::InvalidContract,
-        _ => RunnerError::LoopFailed,
+        DriverError::InvalidContract => RunnerError::InvalidContract,
+        other => RunnerError::LoopFailed(external_error_name(other)),
     }
 }
 
-/// Domain-law re-asserted for tests and callers: the runner's filing is
-/// bounded by the same domain transition the protocol operation uses. Exposed
-/// here so the contract doc's claim ("cannot pass CompletionRequested") is
-/// checkable against the actual transition table, not folklore.
-pub fn completion_requires_running(state: &TaskState) -> bool {
-    matches!(state, TaskState::Running)
+fn external_error_name(error: symbiote_external_agent::DriverError) -> &'static str {
+    use symbiote_external_agent::DriverError;
+    match error {
+        DriverError::InvalidContract => "invalid_contract",
+        DriverError::NotExternalHarness => "not_external_harness",
+        DriverError::InvalidInput => "invalid_input",
+        DriverError::TransportFailed => "transport_failed",
+        DriverError::MalformedFrame => "malformed_frame",
+        DriverError::UnexpectedResponse => "unexpected_response",
+        DriverError::RpcFailure => "rpc_failure",
+        DriverError::UnsupportedVersion => "unsupported_version",
+        DriverError::ContractMismatch => "contract_mismatch",
+        DriverError::AlreadyComplete => "already_complete",
+    }
 }
 
 #[cfg(test)]
@@ -274,7 +349,7 @@ mod tests {
         let task_record = store.task(&task).unwrap();
         let role = fixture::role(&store, tag);
         let dispatch = fixture::dispatch(tag, &task_record, &role, &binding, &host);
-        store
+        let (_, started) = store
             .start_prepared_task(
                 fixture::command(tag, "start"),
                 task.clone(),
@@ -285,6 +360,11 @@ mod tests {
                 Timestamp(50),
             )
             .unwrap();
+        // Fidelity pin: the store re-reads the role/binding from its own
+        // tables and compiles its own dispatch. If the fixture's hand-built
+        // inputs ever diverged from registered state, this identity check
+        // fails loudly instead of testing against a phantom dispatch.
+        assert_eq!(started.id(), dispatch.id());
         (store, task, dispatch)
     }
 
@@ -390,7 +470,7 @@ mod tests {
                 &mut transport,
                 Timestamp(60)
             ),
-            Err(RunnerError::LoopFailed)
+            Err(RunnerError::LoopFailed("provider_failed"))
         );
         assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
         // External: a failed turn files nothing either.
@@ -407,7 +487,7 @@ mod tests {
                 &mut transport,
                 Timestamp(60)
             ),
-            Err(RunnerError::LoopFailed)
+            Err(RunnerError::LoopFailed("failed"))
         );
         assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
     }
@@ -448,6 +528,90 @@ mod tests {
             store.task(&task).unwrap().state(),
             &TaskState::CompletionRequested
         );
+    }
+
+    #[test]
+    fn external_completed_turn_without_message_files_nothing() {
+        let (mut store, task, dispatch) =
+            store_with_running_task("no-report", RuntimeKind::ExternalHarness);
+        // A completed turn whose only item is a commandExecution: the
+        // NoReport path fires instead of filing an empty report the domain
+        // would reject.
+        let mut transport = fixture::ScriptedCodex::new(
+            vec![
+                Ok(serde_json::json!({"userAgent": format!(
+                    "symbiote/{} (Linux)",
+                    symbiote_runtime_discovery::codex::CODEX_VERSION
+                )})),
+                Ok(serde_json::json!({"thread": {"id": "thr-fixture"}})),
+                Ok(serde_json::json!({"turn": {"id": "turn-fixture"}})),
+            ],
+            vec![
+                serde_json::json!({
+                    "method": "item/completed",
+                    "params": {"threadId": "thr-fixture", "turnId": "turn-fixture",
+                        "item": {"type": "commandExecution", "id": "c1",
+                            "command": "cargo test", "status": "completed"}}
+                }),
+                fixture::codex_completed("completed"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            run_external(
+                &mut store,
+                &task,
+                &dispatch,
+                "do the work",
+                "/workspace",
+                &mut transport,
+                Timestamp(60)
+            ),
+            Err(RunnerError::NoReport)
+        );
+        assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+    }
+
+    #[test]
+    fn external_interrupted_turn_files_nothing() {
+        let (mut store, task, dispatch) =
+            store_with_running_task("interrupted-run", RuntimeKind::ExternalHarness);
+        let mut transport = fixture::codex_transport_with_status("interrupted");
+        assert_eq!(
+            run_external(
+                &mut store,
+                &task,
+                &dispatch,
+                "do the work",
+                "/workspace",
+                &mut transport,
+                Timestamp(60)
+            ),
+            Err(RunnerError::LoopFailed("interrupted"))
+        );
+        assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+    }
+
+    #[test]
+    fn native_cancelled_turn_files_nothing() {
+        // The native loop maps FinishReason::Cancelled to HaltReason::Stop;
+        // the runner must look at the terminal event, not just the halt
+        // reason, so a cancelled turn is never filed as worker-complete.
+        let (mut store, task, dispatch) =
+            store_with_running_task("cancelled-run", RuntimeKind::NativeSymbiote);
+        let mut transport = fixture::CancelledTransport;
+        assert_eq!(
+            run_native(
+                &mut store,
+                &task,
+                &dispatch,
+                "do the work",
+                &mut transport,
+                Timestamp(60)
+            ),
+            Err(RunnerError::LoopFailed("stop"))
+        );
+        assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
     }
 
     /// Test fixtures for the store wiring. Mirrors the store's own
@@ -833,6 +997,12 @@ mod tests {
         }
 
         pub fn role(store: &Store, tag: &str) -> Role {
+            // The domain Role is reconstructed here; its fidelity is pinned
+            // by the start step below: the store's start_prepared_task
+            // re-reads the role from the roles table and compiles its own
+            // dispatch, and the test asserts the store's started dispatch
+            // id equals this fixture's dispatch id — a mismatched role
+            // (lineage mismatch) would fail that start loudly.
             let _ = store;
             Role {
                 id: RoleId::new(format!("worker-{tag}")).unwrap(),
@@ -951,7 +1121,53 @@ mod tests {
             )
         }
 
-        fn codex_completed(status: &str) -> serde_json::Value {
+        pub fn codex_transport_with_status(
+            status: &str,
+        ) -> impl symbiote_external_agent::CodexTransport {
+            ScriptedCodex::new(
+                vec![
+                    Ok(serde_json::json!({"userAgent": format!(
+                        "symbiote/{} (Linux)",
+                        symbiote_runtime_discovery::codex::CODEX_VERSION
+                    )})),
+                    Ok(serde_json::json!({"thread": {"id": "thr-fixture"}})),
+                    Ok(serde_json::json!({"turn": {"id": "turn-fixture"}})),
+                ],
+                vec![codex_completed(status)],
+                Vec::new(),
+            )
+        }
+
+        /// A native "provider" that reports a mid-turn cancellation.
+        pub struct CancelledTransport;
+        impl symbiote_native_agent::InferenceTransport for CancelledTransport {
+            fn request(
+                &mut self,
+                request: &symbiote_runtime_sdk::provider::ProviderRequest,
+                _model: &symbiote_runtime_sdk::provider::ModelDescriptor,
+            ) -> Result<
+                symbiote_runtime_sdk::provider::ProviderResponse,
+                symbiote_runtime_sdk::provider::ProviderError,
+            > {
+                Ok(symbiote_runtime_sdk::provider::ProviderResponse {
+                    schema_version: symbiote_runtime_sdk::provider::PROVIDER_CONTRACT_VERSION,
+                    request_id: request.request_id.clone(),
+                    provider_id: request.provider_id.clone(),
+                    model_id: request.model_id.clone(),
+                    text: "I'll continue implementing...".into(),
+                    tool_calls: Vec::new(),
+                    finish_reason: symbiote_runtime_sdk::provider::FinishReason::Cancelled,
+                    usage: symbiote_runtime_sdk::provider::TokenUsage::Known {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        cached_input_tokens: None,
+                        reasoning_tokens: None,
+                    },
+                })
+            }
+        }
+
+        pub fn codex_completed(status: &str) -> serde_json::Value {
             serde_json::json!({
                 "method": "turn/completed",
                 "params": {"threadId": "thr-fixture", "turnId": "turn-fixture",
@@ -960,14 +1176,14 @@ mod tests {
         }
 
         /// Minimal scripted Codex transport for runner wiring tests.
-        struct ScriptedCodex {
+        pub struct ScriptedCodex {
             responses: Vec<Result<serde_json::Value, symbiote_external_agent::DriverError>>,
             notifications: VecDeque<Option<serde_json::Value>>,
             server_requests: VecDeque<symbiote_external_agent::ServerRequest>,
             cursor: usize,
         }
         impl ScriptedCodex {
-            fn new(
+            pub fn new(
                 responses: Vec<Result<serde_json::Value, symbiote_external_agent::DriverError>>,
                 notifications: Vec<serde_json::Value>,
                 server_requests: Vec<symbiote_external_agent::ServerRequest>,

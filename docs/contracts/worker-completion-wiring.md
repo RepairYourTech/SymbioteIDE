@@ -19,19 +19,31 @@ pending item that `dispatch-preparation.md` tracked for both runtimes.
   under this exact dispatch (per the store's journaled state) before the
   loop runs; the loop session re-validates the dispatch contract at run
   time, refusing expired enforcement windows or foreign identities.
-- **Completion is evidence.** On a clean stop (`HaltReason::Stop` native;
-  `StopKind::Completed` external), the final agent message is filed through
-  the store's journaled `apply_task` as `Actor::Worker(dispatch)` with
+- **Completion is evidence.** On a genuinely finished turn — native: the
+  loop's halt reason is `Stop` AND the stream's terminal event is `Exit(0)`
+  with no `CancelAcknowledged` (the native loop maps a provider
+  `Cancelled` finish to the same `HaltReason::Stop` as a normal finish, so
+  the runner checks the event, not just the reason); external:
+  `StopKind::Completed` — the final agent message is filed through the
+  store's journaled `apply_task` as `Actor::Worker(dispatch)` with
   `TaskAction::RequestCompletion` — the same transition the protocol's
   `request_task_completion` uses. The domain law holds structurally: a task
   can only reach `CompletionRequested` this way. Host verification and
   independent review remain the completion gates; the runner has no code
   path to `Complete`, `BeginVerification`, or any other transition.
-- **Failure files nothing.** A halted, failed, interrupted, or
-  transport-lost loop leaves the task `Running` and returns
-  `RunnerError::LoopFailed`; retry policy is the Host's, decided outside
-  the loop. The run summary (loop events, usage, stop kind) is available
-  from the session for journaling by the caller.
+- **The filing command id is per-run** (`worker-completion-{dispatch}-{at}`):
+  a Host retry of the same observed run replays byte-identically, but a new
+  run's filing can never be silently swallowed by an older receipt.
+- **Failure files nothing, with named causes.** A halted, failed,
+  interrupted, or transport-lost loop leaves the task `Running` and returns
+  `RunnerError::LoopFailed(reason)` carrying the loop's own halt/error
+  identity — caller-sequencing bugs (`invalid_input`, `already_complete`)
+  are never misread as retryable transient failures
+  (`provider_failed`). Store refusals return `RunnerError::Store(cause)`
+  with the store's error preserved, so an idempotency collision is
+  distinguishable from a state move. A finished turn with no reportable
+  message returns `NoReport` rather than filing an empty report the domain
+  would reject. Retry policy is the Host's, decided outside the loop.
 
 ## Verification
 

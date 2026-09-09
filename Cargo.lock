@@ -388,7 +388,6 @@ name = "symbiote-host"
 version = "0.1.0"
 dependencies = [
  "nix",
- "rusqlite",
  "schemars",
  "serde",
  "serde_json",
