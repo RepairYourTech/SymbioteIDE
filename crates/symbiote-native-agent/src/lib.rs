@@ -14,6 +14,19 @@
 //! BeginVerification → Complete with independent review. Worker completion is
 //! evidence, never authority.
 use symbiote_domain::*;
+pub mod tools;
+
+/// Forwards through mutable references so a session can hold a boxed
+/// executor and still drive the generic execution helper.
+impl<T: tools::ShellToolExecutor + ?Sized> tools::ShellToolExecutor for &mut T {
+    fn run_shell(
+        &mut self,
+        invocation: &tools::ShellInvocation,
+        worktree: &std::path::Path,
+    ) -> Result<(Vec<u8>, Option<i32>), tools::ToolExecError> {
+        (**self).run_shell(invocation, worktree)
+    }
+}
 use symbiote_runtime_sdk::events::{EventText, RuntimeEvent, RuntimeEventKind, SessionBinding};
 use symbiote_runtime_sdk::provider::{
     FinishReason, InputMessage, InputPart, MessageRole, ModelDescriptor, ProviderError,
@@ -25,6 +38,9 @@ pub const MAX_TURNS_PER_RUN: u32 = 64;
 /// Hard halt on accumulated assistant text even when usage goes unreported:
 /// the backstop that bounds runaway loops a provider reports nothing about.
 pub const MAX_ACCUMULATED_OUTPUT_BYTES: usize = 512 * 1024;
+/// Bound on total tool-result text entered into the conversation: tool
+/// results are growth the provider never reports usage for.
+pub const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 /// EventText's own limit; reports and transport text are truncated to it
 /// rather than panicking.
 pub const MAX_EVENT_TEXT_BYTES: usize = 16_384;
@@ -192,8 +208,11 @@ pub struct NativeSession {
     binding: SessionBinding,
     task_id: TaskId,
     provider_id: ProviderConnectionId,
+    tool_result_bytes: usize,
     contract_context: ContextPolicy,
     tools: Vec<String>,
+    tool_executor: Option<&'static mut dyn tools::ShellToolExecutor>,
+    worktree: Option<std::path::PathBuf>,
     model: ModelDescriptor,
     messages: Vec<InputMessage>,
     events: Vec<RuntimeEvent>,
@@ -234,6 +253,9 @@ impl NativeSession {
             provider_id: contract.profile().provider.clone(),
             contract_context: contract.binding().context.clone(),
             tools: contract.binding().required_tools.iter().cloned().collect(),
+            tool_executor: None,
+            tool_result_bytes: 0,
+            worktree: None,
             model,
             messages: Vec::new(),
             events: Vec::new(),
@@ -251,6 +273,21 @@ impl NativeSession {
 
     pub fn binding(&self) -> &SessionBinding {
         &self.binding
+    }
+
+    /// Enables host-gated tool execution: declared shell tools run through
+    /// the injected executor inside the given reserved worktree, their
+    /// results enter the conversation, and their lifecycle is recorded as
+    /// ToolStarted/ToolCompleted/ToolFailed. Without this, declared tools
+    /// stay propose-only.
+    pub fn with_tool_execution(
+        mut self,
+        executor: &'static mut dyn tools::ShellToolExecutor,
+        worktree: std::path::PathBuf,
+    ) -> Self {
+        self.tool_executor = Some(executor);
+        self.worktree = Some(worktree);
+        self
     }
 
     #[cfg(test)]
@@ -405,11 +442,81 @@ impl NativeSession {
                     name: truncate_event_text(&call.name),
                     arguments: truncate_event_text(&call.arguments.to_string()),
                 })?;
-                // Native tool execution (sandbox invocation) is the next
-                // slice; a proposed-but-unexecuted tool is recorded and the
-                // loop continues with the provider's turn. The conversation
-                // does not yet carry the proposal (message parts are
-                // text-only), documented as tool-turn amnesia.
+                // Host-gated tool execution: a proposal the dispatch
+                // contract declared AND the Host has an executor for runs
+                // through the sandbox and its result enters the
+                // conversation; a declared tool with no executor stays
+                // propose-only (recorded, never silently dropped).
+                if let Some(executor) = self.tool_executor.as_mut() {
+                    let invocation = match tools::parse_shell_arguments(&call.arguments) {
+                        Ok(invocation) => invocation,
+                        Err(error) => {
+                            self.halted = Some(HaltReason::EnvelopeMismatch);
+                            self.record(RuntimeEventKind::Diagnostic {
+                                message: truncate_event_text(&format!(
+                                    "tool arguments rejected: {error:?}"
+                                )),
+                            })?;
+                            return Err(LoopError::EnvelopeMismatch);
+                        }
+                    };
+                    let worktree = self.worktree.clone().ok_or(LoopError::UnknownTool)?;
+                    let events = match tools::execute_shell_tool(
+                        executor,
+                        &call.call_id,
+                        &worktree,
+                        &invocation,
+                    ) {
+                        Ok(events) => events,
+                        Err(error) => {
+                            self.halted = Some(HaltReason::ProviderFailed);
+                            self.record(RuntimeEventKind::Diagnostic {
+                                message: truncate_event_text(&format!(
+                                    "tool execution failed: {error:?}"
+                                )),
+                            })?;
+                            return Err(LoopError::ProviderFailed);
+                        }
+                    };
+                    for event in events {
+                        // Both completions AND failures enter the
+                        // conversation so the model learns the result — a
+                        // failed tool must not be re-executed blind (the
+                        // amnesia fix covers failures too).
+                        let result_text = match &event {
+                            RuntimeEventKind::ToolCompleted { output, .. } => {
+                                Some(output.as_str().to_owned())
+                            }
+                            RuntimeEventKind::ToolFailed { error, .. } => {
+                                Some(error.as_str().to_owned())
+                            }
+                            _ => None,
+                        };
+                        if let Some(result) = result_text {
+                            // Tool results are conversation growth the
+                            // provider never reports usage for: charge them
+                            // against a dedicated bound so a tool storm
+                            // halts with BudgetExhausted instead of
+                            // inflating the envelope until it trips.
+                            self.tool_result_bytes =
+                                self.tool_result_bytes.saturating_add(result.len());
+                            if self.tool_result_bytes > MAX_TOOL_RESULT_BYTES {
+                                self.halted = Some(HaltReason::BudgetExhausted);
+                                self.record(RuntimeEventKind::Diagnostic {
+                                    message: truncate_event_text("tool result budget exhausted"),
+                                })?;
+                                return Err(LoopError::BudgetExhausted);
+                            }
+                            self.messages.push(InputMessage {
+                                role: MessageRole::User,
+                                content: vec![InputPart::Text {
+                                    text: format!("tool {} result: {}", call.name, result),
+                                }],
+                            });
+                        }
+                        self.record(event)?;
+                    }
+                }
             }
             match response.finish_reason {
                 FinishReason::Stop => {
@@ -626,7 +733,7 @@ mod tests {
                 max_input_tokens: 500,
                 reserved_output_tokens: 300,
             },
-            required_tools: BTreeSet::from(["edit_file".to_string()]),
+            required_tools: BTreeSet::from(["edit_file".to_string(), "shell".to_string()]),
             required_skills: BTreeSet::new(),
             escalation: EscalationPolicy::StopAndRequestHuman,
         };
@@ -741,7 +848,7 @@ mod tests {
                 .iter()
                 .map(|t| t.name.clone())
                 .collect::<Vec<_>>(),
-            vec!["edit_file".to_string()]
+            vec!["edit_file".to_string(), "shell".to_string()]
         );
         // The summary carries the real task and provider identities.
         assert_eq!(run.task_id.as_str(), "task");
@@ -811,7 +918,7 @@ mod tests {
                     text: "working".into(),
                     tool_calls: vec![ProviderToolCall {
                         call_id: RequestId::new("call-rogue").unwrap(),
-                        name: "shell".into(),
+                        name: "rogue_tool".into(),
                         arguments: serde_json::json!({}),
                     }],
                     finish_reason: FinishReason::ToolCalls,
@@ -834,6 +941,106 @@ mod tests {
         assert!(matches!(
             session.events().last().map(|e| e.payload()),
             Some(RuntimeEventKind::Diagnostic { .. })
+        ));
+    }
+
+    #[test]
+    fn shell_tools_execute_through_the_injected_executor() {
+        // Turn 1 proposes a shell tool; the session has tool execution
+        // enabled with a scripted executor. The tool runs, its lifecycle is
+        // recorded (ToolProposed → ToolStarted → ToolCompleted), the result
+        // enters the conversation, and turn 2's request carries the tool
+        // result text. Turn 2 then stops with a summary message.
+        let task = task();
+        let dispatch = dispatch(&task);
+        let session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        struct TwoTurn {
+            first: bool,
+        }
+        impl InferenceTransport for TwoTurn {
+            fn request(
+                &mut self,
+                request: &ProviderRequest,
+                _model: &ModelDescriptor,
+            ) -> Result<ProviderResponse, ProviderError> {
+                if self.first {
+                    self.first = false;
+                    Ok(ProviderResponse {
+                        schema_version: request.schema_version,
+                        request_id: request.request_id.clone(),
+                        provider_id: request.provider_id.clone(),
+                        model_id: request.model_id.clone(),
+                        text: "Running tests".into(),
+                        tool_calls: vec![ProviderToolCall {
+                            call_id: RequestId::new("call-shell").unwrap(),
+                            name: "shell".into(),
+                            arguments: serde_json::json!({
+                                "program": "cargo",
+                                "arguments": ["test", "--locked"],
+                            }),
+                        }],
+                        finish_reason: FinishReason::ToolCalls,
+                        usage: TokenUsage::Known {
+                            input_tokens: 10,
+                            output_tokens: 10,
+                            cached_input_tokens: None,
+                            reasoning_tokens: None,
+                        },
+                    })
+                } else {
+                    // The second request's messages must carry the tool
+                    // result; assert before responding.
+                    assert!(
+                        request
+                            .messages
+                            .iter()
+                            .any(|m| m.content.iter().any(
+                                |p| matches!(p, InputPart::Text { text } if text.contains("shell result: test result: ok"))
+                            )),
+                        "the tool result must enter the conversation"
+                    );
+                    Ok(stop_response(request, "Done"))
+                }
+            }
+        }
+        let mut transport = TwoTurn { first: true };
+        struct FixedExecutor;
+        impl tools::ShellToolExecutor for FixedExecutor {
+            fn run_shell(
+                &mut self,
+                _invocation: &tools::ShellInvocation,
+                _worktree: &std::path::Path,
+            ) -> Result<(Vec<u8>, Option<i32>), tools::ToolExecError> {
+                Ok((b"test result: ok".to_vec(), Some(0)))
+            }
+        }
+        let executor: &'static mut dyn tools::ShellToolExecutor =
+            Box::leak(Box::new(FixedExecutor));
+        let worktree =
+            std::env::temp_dir().join(format!("symbiote-shelltest-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&worktree);
+        let mut session = session.with_tool_execution(executor, worktree);
+        let run = session.run("Run the tests", &mut transport).unwrap();
+        assert_eq!(run.turns, 2);
+        // Ready, Message(Running tests), ToolProposed, ToolStarted,
+        // ToolCompleted, Message(Done), Exit.
+        let kinds: Vec<_> = session.events().iter().map(|e| e.payload()).collect();
+        assert!(matches!(kinds[0], RuntimeEventKind::Ready {}));
+        assert!(kinds.iter().any(|k| matches!(
+            k,
+            RuntimeEventKind::ToolProposed { name, .. } if name.as_str() == "shell"
+        )));
+        assert!(kinds.iter().any(|k| matches!(
+            k,
+            RuntimeEventKind::ToolStarted { tool_call_id } if tool_call_id.as_str() == "call-shell"
+        )));
+        assert!(kinds.iter().any(|k| matches!(
+            k,
+            RuntimeEventKind::ToolCompleted { tool_call_id, .. } if tool_call_id.as_str() == "call-shell"
+        )));
+        assert!(matches!(
+            kinds.last().unwrap(),
+            RuntimeEventKind::Exit { code: Some(0) }
         ));
     }
 
