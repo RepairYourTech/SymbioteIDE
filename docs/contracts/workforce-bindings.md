@@ -62,7 +62,7 @@ these configuration/readiness operations.
 With `symbioted --state-dir PRIVATE_DIRECTORY` running, send the Project Team
 `register.json` and `configure.json` fixtures, followed by
 `fixtures/workforce-bindings/configure.json`, `read.json` and `readiness.json`,
-using `symbiote --state-dir PRIVATE_DIRECTORY request`. Restart and retry the same
+using `symbiote --state-dir PRIVATE_DIRECTORY raw <configure.json>`. Restart and retry the same
 configuration command to recover its receipt. The demo references an explicitly
 unresolved Host/profile and must report incomplete readiness.
 

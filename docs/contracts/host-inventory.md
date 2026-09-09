@@ -55,7 +55,7 @@ rejection so malformed state fails rather than hanging at startup.
 
 `cargo build -p symbiote-host --bins` builds the daemon and CLI. With the daemon
 running, send `fixtures/host-inventory/read.json` through
-`symbiote --state-dir PRIVATE_DIRECTORY request` to inspect a real pulse.
+`symbiote --state-dir PRIVATE_DIRECTORY host-pulse` to inspect a real pulse.
 Upgrade CLI and daemon together for protocol v1.5. This batch adds no database
 migration. Older binaries ignore `host-id`; preserve it when rolling back.
 

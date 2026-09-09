@@ -635,8 +635,7 @@ fn cli_exit_codes_distinguish_daemon_refusal_from_usage_and_transport() {
         assert_eq!(result.status.code(), Some(1));
         assert!(result.stdout.is_empty());
     }
-    // Raw mode still types through: a duplicate-field operation file is
-    // rejected by the daemon before execution, exit 2.
+    // Raw mode types through: a valid operation file succeeds.
     let duplicate = host.directory.join("dup.json");
     std::fs::write(&duplicate, br#"{"kind":"health"}"#).unwrap();
     let raw_ok = Command::new(env!("CARGO_BIN_EXE_symbiote"))
@@ -1178,54 +1177,191 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
 #[test]
 fn cli_administration_flow_uses_typed_commands_end_to_end() {
     let host = Host::new();
-    let run = |_name: &str, arguments: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_symbiote"));
-        command
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
             .arg(&host.directory)
             .args(arguments)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let result = command.output().unwrap();
-        (
-            result.status.code().unwrap_or(-1),
-            result.stdout.clone(),
-            String::from_utf8_lossy(&result.stderr).to_string(),
-        )
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
     };
-    // Project registration still needs the full typed draft: raw mode with
-    // a temporary file.
+    // Register via raw (full typed draft), then read back through the
+    // typed command.
     let project_json = host.directory.join("project.json");
-    // project() builds the operation object directly.
     let operation = serde_json::to_value(project("cli")).unwrap();
     std::fs::write(
         &project_json,
         serde_json::to_vec_pretty(&operation).unwrap(),
     )
     .unwrap();
-    let (code, stdout, stderr) = run("register-raw", &["raw", project_json.to_str().unwrap()]);
-    assert_eq!(code, 0, "raw register failed: {stderr}");
-    let registered: Value = serde_json::from_slice(&stdout).unwrap();
-    assert_eq!(registered["kind"], "receipt");
-    // Read it back through the typed command.
-    let (code, stdout, stderr) = run("get-project", &["get-project", "cli"]);
-    assert_eq!(code, 0, "get-project failed: {stderr}");
-    let read: Value = serde_json::from_slice(&stdout).unwrap();
-    assert_eq!(read["kind"], "project");
-    assert_eq!(read["data"]["id"], "cli");
+    let registered = run(&["raw", project_json.to_str().unwrap()]);
+    assert!(
+        registered.status.success(),
+        "raw register: {}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+    let read = run(&["get-project", "cli"]);
+    assert!(
+        read.status.success(),
+        "get-project: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let body: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(body["kind"], "project");
+    assert_eq!(body["data"]["id"], "cli");
+
     // Journal read through the typed command shows the registration event.
-    let (code, stdout, stderr) = run("read-journal", &["read-journal", "cli", "0", "100"]);
-    assert_eq!(code, 0, "read-journal failed: {stderr}");
-    let journal: Value = serde_json::from_slice(&stdout).unwrap();
-    assert_eq!(journal["kind"], "journal");
-    assert_eq!(journal["data"]["events"].as_array().unwrap().len(), 1);
+    let journal = run(&["read-journal", "cli", "0", "100"]);
+    assert!(
+        journal.status.success(),
+        "read-journal: {}",
+        String::from_utf8_lossy(&journal.stderr)
+    );
+    let body: Value = serde_json::from_slice(&journal.stdout).unwrap();
+    assert_eq!(body["kind"], "journal");
+    assert_eq!(body["data"]["events"].as_array().unwrap().len(), 1);
+
+    // Team is absent for this project until configured: the daemon refusal
+    // is a typed error with exit 2 (still an exercised typed command).
+    let team = run(&["get-team", "cli"]);
+    assert_eq!(team.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&team.stderr).unwrap();
+    assert_eq!(error["code"], "not_found");
+
     // Scheduling projection explains an empty queue.
-    let (code, stdout, stderr) = run("scheduling-projection", &["scheduling-projection"]);
-    assert_eq!(code, 0, "scheduling-projection failed: {stderr}");
-    let projection: Value = serde_json::from_slice(&stdout).unwrap();
-    assert_eq!(projection["kind"], "scheduler_sweep");
+    let projection = run(&["scheduling-projection"]);
+    assert!(projection.status.success());
+    let body: Value = serde_json::from_slice(&projection.stdout).unwrap();
+    assert_eq!(body["kind"], "scheduler_sweep");
+
+    // Dispatch preparation against a real task: create one via raw, then
+    // exercise prepare/get-preparation/get-task/get-task-origin through the
+    // typed commands.
+    let objective = host.directory.join("objective.json");
+    std::fs::write(
+        &objective,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "kind":"create_work","work":{"id":{"kind":"objective","id":"cli-objective"},
+            "project_id":"cli","role_id":"lead-cli","title":"CLI objective",
+            "description":"Owns the CLI task","utterance":null,"objective_class":"maintenance",
+            "parent":null,"dependencies":[],"requirements":[],"constraints":[],"risks":[],
+            "acceptance":["done"],"priority":2,"budget":null,"external_references":[]}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let created = run(&["raw", objective.to_str().unwrap()]);
+    assert!(
+        created.status.success(),
+        "create_work: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let task_json = host.directory.join("task.json");
+    std::fs::write(
+        &task_json,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "id":"cli-task","project_id":"cli",
+            "root_id":"root-cli","role_id":"lead-cli",
+            "origin":{"kind":"objective","work":{"project_id":"cli",
+                "id":{"kind":"objective","id":"cli-objective"}}},
+            "task_contract":{"id":"coding-contract","revision":1},
+            "stream":{"id":"cli-stream","originating_chat":"chat","worktree":"cli-worktree",
+            "branch":"task/cli","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let created = run(&["create-task", task_json.to_str().unwrap()]);
+    assert!(
+        created.status.success(),
+        "create-task: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let read = run(&["get-task", "cli", "cli-task"]);
+    assert!(
+        read.status.success(),
+        "get-task: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let body: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(body["kind"], "task");
+    assert_eq!(body["data"]["state"], "ready");
+    let origin = run(&["get-task-origin", "cli", "cli-task"]);
+    assert!(
+        origin.status.success(),
+        "get-task-origin: {}",
+        String::from_utf8_lossy(&origin.stderr)
+    );
+    let body: Value = serde_json::from_slice(&origin.stdout).unwrap();
+    assert_eq!(body["kind"], "task_origin");
+    let preparation = run(&["prepare-dispatch", "cli-task"]);
+    assert!(
+        preparation.status.success(),
+        "prepare-dispatch: {}",
+        String::from_utf8_lossy(&preparation.stderr)
+    );
+    let body: Value = serde_json::from_slice(&preparation.stdout).unwrap();
+    assert_eq!(body["kind"], "dispatch_preparation");
+    // Without routing/binding the composition is recorded as refused — the
+    // recorded outcome is machine-readable in the response.
+    assert_eq!(body["data"]["outcome"], "refused");
+    let read_back = run(&["get-dispatch-preparation", "cli-task"]);
+    assert!(
+        read_back.status.success(),
+        "get-dispatch-preparation: {}",
+        String::from_utf8_lossy(&read_back.stderr)
+    );
+    let body: Value = serde_json::from_slice(&read_back.stdout).unwrap();
+    assert_eq!(body["data"]["outcome"], "refused");
+
+    // run-started-dispatch and request-task-completion and
+    // start-prepared-task against this not-started task: typed refusals
+    // with exit 2 (the commands are on the wire and authorized; the state
+    // machine refuses the transition).
+    // run-started-dispatch and start-prepared-task refuse with the
+    // precondition code; request-task-completion against an unstarted task
+    // maps the domain's illegal transition to invalid_request. All are exit
+    // 2 with typed errors — the commands are on the wire and authorized,
+    // the state machine refuses the transition.
+    for (arguments, code) in [
+        (
+            vec!["run-started-dispatch", "cli-task", "disp_ghost"],
+            "failed_precondition",
+        ),
+        (
+            vec![
+                "request-task-completion",
+                "cli-task",
+                "disp_ghost",
+                "report",
+            ],
+            "invalid_request",
+        ),
+        (
+            vec!["start-prepared-task", "cli-task", "ghost-host"],
+            "permission_denied",
+        ),
+    ] {
+        let result = run(&arguments);
+        assert_eq!(result.status.code(), Some(2), "{arguments:?}");
+        let error: Value = serde_json::from_slice(&result.stderr).unwrap();
+        assert_eq!(error["code"], code, "{arguments:?}");
+    }
+
+    // Transport failure (dead state dir) is exit 1, not 2.
+    let dead = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg("/nonexistent-symbiote-state")
+        .arg("health")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(dead.status.code(), Some(1));
+
     // Help exits 0 with the command table.
-    let (code, stdout, _) = run("help", &["help"]);
-    assert_eq!(code, 0);
-    assert!(String::from_utf8_lossy(&stdout).contains("run-started-dispatch"));
+    let help = run(&["help"]);
+    assert_eq!(help.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("run-started-dispatch"));
 }

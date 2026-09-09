@@ -45,8 +45,8 @@ fn field(args: Args, index: usize, name: &str) -> Result<String, Usage> {
         .ok_or_else(|| Usage(format!("missing <{name}>")))
 }
 
-/// A canonical identity argument arrives as `{"id": value}` on the wire for
-/// the typed-id fields; plain strings for untyped project ids.
+/// Every domain identity (TaskId, HostId, DispatchId, …) serializes as a
+/// plain JSON string on the wire (serde try_from String).
 fn id_field(
     args: Args,
     index: usize,
@@ -55,7 +55,7 @@ fn id_field(
     map: &mut serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), Usage> {
     let value = field(args, index, name)?;
-    map.insert(key.to_owned(), serde_json::json!({ "id": value }));
+    map.insert(key.to_owned(), serde_json::Value::String(value));
     Ok(())
 }
 
@@ -85,6 +85,11 @@ fn commands() -> Vec<Command> {
             usage: "hello",
             build: |_, map| {
                 plain("kind", serde_json::json!("hello"), map);
+                plain(
+                    "supported_versions",
+                    serde_json::json!([symbiote_protocol::CURRENT_VERSION]),
+                    map,
+                );
                 Ok(())
             },
         },
@@ -130,6 +135,7 @@ fn commands() -> Vec<Command> {
             summary: "create a Task from a draft (JSON file)",
             usage: "create-task <task.json>",
             build: |args, map| {
+                plain("kind", serde_json::json!("create_task"), map);
                 plain("task", read_json(&field(args, 0, "task.json")?)?, map);
                 Ok(())
             },
@@ -276,8 +282,10 @@ fn commands() -> Vec<Command> {
 fn print_help() {
     println!("symbiote — administrative client for a running symbioted Host");
     println!();
-    println!("usage: symbiote --state-dir DIR <command> [args...]");
-    println!("       symbiote help");
+    println!("usage: symbiote [--state-dir DIR] [--command-id ID] <command> [args...]");
+    println!(
+        "       symbiote help   (--command-id overrides the minted id; same id + same\n                        intent replays a lost response instead of re-executing)"
+    );
     println!();
     println!("responses are the daemon's JSON (pretty-printed). Exit codes:");
     println!("0 success, 1 usage/connection failure, 2 daemon-refused command.");
@@ -289,15 +297,25 @@ fn print_help() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    run_with(std::env::args().skip(1).collect())
+}
+
+fn run_with(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let mut state_dir: Option<PathBuf> = None;
+    let mut command_id_override: Option<String> = None;
     let mut rest: &[String] = &arguments;
-    if rest.first().map(String::as_str) == Some("--state-dir") {
-        if rest.len() < 2 {
-            return Err(Box::new(Usage("--state-dir requires a directory".into())));
+    loop {
+        match rest.first().map(String::as_str) {
+            Some("--state-dir") if rest.len() >= 2 => {
+                state_dir = Some(PathBuf::from(&rest[1]));
+                rest = &rest[2..];
+            }
+            Some("--command-id") if rest.len() >= 2 => {
+                command_id_override = Some(rest[1].clone());
+                rest = &rest[2..];
+            }
+            _ => break,
         }
-        state_dir = Some(PathBuf::from(&rest[1]));
-        rest = &rest[2..];
     }
     let Some(name) = rest.first().cloned() else {
         print_help();
@@ -322,18 +340,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("symbiote: missing --state-dir PRIVATE_DIRECTORY");
         exit(1);
     };
-    let correlation = format!(
-        "{}-{}",
-        name.replace('_', "-"),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or_default()
-    );
+    // A caller-supplied --command-id restores the documented lost-response
+    // retry contract: the same id with identical intent replays the durable
+    // receipt instead of re-executing. The default mints a unique id per
+    // invocation (millisecond + pid), so parallel scripts never collide.
+    let command_id = match command_id_override {
+        Some(id) => id,
+        None => format!(
+            "cli-{name}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or_default(),
+            std::process::id()
+        ),
+    };
     let request = serde_json::json!({
         "version": symbiote_protocol::CURRENT_VERSION,
-        "correlation_id": correlation,
-        "command_id": format!("cli-{correlation}"),
+        "correlation_id": command_id,
+        "command_id": command_id,
         "operation": operation,
     });
     let bytes = serde_json::to_vec(&request)?;
