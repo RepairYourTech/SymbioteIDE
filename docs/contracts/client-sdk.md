@@ -11,12 +11,15 @@ transports share identical state logic.
 
 ## What it owns
 
-- **Request construction.** `build_request` pins `CURRENT_VERSION` (a
-  session against any other version is a construction error), mints a
-  unique correlation id, and uses the caller's `command_id` verbatim as the
-  durable idempotency key. Oversized requests (64 KiB bound) are refused
-  client-side before any transport is touched, after the same parse the
-  daemon will apply — offline misfires never become transport noise.
+- **Request construction.** `build_request` pins `CURRENT_VERSION`
+  structurally (the session has no other version), mints a unique
+  correlation id, and uses the caller's `command_id` verbatim as the
+  durable idempotency key. Build failures have their own identities —
+  `InvalidCommandId` (charset/length), `InvalidOperation` (wrong kind,
+  unknown fields, or a semantic validation the Host would apply), and
+  `RequestTooLarge` for the 64 KiB bound — refused client-side before any
+  transport is touched, after the same parse the daemon will apply, so
+  offline misfires never become transport noise.
 - **Response classification.** Exactly four terminal outcomes exist:
   `Ok(body)` with the typed `ResponseBody`; `Refused(protocol error)` with
   the daemon's typed error preserved; `Transport` (the command's
@@ -24,9 +27,12 @@ transports share identical state logic.
   that no longer matches — the daemon was replaced under us and the caller
   must re-handshake, never guess). A disconnect is a transport fact, never
   a task outcome: the SDK never invents worker success.
-- **Journal cursor resume.** `Journal` responses advance the per-Project
-  durable cursor over events actually returned; positions survive process
-  restart via `with_positions`. Unknown Projects bootstrap at cursor 0 —
+- **Journal cursor resume.** A `Journal` response advances the
+  per-Project durable cursor over events actually returned, but only when
+  the caller hands the session the project the operation names — a
+  mismatched hand-off is ignored (cursor untouched) so one project's
+  cursor can never be advanced with another's. Positions survive process
+  restart via `with_positions`; unknown Projects bootstrap at cursor 0 —
   the caller decides whether that means full bootstrap or tail read.
 - **Bounded recovery.** `recover` resends the same command id and
   byte-identical operation after transport failures (the daemon's journal
@@ -36,12 +42,14 @@ transports share identical state logic.
 
 ## Deterministic chaos coverage
 
-The chaos test drives a fixed LCG-scheduled hostile sequence — transport
-failures, unparseable frames, wrong-version responses, refusals, durable
-receipts — and asserts every terminal classification is honest (no
-fabricated state) and that durable successes observe the exact journal
-cursor. The schedule is computed, not sampled, so the sequence is
-reproducible on every run and platform.
+The chaos test drives a fixed xorshift64-scheduled hostile sequence —
+transport failures, unparseable frames, wrong-version responses,
+refusals, durable receipts (the fixed schedule is asserted to include
+every class at least once) — consumes every frame, and asserts the frame
+count equals the sum of honest classifications: durable successes observe
+the exact last Journal cursor, refusals and unparseable frames claim
+nothing, and no fabricated state exists. The schedule is computed, not
+sampled, so the sequence is reproducible on every run and platform.
 
 ## Honest non-claims
 

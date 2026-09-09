@@ -60,6 +60,13 @@ pub enum ClientError {
     /// The caller's request exceeded the protocol's 64 KiB bound and was
     /// never sent.
     RequestTooLarge,
+    /// The caller's command id is not a legal `CommandId` (charset or
+    /// length); nothing was sent.
+    InvalidCommandId,
+    /// The operation does not deserialize into a protocol operation (wrong
+    /// `kind`, unknown fields) or fails the request validation the Host
+    /// would apply; nothing was sent.
+    InvalidOperation,
 }
 
 /// A client session: mints protocol-versioned requests with caller-supplied
@@ -134,11 +141,11 @@ impl ClientSession {
                 self.serial,
                 command_id.chars().take(40).collect::<String>()
             ))
-            .map_err(|_| ClientError::RequestTooLarge)?,
+            .map_err(|_| ClientError::InvalidCommandId)?,
             command_id: CommandId::new(command_id.to_owned())
-                .map_err(|_| ClientError::RequestTooLarge)?,
+                .map_err(|_| ClientError::InvalidCommandId)?,
             operation: serde_json::from_value(operation)
-                .map_err(|_| ClientError::RequestTooLarge)?,
+                .map_err(|_| ClientError::InvalidOperation)?,
         };
         let bytes = serde_json::to_vec(&request).map_err(|_| ClientError::RequestTooLarge)?;
         if bytes.len() > MAX_REQUEST_BYTES {
@@ -146,7 +153,7 @@ impl ClientSession {
         }
         // The daemon parses the same bytes; catching malformed operations
         // client-side keeps offline misfires from becoming transport noise.
-        parse_request(&bytes).map_err(|_| ClientError::RequestTooLarge)?;
+        parse_request(&bytes).map_err(|_| ClientError::InvalidOperation)?;
         Ok(request)
     }
 
@@ -179,12 +186,17 @@ impl ClientSession {
                 if let (Some(project), symbiote_protocol::ResponseBody::Journal(page)) =
                     (project, &body)
                 {
-                    self.observe_page(
-                        &serde_json::json!({
-                            "next_cursor": page.next_cursor.0
-                        }),
-                        project,
-                    );
+                    // The caller's project must agree with the operation's
+                    // own — a mismatched hand-off would advance one
+                    // project's cursor with another's next_cursor.
+                    if request.operation.project_id() == Some(project) {
+                        self.observe_page(
+                            &serde_json::json!({
+                                "next_cursor": page.next_cursor.0
+                            }),
+                            project,
+                        );
+                    }
                 }
                 Ok(body)
             }
@@ -293,10 +305,44 @@ mod tests {
     #[test]
     fn oversized_requests_are_refused_before_any_transport() {
         let mut session = ClientSession::new();
-        let big = "x".repeat(MAX_REQUEST_BYTES);
+        // A valid operation (request_task_completion with a huge report)
+        // padded past the 64 KiB bound: the size check must be what fires,
+        // not an earlier shape rejection. The transport is never touched.
+        let transport = Scripted::new(vec![Ok(response_ok(ResponseBody::Hello(
+            symbiote_protocol::negotiate(&[CURRENT_VERSION]).unwrap(),
+        )))]);
         assert_eq!(
-            session.build_request("cmd-big", serde_json::json!({"kind":"raw","blob":big})),
+            session.build_request(
+                "cmd-big",
+                serde_json::json!({"kind":"request_task_completion",
+                    "task_id":"task-one","dispatch_id":"disp-one",
+                    "report":"x".repeat(MAX_REQUEST_BYTES + 1)}),
+            ),
             Err(ClientError::RequestTooLarge)
+        );
+        assert!(transport.sent.is_empty());
+    }
+
+    #[test]
+    fn invalid_command_ids_and_operations_have_their_own_error_identity() {
+        let mut session = ClientSession::new();
+        // Charset-invalid command id: never mapped to a size error.
+        assert_eq!(
+            session.build_request("bad id!", operation("health")),
+            Err(ClientError::InvalidCommandId)
+        );
+        // Unknown operation kind: never mapped to a size error.
+        assert_eq!(
+            session.build_request("cmd-1", serde_json::json!({"kind":"raw"})),
+            Err(ClientError::InvalidOperation)
+        );
+        // Semantic validation the Host would apply: refused client-side.
+        assert_eq!(
+            session.build_request(
+                "cmd-2",
+                serde_json::json!({"kind":"read_journal","project_id":"proj","after":0,"limit":0}),
+            ),
+            Err(ClientError::InvalidOperation)
         );
     }
 
@@ -351,6 +397,55 @@ mod tests {
             .call(&mut transport, &request, Some(&project))
             .unwrap();
         assert_eq!(session.journal_position(&project), JournalCursor(3));
+        // A non-Journal Ok body leaves positions untouched, as does a
+        // Journal response with no project hand-off.
+        let hello_request = session
+            .build_request("cmd-hello", operation("health"))
+            .unwrap();
+        let mut transport = Scripted::new(vec![Ok(response_ok(ResponseBody::Hello(
+            symbiote_protocol::negotiate(&[CURRENT_VERSION]).unwrap(),
+        )))]);
+        session
+            .call(&mut transport, &hello_request, Some(&project))
+            .unwrap();
+        assert_eq!(session.journal_position(&project), JournalCursor(3));
+        let journal_request = session
+            .build_request(
+                "cmd-read-2",
+                serde_json::json!({"kind":"read_journal","project_id":"proj","after":3,"limit":10}),
+            )
+            .unwrap();
+        let mut transport = Scripted::new(vec![Ok(response_ok(ResponseBody::Journal(
+            symbiote_protocol::JournalPage {
+                events: vec![],
+                next_cursor: JournalCursor(9),
+                has_more: false,
+            },
+        )))]);
+        session
+            .call(&mut transport, &journal_request, None)
+            .unwrap();
+        assert_eq!(session.journal_position(&project), JournalCursor(3));
+        // A mismatched project hand-off never advances either cursor.
+        let other = ProjectId::new("other").unwrap();
+        let journal_request = session
+            .build_request(
+                "cmd-read-3",
+                serde_json::json!({"kind":"read_journal","project_id":"proj","after":9,"limit":10}),
+            )
+            .unwrap();
+        let mut transport = Scripted::new(vec![Ok(response_ok(ResponseBody::Journal(
+            symbiote_protocol::JournalPage {
+                events: vec![],
+                next_cursor: JournalCursor(20),
+                has_more: false,
+            },
+        )))]);
+        session
+            .call(&mut transport, &journal_request, Some(&other))
+            .unwrap();
+        assert_eq!(session.journal_position(&project), JournalCursor(3));
+        assert_eq!(session.journal_position(&other), JournalCursor(0));
         // A restart restores positions; an unrelated project bootstraps at 0.
         let restored = ClientSession::new().with_positions(vec![JournalPosition {
             project: project.clone(),
@@ -399,77 +494,128 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_chaos_sequence_converges_to_durable_state() {
-        // A scripted hostile sequence: transport failures interleaved with
-        // wrong-version frames, unparseable frames, refusals, and finally a
-        // durable receipt. Fixed LCG schedule, no external RNG.
+    fn deterministic_chaos_sequence_classifies_every_frame_honestly() {
+        // A scripted hostile sequence over a fixed xorshift64 schedule
+        // (pure arithmetic — no time, env, or RNG): every frame class is
+        // consumed and classified, and the run's only durable mutation is
+        // a cursor advanced by a genuinely observed Journal page. Includes
+        // wrong-version responses and refusals.
+        let project = project();
         let mut session = ClientSession::new();
-
         let request = session
             .build_request(
                 "chaos-cmd",
                 serde_json::json!({"kind":"read_journal","project_id":"proj","after":0,"limit":10}),
             )
             .unwrap();
-
         let mut state = 0x2545F4914F6CDD1Du64;
         let mut step = || {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            state % 5
+            state % 6
         };
-        let project = project();
         let mut frames = Vec::new();
-        for _round in 0..20 {
+        for _round in 0..24 {
             match step() {
-                0 => frames.push(Err(TransportFailure)),
-                1 => frames.push(Ok(b"{broken".to_vec())),
-                2 => frames.push(Ok(response_refused(ErrorCode::NotFound))),
-                3 => frames.push(Err(TransportFailure)),
-                _ => frames.push(Ok(response_ok(ResponseBody::Journal(
-                    symbiote_protocol::JournalPage {
-                        events: vec![],
-                        next_cursor: JournalCursor(7),
-                        has_more: false,
-                    },
-                )))),
+                0 | 3 => frames.push(Frame::Transport),
+                1 => frames.push(Frame::Unparseable),
+                2 => frames.push(Frame::Refused),
+                4 => frames.push(Frame::WrongVersion),
+                _ => frames.push(Frame::Journal(7)),
             }
         }
-        let expected_refusals = frames
-            .iter()
-            .filter(
-                |f| matches!(f, Ok(bytes) if String::from_utf8_lossy(bytes).contains("not_found")),
-            )
-            .count();
-        let _ = expected_refusals;
-        let mut transport = Scripted::new(frames);
-        // Recover attempts 30 times: every refusal aborts, every success
-        // advances the cursor. The final cursor is durable state.
-        let mut result: Result<ResponseBody, ClientError> = Err(ClientError::Transport);
-        for _ in 0..30 {
+        // Guarantee every class appears at least once in the fixed schedule.
+        assert!(frames.iter().any(|f| matches!(f, Frame::Transport)));
+        assert!(frames.iter().any(|f| matches!(f, Frame::Unparseable)));
+        assert!(frames.iter().any(|f| matches!(f, Frame::Refused)));
+        assert!(frames.iter().any(|f| matches!(f, Frame::WrongVersion)));
+        assert!(frames.iter().any(|f| matches!(f, Frame::Journal(_))));
+
+        enum Frame {
+            Transport,
+            Unparseable,
+            Refused,
+            WrongVersion,
+            Journal(u64),
+        }
+        let mut transport = Scripted::new(
+            frames
+                .iter()
+                .map(|frame| match frame {
+                    Frame::Transport => Err(TransportFailure),
+                    Frame::Unparseable => Ok(b"{broken".to_vec()),
+                    Frame::Refused => Ok(response_refused(ErrorCode::NotFound)),
+                    Frame::WrongVersion => {
+                        let mut bytes = response_ok(ResponseBody::Hello(
+                            symbiote_protocol::negotiate(&[CURRENT_VERSION]).unwrap(),
+                        ));
+                        let mut response: Response = serde_json::from_slice(&bytes).unwrap();
+                        response.version = ProtocolVersion {
+                            major: 1,
+                            minor: 12,
+                        };
+                        bytes = serde_json::to_vec(&response).unwrap();
+                        Ok(bytes)
+                    }
+                    Frame::Journal(cursor) => Ok(response_ok(ResponseBody::Journal(
+                        symbiote_protocol::JournalPage {
+                            events: vec![],
+                            next_cursor: JournalCursor(*cursor),
+                            has_more: false,
+                        },
+                    ))),
+                })
+                .collect(),
+        );
+        let mut cursor_moves = 0usize;
+        let mut transport_failures = 0usize;
+        let mut unparseable = 0usize;
+        let mut refusals = 0usize;
+        let mut last: Option<ResponseBody> = None;
+        for _frame in 0..frames.len() {
             match session.call(&mut transport, &request, Some(&project)) {
-                Ok(_) => break,
-                Err(error @ ClientError::Refused(_)) => {
-                    result = Err(error);
-                    break;
+                Ok(ResponseBody::Journal(_)) => {
+                    cursor_moves += 1;
                 }
-                Err(error) => result = Err(error),
+                Ok(body) => {
+                    last = Some(body);
+                    // A non-Journal Ok is possible (the wrong-version frames
+                    // above are rejected before this point only if version
+                    // matches); classify honestly.
+                    unparseable += 0;
+                }
+                Err(ClientError::Transport) => transport_failures += 1,
+                Err(ClientError::Unparseable) => unparseable += 1,
+                Err(ClientError::Refused(_)) => refusals += 1,
+                Err(other) => panic!("chaos produced an unexpected classification: {other:?}"),
             }
         }
-        // Either a durable success (cursor observed) or an honest terminal
-        // classification — never a fabricated state.
-        match result {
-            Ok(_) => assert_eq!(session.journal_position(&project), JournalCursor(7)),
-            // All four classifications are honest terminations: a refusal
-            // was surfaced, an unparseable frame never fabricated a
-            // disposition, and a transport failure claims nothing about the
-            // command's outcome. Nothing here invented worker success.
-            Err(ClientError::Refused(_))
-            | Err(ClientError::Unparseable)
-            | Err(ClientError::Transport)
-            | Err(ClientError::RequestTooLarge) => {}
-        }
+        // Every frame was consumed and classified; nothing was invented.
+        assert_eq!(
+            cursor_moves + transport_failures + unparseable + refusals,
+            frames.len()
+        );
+        assert!(cursor_moves >= 1);
+        assert!(transport_failures >= 1);
+        assert!(unparseable >= 1);
+        assert!(refusals >= 1);
+        // The durable cursor equals the LAST genuinely observed Journal
+        // page's next_cursor — fabricated successes would have moved it
+        // elsewhere.
+        let last_journal = frames
+            .iter()
+            .rev()
+            .find_map(|f| match f {
+                Frame::Journal(cursor) => Some(*cursor),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            session.journal_position(&project),
+            JournalCursor(last_journal)
+        );
+        let _ = last;
     }
 
     #[test]
