@@ -546,16 +546,20 @@ impl ExternalSession {
                     // is invented. Recorded, never an approval.
                     ApprovalDecision::Unanswered
                 };
-                if decision != ApprovalDecision::Unanswered
-                    && let Err(error) = transport.refuse_server_request(&request, decision)
-                {
-                    self.stopped = Some(StopKind::TransportLost);
-                    self.record(RuntimeEventKind::Diagnostic {
-                        message: truncate_event_text(&format!(
-                            "refusal reply failed; run is terminal: {error}"
-                        )),
-                    })?;
-                    return Err(error);
+                if decision != ApprovalDecision::Unanswered {
+                    // Nested on purpose: let-chains are unstable on the
+                    // pinned MSRV (1.85) and clippy's collapse lint is
+                    // silenced here rather than relaxing it workspace-wide.
+                    #[allow(clippy::collapsible_if)]
+                    if let Err(error) = transport.refuse_server_request(&request, decision) {
+                        self.stopped = Some(StopKind::TransportLost);
+                        self.record(RuntimeEventKind::Diagnostic {
+                            message: truncate_event_text(&format!(
+                                "refusal reply failed; run is terminal: {error}"
+                            )),
+                        })?;
+                        return Err(error);
+                    }
                 }
                 // The harness escalated: it is alive and conversed with, so
                 // this interaction is not silence.
