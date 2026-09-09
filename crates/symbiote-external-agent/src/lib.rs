@@ -35,10 +35,13 @@ use symbiote_runtime_sdk::events::{
 };
 
 pub const EXTERNAL_LOOP_VERSION: u32 = 1;
-/// Interleaved notifications (item deltas, token usage, status) can legally
-/// burst between responses; beyond this per-call budget the harness is
-/// misbehaving and the run halts rather than buffering unboundedly.
+/// A single `call` may legally interleave this many notifications before its
+/// response; beyond it the harness is misbehaving. One observed turn may see
+/// at most `MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS`
+/// frames before the driver gives up rather than buffering unboundedly.
 pub const MAX_NOTIFICATIONS_PER_CALL: usize = 64;
+/// How many notification reads one observed turn may span.
+pub const MAX_TURNS_NOTIFICATION_ROUNDS: usize = 16;
 /// Notification text (agent messages, command output) is bounded by the SDK
 /// event contract; oversized text truncates on char boundaries with a marker.
 pub const MAX_EVENT_TEXT_BYTES: usize = symbiote_runtime_sdk::events::MAX_EVENT_TEXT_BYTES;
@@ -112,7 +115,9 @@ pub enum ApprovalDecision {
     Denied,
     /// The request was denied and the harness was told to stop the turn.
     Aborted,
-    /// The driver refused without answering the harness (unsupported shape).
+    /// No reply was sent: the method is outside the pinned approval shapes,
+    /// so no refusal body is claimed to be understood. Recorded, never an
+    /// approval.
     Unanswered,
 }
 
@@ -255,13 +260,27 @@ impl ExternalSession {
         }
     }
 
-    /// Event ids stay within the 128-byte CommandId bound for any legal
-    /// dispatch id; a failure to build a valid event is a hard error rather
-    /// than a dropped observation.
+    /// Event ids stay within the 128-byte CommandId bound: the dispatch id
+    /// contributes at most 118 ASCII bytes (128 minus the "sess_" prefix),
+    /// so "x{seq}_" plus that suffix always fits for any legal session id.
+    /// A failure to build a valid event is a hard error rather than a dropped
+    /// observation.
     fn record(&mut self, payload: RuntimeEventKind) -> Result<(), DriverError> {
+        if self.next_event_sequence == u64::MAX {
+            return Err(DriverError::MalformedFrame);
+        }
         let sequence = self.next_event_sequence;
         self.next_event_sequence += 1;
-        let session_suffix: String = self.binding.session_id.as_str().chars().take(97).collect();
+        // 3 ("x", digits) + 1 ('_') + suffix ≤ 128: keep a slice bound so the
+        // format! output can never exceed the domain's CommandId charset/size
+        // contract regardless of the sequence number's width.
+        let session_suffix: String = self
+            .binding
+            .session_id
+            .as_str()
+            .chars()
+            .take(118 - sequence.to_string().len().min(60))
+            .collect();
         let id = CommandId::new(format!("x{sequence}_{session_suffix}"))
             .map_err(|_| DriverError::InvalidContract)?;
         match RuntimeEvent::new(id, sequence, self.binding.clone(), payload) {
@@ -309,7 +328,7 @@ impl ExternalSession {
             .and_then(serde_json::Value::as_str)
             .ok_or(DriverError::MalformedFrame)?
             .to_owned();
-        if thread_id.is_empty() || thread_id.len() > 128 {
+        if !valid_correlation_id(&thread_id) {
             return Err(DriverError::MalformedFrame);
         }
         self.harness_thread_id = Some(thread_id);
@@ -354,7 +373,7 @@ impl ExternalSession {
             .and_then(serde_json::Value::as_str)
             .ok_or(DriverError::MalformedFrame)?
             .to_owned();
-        if turn_id.is_empty() || turn_id.len() > 128 {
+        if !valid_correlation_id(&turn_id) {
             return Err(DriverError::MalformedFrame);
         }
         self.observe_turn(&thread_id, &turn_id, transport)
@@ -362,18 +381,20 @@ impl ExternalSession {
 
     /// Drains frames until the turn reaches a terminal status. Item payloads
     /// map to tracker-ingestible events; usage is accounted conservatively;
-    /// every harness escalation request is refused and recorded.
+    /// every harness escalation request is refused and recorded. Once the
+    /// terminal frame is seen, nothing further is absorbed: the stop is
+    /// decided and later frames belong to no observed turn.
     fn observe_turn(
         &mut self,
         thread_id: &str,
         turn_id: &str,
         transport: &mut impl CodexTransport,
     ) -> Result<(), DriverError> {
-        let mut completed: Option<StopKind> = None;
+        let mut stop: Option<StopKind> = None;
         let mut seen = 0usize;
-        while completed.is_none() {
+        while stop.is_none() {
             seen += 1;
-            if seen > MAX_NOTIFICATIONS_PER_CALL * 16 {
+            if seen > MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS {
                 self.stopped = Some(StopKind::TransportLost);
                 self.record(RuntimeEventKind::Diagnostic {
                     message: truncate_event_text("notification budget exceeded"),
@@ -385,10 +406,19 @@ impl ExternalSession {
             while let Some((method, params)) = transport.recv_server_request()? {
                 let refusal = ApprovalRefusal::from_method(&method);
                 self.approvals_refused += 1;
-                transport.refuse_server_request(&method, &params, ApprovalDecision::Denied)?;
+                let decision = match refusal {
+                    // Known approval shapes get a shaped refusal the harness
+                    // understands; unknown methods get no reply at all, so no
+                    // unclaimed refusal body is invented for them.
+                    ApprovalRefusal::Unknown => ApprovalDecision::Unanswered,
+                    _ => ApprovalDecision::Denied,
+                };
+                if decision != ApprovalDecision::Unanswered {
+                    transport.refuse_server_request(&method, &params, decision)?;
+                }
                 self.record(RuntimeEventKind::Diagnostic {
                     message: truncate_event_text(&format!(
-                        "refused harness approval request: {method:?} ({refusal:?})"
+                        "refused harness approval request: {method:?} ({refusal:?}, {decision:?})"
                     )),
                 })?;
             }
@@ -407,26 +437,38 @@ impl ExternalSession {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
             let params = notification.get("params").cloned().unwrap_or_default();
-            self.absorb_notification(&notification)?;
+            // Correlate before absorbing: foreign-thread or foreign-turn
+            // frames are this run's observations only if they name this
+            // thread. Unidentifiable frames (no ids) are recorded as
+            // diagnostics but never stop the run or pollute its usage.
             if !same_turn(&params, thread_id, turn_id) {
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!(
+                        "ignored foreign or uncorrelated harness frame: {method}"
+                    )),
+                })?;
                 continue;
             }
+            self.absorb_notification(&notification)?;
             if method == "turn/completed" {
                 let status = params
                     .pointer("/turn/status")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
-                completed = Some(match status {
+                stop = Some(match status {
                     "completed" => StopKind::Completed,
                     "interrupted" => StopKind::Interrupted,
                     _ => StopKind::Failed,
                 });
             }
         }
-        self.stopped = completed;
+        self.stopped = stop;
         match self.stopped {
+            // Exit(None): the harness reports the interruption; Symbiote
+            // never sent CancellationRequested, so CancelAcknowledged would
+            // be a tracker-invalid lie.
             Some(StopKind::Completed) => self.record(RuntimeEventKind::Exit { code: Some(0) })?,
-            Some(StopKind::Interrupted) => self.record(RuntimeEventKind::CancelAcknowledged {})?,
+            Some(StopKind::Interrupted) => self.record(RuntimeEventKind::Exit { code: None })?,
             _ => self.record(RuntimeEventKind::Exit { code: Some(1) })?,
         }
         Ok(())
@@ -584,9 +626,15 @@ impl ExternalSession {
 
     /// A worker (or test harness) explicitly files its completion report;
     /// the Host treats it as RequestCompletion evidence, never as completion.
+    /// Refused once the run reached a terminal stop: the `CompletionRequested`
+    /// event must be tracker-replayable (Running), and it can never follow a
+    /// terminal `Exit`.
     pub fn request_completion(&mut self, report: &str) -> Result<(), DriverError> {
         if self.completion_report.is_some() {
             return Err(DriverError::AlreadyComplete);
+        }
+        if self.stopped.is_some() {
+            return Err(DriverError::ContractMismatch);
         }
         if report.trim().is_empty() || report.len() > MAX_REPORT_BYTES {
             return Err(DriverError::InvalidInput);
@@ -599,7 +647,21 @@ impl ExternalSession {
     }
 }
 
+/// Thread/turn ids are the driver's correlation keys. They must be bounded
+/// and confined to the pinned protocol's identifier charset so exact
+/// string equality is meaningful and no control/whitespace aliasing can
+/// make a frame look foreign (or foreign frames look ours).
+fn valid_correlation_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
+}
+
 fn same_turn(params: &serde_json::Value, thread_id: &str, turn_id: &str) -> bool {
+    // A frame without an explicit threadId is foreign by default: it cannot
+    // be attributed to this run, so it must not drive this run's state.
     let same_thread = params.get("threadId").and_then(serde_json::Value::as_str) == Some(thread_id);
     let turn_field = params.get("turnId").and_then(serde_json::Value::as_str);
     same_thread && turn_field.is_none_or(|id| id == turn_id)
@@ -704,6 +766,24 @@ mod tests {
             "params": {"threadId": "thr-1", "turnId": "turn-1",
                 "turn": {"id": "turn-1", "status": status, "items": []}}
         })
+    }
+
+    /// Replays every recorded event through the SDK's session tracker in
+    /// order. Any rejection (sequence gap, invalid transition, capacity)
+    /// means the driver's journal is not consumable by Host-side tooling.
+    /// Catches event-ordering lies empirically instead of trusting the
+    /// driver to emit what the SDK accepts.
+    fn replay_through_tracker(session: &ExternalSession) {
+        let mut tracker = symbiote_runtime_sdk::events::SessionTracker::new(
+            session.binding().clone(),
+            symbiote_runtime_sdk::events::TrackerLimits::default(),
+        )
+        .unwrap();
+        for event in session.events() {
+            tracker
+                .apply(event.clone())
+                .unwrap_or_else(|error| panic!("tracker rejected event: {error}"));
+        }
     }
 
     fn dispatch(task: &Task) -> Dispatch {
@@ -865,6 +945,149 @@ mod tests {
                 .iter()
                 .all(|e| e.binding().runtime == RuntimeKind::ExternalHarness)
         );
+        // The journal is contiguously sequenced, uniquely identified and
+        // fully replayable through the SDK's session tracker.
+        assert!(
+            session
+                .events()
+                .iter()
+                .enumerate()
+                .all(|(i, e)| e.sequence() as usize == i + 1)
+        );
+        let ids: BTreeSet<_> = session.events().iter().map(|e| e.id().clone()).collect();
+        assert_eq!(ids.len(), session.events().len());
+        replay_through_tracker(&session);
+    }
+
+    #[test]
+    fn terminal_stop_blocks_later_completion_and_turns() {
+        let mut session = session();
+        let mut transport = transport_with(vec![turn_completed("completed")]);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        // After a terminal stop, no further turn can start and no completion
+        // report can be filed: the CompletionRequested event would follow a
+        // terminal Exit and be unreplayable.
+        assert_eq!(
+            session.turn("another turn", &mut transport),
+            Err(DriverError::AlreadyComplete)
+        );
+        assert_eq!(
+            session.start_turn("another turn", "/tmp/worktree", &mut transport),
+            Err(DriverError::AlreadyComplete)
+        );
+        assert_eq!(
+            session.request_completion("done"),
+            Err(DriverError::ContractMismatch)
+        );
+        // Only one Ready was ever recorded; nothing was appended.
+        assert_eq!(
+            session
+                .events()
+                .iter()
+                .filter(|e| matches!(e.payload(), RuntimeEventKind::Ready {}))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            session.events().last().unwrap().payload(),
+            RuntimeEventKind::Exit { .. }
+        ));
+        replay_through_tracker(&session);
+    }
+
+    #[test]
+    fn unattributable_notifications_never_stop_or_pollute_the_run() {
+        let mut session = session();
+        let notifications = vec![
+            // No threadId: unattributable, must be ignored, not absorbed.
+            serde_json::json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {"tokenUsage": {"last": {}, "total": {
+                    "inputTokens": 9999, "outputTokens": 9999,
+                    "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 19998}}}
+            }),
+            // No ids at all: unattributable, must be ignored.
+            serde_json::json!({"method": "thread/status/changed", "params": {}}),
+            turn_completed("completed"),
+        ];
+        let mut transport = transport_with(notifications);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        let run = session.run_summary();
+        assert_eq!(run.stopped, Some(StopKind::Completed));
+        // The foreign-frame usage never touched this run's accounting.
+        assert_eq!(run.usage_turns, 0);
+        assert_eq!(run.unreported_usage_turns, 0);
+        // Both foreign frames left bounded, distinct diagnostics.
+        let ignored: usize = session
+            .events()
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.payload(),
+                    RuntimeEventKind::Diagnostic { message }
+                        if message
+                            .as_str()
+                            .contains("foreign or uncorrelated harness frame")
+                )
+            })
+            .count();
+        assert_eq!(ignored, 2);
+        replay_through_tracker(&session);
+    }
+
+    #[test]
+    fn malformed_or_charset_violating_harness_ids_are_refused() {
+        for bad_thread in [
+            serde_json::json!({"thread": {"id": ""}}),
+            serde_json::json!({"thread": {"id": "thr 1"}}),
+            serde_json::json!({"thread": {"id": "thr\t1"}}),
+            serde_json::json!({"thread": {"id": "thré"}}),
+            serde_json::json!({"thread": {"id": "x".repeat(129)}}),
+            serde_json::json!({"thread": {"id": 17}}),
+        ] {
+            let mut session = session();
+            let mut transport = FixtureTransport::new(vec![Ok(bad_thread)], vec![], vec![]);
+            assert!(matches!(
+                session.start_turn("fix the bug", "/tmp/worktree", &mut transport),
+                Err(DriverError::MalformedFrame)
+            ));
+        }
+    }
+
+    #[test]
+    fn sequence_numbers_remain_contiguous_for_long_runs() {
+        // Long enough that the event id's sequence number grows a digit and
+        // the suffix slice shrinks accordingly.
+        let mut session = session();
+        let notifications: Vec<serde_json::Value> = (0..150)
+            .map(|i| {
+                serde_json::json!({
+                    "method": "item/completed",
+                    "params": {"threadId": "thr-1", "turnId": "turn-1",
+                        "item": {"type": "agentMessage", "id": format!("i{i}"),
+                            "text": format!("progress {i}")}}
+                })
+            })
+            .chain(std::iter::once(turn_completed("completed")))
+            .collect();
+        let mut transport = transport_with(notifications);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        assert!(
+            session
+                .events()
+                .iter()
+                .enumerate()
+                .all(|(i, e)| e.sequence() as usize == i + 1)
+        );
+        let ids: BTreeSet<_> = session.events().iter().map(|e| e.id().as_str()).collect();
+        assert_eq!(ids.len(), session.events().len());
+        replay_through_tracker(&session);
     }
 
     #[test]
@@ -995,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_server_request_is_recorded_but_unanswered() {
+    fn unknown_server_request_is_counted_but_never_answered() {
         let mut session = session();
         let mut transport = FixtureTransport::new(
             vec![Ok(thread_start_response()), Ok(turn_start_response())],
@@ -1008,13 +1231,26 @@ mod tests {
         session
             .start_turn("fix the bug", "/tmp/worktree", &mut transport)
             .unwrap();
-        assert_eq!(transport.refusals.len(), 1);
-        assert_eq!(
-            transport.refusals[0].1,
-            ApprovalDecision::Denied,
-            "unknown requests refuse with the generic denial, never an approval"
-        );
+        // Unknown methods get no reply: no refusal body is invented for a
+        // shape outside the pinned approval responses.
+        assert!(transport.refusals.is_empty());
         assert_eq!(session.run_summary().approvals_refused, 1);
+        let refusals: Vec<_> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e.payload() {
+                RuntimeEventKind::Diagnostic { message }
+                    if message
+                        .as_str()
+                        .contains("refused harness approval request") =>
+                {
+                    Some(message.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(refusals.len(), 1);
+        assert!(refusals[0].contains("Unanswered"));
     }
 
     #[test]
@@ -1247,17 +1483,21 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_turn_records_cancellation_not_exit() {
+    fn interrupted_turn_records_exit_none_and_stays_tracker_replayable() {
         let mut session = session();
         let mut transport = transport_with(vec![turn_completed("interrupted")]);
         session
             .start_turn("fix the bug", "/tmp/worktree", &mut transport)
             .unwrap();
         assert_eq!(session.run_summary().stopped, Some(StopKind::Interrupted));
+        // Exit(None), not CancelAcknowledged: the driver never sent
+        // CancellationRequested, so an acknowledgement would be a lie the
+        // SDK session tracker rejects (InvalidTransition).
         assert!(matches!(
             session.events().last().unwrap().payload(),
-            RuntimeEventKind::CancelAcknowledged {}
+            RuntimeEventKind::Exit { code: None }
         ));
+        replay_through_tracker(&session);
     }
 
     #[test]

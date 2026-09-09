@@ -44,17 +44,19 @@ fuzzyFileSearch requests. Notifications are correlated by `threadId` +
 
 ## Approval refusal is total
 
-Every server-initiated escalation request the harness surfaces —
-`execCommandApproval`, `applyPatchApproval`,
-`item/permissions/requestApproval`, `item/commandExecution/requestApproval`,
-`item/fileChange/requestApproval`, `item/tool/requestUserInput`,
-`mcpServer/elicitation/request`, `item/tool/call`, and any unknown method —
-is refused and recorded as a bounded Diagnostic naming only the method, plus
-a count in the run summary. The driver never grants an approval: the
-dispatch contract's access snapshot is the only permission authority, and
-model text cannot widen it through the harness. Refusal answers follow the
-pinned response shapes (`decline` decisions, decline/cancel elicitation
-actions, empty answer sets); the transport owns the exact reply encoding.
+Every server-initiated escalation request the harness surfaces is refused
+and recorded as a bounded Diagnostic naming only the method, plus a count in
+the run summary. Known pinned approval shapes — `execCommandApproval`,
+`applyPatchApproval`, `item/permissions/requestApproval`,
+`item/tool/requestUserInput`, `mcpServer/elicitation/request` — receive a
+shaped denial the harness understands. Methods outside the pinned approval
+responses (including `item/commandExecution/requestApproval`,
+`item/fileChange/requestApproval`, `item/tool/call` and anything unknown)
+receive **no reply at all**: the driver does not invent a refusal body for a
+shape it has not verified, it merely refuses to grant and records. The
+driver never grants an approval: the dispatch contract's access snapshot is
+the only permission authority, and model text cannot widen it through the
+harness.
 
 With `approvalPolicy: "never"` the pinned harness is expected not to
 escalate; the refusal path exists because the driver does not trust that
@@ -66,13 +68,26 @@ policy to hold.
   aggregate input/output with billing and cached-input explicitly
   `Unknown/NotReported` and `coverage: AggregateOnly`. A notification
   missing its numeric fields counts as an unreported turn — never free.
-- Notification budgets are bounded (`MAX_NOTIFICATIONS_PER_CALL`, ×16 per
-  observed turn); exceeding them halts the run as `TransportLost`. Event
-  text truncates at 16 KiB on char boundaries with a visible marker.
+  Frames that do not name this run's thread are never accounted here.
+- Frames are correlated by exact `threadId`/`turnId` equality before they
+  can drive the run's state or accounting; unattributable frames (no ids,
+  foreign thread) leave a bounded diagnostic and nothing else. Thread/turn
+  ids are validated to the pinned protocol's identifier charset and 128-byte
+  bound on receipt.
+- One observed turn may absorb at most
+  `MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS` frames;
+  exceeding that halts the run as `TransportLost`. Event text truncates at
+  16 KiB on char boundaries with a visible marker.
 - Stop states are explicit (`Completed`, `Failed`, `Interrupted`,
-  `TransportLost`) and map to `Exit(0)`, `Exit(1)`,
-  `CancelAcknowledged`, and a Diagnostic + error respectively. A lost
+  `TransportLost`) and map to `Exit(0)`, `Exit(1)`, `Exit(None)`, and a
+  Diagnostic + error respectively. `Exit(None)` for interruptions, not
+  `CancelAcknowledged`: the driver never sends a cancellation request, so an
+  acknowledgement would be rejected by the SDK session tracker. A lost
   transport never reads as a completed turn.
+- `request_completion` is refused after a terminal stop: its
+  `CompletionRequested` event must remain tracker-replayable, and it can
+  never follow a terminal `Exit`. Every completed turn's full event stream
+  replays cleanly through the SDK `SessionTracker` (asserted in tests).
 
 ## Honest non-claims
 
