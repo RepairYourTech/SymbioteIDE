@@ -13,6 +13,8 @@ pub const LEASE_VERSION: u32 = 1;
 /// Lease durations are bounded so a partition cannot hold a task forever.
 pub const MIN_LEASE_MS: u64 = 1_000;
 pub const MAX_LEASE_MS: u64 = 3_600_000;
+/// Window used when a Start transition acquires the governing lease.
+pub const DEFAULT_START_LEASE_MS: u64 = 300_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

@@ -171,10 +171,15 @@ fn full_fixture(store: &mut Store, tag: &str) -> (ProjectId, TaskId) {
             root_effort: symbiote_workforce::RootEffort::Medium,
             local_children: symbiote_workforce::LocalChildPolicy::default(),
             fallback_consent: symbiote_domain::FallbackConsent::ExplicitRequired,
-            minimum_enforcement: BTreeMap::from([(
+            minimum_enforcement: [
                 symbiote_domain::Control::Filesystem,
-                symbiote_domain::EnforcementStrength::HostEnforced,
-            )]),
+                symbiote_domain::Control::Cancellation,
+                symbiote_domain::Control::CompletionAuthority,
+                symbiote_domain::Control::Process,
+            ]
+            .into_iter()
+            .map(|c| (c, symbiote_domain::EnforcementStrength::HostEnforced))
+            .collect(),
             required_capabilities: BTreeSet::new(),
         },
     };
@@ -197,7 +202,7 @@ fn full_fixture(store: &mut Store, tag: &str) -> (ProjectId, TaskId) {
         task.id().clone(),
         project.id.clone(),
         project.roots.iter().next().unwrap().clone(),
-        project.lead.clone(),
+        id!(RoleId, &format!("worker-{tag}")),
         id!(ChangeStreamId, &format!("stream-{tag}")),
         VersionedTaskContract {
             id: id!(TaskContractId, &format!("contract-{tag}")),
@@ -248,8 +253,12 @@ fn preparation_composes_routing_lease_worktree_and_provider() {
             .iter()
             .any(|step| matches!(step, CompositionStep::Routing { resolved: None }))
     );
-    // Provider never resolved: the routed Role's binding is missing routing.
-    assert_eq!(preparation.provider_connection, None);
+    // Provider resolves through the routed Role's workforce binding, which
+    // the fixture registered against the #464 registry.
+    assert_eq!(
+        preparation.provider_connection,
+        Some(id!(ProviderConnectionId, "provider-one"))
+    );
     // Worktree always composed from the stream record.
     assert!(preparation.worktree_id.is_some());
     assert!(preparation.branch.is_some());
@@ -276,4 +285,214 @@ fn preparation_composes_routing_lease_worktree_and_provider() {
         ),
         Err(StoreError::NotFound)
     ));
+}
+
+#[test]
+fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, task) = full_fixture(&mut store, "start");
+    // Record a route so the preparation's routing step resolves. The route is
+    // an explicit assignment of the task's own Role (classification never
+    // routes to the Lead, and the task carries the worker Role here).
+    let task_role = store.task(&task).unwrap().role_id().clone();
+    let request = symbiote_workforce::RouteRequest {
+        project_id: project.clone(),
+        work_id: WorkId::Objective(id!(ObjectiveId, "project-prep-start")),
+        requested: Some(task_role.clone()),
+        domains: BTreeSet::new(),
+    };
+    let team = store.get_team(&project).unwrap();
+    let decision = symbiote_workforce::resolve_route(&team, &request).unwrap();
+    store
+        .record_route(
+            id!(CommandId, "route-start"),
+            decision,
+            id!(UserId, "owner"),
+            Timestamp(20),
+        )
+        .unwrap();
+    // Prepare: routing, worktree, and provider all resolve; the lease step
+    // is informational (no lease held before the first start).
+    let (_, preparation) = store
+        .prepare_dispatch(
+            id!(CommandId, "prepare-start"),
+            task.clone(),
+            id!(UserId, "owner"),
+            Timestamp(30),
+        )
+        .unwrap();
+    assert_eq!(preparation.outcome, PreparationOutcome::Ready);
+    let routed_role = preparation.role_id.clone().unwrap();
+    // Compile the dispatch the Host would start against the host's claims.
+    let host = Host {
+        id: id!(HostId, "host-start"),
+        revision: Revision(0),
+        device: id!(DeviceId, "device-start"),
+        fabric: None,
+        supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+        controls: [
+            symbiote_domain::Control::Filesystem,
+            symbiote_domain::Control::Cancellation,
+            symbiote_domain::Control::CompletionAuthority,
+            symbiote_domain::Control::Process,
+        ]
+        .into_iter()
+        .map(|c| {
+            (
+                c,
+                symbiote_domain::EnforcementClaim {
+                    strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                    evidence: id!(EvidenceId, "proof"),
+                    verified_at: Timestamp(1),
+                    expires_at: Timestamp(1_000_000),
+                },
+            )
+        })
+        .collect(),
+    };
+    let binding_body: String = store
+        .connection
+        .query_row(
+            "SELECT body FROM workforce_bindings WHERE project_id=?1 AND role_id=?2",
+            params![project.as_str(), routed_role.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let binding: symbiote_workforce::BindingConfiguration =
+        serde_json::from_str(&binding_body).unwrap();
+    let task_record = store.task(&task).unwrap();
+    let role_body: String = store
+        .connection
+        .query_row(
+            "SELECT body FROM roles WHERE id=?1 AND project_id=?2",
+            params![routed_role.as_str(), project.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let role: Role = serde_json::from_str(&role_body).unwrap();
+    let dispatch = symbiote_domain::Dispatch::compile(
+        id!(DispatchId, "dispatch-start"),
+        id!(RuntimeContractId, "contract-start"),
+        symbiote_domain::DispatchInputs {
+            task: &task_record,
+            role: &role,
+            binding: &binding.binding,
+            profile: &binding.primary.profile,
+            host: &host,
+            now: Timestamp(35),
+        },
+    )
+    .unwrap();
+    // Start the prepared task: the store compiles its own dispatch from the
+    // same inputs, transitions the task to Running, and acquires the
+    // governing lease transactionally.
+    let (receipt, started) = store
+        .start_prepared_task(
+            id!(CommandId, "start-1"),
+            task.clone(),
+            dispatch.id().clone(),
+            id!(RuntimeContractId, "contract-start-2"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(50),
+        )
+        .unwrap();
+    assert!(!receipt.replayed);
+    assert_eq!(started.id(), dispatch.id());
+    let started_task = store.task(&task).unwrap();
+    assert_eq!(started_task.state(), &TaskState::Running);
+    assert_eq!(
+        started_task.current_dispatch().map(|d| d.id().clone()),
+        Some(dispatch.id().clone())
+    );
+    // The governing lease is held with token 1 and binds the started dispatch.
+    let lease = store.task_lease(&task).unwrap();
+    assert_eq!(lease.state, symbiote_domain::LeaseState::Held);
+    assert_eq!(lease.fencing_token, 1);
+    assert_eq!(lease.dispatch_id, *dispatch.id());
+    // The journal request bytes must satisfy the audit (P0 regression from
+    // the PR #494 review): integrity check passes and reopen replays.
+    store.integrity_check().unwrap();
+    // Idempotent retry of the committed start replays its receipt.
+    let (retry_receipt, retry_dispatch) = store
+        .start_prepared_task(
+            id!(CommandId, "start-1"),
+            task.clone(),
+            dispatch.id().clone(),
+            id!(RuntimeContractId, "contract-start-2"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(51),
+        )
+        .unwrap();
+    assert!(retry_receipt.replayed);
+    assert_eq!(retry_receipt.sequence, receipt.sequence);
+    assert_eq!(retry_dispatch.id(), dispatch.id());
+    // A start under the reserved sweep namespace is refused.
+    assert!(matches!(
+        store.start_prepared_task(
+            id!(CommandId, "symbiote-sweep-poison"),
+            task.clone(),
+            dispatch.id().clone(),
+            id!(RuntimeContractId, "contract-x"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(52),
+        ),
+        Err(StoreError::InvalidLease)
+    ));
+    // Reopen: the started task, lease, and preparation all replay (the P0
+    // regression — a committed start must never brick the store).
+    drop(store);
+    let mut store = Store::open(temp.database()).unwrap();
+    assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+    assert_eq!(
+        store.task_lease(&task).unwrap().state,
+        symbiote_domain::LeaseState::Held
+    );
+    store.integrity_check().unwrap();
+    // Prepare again after the start: the task is Running, so the scheduling
+    // step records the refusal — preparation precedes start, never follows.
+    let (_, preparation) = store
+        .prepare_dispatch(
+            id!(CommandId, "prepare-start-2"),
+            task.clone(),
+            id!(UserId, "owner"),
+            Timestamp(55),
+        )
+        .unwrap();
+    assert_eq!(preparation.outcome, PreparationOutcome::Refused);
+    assert!(
+        preparation
+            .steps
+            .iter()
+            .any(|step| matches!(step, CompositionStep::Scheduling { schedulable: false }))
+    );
+    // A second start is refused: the lease is already held (or, equivalently,
+    // the task is no longer Ready for another Start).
+    let second = store.start_prepared_task(
+        id!(CommandId, "start-2"),
+        task.clone(),
+        dispatch.id().clone(),
+        id!(RuntimeContractId, "contract-start-3"),
+        &host,
+        id!(UserId, "owner"),
+        Timestamp(60),
+    );
+    // The second start must be refused. Because prepare-start-2 superseded
+    // the stored preparation with a Refused record, the start sees
+    // PreparationRefused; a stale-Ready path would yield StillHeld or
+    // IllegalTransition. All three are refusals, never a second Running.
+    assert!(
+        matches!(
+            &second,
+            Err(StoreError::PreparationRefused)
+                | Err(StoreError::LeaseConflict(
+                    symbiote_domain::LeaseError::StillHeld
+                ))
+                | Err(StoreError::Domain(DomainError::IllegalTransition))
+        ),
+        "second start must be refused, got {second:?}"
+    );
 }

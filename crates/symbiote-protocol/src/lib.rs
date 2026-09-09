@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 10,
+    minor: 11,
 };
 
 #[derive(
@@ -160,6 +160,10 @@ pub enum Operation {
     PrepareDispatch {
         task_id: TaskId,
     },
+    StartPreparedTask {
+        task_id: TaskId,
+        host_id: HostId,
+    },
     GetDispatchPreparation {
         task_id: TaskId,
     },
@@ -256,6 +260,7 @@ impl Operation {
             | Self::GetBillingEntitlement { .. }
             | Self::GetModelDescriptor { .. } => None,
             Self::PrepareDispatch { .. } | Self::GetDispatchPreparation { .. } => None,
+            Self::StartPreparedTask { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -294,6 +299,7 @@ impl Operation {
                 | Self::ReplaceBillingEntitlement { .. }
                 | Self::ReplaceModelDescriptor { .. }
                 | Self::PrepareDispatch { .. }
+                | Self::StartPreparedTask { .. }
                 | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
@@ -525,6 +531,12 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         | Operation::GetBillingEntitlement { .. }
         | Operation::GetModelDescriptor { .. } => principal.local_owner,
         Operation::PrepareDispatch { .. } | Operation::GetDispatchPreparation { .. } => {
+            principal.local_owner
+        }
+        Operation::StartPreparedTask { .. } => {
+            // Local-owner authority only; the Host service separately
+            // requires the requested host identity to be its own inventory
+            // identity, so a client cannot start work on another Host.
             principal.local_owner
         }
         Operation::GetRoute { project_id, .. } => {
@@ -798,6 +810,7 @@ pub struct JournalCursor(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    DispatchStart,
     DispatchPreparation,
     ProviderRegistryWrite,
     ProviderRegistryRead,
@@ -848,6 +861,7 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
     Ok(ServerHello {
         version: CURRENT_VERSION,
         capabilities: [
+            Capability::DispatchStart,
             Capability::DispatchPreparation,
             Capability::ProviderRegistryWrite,
             Capability::ProviderRegistryRead,
@@ -1189,6 +1203,17 @@ impl JournalPage {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct StartedDispatch {
+    pub task_id: TaskId,
+    pub dispatch_id: DispatchId,
+    pub host_id: HostId,
+    pub stream_id: ChangeStreamId,
+    pub fencing_token: u64,
+    pub started_at: Timestamp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExpiredLease {
     pub task_id: TaskId,
     pub fencing_token: u64,
@@ -1225,6 +1250,7 @@ pub enum ResponseBody {
     BillingEntitlement(Box<symbiote_domain::BillingEntitlement>),
     ModelDescriptor(Box<symbiote_runtime_sdk::provider::ModelDescriptor>),
     DispatchPreparation(Box<symbiote_domain::DispatchPreparation>),
+    StartedDispatch(Box<StartedDispatch>),
     Journal(JournalPage),
     Shutdown {},
 }

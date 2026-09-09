@@ -79,6 +79,8 @@ impl DispatchPreparation {
             resolved: routed_role.clone(),
         });
         let lease_dispatch = lease.map(|(dispatch, token)| (dispatch.clone(), token));
+        // Informational: a lease may already be held (renewal); first-time
+        // starts acquire it transactionally during the Start transition.
         steps.push(CompositionStep::Lease {
             held: lease.is_some(),
         });
@@ -89,7 +91,7 @@ impl DispatchPreparation {
         steps.push(CompositionStep::Provider {
             validated: provider_resolved,
         });
-        let ready = schedulable && routed_role.is_some() && lease.is_some() && provider_resolved;
+        let ready = schedulable && routed_role.is_some() && provider_resolved;
         Self {
             version: PREPARATION_VERSION,
             project_id: task.project_id().clone(),

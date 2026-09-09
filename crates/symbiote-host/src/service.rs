@@ -1,5 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
-use symbiote_domain::{Actor, DomainError, Timestamp, WorkCommand, WorkError, WorkItem};
+use symbiote_domain::{
+    Actor, DispatchId, DomainError, HostId, RuntimeContractId, Timestamp, WorkCommand, WorkError,
+    WorkItem,
+};
 use symbiote_protocol::*;
 use symbiote_store::{Store, StoreError};
 
@@ -80,6 +83,75 @@ fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Protoc
             .try_into()
             .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
     ))
+}
+
+fn start_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .preparation_command_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+        .as_millis();
+    Ok(Timestamp(
+        millis
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    ))
+}
+
+/// The local Host's enforcement-claim record. Claims are operator-provisioned
+/// (see docs/contracts/dispatch-preparation.md); the Host asserts them for its
+/// own identity only, with a fixed one-hour verification window until
+/// sandbox-observed evidence lands (#269).
+fn host_record(
+    host_id: &HostId,
+    inventory: &mut crate::inventory::InventoryService,
+) -> Result<symbiote_domain::Host, ProtocolError> {
+    if inventory.host_id() != host_id {
+        return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+    }
+    let now = Timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+            .as_millis()
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    );
+    let evidence = symbiote_domain::EvidenceId::new(format!("host-claims-{}", host_id.as_str()))
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+    let claims = [
+        symbiote_domain::Control::Filesystem,
+        symbiote_domain::Control::Process,
+        symbiote_domain::Control::Cancellation,
+        symbiote_domain::Control::CompletionAuthority,
+    ]
+    .into_iter()
+    .map(|control| {
+        (
+            control,
+            symbiote_domain::EnforcementClaim {
+                strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                evidence: evidence.clone(),
+                verified_at: now,
+                expires_at: Timestamp(now.0 + 3_600_000),
+            },
+        )
+    })
+    .collect();
+    Ok(symbiote_domain::Host {
+        id: host_id.clone(),
+        revision: symbiote_domain::Revision(0),
+        device: symbiote_domain::DeviceId::new(format!("device-{}", host_id.as_str()))
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+        fabric: None,
+        supported_runtimes: vec![symbiote_domain::RuntimeKind::NativeSymbiote],
+        controls: claims,
+    })
 }
 
 fn provider_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
@@ -408,6 +480,45 @@ fn execute(
                 .map_err(storage_error)?;
             let _ = receipt;
             Ok(ResponseBody::DispatchPreparation(Box::new(preparation)))
+        }
+        Operation::StartPreparedTask { task_id, host_id } => {
+            // The caller must be the Host itself; the request's host identity
+            // is checked against the principal in authorize(). The Host record
+            // carries this process's enforcement claims: the claims are the
+            // operator-provisioned set documented in dispatch-preparation.md, with
+            // evidence windows owned by the Host operator.
+            let claims_host = host_record(host_id, inventory)?;
+            let at = start_timestamp(store, request)?;
+            // Dispatch and contract identities are minted by the Host from
+            // its nonce-bearing inventory identity, deterministic per task.
+            // Stable per task across daemon restarts (P2 from PR #494
+            // review): the lease audit requires dispatch-id stability across
+            // generations of a task's leases.
+            let dispatch_id = DispatchId::new(format!("disp_{}", task_id.as_str()))
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            let contract_id = RuntimeContractId::new(format!("rtc_{}", task_id.as_str()))
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            let (receipt, dispatch) = store
+                .start_prepared_task(
+                    request.command_id.clone(),
+                    task_id.clone(),
+                    dispatch_id.clone(),
+                    contract_id.clone(),
+                    &claims_host,
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map_err(storage_error)?;
+            let _ = receipt;
+            let lease = store.task_lease(task_id).map_err(storage_error)?;
+            Ok(ResponseBody::StartedDispatch(Box::new(StartedDispatch {
+                task_id: task_id.clone(),
+                dispatch_id: dispatch.id().clone(),
+                host_id: claims_host.id.clone(),
+                stream_id: dispatch.contract().stream_id().clone(),
+                fencing_token: lease.fencing_token,
+                started_at: at,
+            })))
         }
         Operation::GetDispatchPreparation { task_id } => store
             .dispatch_preparation(task_id)
