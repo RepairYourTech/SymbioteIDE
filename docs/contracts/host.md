@@ -1,6 +1,6 @@
 # Local durable Host — #180 / #181 / #43
 
-The workspace now builds `symbioted` and its `symbiote` CLI client. This is the first persistent metadata service, not an agent runtime. It registers canonical Projects, Roots and Roles together, creates ready Tasks with initial Change Streams, returns records and paginates a durable journal. It does not execute commands, create worktrees, call models or claim task completion.
+The workspace now builds `symbioted` and its `symbiote` CLI client. This is the first persistent metadata service, not an agent runtime. It registers canonical Projects, Roots and Roles together, creates ready Tasks with initial Change Streams, returns records and paginates a durable journal. It does not execute commands, call models or claim task completion. Dispatch activation (`run_started_dispatch`) provisions the task's Change Stream worktree from the Root's recorded host placement — reservation verification, base-commit validation against the stream's recorded base, and materialization — before any transport would be built; with the production configuration (no reservation base, no transports) it refuses with typed errors and nothing executes.
 
 ## Run
 

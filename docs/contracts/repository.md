@@ -77,7 +77,13 @@ stage-honest (`Reservation` / `BaseUnresolved` / `BaseMoved` / `Git`) so
 retry policy can distinguish a compromised location from a stale premise
 from a git refusal. Provisioning is not idempotent across a crash between
 reserve and materialize: the reservation layer's O_EXCL marker refuses
-re-claim until an explicit `release()`.
+re-claim until an explicit `release()` — operationally, a failed run's
+task cannot re-activate without that release, and the refusal reports the
+Reservation stage. The Host wiring (`symbiote-host::runner::
+provision_worktree`) resolves the stream, Root placement (per-Host
+host_paths), and policy seed from trusted store state; the policy seed is
+a hex digest of the stream id, never the raw id (domain ids allow 128
+bytes, the seed bound is 64).
 
 ## Tests
 

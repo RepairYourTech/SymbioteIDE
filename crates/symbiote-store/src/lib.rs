@@ -740,6 +740,32 @@ impl Store {
         read_task(&self.connection, id)
     }
 
+    /// Reads the Change Stream a task belongs to (via the task's recorded
+    /// stream id): the worktree id, branch, and base commit that dispatch
+    /// provisioning validates and materializes against. Integrity-checked
+    /// columns like every stream read.
+    pub fn task_stream(&self, task: &TaskId) -> Result<ChangeStream> {
+        let task = read_task(&self.connection, task)?;
+        read_stream(&self.connection, task.stream_id())
+    }
+
+    /// Reads a canonical Root record (its host_paths carry the observed
+    /// repository placement per Host).
+    pub fn root(&self, id: &RootId) -> Result<Root> {
+        let body: String = self
+            .connection
+            .query_row("SELECT body FROM roots WHERE id=?1", [id.as_str()], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or(StoreError::NotFound)?;
+        let root: Root = serde_json::from_str(&body)?;
+        if &root.id != id {
+            return Err(StoreError::Integrity("root key differs from body".into()));
+        }
+        Ok(root)
+    }
+
     pub fn events(&self, project_id: &ProjectId, after: u64, limit: u32) -> Result<EventPage> {
         if limit == 0 || limit > MAX_EVENT_PAGE || after > i64::MAX as u64 {
             return Err(StoreError::InvalidPage);

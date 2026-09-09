@@ -56,6 +56,10 @@ pub struct WorkerOutcome {
 pub struct WorkerTransports {
     native: Option<Box<dyn NativeTransportFactory>>,
     external: Option<Box<dyn ExternalTransportFactory>>,
+    /// The Host's reserved-location base directory for derived worktrees
+    /// (the premise symbiote-worktrees verifies). Empty means worktree
+    /// provisioning has no configured base and refuses.
+    pub(crate) reservation_base: Option<std::path::PathBuf>,
 }
 
 impl WorkerTransports {
@@ -82,6 +86,23 @@ impl WorkerTransports {
 
     pub fn external_configured(&self) -> bool {
         self.external.is_some()
+    }
+
+    /// Configures the derived-worktree base directory. Provisioning is
+    /// refused with a typed error until this is set.
+    pub fn with_reservation_base(mut self, base: std::path::PathBuf) -> Self {
+        self.reservation_base = Some(base);
+        self
+    }
+
+    pub(crate) fn reservation_base(&self) -> Result<std::path::PathBuf, RunnerError> {
+        self.reservation_base
+            .clone()
+            .ok_or(RunnerError::NoReservationBase)
+    }
+
+    pub(crate) fn git(&mut self) -> symbiote_repo::SystemGit {
+        symbiote_repo::SystemGit::new()
     }
 
     pub fn native_build(
@@ -147,6 +168,18 @@ pub enum RunnerError {
     NoTransport,
     /// The configured transport factory refused to build a transport.
     TransportBuild(&'static str),
+    /// The Root record carries no repository placement for this Host.
+    NoHostPath,
+    /// The Host has not configured a reservation base directory for
+    /// derived worktrees; provisioning refuses before anything runs.
+    NoReservationBase,
+    /// Worktree provisioning refused at a named stage (reservation
+    /// verification, base validation, or git materialization).
+    Provisioning(symbiote_repo::provision::ProvisionError),
+    /// The Host's policy seed was rejected by the worktrees crate.
+    InvalidSeed,
+    /// A provisioning-time store read or integrity check failed.
+    ProvisioningStore(String),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -222,6 +255,108 @@ fn file_completion(
             RunnerError::Store(error.to_string())
         })?;
     Ok(())
+}
+
+/// Provisioning outcome for a run: the materialized worktree path and the
+/// observed HEAD the work starts from (recorded by the caller for the
+/// dispatch's evidence trail). The branch is the stream's derived branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorktreeProvisioned {
+    pub worktree: std::path::PathBuf,
+    pub branch: String,
+    pub observed_head: String,
+}
+
+/// Resolves and provisions the worktree for a started dispatch from trusted
+/// store state: the task's Change Stream (worktree id, derived branch,
+/// recorded base commit) and the Root's host-path placement for this Host.
+/// Ordering is the #211 contract — reservation verify, base validation
+/// against the stream's recorded base, then materialization — and failures
+/// are stage-honest. `host_id` selects the Root's observed placement; a
+/// Root with no placement for this Host is `NoHostPath` (documented as
+/// landing here from PR #503's review).
+pub fn provision_worktree(
+    store: &Store,
+    task_id: &TaskId,
+    host_id: &symbiote_domain::HostId,
+    git: &mut impl symbiote_repo::GitExecutor,
+    reservation_base: &std::path::Path,
+) -> Result<WorktreeProvisioned, RunnerError> {
+    let task = store.task(task_id).map_err(provisioning_store_error)?;
+    let stream = store
+        .task_stream(task_id)
+        .map_err(provisioning_store_error)?;
+    assert_task_in_stream(&stream, task_id)?;
+    let root_record = store
+        .root(stream.root_id())
+        .map_err(provisioning_store_error)?;
+    let placement = root_record
+        .host_paths
+        .get(host_id)
+        .ok_or(RunnerError::NoHostPath)?;
+    // The policy seed is Host-owned configuration, not client JSON; the
+    // derivation must reproduce the stream's recorded identities (the
+    // tamper check inside provision).
+    let policy_seed = symbiote_worktrees_policy_seed(stream.id())?;
+    let inputs = symbiote_repo::provision::ProvisionInputs {
+        stream: &stream,
+        root_id: stream.root_id(),
+        project_id: task.project_id(),
+        stream_id: task.stream_id(),
+        policy_seed: &policy_seed,
+        reservation_base,
+        source_repository: std::path::Path::new(placement),
+    };
+    let provisioned = symbiote_repo::provision::provision(git, inputs).map_err(provision_error)?;
+    Ok(WorktreeProvisioned {
+        worktree: provisioned.worktree,
+        branch: provisioned.branch,
+        observed_head: provisioned.head.commit,
+    })
+}
+
+/// Provisioning-time store failures: stage-honest instead of reusing the
+/// completion-filing error identity.
+fn provisioning_store_error(error: symbiote_store::StoreError) -> RunnerError {
+    RunnerError::ProvisioningStore(error.to_string())
+}
+
+/// Cheap reader-side defense-in-depth: the stream's task set must contain
+/// the task whose stream id named it.
+fn assert_task_in_stream(
+    stream: &symbiote_domain::ChangeStream,
+    task: &TaskId,
+) -> Result<(), RunnerError> {
+    if stream.tasks().contains(task) {
+        Ok(())
+    } else {
+        Err(RunnerError::ProvisioningStore(
+            "stream task set integrity".into(),
+        ))
+    }
+}
+
+fn provision_error(error: symbiote_repo::provision::ProvisionError) -> RunnerError {
+    RunnerError::Provisioning(error)
+}
+
+/// The Host's worktree policy seed: stable Host-owned configuration that
+/// binds the derived naming namespace. One seed per store; it is derived
+/// from the stream's id namespace rather than client input, so a client
+/// cannot steer the derivation.
+fn symbiote_worktrees_policy_seed(
+    stream: &symbiote_domain::ChangeStreamId,
+) -> Result<String, RunnerError> {
+    // Host-owned policy: a digest of the stream id, NOT the id itself.
+    // Domain ids allow up to 128 bytes but the worktrees crate's seed bound
+    // is 64 — embedding the raw id would break every legal id of 61+ bytes.
+    // A hex digest is always 64 bytes of legal charset and deterministic
+    // per stream, so the derivation binds the identity without embedding
+    // it.
+    let digest = symbiote_trust::Fingerprint::of(stream.as_str().as_bytes());
+    symbiote_worktrees::policy_seed(digest.as_str())
+        .map(|seed| seed.to_owned())
+        .map_err(|_| RunnerError::InvalidSeed)
 }
 
 /// Runs the native loop (#465 native side) against an already-started
@@ -426,6 +561,9 @@ fn external_error_name(error: symbiote_external_agent::DriverError) -> &'static 
 mod tests {
     use super::*;
     use std::collections::{BTreeSet, VecDeque};
+    use std::path::Path;
+    use std::process::Command;
+    use symbiote_domain::HostId;
 
     fn store_with_running_task(tag: &str, runtime: RuntimeKind) -> (Store, TaskId, Dispatch) {
         let mut store = Store::memory().unwrap();
@@ -539,6 +677,169 @@ mod tests {
             empty.external_build(),
             Err(RunnerError::NoTransport)
         ));
+    }
+
+    fn store_with_placed_running_task(
+        tag: &str,
+        runtime: RuntimeKind,
+        host: &HostId,
+        repo_dir: &Path,
+        base_sha: &str,
+    ) -> (Store, TaskId, Dispatch) {
+        let mut store = Store::memory().unwrap();
+        let (project, task) = fixture::full_fixture_with_placement(
+            &mut store,
+            tag,
+            runtime,
+            Some((host, repo_dir)),
+            Some(base_sha),
+        );
+        let task_role = store.task(&task).unwrap().role_id().clone();
+        let request = symbiote_workforce::RouteRequest {
+            project_id: project.clone(),
+            work_id: fixture::work_id(tag),
+            requested: Some(task_role.clone()),
+            domains: BTreeSet::new(),
+        };
+        let decision =
+            symbiote_workforce::resolve_route(&store.get_team(&project).unwrap(), &request)
+                .unwrap();
+        store
+            .record_route(
+                fixture::command(tag, "route"),
+                decision,
+                fixture::user(),
+                Timestamp(20),
+            )
+            .unwrap();
+        store
+            .prepare_dispatch(
+                fixture::command(tag, "prepare"),
+                task.clone(),
+                fixture::user(),
+                Timestamp(30),
+            )
+            .unwrap();
+        let preparation = store.dispatch_preparation(&task).unwrap();
+        assert_eq!(preparation.outcome, fixture::ready_outcome());
+        let host = fixture::host(tag);
+        let binding = fixture::binding(&store, &project, tag);
+        let task_record = store.task(&task).unwrap();
+        let role = fixture::role(&store, tag);
+        let dispatch = fixture::dispatch(tag, &task_record, &role, &binding, &host);
+        store
+            .start_prepared_task(
+                fixture::command(tag, "start"),
+                task.clone(),
+                dispatch.id().clone(),
+                fixture::contract(tag, "start"),
+                &host,
+                fixture::user(),
+                Timestamp(50),
+            )
+            .unwrap();
+        (store, task, dispatch)
+    }
+
+    #[test]
+    fn provision_worktree_refuses_roots_without_this_hosts_placement() {
+        // The fixture's Root record carries no host_paths entry: this
+        // Host has no observed placement, so provisioning refuses with
+        // NoHostPath before any git call (the root placement comes from
+        // trusted store state, never from the caller).
+        let (store, task, _dispatch) =
+            store_with_running_task("prov-wire", RuntimeKind::ExternalHarness);
+        let host_id = HostId::new("unplaced-host").unwrap();
+        let reservation_base =
+            std::env::temp_dir().join(format!("symbiote-provwire-{}-base", std::process::id()));
+        let _ = std::fs::remove_dir_all(&reservation_base);
+        std::fs::create_dir_all(&reservation_base).unwrap();
+        let mut git = symbiote_repo::SystemGit::new();
+        assert_eq!(
+            provision_worktree(&store, &task, &host_id, &mut git, &reservation_base),
+            Err(RunnerError::NoHostPath)
+        );
+        let _ = std::fs::remove_dir_all(&reservation_base);
+    }
+
+    #[test]
+    fn provision_worktree_materializes_from_store_records() {
+        // Full happy path: the fixture Root's placement points at a real
+        // git repository whose HEAD equals the stream's recorded base.
+        let host_id = HostId::new("host-prov-wire").unwrap();
+        let repo_dir =
+            std::env::temp_dir().join(format!("symbiote-provwire-{}-repo", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo_dir);
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo_dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo_dir.join("base.txt"), "base\n").unwrap();
+        run(&["add", "."]);
+        run(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        let base_sha = run(&["rev-parse", "HEAD"]);
+
+        // Register the project with a Root record whose host_paths carry
+        // this Host's placement, then build the stream from the same seed
+        // policy the host derives. The fixture functions are reused for
+        // team/binding/provider; the project registration is bespoke.
+        let (store, task, _dispatch) = store_with_placed_running_task(
+            "prov-full",
+            RuntimeKind::ExternalHarness,
+            &host_id,
+            &repo_dir,
+            &base_sha,
+        );
+
+        let reservation_base =
+            std::env::temp_dir().join(format!("symbiote-provwire-{}-base", std::process::id()));
+        let _ = std::fs::remove_dir_all(&reservation_base);
+        std::fs::create_dir_all(&reservation_base).unwrap();
+        let mut git = symbiote_repo::SystemGit::new();
+        let provisioned =
+            provision_worktree(&store, &task, &host_id, &mut git, &reservation_base).unwrap();
+        assert_eq!(provisioned.observed_head, base_sha);
+        assert!(provisioned.worktree.join("base.txt").exists());
+        // The materialized HEAD is the derived branch AT the base.
+        let head = symbiote_repo::observe_head(&mut git, &provisioned.worktree).unwrap();
+        assert_eq!(head.commit, base_sha);
+        assert!(matches!(
+            &head.state,
+            symbiote_repo::HeadState::Branch { .. }
+        ));
+        // Re-provisioning refuses honestly (non-empty worktree).
+        let second = provision_worktree(&store, &task, &host_id, &mut git, &reservation_base);
+        // The stage must be Reservation (the reservation layer's
+        // non-empty rule), not a Store or wrong-stage error.
+        assert!(matches!(
+            second,
+            Err(RunnerError::Provisioning(
+                symbiote_repo::provision::ProvisionError::Reservation
+            ))
+        ));
+        let _ = std::fs::remove_dir_all(&repo_dir);
+        let _ = std::fs::remove_dir_all(&reservation_base);
     }
 
     #[test]
@@ -793,6 +1094,7 @@ mod tests {
     mod fixture {
         use super::*;
         use std::collections::BTreeMap;
+        use std::path::Path;
         use symbiote_domain::*;
 
         pub fn user() -> symbiote_domain::UserId {
@@ -825,6 +1127,16 @@ mod tests {
             tag: &str,
             runtime: RuntimeKind,
         ) -> (ProjectId, TaskId) {
+            fixture::full_fixture_with_placement(store, tag, runtime, None, None)
+        }
+
+        pub fn full_fixture_with_placement(
+            store: &mut Store,
+            tag: &str,
+            runtime: RuntimeKind,
+            host_placement: Option<(&HostId, &Path)>,
+            base_override: Option<&str>,
+        ) -> (ProjectId, TaskId) {
             let project_id = ProjectId::new(format!("project-{tag}")).unwrap();
             let root_id = RootId::new(format!("root-{tag}")).unwrap();
             let lead_id = RoleId::new(format!("lead-{tag}")).unwrap();
@@ -844,12 +1156,16 @@ mod tests {
                     external_references: vec![],
                 },
             };
+            let mut host_paths = BTreeMap::new();
+            if let Some((host, path)) = host_placement {
+                host_paths.insert(host.clone(), path.display().to_string());
+            }
             let root = Root {
                 id: root_id.clone(),
                 project_id: project_id.clone(),
                 revision: Revision(0),
                 repository: None,
-                host_paths: BTreeMap::new(),
+                host_paths,
             };
             let roles = vec![
                 Role {
@@ -1110,16 +1426,30 @@ mod tests {
                     revision: Revision(1),
                 },
             );
+            // The stream's worktree/branch must be what the HOST policy
+            // seed derives — the same derivation provision re-checks.
+            let derived = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
+                project_id: &project.id,
+                root_id: &root_id,
+                stream_id: &ChangeStreamId::new(format!("stream-{tag}")).unwrap(),
+                seed: &symbiote_worktrees_policy_seed(
+                    &ChangeStreamId::new(format!("stream-{tag}")).unwrap(),
+                )
+                .unwrap(),
+            })
+            .unwrap();
             let stream = ChangeStream::new(NewChangeStream {
                 id: ChangeStreamId::new(format!("stream-{tag}")).unwrap(),
                 project_id: project.id.clone(),
                 root_id: root_id.clone(),
                 tasks: BTreeSet::from([task.id().clone()]),
                 originating_chat: ChatId::new(format!("chat-{tag}")).unwrap(),
-                worktree: WorktreeId::new(format!("worktree-{tag}")).unwrap(),
-                branch: "fixture-branch".into(),
+                worktree: derived.worktree_id,
+                branch: derived.branch,
                 lineage: StreamLineage::Independent,
-                base: sha('a'),
+                base: base_override
+                    .map(|value| CommitSha::new(value.to_owned()).unwrap())
+                    .unwrap_or_else(|| sha('a')),
                 target: sha('b'),
             })
             .unwrap();

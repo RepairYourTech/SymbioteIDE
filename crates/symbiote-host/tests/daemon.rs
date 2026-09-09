@@ -1139,9 +1139,12 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
             "dispatch_id":started["dispatch_id"]}),
     ));
     assert_eq!(refused["result"]["Err"]["code"], "failed_precondition");
+    // Provisioning runs BEFORE the transport build: the production daemon
+    // configures no reservation base, so the provisioning stage refuses
+    // first (the no-transport refusal is pinned in the runner tests).
     assert_eq!(
         refused["result"]["Err"]["message"],
-        "no worker transport configured for this runtime kind"
+        "no worktree reservation base configured"
     );
     let task_read = request(
         "activation-task-read",
