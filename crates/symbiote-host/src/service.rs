@@ -104,8 +104,9 @@ fn start_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Protoc
 }
 
 /// The local Host's enforcement-claim record. Claims are operator-provisioned
-/// (see docs/contracts/dispatch-start.md); the Host asserts them for its own
-/// identity only, with a verification window bounded by the pulse cadence.
+/// (see docs/contracts/dispatch-preparation.md); the Host asserts them for its
+/// own identity only, with a fixed one-hour verification window until
+/// sandbox-observed evidence lands (#269).
 fn host_record(
     host_id: &HostId,
     inventory: &mut crate::inventory::InventoryService,
@@ -484,24 +485,19 @@ fn execute(
             // The caller must be the Host itself; the request's host identity
             // is checked against the principal in authorize(). The Host record
             // carries this process's enforcement claims: the claims are the
-            // operator-provisioned set documented in dispatch-start.md, with
+            // operator-provisioned set documented in dispatch-preparation.md, with
             // evidence windows owned by the Host operator.
             let claims_host = host_record(host_id, inventory)?;
             let at = start_timestamp(store, request)?;
             // Dispatch and contract identities are minted by the Host from
             // its nonce-bearing inventory identity, deterministic per task.
-            let dispatch_id = DispatchId::new(format!(
-                "disp_{}_{}",
-                inventory.nonce_prefix(),
-                task_id.as_str()
-            ))
-            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
-            let contract_id = RuntimeContractId::new(format!(
-                "rtc_{}_{}",
-                inventory.nonce_prefix(),
-                task_id.as_str()
-            ))
-            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            // Stable per task across daemon restarts (P2 from PR #494
+            // review): the lease audit requires dispatch-id stability across
+            // generations of a task's leases.
+            let dispatch_id = DispatchId::new(format!("disp_{}", task_id.as_str()))
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            let contract_id = RuntimeContractId::new(format!("rtc_{}", task_id.as_str()))
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
             let (receipt, dispatch) = store
                 .start_prepared_task(
                     request.command_id.clone(),

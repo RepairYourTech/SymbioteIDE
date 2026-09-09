@@ -6,13 +6,13 @@ Canonical owner: [#205](https://github.com/RepairYourTech/SymbioteIDE/issues/205
 
 `prepare_dispatch(task_id)` runs entirely against authoritative storage — no client-supplied composition — and journals one `dispatch_prepared` event per task (latest wins, table replays exactly, both directions audited):
 
-- **Scheduling** — the task must be `Ready`; the #95 projection's dependency/stream detail is recorded there and the same conditions gate a `Ready` verdict here.
+- **Scheduling** — the task must be `Ready`; the #95 projection's dependency and stream-safety conditions are enforced again at Start time (not in the preparation itself).
 - **Routing** — the latest route decision (#204 slice) for the task's origin work identity supplies the resolved Role; unresolved routes are recorded as such.
-- **Lease** — a `held`, unexpired lease (#95 slice) contributes its dispatch binding and fencing token; the token is what a later `Start` transition must carry forward.
+- **Lease** — informational: whether a lease is already held (renewal scenario). First-time starts acquire the lease transactionally during Start; the fencing token is minted at start.
 - **Worktree** — the stream's reserved worktree identity and branch from the Change Stream record (#211 slice owns filesystem reservation; this records the binding).
 - **Provider** — the routed Role's workforce binding (#203/#486) carries the runtime profile; its provider connection must exist in the #464 registry for the provider step to resolve.
 
-The outcome is `ready` only when scheduling, routing, lease, and provider all resolve. **A refused composition is recorded like a ready one**: the response body carries `outcome: "refused"` with the refusing step — refusal is a successful read of recorded state, not an error. Failures *outside* the enumerated steps (unknown task, unreadable origin, malformed stored binding) surface as errors and leave no preparation record; the journal's surrounding events remain the evidence for those.
+The outcome is `ready` only when scheduling, routing, and provider all resolve. **A refused composition is recorded like a ready one**: the response body carries `outcome: "refused"` with the refusing step — refusal is a successful read of recorded state, not an error. Failures *outside* the enumerated steps (unknown task, unreadable origin, malformed stored binding) surface as errors and leave no preparation record; the journal's surrounding events remain the evidence for those.
 
 ## Authority
 

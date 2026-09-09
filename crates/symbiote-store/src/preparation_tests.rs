@@ -289,7 +289,8 @@ fn preparation_composes_routing_lease_worktree_and_provider() {
 
 #[test]
 fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
-    let mut store = Store::memory().unwrap();
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
     let (project, task) = full_fixture(&mut store, "start");
     // Record a route so the preparation's routing step resolves. The route is
     // an explicit assignment of the task's own Role (classification never
@@ -410,6 +411,47 @@ fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
     assert_eq!(lease.state, symbiote_domain::LeaseState::Held);
     assert_eq!(lease.fencing_token, 1);
     assert_eq!(lease.dispatch_id, *dispatch.id());
+    // The journal request bytes must satisfy the audit (P0 regression from
+    // the PR #494 review): integrity check passes and reopen replays.
+    store.integrity_check().unwrap();
+    // Idempotent retry of the committed start replays its receipt.
+    let (retry_receipt, retry_dispatch) = store
+        .start_prepared_task(
+            id!(CommandId, "start-1"),
+            task.clone(),
+            dispatch.id().clone(),
+            id!(RuntimeContractId, "contract-start-2"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(51),
+        )
+        .unwrap();
+    assert!(retry_receipt.replayed);
+    assert_eq!(retry_receipt.sequence, receipt.sequence);
+    assert_eq!(retry_dispatch.id(), dispatch.id());
+    // A start under the reserved sweep namespace is refused.
+    assert!(matches!(
+        store.start_prepared_task(
+            id!(CommandId, "symbiote-sweep-poison"),
+            task.clone(),
+            dispatch.id().clone(),
+            id!(RuntimeContractId, "contract-x"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(52),
+        ),
+        Err(StoreError::InvalidLease)
+    ));
+    // Reopen: the started task, lease, and preparation all replay (the P0
+    // regression — a committed start must never brick the store).
+    drop(store);
+    let mut store = Store::open(temp.database()).unwrap();
+    assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+    assert_eq!(
+        store.task_lease(&task).unwrap().state,
+        symbiote_domain::LeaseState::Held
+    );
+    store.integrity_check().unwrap();
     // Prepare again after the start: the task is Running, so the scheduling
     // step records the refusal — preparation precedes start, never follows.
     let (_, preparation) = store

@@ -26,9 +26,6 @@ impl InventoryService {
             cached: None,
         })
     }
-    pub(crate) fn nonce_prefix(&self) -> &str {
-        &self.nonce
-    }
     pub(crate) fn host_id(&self) -> &HostId {
         &self.host_id
     }

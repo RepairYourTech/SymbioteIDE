@@ -173,9 +173,57 @@ impl Store {
         if at.0 > i64::MAX as u64 {
             return Err(StoreError::InvalidPreparation);
         }
+        // Caller-chosen ids may not occupy the system sweep namespace.
+        if command_id
+            .as_str()
+            .starts_with(lease::RESERVED_LEASE_PREFIX)
+        {
+            return Err(StoreError::InvalidLease);
+        }
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Idempotent retry: consult the journal BEFORE any state validation
+        // so a lost response after a committed start replays its receipt
+        // (P1 from PR #494 review).
+        // Idempotent retry: a committed start under this command id returns
+        // its recorded receipt. The request bytes cannot be re-derived (the
+        // Host's claim windows move with time), so the retry validates by
+        // payload kind and task identity instead of byte equality.
+        let existing_row: Option<(u64, u64, String)> = transaction
+            .query_row(
+                "SELECT sequence,revision,payload FROM journal WHERE command_id=?1",
+                [command_id.as_str()],
+                |r| Ok((sql_u64(r, 0)?, sql_u64(r, 1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((sequence, revision, payload)) = &existing_row {
+            let parsed: EventPayload = serde_json::from_str(payload)?;
+            match parsed {
+                EventPayload::TaskChanged {
+                    task_id: recorded,
+                    task,
+                    ..
+                } => {
+                    if recorded != task_id {
+                        return Err(StoreError::IdempotencyConflict);
+                    }
+                    let dispatch = task
+                        .current_dispatch()
+                        .ok_or(StoreError::IdempotencyConflict)?
+                        .clone();
+                    return Ok((
+                        Receipt {
+                            sequence: *sequence,
+                            revision: Revision(*revision),
+                            replayed: true,
+                        },
+                        dispatch,
+                    ));
+                }
+                _ => return Err(StoreError::IdempotencyConflict),
+            }
+        }
         let preparation = read(&transaction, &task_id)?.ok_or(StoreError::NotFound)?;
         if preparation.outcome != PreparationOutcome::Ready {
             return Err(StoreError::PreparationRefused);
@@ -195,6 +243,25 @@ impl Store {
         let task = read_task(&transaction, &task_id)?;
         if task.project_id() != &preparation.project_id {
             return Err(StoreError::RelationshipMismatch);
+        }
+        // Same explicit origin guard as apply_task's Start path.
+        if work::read_origin(&transaction, &preparation.project_id, &task_id)?.is_none() {
+            return Err(StoreError::UnclassifiedTask);
+        }
+        // Start-time scheduling gates (P1 from PR #494 review): unresolved
+        // completion-blocking dependencies and unsafe streams refuse the
+        // start — the same conditions the #95 projection encodes.
+        dependency::completion_gate(&transaction, &preparation.project_id, &task_id)?;
+        {
+            let stream_body: String = transaction.query_row(
+                "SELECT body FROM streams WHERE id=?1",
+                [task.stream_id().as_str()],
+                |r| r.get(0),
+            )?;
+            let stream: ChangeStream = serde_json::from_str(&stream_body)?;
+            if stream.state() != &StreamState::Active {
+                return Err(StoreError::PreparationRefused);
+            }
         }
         // The routed Role must still be the Team's member record.
         let role_body: String = transaction
@@ -266,7 +333,10 @@ impl Store {
                 command: Box::new(command.clone()),
                 task: Box::new(mutable_task.clone()),
             };
-            let request = serde_json::to_string(&payload)?;
+            // The journal's request bytes must match what the audit's
+            // TaskChanged arm re-derives: mutation_request format, not the
+            // payload serialization (P0 from PR #494 review).
+            let request = mutation_request(&task_id, &command)?;
             if let Some(receipt) = replay(&transaction, &command_id, &request)? {
                 return Ok((receipt, dispatch));
             }
