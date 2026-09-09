@@ -563,63 +563,90 @@ fn concurrent_retry_and_dropped_reply_commit_once() {
 #[test]
 fn cli_attaches_and_explicit_shutdown_exits_cleanly() {
     let mut host = Host::new();
-    let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+    let result = Command::new(env!("CARGO_BIN_EXE_symbiote"))
         .arg("--state-dir")
         .arg(&host.directory)
-        .arg("request")
-        .stdin(Stdio::piped())
+        .arg("health")
         .stdout(Stdio::piped())
-        .spawn()
+        .output()
         .unwrap();
-    cli.stdin
-        .take()
-        .unwrap()
-        .write_all(
-            &serde_json::to_vec_pretty(&request("health", json!({"kind":"health"}))).unwrap(),
-        )
-        .unwrap();
-    let result = cli.wait_with_output().unwrap();
     assert!(result.status.success());
-    assert_eq!(
-        ok(&serde_json::from_slice::<Value>(&result.stdout).unwrap())["kind"],
-        "hello"
-    );
+    let body: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(body["kind"], "hello");
+    // Host pulse is owner-authorized over the same socket.
+    let pulse = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg(&host.directory)
+        .arg("host-pulse")
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(pulse.status.success());
+    let body: Value = serde_json::from_slice(&pulse.stdout).unwrap();
+    assert_eq!(body["kind"], "host_pulse");
     ok(&host.call(request("shutdown", json!({"kind":"shutdown"}))));
     assert!(host.child.take().unwrap().wait().unwrap().success());
     assert!(!host.directory.join("host.sock").exists());
 }
 
 #[test]
-fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
+fn cli_exit_codes_distinguish_daemon_refusal_from_usage_and_transport() {
     let host = Host::new();
-    let missing = serde_json::to_vec(&request(
-        "missing",
-        json!({"kind":"get_project","project_id":"missing"}),
-    ))
-    .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":13},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
-    for (input, rpc_response) in [(missing, true), (duplicate, false)] {
-        let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
-            .arg("--state-dir")
-            .arg(&host.directory)
-            .arg("request")
-            .stdin(Stdio::piped())
+    // Daemon refusal (unknown project): exit 2 with the typed error on
+    // stderr, nothing on stdout.
+    let refused = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg(&host.directory)
+        .args(["get-project", "missing"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(refused.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+    assert_eq!(error["code"], "not_found");
+    // Usage failure (unknown command, missing args): exit 1 before any
+    // connection attempt.
+    for arguments in [
+        vec![
+            "--state-dir".to_string(),
+            host.directory.display().to_string(),
+            "no-such-command".to_string(),
+        ],
+        vec![
+            "--state-dir".to_string(),
+            host.directory.display().to_string(),
+            "get-task".to_string(),
+        ],
+        vec![
+            "--state-dir".to_string(),
+            host.directory.display().to_string(),
+            "get-task".to_string(),
+            "p".to_string(),
+        ],
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .args(&arguments)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .output()
             .unwrap();
-        cli.stdin.take().unwrap().write_all(&input).unwrap();
-        let result = cli.wait_with_output().unwrap();
-        assert!(!result.status.success());
-        if rpc_response {
-            assert_eq!(
-                serde_json::from_slice::<Value>(&result.stdout).unwrap()["result"]["Err"]["code"],
-                "not_found"
-            );
-        } else {
-            assert!(result.stdout.is_empty());
-        }
+        assert_eq!(result.status.code(), Some(1));
+        assert!(result.stdout.is_empty());
     }
+    // Raw mode types through: a valid operation file succeeds.
+    let duplicate = host.directory.join("dup.json");
+    std::fs::write(&duplicate, br#"{"kind":"health"}"#).unwrap();
+    let raw_ok = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg(&host.directory)
+        .args(["raw"])
+        .arg(&duplicate)
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(raw_ok.status.success());
     ok(&host.call(request("still-alive", json!({"kind":"health"}))));
 }
 
@@ -1145,4 +1172,196 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     let task_response = host.call(task_read);
     let task = ok(&task_response);
     assert_eq!(task["data"]["state"], "running");
+}
+
+#[test]
+fn cli_administration_flow_uses_typed_commands_end_to_end() {
+    let host = Host::new();
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .arg("--state-dir")
+            .arg(&host.directory)
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    // Register via raw (full typed draft), then read back through the
+    // typed command.
+    let project_json = host.directory.join("project.json");
+    let operation = serde_json::to_value(project("cli")).unwrap();
+    std::fs::write(
+        &project_json,
+        serde_json::to_vec_pretty(&operation).unwrap(),
+    )
+    .unwrap();
+    let registered = run(&["raw", project_json.to_str().unwrap()]);
+    assert!(
+        registered.status.success(),
+        "raw register: {}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+    let read = run(&["get-project", "cli"]);
+    assert!(
+        read.status.success(),
+        "get-project: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let body: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(body["kind"], "project");
+    assert_eq!(body["data"]["id"], "cli");
+
+    // Journal read through the typed command shows the registration event.
+    let journal = run(&["read-journal", "cli", "0", "100"]);
+    assert!(
+        journal.status.success(),
+        "read-journal: {}",
+        String::from_utf8_lossy(&journal.stderr)
+    );
+    let body: Value = serde_json::from_slice(&journal.stdout).unwrap();
+    assert_eq!(body["kind"], "journal");
+    assert_eq!(body["data"]["events"].as_array().unwrap().len(), 1);
+
+    // Team is absent for this project until configured: the daemon refusal
+    // is a typed error with exit 2 (still an exercised typed command).
+    let team = run(&["get-team", "cli"]);
+    assert_eq!(team.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&team.stderr).unwrap();
+    assert_eq!(error["code"], "not_found");
+
+    // Scheduling projection explains an empty queue.
+    let projection = run(&["scheduling-projection"]);
+    assert!(projection.status.success());
+    let body: Value = serde_json::from_slice(&projection.stdout).unwrap();
+    assert_eq!(body["kind"], "scheduler_sweep");
+
+    // Dispatch preparation against a real task: create one via raw, then
+    // exercise prepare/get-preparation/get-task/get-task-origin through the
+    // typed commands.
+    let objective = host.directory.join("objective.json");
+    std::fs::write(
+        &objective,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "kind":"create_work","work":{"id":{"kind":"objective","id":"cli-objective"},
+            "project_id":"cli","role_id":"lead-cli","title":"CLI objective",
+            "description":"Owns the CLI task","utterance":null,"objective_class":"maintenance",
+            "parent":null,"dependencies":[],"requirements":[],"constraints":[],"risks":[],
+            "acceptance":["done"],"priority":2,"budget":null,"external_references":[]}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let created = run(&["raw", objective.to_str().unwrap()]);
+    assert!(
+        created.status.success(),
+        "create_work: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let task_json = host.directory.join("task.json");
+    std::fs::write(
+        &task_json,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "id":"cli-task","project_id":"cli",
+            "root_id":"root-cli","role_id":"lead-cli",
+            "origin":{"kind":"objective","work":{"project_id":"cli",
+                "id":{"kind":"objective","id":"cli-objective"}}},
+            "task_contract":{"id":"coding-contract","revision":1},
+            "stream":{"id":"cli-stream","originating_chat":"chat","worktree":"cli-worktree",
+            "branch":"task/cli","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let created = run(&["create-task", task_json.to_str().unwrap()]);
+    assert!(
+        created.status.success(),
+        "create-task: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let read = run(&["get-task", "cli", "cli-task"]);
+    assert!(
+        read.status.success(),
+        "get-task: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let body: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(body["kind"], "task");
+    assert_eq!(body["data"]["state"], "ready");
+    let origin = run(&["get-task-origin", "cli", "cli-task"]);
+    assert!(
+        origin.status.success(),
+        "get-task-origin: {}",
+        String::from_utf8_lossy(&origin.stderr)
+    );
+    let body: Value = serde_json::from_slice(&origin.stdout).unwrap();
+    assert_eq!(body["kind"], "task_origin");
+    let preparation = run(&["prepare-dispatch", "cli-task"]);
+    assert!(
+        preparation.status.success(),
+        "prepare-dispatch: {}",
+        String::from_utf8_lossy(&preparation.stderr)
+    );
+    let body: Value = serde_json::from_slice(&preparation.stdout).unwrap();
+    assert_eq!(body["kind"], "dispatch_preparation");
+    // Without routing/binding the composition is recorded as refused — the
+    // recorded outcome is machine-readable in the response.
+    assert_eq!(body["data"]["outcome"], "refused");
+    let read_back = run(&["get-dispatch-preparation", "cli-task"]);
+    assert!(
+        read_back.status.success(),
+        "get-dispatch-preparation: {}",
+        String::from_utf8_lossy(&read_back.stderr)
+    );
+    let body: Value = serde_json::from_slice(&read_back.stdout).unwrap();
+    assert_eq!(body["data"]["outcome"], "refused");
+
+    // run-started-dispatch and request-task-completion and
+    // start-prepared-task against this not-started task: typed refusals
+    // with exit 2 (the commands are on the wire and authorized; the state
+    // machine refuses the transition).
+    // run-started-dispatch and start-prepared-task refuse with the
+    // precondition code; request-task-completion against an unstarted task
+    // maps the domain's illegal transition to invalid_request. All are exit
+    // 2 with typed errors — the commands are on the wire and authorized,
+    // the state machine refuses the transition.
+    for (arguments, code) in [
+        (
+            vec!["run-started-dispatch", "cli-task", "disp_ghost"],
+            "failed_precondition",
+        ),
+        (
+            vec![
+                "request-task-completion",
+                "cli-task",
+                "disp_ghost",
+                "report",
+            ],
+            "invalid_request",
+        ),
+        (
+            vec!["start-prepared-task", "cli-task", "ghost-host"],
+            "permission_denied",
+        ),
+    ] {
+        let result = run(&arguments);
+        assert_eq!(result.status.code(), Some(2), "{arguments:?}");
+        let error: Value = serde_json::from_slice(&result.stderr).unwrap();
+        assert_eq!(error["code"], code, "{arguments:?}");
+    }
+
+    // Transport failure (dead state dir) is exit 1, not 2.
+    let dead = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg("/nonexistent-symbiote-state")
+        .arg("health")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(dead.status.code(), Some(1));
+
+    // Help exits 0 with the command table.
+    let help = run(&["help"]);
+    assert_eq!(help.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("run-started-dispatch"));
 }

@@ -102,7 +102,7 @@ with a fresh private state directory, then submit `fixtures/work-hierarchy/proje
 `request.json`, `capability.json` and `plan.json` in that order:
 
 ```sh
-target/debug/symbiote --state-dir /absolute/private/state-directory request < fixtures/work-hierarchy/project.json
+target/debug/symbiote --state-dir /absolute/private/state-directory raw fixtures/work-hierarchy/project.json
 ```
 
 Use the same command with each fixture filename. `read.json` returns the

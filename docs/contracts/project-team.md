@@ -40,7 +40,7 @@ older protocol clients cannot decode Team events.
 
 Build `cargo build -p symbiote-host --bins`, start `symbioted --state-dir` using a
 private directory, and send the JSON files in `fixtures/project-team` through
-`symbiote --state-dir ... request`: `register.json`, `configure.json`, `read.json`.
+`symbiote --state-dir ... raw <file>` (typed drafts): `register.json`, `configure.json`, `read.json`.
 Restart the daemon and resend `configure.json`; the receipt must be replayed and
 `read.json` must return the same Team. `shutdown.json` stops the demo daemon.
 
