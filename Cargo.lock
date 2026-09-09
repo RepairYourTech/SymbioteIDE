@@ -376,7 +376,11 @@ dependencies = [
  "serde",
  "serde_json",
  "symbiote-domain",
+ "symbiote-runtime-discovery",
  "symbiote-runtime-sdk",
+ "symbiote-runtime-transport",
+ "symbiote-sandbox",
+ "symbiote-trust",
 ]
 
 [[package]]

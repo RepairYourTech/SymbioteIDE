@@ -32,15 +32,21 @@ The tested release is `codex-cli 0.118.0`; shapes were checked against the
 installed executable's `app-server generate-json-schema` output (v2
 thread/turn APIs) without experimental methods. The driver sends exactly:
 
-- `thread/start` with the Host-authorized worktree as `cwd`, `sandbox`
-  pinned to `read-only` and `approvalPolicy` pinned to `never`. The thread
-  id is minted by the harness; the driver only records it.
+- `thread/start` with the worktree path **as visible to the harness
+  process** as `cwd` — through the sandboxed launcher the Host path is
+  mounted at `/workspace` and invisible by its host name, so composed
+  callers pass `/workspace` — `sandbox` pinned to `read-only` and
+  `approvalPolicy` pinned to `never`. The thread id is minted by the
+  harness; the driver only records it.
 - `turn/start` with the task prompt as one text input on the recorded
   thread. Turn identity is minted by the harness.
 
-It never sends login/logout/account/config-write/fs/plugin/feedback/exec or
+The handshake precedes everything: `initialize` → pinned
+`symbiote/0.118.0` check → `initialized`. The driver never sends
+login/logout/account/config-write/fs/plugin/feedback/exec or
 fuzzyFileSearch requests. Notifications are correlated by `threadId` +
-`turnId`; foreign-turn notifications are absorbed but never stop the turn.
+`turnId`; foreign-turn or unattributable notifications are ignored with a
+bounded diagnostic and never stop the turn or touch its accounting.
 
 ## Approval refusal is total
 
@@ -89,16 +95,40 @@ policy to hold.
   never follow a terminal `Exit`. Every completed turn's full event stream
   replays cleanly through the SDK `SessionTracker` (asserted in tests).
 
+## Production transport
+
+The `process` module owns the wire: versionless request envelopes (no
+`jsonrpc` field, transport-assigned numeric ids), strict frame
+classification (response / notification / server request; unknown fields,
+null ids and stray responses are violations, never guesses), bounded
+buffering, and the per-method denial bodies from the pinned response
+schemas. `launch_sandboxed` composes the Host sandbox (#218) with the
+pinned binary (`/usr/bin/codex app-server --listen stdio://`): trusted
+helper, consent whose fingerprint covers the exact invocation, disposable
+HOME, isolated network, reserved worktree (#211). The driver completes the
+real handshake (`initialize` → pinned `symbiote/0.118.0` check →
+`initialized`) before any thread or turn interaction; a server that does
+not report the pinned version is refused.
+
+The `codex_thread_smoke` example is the real-binary proof, mirroring the
+#483 discovery proof: sandboxed launch, the driver's own `begin_thread`
+against the production framing, then cancellation — no turn, no model
+call, no credentials, no network. It runs locally and in CI
+(`Rust contracts`, stable toolchain). Sizing note: the shared transport's
+default frame cap is 64 KiB; a real turn whose frames exceed that is
+rejected (`FrameTooLarge`) and reads as a lost transport, so production
+callers must size `TransportLimits` explicitly — event-text truncation
+only applies after framing.
+
 ## Honest non-claims
 
-This slice is offline-only: the 14 tests run against deterministic fixture
-transports and prove the driver's state machine, refusal behavior, event
-mapping and bounds. No live `codex` process was launched by these tests, no
-real App Server session was created, no model turn ran, no credential was
-read and no spending occurred. The concrete production transport (sandboxed
-`JsonlTransport` spawn of the pinned binary, #211/#218) is not implemented
-here; the discovery example (#483) remains the only real-binary proof, and
-it made no model turn. Durable session resume/reconnect (the SDK's
-Disconnected/Reconnected events), steering, interruption requests and
-multi-turn tool-result round trips are not implemented. #464/#465 remain
+Unit tests run against deterministic fixture transports; two tests drive
+the full driver over a real framed subprocess (scripted frames, no codex
+binary, no network, no credentials) to pin EOF, deadline and
+silent-harness behavior. The only live-binary evidence is the smoke
+proof's handshake + thread start: **no model turn ran** — with
+authentication `required` and no credentials in the sandbox, a turn would
+fail anyway, so execution proof still requires explicit user authorization
+for credentials and billing. No tool-result round trips, no
+steering/interrupt requests, no durable resume/reconnect. #464/#465 remain
 open.

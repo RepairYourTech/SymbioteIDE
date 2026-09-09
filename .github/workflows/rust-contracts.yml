@@ -58,3 +58,12 @@ jobs:
           cargo run --locked -p symbiote-runtime-discovery --example codex_discover -- \
             "$GITHUB_WORKSPACE/target/debug/symbiote-sandbox-launch" \
             "$proof_root/worktree" "$proof_root/protected"
+      - name: Prove pinned Codex driver handshake and thread start without a model turn
+        if: matrix.toolchain == 'stable'
+        run: |
+          cargo build --locked -p symbiote-external-agent --example codex_thread_smoke
+          smoke_root=$(mktemp -d "$RUNNER_TEMP/smoke.XXXXXXXX")
+          mkdir -m 700 "$smoke_root/worktree" "$smoke_root/protected"
+          cargo run --locked -p symbiote-external-agent --example codex_thread_smoke -- \
+            "$GITHUB_WORKSPACE/target/debug/symbiote-sandbox-launch" \
+            "$smoke_root/worktree" "$smoke_root/protected"

@@ -34,14 +34,20 @@ use symbiote_runtime_sdk::events::{
     EventText, ObservationKind, RuntimeEvent, RuntimeEventKind, SessionBinding,
 };
 
+pub mod process;
+
 pub const EXTERNAL_LOOP_VERSION: u32 = 1;
-/// A single `call` may legally interleave this many notifications before its
-/// response; beyond it the harness is misbehaving. One observed turn may see
-/// at most `MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS`
-/// frames before the driver gives up rather than buffering unboundedly.
-pub const MAX_NOTIFICATIONS_PER_CALL: usize = 64;
-/// How many notification reads one observed turn may span.
-pub const MAX_TURNS_NOTIFICATION_ROUNDS: usize = 16;
+/// One observed turn may absorb at most
+/// `MAX_TURN_NOTIFICATION_FRAMES` harness frames before the driver gives up
+/// rather than journaling unboundedly. (The transport separately bounds how
+/// many frames one `call` may buffer: 1024.)
+pub const MAX_TURN_NOTIFICATION_FRAMES: usize = 1024;
+/// Empty polls while waiting for harness frames. The production transport
+/// polls at 250 ms, so this bounds a silent-but-alive harness (a long model
+/// turn) at roughly 17 minutes before declaring the transport lost. Frames
+/// that surfaced server requests do not count as silence: the harness was
+/// alive and conversed with.
+pub const MAX_EMPTY_NOTIFICATION_POLLS: usize = 4096;
 /// Notification text (agent messages, command output) is bounded by the SDK
 /// event contract; oversized text truncates on char boundaries with a marker.
 pub const MAX_EVENT_TEXT_BYTES: usize = symbiote_runtime_sdk::events::MAX_EVENT_TEXT_BYTES;
@@ -62,6 +68,10 @@ pub enum DriverError {
     MalformedFrame,
     /// A response correlated to a different request than the outstanding one.
     UnexpectedResponse,
+    /// The harness answered a request with a JSON-RPC error object.
+    RpcFailure,
+    /// The server did not report the pinned App Server version.
+    UnsupportedVersion,
     /// The harness answered the launch handshake with an unexpected state.
     ContractMismatch,
     /// Completion was already filed; the driver is finished.
@@ -75,34 +85,46 @@ impl std::fmt::Display for DriverError {
 }
 impl std::error::Error for DriverError {}
 
+/// One server-initiated request frame awaiting an answer. The `id` is kept
+/// verbatim (string or number) because the refusal response must echo it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerRequest {
+    pub id: serde_json::Value,
+    pub method: String,
+    pub params: serde_json::Value,
+}
+
 /// The framed IPC boundary to the pinned App Server. Implementations translate
 /// a versionless request envelope into either a correlated response result or
 /// an error; notifications are surfaced separately. The production
-/// implementation wraps `JsonlTransport`; tests provide deterministic fixture
-/// servers.
+/// implementation wraps the sandboxed `JsonlTransport` process (see the
+/// `process` module); tests provide deterministic fixture servers.
 pub trait CodexTransport {
-    /// Send a request envelope (no `jsonrpc` field, string-or-number ids) and
-    /// return the matching response's `result` object. Interleaved server
-    /// notifications surface through [`Self::recv_notification`]; server
-    /// requests (approvals) surface through [`Self::recv_server_request`].
+    /// Send a request envelope (no `jsonrpc` field, number ids assigned by
+    /// the transport) and return the matching response's `result` object.
+    /// Interleaved server notifications and requests are buffered and
+    /// surfaced through [`Self::recv_notification`] and
+    /// [`Self::recv_server_request`].
     fn call(
         &mut self,
         method: &str,
         params: &serde_json::Value,
     ) -> Result<serde_json::Value, DriverError>;
-    /// Receive one server-initiated notification frame, or `None` at EOF.
+    /// Send a notification envelope (no id, no response expected).
+    fn notify(&mut self, method: &str, params: &serde_json::Value) -> Result<(), DriverError>;
+    /// Receive one server-initiated notification frame. `Ok(None)` means
+    /// nothing arrived within the transport's poll window — keep polling;
+    /// `Err` means the stream is closed or failed.
     fn recv_notification(&mut self) -> Result<Option<serde_json::Value>, DriverError>;
-    /// Receive one server-initiated request frame awaiting an answer, or
-    /// `None` when none is pending.
-    fn recv_server_request(&mut self) -> Result<Option<(String, serde_json::Value)>, DriverError>;
-    /// Refuse one pending server request. The refusal shape is per-method:
-    /// exec/patch/permissions requests take `decline`/`abort`, elicitation
-    /// takes `decline`, and a tool user-input question is answered with an
-    /// empty answer set. `Unanswered` refusals are never sent.
+    /// Receive one buffered server-initiated request frame, or `None` when
+    /// none is pending.
+    fn recv_server_request(&mut self) -> Result<Option<ServerRequest>, DriverError>;
+    /// Refuse one pending server request by echoing its id with a per-method
+    /// denial body from the pinned response schemas. `Unanswered` refusals
+    /// are never sent by the driver; implementations must not invent bodies.
     fn refuse_server_request(
         &mut self,
-        method: &str,
-        params: &serde_json::Value,
+        request: &ServerRequest,
         decision: ApprovalDecision,
     ) -> Result<(), DriverError>;
 }
@@ -123,11 +145,25 @@ pub enum ApprovalDecision {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApprovalRefusal {
+    /// `execCommandApproval` — legacy exec approval; denied with `denied`.
     ExecCommand,
+    /// `applyPatchApproval` — legacy patch approval; denied with `denied`.
     ApplyPatch,
+    /// `item/commandExecution/requestApproval` — denied with `decline`.
+    CommandExecutionRequest,
+    /// `item/fileChange/requestApproval` — denied with `decline`.
+    FileChangeRequest,
+    /// `item/permissions/requestApproval` — denied with an empty granted
+    /// profile (grants nothing).
     PermissionsRequest,
-    ToolUserInput,
+    /// `mcpServer/elicitation/request` — declined with action `decline`.
     McpElicitation,
+    /// `item/tool/call` — a client-executed dynamic tool call; refused with
+    /// `success: false` and no content.
+    ToolCall,
+    /// `item/tool/requestUserInput` — no reply: the pinned answer shape must
+    /// match the question count, and inventing answers is worse than silence.
+    ToolUserInput,
     /// A server request method outside the pinned schema's known approvals.
     Unknown,
 }
@@ -137,11 +173,19 @@ impl ApprovalRefusal {
         match method {
             "execCommandApproval" => Self::ExecCommand,
             "applyPatchApproval" => Self::ApplyPatch,
+            "item/commandExecution/requestApproval" => Self::CommandExecutionRequest,
+            "item/fileChange/requestApproval" => Self::FileChangeRequest,
             "item/permissions/requestApproval" => Self::PermissionsRequest,
-            "item/tool/requestUserInput" => Self::ToolUserInput,
             "mcpServer/elicitation/request" => Self::McpElicitation,
+            "item/tool/call" => Self::ToolCall,
+            "item/tool/requestUserInput" => Self::ToolUserInput,
             _ => Self::Unknown,
         }
+    }
+    /// Whether the pinned response schemas give this refusal a well-defined
+    /// denial body the driver may send. Everything else stays unanswered.
+    fn has_shaped_denial(self) -> bool {
+        !matches!(self, Self::ToolUserInput | Self::Unknown)
     }
 }
 
@@ -293,10 +337,7 @@ impl ExternalSession {
     }
 
     /// Starts a harness thread bound to the task worktree and files the task
-    /// prompt as the first turn. `worktree` is the reserved worktree path the
-    /// Host authorized in the dispatch's root; the harness's sandbox policy is
-    /// pinned to read-only-plus-worktree here and can only be tightened, never
-    /// widened, by caller input.
+    /// prompt as the first turn: `begin_thread` + [`Self::turn`].
     pub fn start_turn(
         &mut self,
         task_prompt: &str,
@@ -309,15 +350,83 @@ impl ExternalSession {
         if task_prompt.trim().is_empty() || task_prompt.len() > 64 * 1024 {
             return Err(DriverError::InvalidInput);
         }
-        if worktree.is_empty() || worktree.len() > 4096 || !worktree.starts_with('/') {
+        self.begin_thread(worktree, transport)?;
+        self.turn(task_prompt, transport)
+    }
+
+    /// Completes the pinned App Server handshake and starts the harness
+    /// thread. `worktree_cwd` is the worktree path **as visible to the
+    /// harness process**: through the sandboxed launcher the Host path is
+    /// mounted at `/workspace` and invisible by its host name, so callers
+    /// composing with [`process::launch_sandboxed`] pass `/workspace`; a
+    /// caller owning the process directly passes its own authorized path.
+    /// The harness's internal sandbox policy is pinned to read-only and its
+    /// approval policy to never — the outer Host sandbox is the enforcement
+    /// boundary. No model turn starts here; the `codex_thread_smoke` proof
+    /// stops after this step.
+    ///
+    /// Once the handshake begins, the session is single-shot: any failure
+    /// after the Ready event is terminal (the driver records a
+    /// `TransportLost` stop and a diagnostic), because a retry would record
+    /// a second Ready and make the journal unreplayable for the SDK's
+    /// session tracker. Recovery is a fresh session with a fresh dispatch.
+    pub fn begin_thread(
+        &mut self,
+        worktree_cwd: &str,
+        transport: &mut impl CodexTransport,
+    ) -> Result<(), DriverError> {
+        if self.completion_report.is_some() || self.stopped.is_some() {
+            return Err(DriverError::AlreadyComplete);
+        }
+        if self.harness_thread_id.is_some() {
+            return Err(DriverError::ContractMismatch);
+        }
+        if worktree_cwd.is_empty() || worktree_cwd.len() > 4096 || !worktree_cwd.starts_with('/') {
             return Err(DriverError::InvalidInput);
         }
         // The SDK's session consumers require Ready before any other event.
         self.record(RuntimeEventKind::Ready {})?;
+        // From here the session has begun journaling: a failure must be
+        // terminal so no entry point can append to a half-open session.
+        if let Err(error) = self.complete_handshake(worktree_cwd, transport) {
+            self.stopped = Some(StopKind::TransportLost);
+            self.record(RuntimeEventKind::Diagnostic {
+                message: truncate_event_text(&format!("harness handshake failed: {error}")),
+            })?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn complete_handshake(
+        &mut self,
+        worktree_cwd: &str,
+        transport: &mut impl CodexTransport,
+    ) -> Result<(), DriverError> {
+        // Handshake first: initialize → pinned version check → initialized.
+        // The pin mirrors the #483 discovery probe exactly; a server that
+        // does not report the pinned version is refused before any thread,
+        // turn or account interaction happens.
+        let client_info = serde_json::json!({
+            "clientInfo": {"name": "symbiote", "version": "0.1.0", "title": "Symbiote"}
+        });
+        let initialized = transport.call("initialize", &client_info)?;
+        let user_agent = initialized
+            .get("userAgent")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DriverError::MalformedFrame)?;
+        let expected = format!(
+            "symbiote/{}",
+            symbiote_runtime_discovery::codex::CODEX_VERSION
+        );
+        if user_agent.len() > 1024 || user_agent.split_whitespace().next() != Some(&expected) {
+            return Err(DriverError::UnsupportedVersion);
+        }
+        transport.notify("initialized", &serde_json::json!({}))?;
         // Thread identity is minted by the harness, not the driver. The
         // thread id is the correlation key for every later notification.
         let params = serde_json::json!({
-            "cwd": worktree,
+            "cwd": worktree_cwd,
             "sandbox": "read-only",
             "approvalPolicy": "never",
         });
@@ -332,7 +441,7 @@ impl ExternalSession {
             return Err(DriverError::MalformedFrame);
         }
         self.harness_thread_id = Some(thread_id);
-        self.turn(task_prompt, transport)
+        Ok(())
     }
 
     /// Files one turn and observes it to completion. All harness escalation
@@ -391,47 +500,88 @@ impl ExternalSession {
         transport: &mut impl CodexTransport,
     ) -> Result<(), DriverError> {
         let mut stop: Option<StopKind> = None;
-        let mut seen = 0usize;
+        let mut frames = 0usize;
+        let mut empty_polls = 0usize;
         while stop.is_none() {
-            seen += 1;
-            if seen > MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS {
+            let notification = match transport.recv_notification() {
+                Ok(Some(notification)) => {
+                    empty_polls = 0;
+                    Some(notification)
+                }
+                Ok(None) => {
+                    // Nothing arrived within the poll window. A live harness
+                    // may think for a long time; only a bounded number of
+                    // silent polls reads as a lost transport.
+                    empty_polls += 1;
+                    if empty_polls > MAX_EMPTY_NOTIFICATION_POLLS {
+                        self.stopped = Some(StopKind::TransportLost);
+                        self.record(RuntimeEventKind::Diagnostic {
+                            message: truncate_event_text("harness silent beyond the poll budget"),
+                        })?;
+                        return Err(DriverError::TransportFailed);
+                    }
+                    None
+                }
+                Err(error) => {
+                    self.stopped = Some(StopKind::TransportLost);
+                    self.record(RuntimeEventKind::Diagnostic {
+                        message: truncate_event_text(&format!(
+                            "harness closed before turn completion: {error}"
+                        )),
+                    })?;
+                    return Err(error);
+                }
+            };
+            // Server requests surface through the same frame pump as
+            // notifications: drain everything that read surfaced before
+            // processing the notification itself, so a harness blocked on a
+            // pending approval is answered first.
+            while let Some(request) = transport.recv_server_request()? {
+                let refusal = ApprovalRefusal::from_method(&request.method);
+                self.approvals_refused += 1;
+                let decision = if refusal.has_shaped_denial() {
+                    ApprovalDecision::Denied
+                } else {
+                    // No pinned denial body exists for this shape; no reply
+                    // is invented. Recorded, never an approval.
+                    ApprovalDecision::Unanswered
+                };
+                if decision != ApprovalDecision::Unanswered {
+                    // Nested on purpose: let-chains are unstable on the
+                    // pinned MSRV (1.85) and clippy's collapse lint is
+                    // silenced here rather than relaxing it workspace-wide.
+                    #[allow(clippy::collapsible_if)]
+                    if let Err(error) = transport.refuse_server_request(&request, decision) {
+                        self.stopped = Some(StopKind::TransportLost);
+                        self.record(RuntimeEventKind::Diagnostic {
+                            message: truncate_event_text(&format!(
+                                "refusal reply failed; run is terminal: {error}"
+                            )),
+                        })?;
+                        return Err(error);
+                    }
+                }
+                // The harness escalated: it is alive and conversed with, so
+                // this interaction is not silence.
+                empty_polls = 0;
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!(
+                        "refused harness approval request: {:?} ({refusal:?}, {decision:?})",
+                        request.method
+                    )),
+                })?;
+            }
+            let Some(notification) = notification else {
+                continue;
+            };
+            frames += 1;
+            if frames > MAX_TURN_NOTIFICATION_FRAMES {
                 self.stopped = Some(StopKind::TransportLost);
                 self.record(RuntimeEventKind::Diagnostic {
                     message: truncate_event_text("notification budget exceeded"),
                 })?;
                 return Err(DriverError::TransportFailed);
             }
-            // Server requests are answered first: the pinned harness blocks a
-            // pending approval request while streaming notifications.
-            while let Some((method, params)) = transport.recv_server_request()? {
-                let refusal = ApprovalRefusal::from_method(&method);
-                self.approvals_refused += 1;
-                let decision = match refusal {
-                    // Known approval shapes get a shaped refusal the harness
-                    // understands; unknown methods get no reply at all, so no
-                    // unclaimed refusal body is invented for them.
-                    ApprovalRefusal::Unknown => ApprovalDecision::Unanswered,
-                    _ => ApprovalDecision::Denied,
-                };
-                if decision != ApprovalDecision::Unanswered {
-                    transport.refuse_server_request(&method, &params, decision)?;
-                }
-                self.record(RuntimeEventKind::Diagnostic {
-                    message: truncate_event_text(&format!(
-                        "refused harness approval request: {method:?} ({refusal:?}, {decision:?})"
-                    )),
-                })?;
-            }
-            let notification = match transport.recv_notification()? {
-                Some(notification) => notification,
-                None => {
-                    self.stopped = Some(StopKind::TransportLost);
-                    self.record(RuntimeEventKind::Diagnostic {
-                        message: truncate_event_text("harness closed before turn completion"),
-                    })?;
-                    return Err(DriverError::TransportFailed);
-                }
-            };
             let method = notification
                 .get("method")
                 .and_then(serde_json::Value::as_str)
@@ -449,7 +599,15 @@ impl ExternalSession {
                 })?;
                 continue;
             }
-            self.absorb_notification(&notification)?;
+            if let Err(error) = self.absorb_notification(&notification) {
+                self.stopped = Some(StopKind::TransportLost);
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!(
+                        "unabsorbable harness frame; run is terminal: {error}"
+                    )),
+                })?;
+                return Err(error);
+            }
             if method == "turn/completed" {
                 let status = params
                     .pointer("/turn/status")
@@ -691,23 +849,26 @@ mod tests {
     use std::collections::{BTreeSet, VecDeque};
 
     /// Deterministic offline fixture server: scripted frames consumed in
-    /// order. Refusal answers are recorded for assertions. Not a mock of
-    /// verification — the driver's real logic runs against it.
+    /// order. Calls, notifications and refusals are recorded for assertions.
+    /// Not a mock of verification — the driver's real logic runs against it.
     struct FixtureTransport {
         /// Response frames for `call`, keyed by arrival order.
         responses: Vec<Result<serde_json::Value, DriverError>>,
-        /// Frames surfaced by `recv_notification` (None = EOF).
+        /// Frames surfaced by `recv_notification` (None = end of script; the
+        /// driver treats prolonged silence as a lost transport).
         notifications: VecDeque<Option<serde_json::Value>>,
         /// Server requests awaiting refusal, surfaced by `recv_server_request`.
-        server_requests: VecDeque<(String, serde_json::Value)>,
+        server_requests: VecDeque<ServerRequest>,
         refusals: Vec<(String, ApprovalDecision)>,
+        /// (kind, method) of everything sent, in order.
+        sent: Vec<(&'static str, String)>,
         cursor: usize,
     }
     impl FixtureTransport {
         fn new(
             responses: Vec<Result<serde_json::Value, DriverError>>,
             notifications: Vec<serde_json::Value>,
-            server_requests: Vec<(String, serde_json::Value)>,
+            server_requests: Vec<ServerRequest>,
         ) -> Self {
             Self {
                 responses,
@@ -718,6 +879,7 @@ mod tests {
                     .collect(),
                 server_requests: server_requests.into(),
                 refusals: Vec::new(),
+                sent: Vec::new(),
                 cursor: 0,
             }
         }
@@ -725,9 +887,10 @@ mod tests {
     impl CodexTransport for FixtureTransport {
         fn call(
             &mut self,
-            _method: &str,
+            method: &str,
             _params: &serde_json::Value,
         ) -> Result<serde_json::Value, DriverError> {
+            self.sent.push(("request", method.to_owned()));
             let index = self.cursor;
             self.cursor += 1;
             self.responses
@@ -735,25 +898,44 @@ mod tests {
                 .cloned()
                 .unwrap_or(Err(DriverError::TransportFailed))
         }
+        fn notify(&mut self, method: &str, _params: &serde_json::Value) -> Result<(), DriverError> {
+            self.sent.push(("notification", method.to_owned()));
+            Ok(())
+        }
         fn recv_notification(&mut self) -> Result<Option<serde_json::Value>, DriverError> {
             Ok(self.notifications.pop_front().flatten())
         }
-        fn recv_server_request(
-            &mut self,
-        ) -> Result<Option<(String, serde_json::Value)>, DriverError> {
+        fn recv_server_request(&mut self) -> Result<Option<ServerRequest>, DriverError> {
             Ok(self.server_requests.pop_front())
         }
         fn refuse_server_request(
             &mut self,
-            method: &str,
-            _params: &serde_json::Value,
+            request: &ServerRequest,
             decision: ApprovalDecision,
         ) -> Result<(), DriverError> {
-            self.refusals.push((method.to_owned(), decision));
+            self.refusals.push((request.method.clone(), decision));
             Ok(())
         }
     }
 
+    fn server_request(
+        id: impl Into<serde_json::Value>,
+        method: &str,
+        params: serde_json::Value,
+    ) -> ServerRequest {
+        ServerRequest {
+            id: id.into(),
+            method: method.to_owned(),
+            params,
+        }
+    }
+
+    fn initialize_response() -> serde_json::Value {
+        serde_json::json!({"userAgent": format!(
+            "symbiote/{} (Linux)",
+            symbiote_runtime_discovery::codex::CODEX_VERSION
+        )})
+    }
     fn thread_start_response() -> serde_json::Value {
         serde_json::json!({"thread": {"id": "thr-1"}})
     }
@@ -898,7 +1080,11 @@ mod tests {
 
     fn transport_with(notifications: Vec<serde_json::Value>) -> FixtureTransport {
         FixtureTransport::new(
-            vec![Ok(thread_start_response()), Ok(turn_start_response())],
+            vec![
+                Ok(initialize_response()),
+                Ok(thread_start_response()),
+                Ok(turn_start_response()),
+            ],
             notifications,
             vec![],
         )
@@ -1040,6 +1226,73 @@ mod tests {
     }
 
     #[test]
+    fn failed_handshake_is_terminal_and_retry_never_doubles_ready() {
+        // A server reporting a foreign version is refused after Ready; the
+        // session must be terminal so a retry cannot append a second Ready
+        // (which the SDK tracker would reject) to a half-open journal.
+        for bad_agent in ["symbiote/0.117.0", "unrelated", "symbiote/0.118.0evil"] {
+            let mut session = session();
+            let mut transport = FixtureTransport::new(
+                vec![Ok(serde_json::json!({
+                    "userAgent": format!("{bad_agent} (Linux)")
+                }))],
+                vec![],
+                vec![],
+            );
+            let error = session
+                .begin_thread("/tmp/worktree", &mut transport)
+                .unwrap_err();
+            assert_eq!(error, DriverError::UnsupportedVersion);
+            // Terminal: no retry, no turn, no completion filing.
+            assert_eq!(
+                session.begin_thread("/tmp/worktree", &mut transport),
+                Err(DriverError::AlreadyComplete)
+            );
+            assert_eq!(
+                session.turn("another", &mut transport),
+                Err(DriverError::AlreadyComplete)
+            );
+            assert_eq!(
+                session.request_completion("done"),
+                Err(DriverError::ContractMismatch)
+            );
+            // Exactly one Ready, one refusal diagnostic, tracker-replayable.
+            assert_eq!(
+                session
+                    .events()
+                    .iter()
+                    .filter(|e| matches!(e.payload(), RuntimeEventKind::Ready {}))
+                    .count(),
+                1
+            );
+            assert!(matches!(
+                session.run_summary().stopped,
+                Some(StopKind::TransportLost)
+            ));
+            replay_through_tracker(&session);
+        }
+    }
+
+    #[test]
+    fn malformed_thread_response_is_terminal_too() {
+        let mut session = session();
+        let mut transport = FixtureTransport::new(
+            vec![Ok(initialize_response()), Ok(serde_json::json!({}))],
+            vec![],
+            vec![],
+        );
+        let error = session
+            .begin_thread("/tmp/worktree", &mut transport)
+            .unwrap_err();
+        assert_eq!(error, DriverError::MalformedFrame);
+        assert_eq!(
+            session.begin_thread("/tmp/worktree", &mut transport),
+            Err(DriverError::AlreadyComplete)
+        );
+        replay_through_tracker(&session);
+    }
+
+    #[test]
     fn malformed_or_charset_violating_harness_ids_are_refused() {
         for bad_thread in [
             serde_json::json!({"thread": {"id": ""}}),
@@ -1149,30 +1402,39 @@ mod tests {
     fn every_approval_request_is_refused_and_counted() {
         let mut session = session();
         let mut transport = FixtureTransport::new(
-            vec![Ok(thread_start_response()), Ok(turn_start_response())],
+            vec![
+                Ok(initialize_response()),
+                Ok(thread_start_response()),
+                Ok(turn_start_response()),
+            ],
             vec![turn_completed("completed")],
             vec![
-                (
-                    "execCommandApproval".to_string(),
+                server_request(
+                    1,
+                    "execCommandApproval",
                     serde_json::json!({"callId": "c1", "conversationId": "thr-1",
                         "command": ["rm", "-rf"], "cwd": "/tmp/worktree", "parsedCmd": []}),
                 ),
-                (
-                    "applyPatchApproval".to_string(),
+                server_request(
+                    2,
+                    "applyPatchApproval",
                     serde_json::json!({"callId": "c2", "conversationId": "thr-1",
                         "fileChanges": {}}),
                 ),
-                (
-                    "item/permissions/requestApproval".to_string(),
+                server_request(
+                    "srv-3",
+                    "item/permissions/requestApproval",
                     serde_json::json!({"itemId": "i1", "threadId": "thr-1",
                         "turnId": "turn-1", "permissions": {}}),
                 ),
-                (
-                    "mcpServer/elicitation/request".to_string(),
+                server_request(
+                    "srv-4",
+                    "mcpServer/elicitation/request",
                     serde_json::json!({"serverName": "srv", "threadId": "thr-1"}),
                 ),
-                (
-                    "item/tool/requestUserInput".to_string(),
+                server_request(
+                    "srv-5",
+                    "item/tool/requestUserInput",
                     serde_json::json!({"itemId": "i2", "threadId": "thr-1",
                         "turnId": "turn-1", "questions": []}),
                 ),
@@ -1181,12 +1443,20 @@ mod tests {
         session
             .start_turn("fix the bug", "/tmp/worktree", &mut transport)
             .unwrap();
-        assert_eq!(transport.refusals.len(), 5);
+        // Four known shapes get a pinned denial reply; the user-input
+        // question gets none (no invented answers).
+        assert_eq!(transport.refusals.len(), 4);
         assert!(
             transport
                 .refusals
                 .iter()
                 .all(|(_, decision)| *decision == ApprovalDecision::Denied)
+        );
+        assert!(
+            !transport
+                .refusals
+                .iter()
+                .any(|(method, _)| method == "item/tool/requestUserInput")
         );
         let run = session.run_summary();
         assert_eq!(run.approvals_refused, 5);
@@ -1221,10 +1491,15 @@ mod tests {
     fn unknown_server_request_is_counted_but_never_answered() {
         let mut session = session();
         let mut transport = FixtureTransport::new(
-            vec![Ok(thread_start_response()), Ok(turn_start_response())],
+            vec![
+                Ok(initialize_response()),
+                Ok(thread_start_response()),
+                Ok(turn_start_response()),
+            ],
             vec![turn_completed("completed")],
-            vec![(
-                "account/chatgptAuthTokens/refresh".to_string(),
+            vec![server_request(
+                "srv-7",
+                "account/chatgptAuthTokens/refresh",
                 serde_json::json!({"reason": "test"}),
             )],
         );
@@ -1265,12 +1540,86 @@ mod tests {
         assert_eq!(run.stopped, Some(StopKind::TransportLost));
         // A lost transport never reads as a normal stop.
         assert_ne!(run.stopped, Some(StopKind::Completed));
+        // The silence budget fired, not a fabricated completion.
+        assert!(session.events().iter().any(
+            |e| matches!(e.payload(), RuntimeEventKind::Diagnostic { message }
+                    if message.as_str().contains("harness silent beyond the poll budget"))
+        ));
+        assert!(
+            !session
+                .events()
+                .iter()
+                .any(|e| matches!(e.payload(), RuntimeEventKind::Exit { .. }))
+        );
+    }
+
+    #[test]
+    fn driver_and_transport_work_end_to_end_over_a_real_subprocess() {
+        // The full driver against the real framed transport on a real
+        // process (pipes, EOF, deadlines) — scripted frames, no codex
+        // binary, no network, no credentials.
+        let mut session = session();
+        let mut transport = process::spawn_test_server(
+            "printf '%s\\n' \
+             '{\"id\":1,\"result\":{\"userAgent\":\"symbiote/0.118.0 (Linux)\"}}' \
+             '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thr-1\"}}}' \
+             '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}' \
+             '{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thr-1\",\"turnId\":\"turn-1\",\"item\":{\"type\":\"agentMessage\",\"id\":\"i1\",\"text\":\"done\"}}}' \
+             '{\"method\":\"thread/tokenUsage/updated\",\"params\":{\"threadId\":\"thr-1\",\"turnId\":\"turn-1\",\"tokenUsage\":{\"last\":{},\"total\":{\"inputTokens\":11,\"outputTokens\":5,\"cachedInputTokens\":0,\"reasoningOutputTokens\":0,\"totalTokens\":16}}}}' \
+             '{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thr-1\",\"turnId\":\"turn-1\",\"turn\":{\"id\":\"turn-1\",\"status\":\"completed\",\"items\":[]}}}'; sleep 30",
+        );
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        let kinds: Vec<_> = session.events().iter().map(|e| e.payload()).collect();
+        assert!(matches!(kinds[0], RuntimeEventKind::Ready {}));
+        assert!(matches!(kinds[1], RuntimeEventKind::Message { .. }));
+        assert!(matches!(kinds[2], RuntimeEventKind::Usage { .. }));
+        assert!(matches!(kinds[3], RuntimeEventKind::Exit { code: Some(0) }));
+        let run = session.run_summary();
+        assert_eq!(run.stopped, Some(StopKind::Completed));
+        assert_eq!(run.usage_turns, 1);
+        replay_through_tracker(&session);
+    }
+
+    #[test]
+    fn silent_harness_never_reads_as_completion_or_hangs() {
+        // A harness that starts a turn and then goes quiet: the driver's
+        // poll budget must convert sustained silence into an explicit lost
+        // transport instead of spinning forever or inventing an outcome.
+        let mut session = session();
+        let mut transport = process::spawn_test_server(
+            "printf '%s\\n' \
+             '{\"id\":1,\"result\":{\"userAgent\":\"symbiote/0.118.0 (Linux)\"}}' \
+             '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thr-1\"}}}' \
+             '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'; sleep 1",
+        );
+        let error = session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap_err();
+        assert_eq!(error, DriverError::TransportFailed);
+        assert_eq!(session.run_summary().stopped, Some(StopKind::TransportLost));
+        // The run recorded a transport diagnostic and never an Exit: silence
+        // produces no fabricated completion either way.
+        assert!(
+            session
+                .events()
+                .iter()
+                .any(|e| matches!(e.payload(), RuntimeEventKind::Diagnostic { .. }))
+        );
+        assert!(
+            !session
+                .events()
+                .iter()
+                .any(|e| matches!(e.payload(), RuntimeEventKind::Exit { .. }))
+        );
+        replay_through_tracker(&session);
     }
 
     #[test]
     fn notification_flood_is_bounded() {
         let mut session = session();
-        let flood: Vec<serde_json::Value> = (0..MAX_NOTIFICATIONS_PER_CALL * 16 + 1)
+        let flood: Vec<serde_json::Value> = (0..MAX_TURN_NOTIFICATION_FRAMES + 1)
             .map(|_| {
                 serde_json::json!({"method": "thread/status/changed",
                     "params": {"threadId": "thr-1", "status": "idle"}})
@@ -1282,7 +1631,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, DriverError::TransportFailed);
         // Event count stays bounded by the flood budget, not unbounded.
-        assert!(session.events().len() <= MAX_NOTIFICATIONS_PER_CALL * 16 + 8);
+        assert!(session.events().len() <= MAX_TURN_NOTIFICATION_FRAMES + 8);
     }
 
     #[test]
