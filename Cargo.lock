@@ -350,6 +350,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-client-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "symbiote-domain",
+ "symbiote-protocol",
+]
+
+[[package]]
 name = "symbiote-config"
 version = "0.1.0"
 dependencies = [
