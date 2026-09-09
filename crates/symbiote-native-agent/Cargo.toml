@@ -1,0 +1,16 @@
+[package]
+name = "symbiote-native-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+symbiote-domain = { path = "../symbiote-domain" }
+symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

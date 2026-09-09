@@ -394,6 +394,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-native-agent"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "symbiote-domain",
+ "symbiote-runtime-sdk",
+]
+
+[[package]]
 name = "symbiote-projection"
 version = "0.1.0"
 dependencies = [

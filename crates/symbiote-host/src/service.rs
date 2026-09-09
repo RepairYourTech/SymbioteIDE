@@ -520,6 +520,40 @@ fn execute(
                 started_at: at,
             })))
         }
+        Operation::RequestTaskCompletion {
+            task_id,
+            dispatch_id,
+            report,
+        } => {
+            // Route the worker's report through the domain lifecycle. The
+            // local owner is proxying: the Host constructs the Worker actor
+            // from caller input, and safety comes from the domain binding
+            // that actor to the task's actual current dispatch. The task can
+            // only reach CompletionRequested; verification and independent
+            // review remain Host gates after this.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Worker(dispatch_id.clone()),
+                at: Timestamp(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                        .as_millis()
+                        .try_into()
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+                ),
+                action: symbiote_domain::TaskAction::RequestCompletion {
+                    dispatch_id: dispatch_id.clone(),
+                    report: report.clone(),
+                },
+            };
+            store
+                .apply_task(task_id, command)
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::GetDispatchPreparation { task_id } => store
             .dispatch_preparation(task_id)
             .map(|preparation| ResponseBody::DispatchPreparation(Box::new(preparation)))

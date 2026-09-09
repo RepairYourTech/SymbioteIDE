@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 11,
+    minor: 12,
 };
 
 #[derive(
@@ -164,6 +164,11 @@ pub enum Operation {
         task_id: TaskId,
         host_id: HostId,
     },
+    RequestTaskCompletion {
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+        report: String,
+    },
     GetDispatchPreparation {
         task_id: TaskId,
     },
@@ -261,6 +266,7 @@ impl Operation {
             | Self::GetModelDescriptor { .. } => None,
             Self::PrepareDispatch { .. } | Self::GetDispatchPreparation { .. } => None,
             Self::StartPreparedTask { .. } => None,
+            Self::RequestTaskCompletion { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -537,6 +543,13 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // Local-owner authority only; the Host service separately
             // requires the requested host identity to be its own inventory
             // identity, so a client cannot start work on another Host.
+            principal.local_owner
+        }
+        Operation::RequestTaskCompletion { .. } => {
+            // A worker's completion request is evidence. Local-owner proxy
+            // submission is the current path; the Host enforces that the
+            // actor maps to the dispatch's Worker identity and that this
+            // NEVER advances the task beyond CompletionRequested.
             principal.local_owner
         }
         Operation::GetRoute { project_id, .. } => {
