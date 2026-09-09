@@ -141,6 +141,15 @@ fn classify(frame: Value) -> Result<Inbound, DriverError> {
             if id.is_null() {
                 return Err(DriverError::MalformedFrame);
             }
+            // A response carries exactly id + result xor id + error; any
+            // other key makes the frame out-of-shape even if the key is
+            // individually known to the protocol.
+            if object
+                .keys()
+                .any(|k| k != "id" && k != "result" && k != "error")
+            {
+                return Err(DriverError::MalformedFrame);
+            }
             match (object.get("result"), object.get("error")) {
                 (Some(result), None) => Ok(Inbound::Response {
                     id: id.clone(),
@@ -239,12 +248,14 @@ impl<T: FrameIo> CodexServerProcess<T> {
             .checked_add(self.frame_timeout)
             .ok_or(DriverError::TransportFailed)?;
         loop {
-            let remaining = deadline
+            let Some(remaining) = deadline
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or(DriverError::TransportFailed)?;
-            if remaining.is_zero() {
+                .filter(|d| !d.is_zero())
+            else {
+                // Poll window over. Buffered frames surface through the
+                // queue on the next call; this is not a transport failure.
                 return Ok(None);
-            }
+            };
             match self.io.recv_frame(remaining)? {
                 Some(frame) => match classify(frame)? {
                     Inbound::Notification(notification) => return Ok(Some(notification)),
@@ -593,36 +604,5 @@ mod tests {
                 other => panic!("unexpected poll result: {other:?}"),
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod probe_timing {
-    use super::*;
-    use crate::CodexTransport;
-
-    #[test]
-    fn probe_zz_step_timing() {
-        let mut server = spawn_test_server(
-            "printf '%s\\n' \
-             '{\"id\":1,\"result\":{\"userAgent\":\"symbiote/0.118.0 (Linux)\"}}' \
-             '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thr-1\"}}}' \
-             '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'; sleep 30",
-        );
-        let t0 = std::time::Instant::now();
-        let r = server.call("initialize", &json!({}));
-        eprintln!("initialize: {:?} at {:?}", r.is_ok(), t0.elapsed());
-        let r = server.notify("initialized", &json!({}));
-        eprintln!("notify: {:?} at {:?}", r.is_ok(), t0.elapsed());
-        let r = server.call("thread/start", &json!({}));
-        eprintln!("thread/start: {:?} at {:?}", r.is_ok(), t0.elapsed());
-        let r = server.call("turn/start", &json!({}));
-        eprintln!("turn/start: {:?} at {:?}", r.is_ok(), t0.elapsed());
-        let r = server.recv_notification();
-        eprintln!(
-            "first notification poll: {:?} at {:?}",
-            r.is_ok(),
-            t0.elapsed()
-        );
     }
 }

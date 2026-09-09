@@ -37,16 +37,16 @@ use symbiote_runtime_sdk::events::{
 pub mod process;
 
 pub const EXTERNAL_LOOP_VERSION: u32 = 1;
-/// A single `call` may legally interleave this many notifications before its
-/// response; beyond it the harness is misbehaving. One observed turn may see
-/// at most `MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS`
-/// frames before the driver gives up rather than buffering unboundedly.
-pub const MAX_NOTIFICATIONS_PER_CALL: usize = 64;
-/// How many notification reads one observed turn may span.
-pub const MAX_TURNS_NOTIFICATION_ROUNDS: usize = 16;
+/// One observed turn may absorb at most
+/// `MAX_TURN_NOTIFICATION_FRAMES` harness frames before the driver gives up
+/// rather than journaling unboundedly. (The transport separately bounds how
+/// many frames one `call` may buffer: 1024.)
+pub const MAX_TURN_NOTIFICATION_FRAMES: usize = 1024;
 /// Empty polls while waiting for harness frames. The production transport
-/// blocks on each poll, so this bounds a silent-but-alive harness (a long
-/// model turn) without falsely reporting a live run as lost.
+/// polls at 250 ms, so this bounds a silent-but-alive harness (a long model
+/// turn) at roughly 17 minutes before declaring the transport lost. Frames
+/// that surfaced server requests do not count as silence: the harness was
+/// alive and conversed with.
 pub const MAX_EMPTY_NOTIFICATION_POLLS: usize = 4096;
 /// Notification text (agent messages, command output) is bounded by the SDK
 /// event contract; oversized text truncates on char boundaries with a marker.
@@ -355,15 +355,24 @@ impl ExternalSession {
     }
 
     /// Completes the pinned App Server handshake and starts the harness
-    /// thread bound to the task worktree. `worktree` is the reserved worktree
-    /// path the Host authorized in the dispatch's root; the harness's
-    /// internal sandbox policy is pinned to read-only and its approval
-    /// policy to never — the outer Host sandbox is the enforcement boundary.
-    /// No model turn starts here; the `codex_thread_smoke` proof stops after
-    /// this step.
+    /// thread. `worktree_cwd` is the worktree path **as visible to the
+    /// harness process**: through the sandboxed launcher the Host path is
+    /// mounted at `/workspace` and invisible by its host name, so callers
+    /// composing with [`process::launch_sandboxed`] pass `/workspace`; a
+    /// caller owning the process directly passes its own authorized path.
+    /// The harness's internal sandbox policy is pinned to read-only and its
+    /// approval policy to never — the outer Host sandbox is the enforcement
+    /// boundary. No model turn starts here; the `codex_thread_smoke` proof
+    /// stops after this step.
+    ///
+    /// Once the handshake begins, the session is single-shot: any failure
+    /// after the Ready event is terminal (the driver records a
+    /// `TransportLost` stop and a diagnostic), because a retry would record
+    /// a second Ready and make the journal unreplayable for the SDK's
+    /// session tracker. Recovery is a fresh session with a fresh dispatch.
     pub fn begin_thread(
         &mut self,
-        worktree: &str,
+        worktree_cwd: &str,
         transport: &mut impl CodexTransport,
     ) -> Result<(), DriverError> {
         if self.completion_report.is_some() || self.stopped.is_some() {
@@ -372,11 +381,28 @@ impl ExternalSession {
         if self.harness_thread_id.is_some() {
             return Err(DriverError::ContractMismatch);
         }
-        if worktree.is_empty() || worktree.len() > 4096 || !worktree.starts_with('/') {
+        if worktree_cwd.is_empty() || worktree_cwd.len() > 4096 || !worktree_cwd.starts_with('/') {
             return Err(DriverError::InvalidInput);
         }
         // The SDK's session consumers require Ready before any other event.
         self.record(RuntimeEventKind::Ready {})?;
+        // From here the session has begun journaling: a failure must be
+        // terminal so no entry point can append to a half-open session.
+        if let Err(error) = self.complete_handshake(worktree_cwd, transport) {
+            self.stopped = Some(StopKind::TransportLost);
+            self.record(RuntimeEventKind::Diagnostic {
+                message: truncate_event_text(&format!("harness handshake failed: {error}")),
+            })?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn complete_handshake(
+        &mut self,
+        worktree_cwd: &str,
+        transport: &mut impl CodexTransport,
+    ) -> Result<(), DriverError> {
         // Handshake first: initialize → pinned version check → initialized.
         // The pin mirrors the #483 discovery probe exactly; a server that
         // does not report the pinned version is refused before any thread,
@@ -400,7 +426,7 @@ impl ExternalSession {
         // Thread identity is minted by the harness, not the driver. The
         // thread id is the correlation key for every later notification.
         let params = serde_json::json!({
-            "cwd": worktree,
+            "cwd": worktree_cwd,
             "sandbox": "read-only",
             "approvalPolicy": "never",
         });
@@ -520,9 +546,20 @@ impl ExternalSession {
                     // is invented. Recorded, never an approval.
                     ApprovalDecision::Unanswered
                 };
-                if decision != ApprovalDecision::Unanswered {
-                    transport.refuse_server_request(&request, decision)?;
+                if decision != ApprovalDecision::Unanswered
+                    && let Err(error) = transport.refuse_server_request(&request, decision)
+                {
+                    self.stopped = Some(StopKind::TransportLost);
+                    self.record(RuntimeEventKind::Diagnostic {
+                        message: truncate_event_text(&format!(
+                            "refusal reply failed; run is terminal: {error}"
+                        )),
+                    })?;
+                    return Err(error);
                 }
+                // The harness escalated: it is alive and conversed with, so
+                // this interaction is not silence.
+                empty_polls = 0;
                 self.record(RuntimeEventKind::Diagnostic {
                     message: truncate_event_text(&format!(
                         "refused harness approval request: {:?} ({refusal:?}, {decision:?})",
@@ -534,7 +571,7 @@ impl ExternalSession {
                 continue;
             };
             frames += 1;
-            if frames > MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS {
+            if frames > MAX_TURN_NOTIFICATION_FRAMES {
                 self.stopped = Some(StopKind::TransportLost);
                 self.record(RuntimeEventKind::Diagnostic {
                     message: truncate_event_text("notification budget exceeded"),
@@ -558,7 +595,15 @@ impl ExternalSession {
                 })?;
                 continue;
             }
-            self.absorb_notification(&notification)?;
+            if let Err(error) = self.absorb_notification(&notification) {
+                self.stopped = Some(StopKind::TransportLost);
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!(
+                        "unabsorbable harness frame; run is terminal: {error}"
+                    )),
+                })?;
+                return Err(error);
+            }
             if method == "turn/completed" {
                 let status = params
                     .pointer("/turn/status")
@@ -1177,6 +1222,73 @@ mod tests {
     }
 
     #[test]
+    fn failed_handshake_is_terminal_and_retry_never_doubles_ready() {
+        // A server reporting a foreign version is refused after Ready; the
+        // session must be terminal so a retry cannot append a second Ready
+        // (which the SDK tracker would reject) to a half-open journal.
+        for bad_agent in ["symbiote/0.117.0", "unrelated", "symbiote/0.118.0evil"] {
+            let mut session = session();
+            let mut transport = FixtureTransport::new(
+                vec![Ok(serde_json::json!({
+                    "userAgent": format!("{bad_agent} (Linux)")
+                }))],
+                vec![],
+                vec![],
+            );
+            let error = session
+                .begin_thread("/tmp/worktree", &mut transport)
+                .unwrap_err();
+            assert_eq!(error, DriverError::UnsupportedVersion);
+            // Terminal: no retry, no turn, no completion filing.
+            assert_eq!(
+                session.begin_thread("/tmp/worktree", &mut transport),
+                Err(DriverError::AlreadyComplete)
+            );
+            assert_eq!(
+                session.turn("another", &mut transport),
+                Err(DriverError::AlreadyComplete)
+            );
+            assert_eq!(
+                session.request_completion("done"),
+                Err(DriverError::ContractMismatch)
+            );
+            // Exactly one Ready, one refusal diagnostic, tracker-replayable.
+            assert_eq!(
+                session
+                    .events()
+                    .iter()
+                    .filter(|e| matches!(e.payload(), RuntimeEventKind::Ready {}))
+                    .count(),
+                1
+            );
+            assert!(matches!(
+                session.run_summary().stopped,
+                Some(StopKind::TransportLost)
+            ));
+            replay_through_tracker(&session);
+        }
+    }
+
+    #[test]
+    fn malformed_thread_response_is_terminal_too() {
+        let mut session = session();
+        let mut transport = FixtureTransport::new(
+            vec![Ok(initialize_response()), Ok(serde_json::json!({}))],
+            vec![],
+            vec![],
+        );
+        let error = session
+            .begin_thread("/tmp/worktree", &mut transport)
+            .unwrap_err();
+        assert_eq!(error, DriverError::MalformedFrame);
+        assert_eq!(
+            session.begin_thread("/tmp/worktree", &mut transport),
+            Err(DriverError::AlreadyComplete)
+        );
+        replay_through_tracker(&session);
+    }
+
+    #[test]
     fn malformed_or_charset_violating_harness_ids_are_refused() {
         for bad_thread in [
             serde_json::json!({"thread": {"id": ""}}),
@@ -1503,7 +1615,7 @@ mod tests {
     #[test]
     fn notification_flood_is_bounded() {
         let mut session = session();
-        let flood: Vec<serde_json::Value> = (0..MAX_NOTIFICATIONS_PER_CALL * 16 + 1)
+        let flood: Vec<serde_json::Value> = (0..MAX_TURN_NOTIFICATION_FRAMES + 1)
             .map(|_| {
                 serde_json::json!({"method": "thread/status/changed",
                     "params": {"threadId": "thr-1", "status": "idle"}})
@@ -1515,7 +1627,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, DriverError::TransportFailed);
         // Event count stays bounded by the flood budget, not unbounded.
-        assert!(session.events().len() <= MAX_NOTIFICATIONS_PER_CALL * 16 + 8);
+        assert!(session.events().len() <= MAX_TURN_NOTIFICATION_FRAMES + 8);
     }
 
     #[test]

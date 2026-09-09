@@ -32,9 +32,12 @@ The tested release is `codex-cli 0.118.0`; shapes were checked against the
 installed executable's `app-server generate-json-schema` output (v2
 thread/turn APIs) without experimental methods. The driver sends exactly:
 
-- `thread/start` with the Host-authorized worktree as `cwd`, `sandbox`
-  pinned to `read-only` and `approvalPolicy` pinned to `never`. The thread
-  id is minted by the harness; the driver only records it.
+- `thread/start` with the worktree path **as visible to the harness
+  process** as `cwd` — through the sandboxed launcher the Host path is
+  mounted at `/workspace` and invisible by its host name, so composed
+  callers pass `/workspace` — `sandbox` pinned to `read-only` and
+  `approvalPolicy` pinned to `never`. The thread id is minted by the
+  harness; the driver only records it.
 - `turn/start` with the task prompt as one text input on the recorded
   thread. Turn identity is minted by the harness.
 
@@ -42,7 +45,8 @@ The handshake precedes everything: `initialize` → pinned
 `symbiote/0.118.0` check → `initialized`. The driver never sends
 login/logout/account/config-write/fs/plugin/feedback/exec or
 fuzzyFileSearch requests. Notifications are correlated by `threadId` +
-`turnId`; foreign-turn notifications are absorbed but never stop the turn.
+`turnId`; foreign-turn or unattributable notifications are ignored with a
+bounded diagnostic and never stop the turn or touch its accounting.
 
 ## Approval refusal is total
 
@@ -107,9 +111,14 @@ real handshake (`initialize` → pinned `symbiote/0.118.0` check →
 not report the pinned version is refused.
 
 The `codex_thread_smoke` example is the real-binary proof, mirroring the
-#483 discovery proof: sandboxed launch, real handshake, real `thread/start`,
-then cancellation — no turn, no model call, no credentials, no network. It
-runs locally and in CI (`Rust contracts`, stable toolchain).
+#483 discovery proof: sandboxed launch, the driver's own `begin_thread`
+against the production framing, then cancellation — no turn, no model
+call, no credentials, no network. It runs locally and in CI
+(`Rust contracts`, stable toolchain). Sizing note: the shared transport's
+default frame cap is 64 KiB; a real turn whose frames exceed that is
+rejected (`FrameTooLarge`) and reads as a lost transport, so production
+callers must size `TransportLimits` explicitly — event-text truncation
+only applies after framing.
 
 ## Honest non-claims
 
