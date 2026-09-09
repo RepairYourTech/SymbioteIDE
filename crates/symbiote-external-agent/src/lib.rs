@@ -1,0 +1,1280 @@
+//! External Symbiote Agent worker loop: drives the pinned Codex App Server
+//! (`codex-cli 0.118.0`) as an external harness over versionless JSONL RPC.
+//! This crate owns the external side of #465. It is deliberately
+//! offline-testable: the [`CodexTransport`] trait abstracts the framed IPC so
+//! the driver, its state machine, its event journaling and its completion
+//! handoff are exercised against deterministic fixture servers without the
+//! binary, network access, credential reads or spending. The concrete
+//! transport is the shared `JsonlTransport` in `symbiote-runtime-transport`
+//! plus the sandbox launcher; the `codex_discover` proof (#483) established
+//! this pinned binary's offline protocol compatibility, and this crate
+//! extends the same versionless envelope (no `jsonrpc` field, string-or-number
+//! ids, notifications interleaved with responses).
+//!
+//! Boundary: the harness is untrusted execution. It never writes canonical
+//! state. The driver emits typed [`RuntimeEvent`]s carrying the session
+//! binding with `RuntimeKind::ExternalHarness` and produces a completion
+//! report the Host routes through RequestCompletion → BeginVerification →
+//! Complete with independent review. Every server-initiated approval request
+//! (`execCommandApproval`, `applyPatchApproval`, `item/permissions/requestApproval`,
+//! `item/tool/requestUserInput`, `mcpServer/elicitation/request`) is refused
+//! and recorded as an [`ApprovalRefusal`]: the dispatch contract's access
+//! snapshot is the only permission authority, and granting the harness's
+//! runtime escalation requests from inside the worker loop would bypass it.
+//! Steering a live turn is an explicit [`ControlOutcome`]; the driver never
+//! guesses whether the harness accepted an interrupt.
+//!
+//! Credential separation: the harness authenticates with its own configured
+//! account. The driver sends no credentials, no API keys and no native
+//! billing route; `account/read` is never called here (discovery already
+//! proved the handshake) and `refreshToken` is never sent. A native provider
+//! credential reference is never copied into an external session.
+use symbiote_domain::*;
+use symbiote_runtime_sdk::events::{
+    EventText, ObservationKind, RuntimeEvent, RuntimeEventKind, SessionBinding,
+};
+
+pub const EXTERNAL_LOOP_VERSION: u32 = 1;
+/// Interleaved notifications (item deltas, token usage, status) can legally
+/// burst between responses; beyond this per-call budget the harness is
+/// misbehaving and the run halts rather than buffering unboundedly.
+pub const MAX_NOTIFICATIONS_PER_CALL: usize = 64;
+/// Notification text (agent messages, command output) is bounded by the SDK
+/// event contract; oversized text truncates on char boundaries with a marker.
+pub const MAX_EVENT_TEXT_BYTES: usize = symbiote_runtime_sdk::events::MAX_EVENT_TEXT_BYTES;
+/// Completion reports are bounded by the same limit as event text.
+pub const MAX_REPORT_BYTES: usize = MAX_EVENT_TEXT_BYTES;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriverError {
+    /// The dispatch contract no longer validates (expired enforcement, etc.).
+    InvalidContract,
+    /// The dispatch is native; the external driver refuses to run it.
+    NotExternalHarness,
+    /// Caller input failed local bounds.
+    InvalidInput,
+    /// The transport failed or the process exited mid-call.
+    TransportFailed,
+    /// The harness produced a frame the pinned protocol does not allow.
+    MalformedFrame,
+    /// A response correlated to a different request than the outstanding one.
+    UnexpectedResponse,
+    /// The harness answered the launch handshake with an unexpected state.
+    ContractMismatch,
+    /// Completion was already filed; the driver is finished.
+    AlreadyComplete,
+}
+
+impl std::fmt::Display for DriverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "external driver: {self:?}")
+    }
+}
+impl std::error::Error for DriverError {}
+
+/// The framed IPC boundary to the pinned App Server. Implementations translate
+/// a versionless request envelope into either a correlated response result or
+/// an error; notifications are surfaced separately. The production
+/// implementation wraps `JsonlTransport`; tests provide deterministic fixture
+/// servers.
+pub trait CodexTransport {
+    /// Send a request envelope (no `jsonrpc` field, string-or-number ids) and
+    /// return the matching response's `result` object. Interleaved server
+    /// notifications surface through [`Self::recv_notification`]; server
+    /// requests (approvals) surface through [`Self::recv_server_request`].
+    fn call(
+        &mut self,
+        method: &str,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, DriverError>;
+    /// Receive one server-initiated notification frame, or `None` at EOF.
+    fn recv_notification(&mut self) -> Result<Option<serde_json::Value>, DriverError>;
+    /// Receive one server-initiated request frame awaiting an answer, or
+    /// `None` when none is pending.
+    fn recv_server_request(&mut self) -> Result<Option<(String, serde_json::Value)>, DriverError>;
+    /// Refuse one pending server request. The refusal shape is per-method:
+    /// exec/patch/permissions requests take `decline`/`abort`, elicitation
+    /// takes `decline`, and a tool user-input question is answered with an
+    /// empty answer set. `Unanswered` refusals are never sent.
+    fn refuse_server_request(
+        &mut self,
+        method: &str,
+        params: &serde_json::Value,
+        decision: ApprovalDecision,
+    ) -> Result<(), DriverError>;
+}
+
+/// How the driver disposed of one harness escalation request. Every refusal
+/// is recorded: the model text never gains permissions through the harness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    /// The request was denied and the harness was told to continue.
+    Denied,
+    /// The request was denied and the harness was told to stop the turn.
+    Aborted,
+    /// The driver refused without answering the harness (unsupported shape).
+    Unanswered,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalRefusal {
+    ExecCommand,
+    ApplyPatch,
+    PermissionsRequest,
+    ToolUserInput,
+    McpElicitation,
+    /// A server request method outside the pinned schema's known approvals.
+    Unknown,
+}
+
+impl ApprovalRefusal {
+    fn from_method(method: &str) -> Self {
+        match method {
+            "execCommandApproval" => Self::ExecCommand,
+            "applyPatchApproval" => Self::ApplyPatch,
+            "item/permissions/requestApproval" => Self::PermissionsRequest,
+            "item/tool/requestUserInput" => Self::ToolUserInput,
+            "mcpServer/elicitation/request" => Self::McpElicitation,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum StopKind {
+    /// The turn completed normally.
+    Completed,
+    /// The turn failed inside the harness (model/provider/sandbox error).
+    Failed,
+    /// The turn was interrupted by the harness itself.
+    Interrupted,
+    /// The driver stopped observing because the transport died.
+    TransportLost,
+}
+
+/// Durable record of one external run: the harness identities and the
+/// emitted events. The Host journals this; the driver holds no canonical
+/// write authority.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalRun {
+    pub version: u32,
+    pub dispatch_id: DispatchId,
+    pub task_id: TaskId,
+    pub harness_session_id: Option<String>,
+    pub turns_observed: u32,
+    pub approvals_refused: u32,
+    pub usage_turns: u32,
+    pub unreported_usage_turns: u32,
+    pub completion_report: Option<String>,
+    pub stopped: Option<StopKind>,
+}
+
+/// The external turn driver. Created per dispatch from already-authorized
+/// state, exactly like the native loop: the dispatch contract supplies the
+/// task identity, permissions ceiling and host; the driver adds nothing.
+#[derive(Debug)]
+pub struct ExternalSession {
+    binding: SessionBinding,
+    task_id: TaskId,
+    events: Vec<RuntimeEvent>,
+    next_event_sequence: u64,
+    harness_thread_id: Option<String>,
+    turns_observed: u32,
+    approvals_refused: u32,
+    usage_turns: u32,
+    unreported_usage_turns: u32,
+    completion_report: Option<String>,
+    stopped: Option<StopKind>,
+}
+
+impl ExternalSession {
+    /// The dispatch must still validate at `now`, and its runtime kind must
+    /// be the external harness — a native dispatch is refused here rather
+    /// than silently executed through the wrong loop.
+    pub fn new(dispatch: &Dispatch, at: Timestamp) -> Result<Self, DriverError> {
+        dispatch
+            .contract()
+            .validate_at(at)
+            .map_err(|_| DriverError::InvalidContract)?;
+        let contract = dispatch.contract();
+        if contract.profile().runtime != RuntimeKind::ExternalHarness {
+            return Err(DriverError::NotExternalHarness);
+        }
+        let session = SessionId::new(format!("sess_{}", dispatch.id().as_str()))
+            .map_err(|_| DriverError::InvalidContract)?;
+        Ok(Self {
+            binding: SessionBinding {
+                session_id: session,
+                dispatch_id: dispatch.id().clone(),
+                host_id: contract.host_id().clone(),
+                runtime: RuntimeKind::ExternalHarness,
+            },
+            task_id: contract.task_id().clone(),
+            events: Vec::new(),
+            next_event_sequence: 1,
+            harness_thread_id: None,
+            turns_observed: 0,
+            approvals_refused: 0,
+            usage_turns: 0,
+            unreported_usage_turns: 0,
+            completion_report: None,
+            stopped: None,
+        })
+    }
+
+    pub fn binding(&self) -> &SessionBinding {
+        &self.binding
+    }
+
+    pub fn events(&self) -> &[RuntimeEvent] {
+        &self.events
+    }
+
+    pub fn harness_thread_id(&self) -> Option<&str> {
+        self.harness_thread_id.as_deref()
+    }
+
+    pub fn run_summary(&self) -> ExternalRun {
+        ExternalRun {
+            version: EXTERNAL_LOOP_VERSION,
+            dispatch_id: self.binding.dispatch_id.clone(),
+            task_id: self.task_id.clone(),
+            harness_session_id: self.harness_thread_id.clone(),
+            turns_observed: self.turns_observed,
+            approvals_refused: self.approvals_refused,
+            usage_turns: self.usage_turns,
+            unreported_usage_turns: self.unreported_usage_turns,
+            completion_report: self.completion_report.clone(),
+            stopped: self.stopped,
+        }
+    }
+
+    /// Event ids stay within the 128-byte CommandId bound for any legal
+    /// dispatch id; a failure to build a valid event is a hard error rather
+    /// than a dropped observation.
+    fn record(&mut self, payload: RuntimeEventKind) -> Result<(), DriverError> {
+        let sequence = self.next_event_sequence;
+        self.next_event_sequence += 1;
+        let session_suffix: String = self.binding.session_id.as_str().chars().take(97).collect();
+        let id = CommandId::new(format!("x{sequence}_{session_suffix}"))
+            .map_err(|_| DriverError::InvalidContract)?;
+        match RuntimeEvent::new(id, sequence, self.binding.clone(), payload) {
+            Ok(event) => {
+                self.events.push(event);
+                Ok(())
+            }
+            Err(_) => Err(DriverError::MalformedFrame),
+        }
+    }
+
+    /// Starts a harness thread bound to the task worktree and files the task
+    /// prompt as the first turn. `worktree` is the reserved worktree path the
+    /// Host authorized in the dispatch's root; the harness's sandbox policy is
+    /// pinned to read-only-plus-worktree here and can only be tightened, never
+    /// widened, by caller input.
+    pub fn start_turn(
+        &mut self,
+        task_prompt: &str,
+        worktree: &str,
+        transport: &mut impl CodexTransport,
+    ) -> Result<(), DriverError> {
+        if self.completion_report.is_some() || self.stopped.is_some() {
+            return Err(DriverError::AlreadyComplete);
+        }
+        if task_prompt.trim().is_empty() || task_prompt.len() > 64 * 1024 {
+            return Err(DriverError::InvalidInput);
+        }
+        if worktree.is_empty() || worktree.len() > 4096 || !worktree.starts_with('/') {
+            return Err(DriverError::InvalidInput);
+        }
+        // The SDK's session consumers require Ready before any other event.
+        self.record(RuntimeEventKind::Ready {})?;
+        // Thread identity is minted by the harness, not the driver. The
+        // thread id is the correlation key for every later notification.
+        let params = serde_json::json!({
+            "cwd": worktree,
+            "sandbox": "read-only",
+            "approvalPolicy": "never",
+        });
+        let result = transport.call("thread/start", &params)?;
+        let thread_id = result
+            .get("thread")
+            .and_then(|t| t.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DriverError::MalformedFrame)?
+            .to_owned();
+        if thread_id.is_empty() || thread_id.len() > 128 {
+            return Err(DriverError::MalformedFrame);
+        }
+        self.harness_thread_id = Some(thread_id);
+        self.turn(task_prompt, transport)
+    }
+
+    /// Files one turn and observes it to completion. All harness escalation
+    /// requests surfaced while observing are refused; the dispatch's access
+    /// snapshot is the only permission authority.
+    pub fn turn(
+        &mut self,
+        prompt: &str,
+        transport: &mut impl CodexTransport,
+    ) -> Result<(), DriverError> {
+        if self.completion_report.is_some() || self.stopped.is_some() {
+            return Err(DriverError::AlreadyComplete);
+        }
+        if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
+            return Err(DriverError::InvalidInput);
+        }
+        let Some(thread_id) = self.harness_thread_id.clone() else {
+            return Err(DriverError::ContractMismatch);
+        };
+        self.turns_observed += 1;
+        let params = serde_json::json!({
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": prompt}],
+        });
+        let result = match transport.call("turn/start", &params) {
+            Ok(result) => result,
+            Err(error) => {
+                self.stopped = Some(StopKind::TransportLost);
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!("harness transport failed: {error}")),
+                })?;
+                return Err(error);
+            }
+        };
+        let turn_id = result
+            .get("turn")
+            .and_then(|t| t.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DriverError::MalformedFrame)?
+            .to_owned();
+        if turn_id.is_empty() || turn_id.len() > 128 {
+            return Err(DriverError::MalformedFrame);
+        }
+        self.observe_turn(&thread_id, &turn_id, transport)
+    }
+
+    /// Drains frames until the turn reaches a terminal status. Item payloads
+    /// map to tracker-ingestible events; usage is accounted conservatively;
+    /// every harness escalation request is refused and recorded.
+    fn observe_turn(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        transport: &mut impl CodexTransport,
+    ) -> Result<(), DriverError> {
+        let mut completed: Option<StopKind> = None;
+        let mut seen = 0usize;
+        while completed.is_none() {
+            seen += 1;
+            if seen > MAX_NOTIFICATIONS_PER_CALL * 16 {
+                self.stopped = Some(StopKind::TransportLost);
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text("notification budget exceeded"),
+                })?;
+                return Err(DriverError::TransportFailed);
+            }
+            // Server requests are answered first: the pinned harness blocks a
+            // pending approval request while streaming notifications.
+            while let Some((method, params)) = transport.recv_server_request()? {
+                let refusal = ApprovalRefusal::from_method(&method);
+                self.approvals_refused += 1;
+                transport.refuse_server_request(&method, &params, ApprovalDecision::Denied)?;
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!(
+                        "refused harness approval request: {method:?} ({refusal:?})"
+                    )),
+                })?;
+            }
+            let notification = match transport.recv_notification()? {
+                Some(notification) => notification,
+                None => {
+                    self.stopped = Some(StopKind::TransportLost);
+                    self.record(RuntimeEventKind::Diagnostic {
+                        message: truncate_event_text("harness closed before turn completion"),
+                    })?;
+                    return Err(DriverError::TransportFailed);
+                }
+            };
+            let method = notification
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let params = notification.get("params").cloned().unwrap_or_default();
+            self.absorb_notification(&notification)?;
+            if !same_turn(&params, thread_id, turn_id) {
+                continue;
+            }
+            if method == "turn/completed" {
+                let status = params
+                    .pointer("/turn/status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                completed = Some(match status {
+                    "completed" => StopKind::Completed,
+                    "interrupted" => StopKind::Interrupted,
+                    _ => StopKind::Failed,
+                });
+            }
+        }
+        self.stopped = completed;
+        match self.stopped {
+            Some(StopKind::Completed) => self.record(RuntimeEventKind::Exit { code: Some(0) })?,
+            Some(StopKind::Interrupted) => self.record(RuntimeEventKind::CancelAcknowledged {})?,
+            _ => self.record(RuntimeEventKind::Exit { code: Some(1) })?,
+        }
+        Ok(())
+    }
+
+    /// Maps one harness notification onto the normalized event stream.
+    /// Unknown item types and unknown methods stay Diagnostic (bounded text);
+    /// they are observations, not permissions.
+    fn absorb_notification(&mut self, notification: &serde_json::Value) -> Result<(), DriverError> {
+        let method = notification
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let params = notification.get("params").cloned().unwrap_or_default();
+        match method {
+            "item/completed" => {
+                let item = params.get("item").ok_or(DriverError::MalformedFrame)?;
+                let kind = item
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                match kind {
+                    "agentMessage" => {
+                        let text = item
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or(DriverError::MalformedFrame)?;
+                        self.record(RuntimeEventKind::Message {
+                            text: truncate_event_text(text),
+                        })?;
+                    }
+                    "commandExecution" => {
+                        let command = item
+                            .get("command")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let status = item
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let output = item
+                            .get("aggregatedOutput")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let detail = format!("command [{status}]: {command}\n{output}");
+                        self.record(RuntimeEventKind::Observation {
+                            resource: ObservationKind::ShellProcess,
+                            detail: truncate_event_text(&detail),
+                        })?;
+                    }
+                    "fileChange" => {
+                        let status = item
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let changes = item
+                            .get("changes")
+                            .map(|c| c.to_string())
+                            .unwrap_or_default();
+                        let detail = format!("file change [{status}]: {changes}");
+                        self.record(RuntimeEventKind::Observation {
+                            resource: ObservationKind::FilesystemMutation,
+                            detail: truncate_event_text(&detail),
+                        })?;
+                    }
+                    "reasoning" => {
+                        // Reasoning summaries are vendor material; retain the
+                        // bounded text as a Diagnostic, not as task evidence.
+                        let text = item
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        self.record(RuntimeEventKind::Diagnostic {
+                            message: truncate_event_text(&format!("reasoning: {text}")),
+                        })?;
+                    }
+                    _ => {
+                        self.record(RuntimeEventKind::Diagnostic {
+                            message: truncate_event_text(&format!(
+                                "unmapped harness item type: {kind}"
+                            )),
+                        })?;
+                    }
+                }
+                Ok(())
+            }
+            "thread/tokenUsage/updated" => {
+                let total = params.pointer("/tokenUsage/total");
+                let input = total
+                    .and_then(|t| t.get("inputTokens"))
+                    .and_then(serde_json::Value::as_u64);
+                let output = total
+                    .and_then(|t| t.get("outputTokens"))
+                    .and_then(serde_json::Value::as_u64);
+                match (input, output) {
+                    (Some(input), Some(output)) => {
+                        self.usage_turns += 1;
+                        self.record(RuntimeEventKind::Usage {
+                            usage: symbiote_runtime_sdk::events::RuntimeUsage {
+                                input_tokens:
+                                    symbiote_runtime_sdk::events::UsageMeasurement::Measured {
+                                        value: input,
+                                    },
+                                output_tokens:
+                                    symbiote_runtime_sdk::events::UsageMeasurement::Measured {
+                                        value: output,
+                                    },
+                                cached_input_tokens:
+                                    symbiote_runtime_sdk::events::UsageMeasurement::Unknown {
+                                        reason:
+                                            symbiote_runtime_sdk::events::UnknownUsageReason::NotReported,
+                                    },
+                                billed_micro_units:
+                                    symbiote_runtime_sdk::events::UsageMeasurement::Unknown {
+                                        reason:
+                                            symbiote_runtime_sdk::events::UnknownUsageReason::NotReported,
+                                    },
+                                coverage:
+                                    symbiote_runtime_sdk::events::UsageCoverage::AggregateOnly,
+                            },
+                        })?;
+                    }
+                    _ => {
+                        self.unreported_usage_turns += 1;
+                        self.record(RuntimeEventKind::Diagnostic {
+                            message: truncate_event_text("usage notification missing fields"),
+                        })?;
+                    }
+                }
+                Ok(())
+            }
+            "error" => {
+                let message = params
+                    .pointer("/error/message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!("harness error: {message}")),
+                })?;
+                Ok(())
+            }
+            // Turn/item lifecycle frames are consumed by observe_turn, which
+            // keys the stop state off them; they need no separate mapping.
+            "turn/completed" | "turn/started" | "item/started" => Ok(()),
+            _ => {
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text(&format!(
+                        "unmapped harness notification: {method}"
+                    )),
+                })?;
+                Ok(())
+            }
+        }
+    }
+
+    /// A worker (or test harness) explicitly files its completion report;
+    /// the Host treats it as RequestCompletion evidence, never as completion.
+    pub fn request_completion(&mut self, report: &str) -> Result<(), DriverError> {
+        if self.completion_report.is_some() {
+            return Err(DriverError::AlreadyComplete);
+        }
+        if report.trim().is_empty() || report.len() > MAX_REPORT_BYTES {
+            return Err(DriverError::InvalidInput);
+        }
+        self.completion_report = Some(report.to_owned());
+        self.record(RuntimeEventKind::CompletionRequested {
+            report: truncate_event_text(report),
+        })?;
+        Ok(())
+    }
+}
+
+fn same_turn(params: &serde_json::Value, thread_id: &str, turn_id: &str) -> bool {
+    let same_thread = params.get("threadId").and_then(serde_json::Value::as_str) == Some(thread_id);
+    let turn_field = params.get("turnId").and_then(serde_json::Value::as_str);
+    same_thread && turn_field.is_none_or(|id| id == turn_id)
+}
+
+/// EventText permits 16 KiB; harness text may legally be larger, so event
+/// payloads truncate on a char boundary instead of failing. Truncation is
+/// visible (the marker), never silent.
+fn truncate_event_text(text: &str) -> EventText {
+    const MARKER: &str = "…[truncated]";
+    if text.len() <= MAX_EVENT_TEXT_BYTES {
+        return EventText::new(text).expect("within the checked bound");
+    }
+    let budget = MAX_EVENT_TEXT_BYTES - MARKER.len();
+    let mut end = budget;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = String::from(&text[..end]);
+    truncated.push_str(MARKER);
+    EventText::new(truncated).expect("bounded by construction")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeSet, VecDeque};
+
+    /// Deterministic offline fixture server: scripted frames consumed in
+    /// order. Refusal answers are recorded for assertions. Not a mock of
+    /// verification — the driver's real logic runs against it.
+    struct FixtureTransport {
+        /// Response frames for `call`, keyed by arrival order.
+        responses: Vec<Result<serde_json::Value, DriverError>>,
+        /// Frames surfaced by `recv_notification` (None = EOF).
+        notifications: VecDeque<Option<serde_json::Value>>,
+        /// Server requests awaiting refusal, surfaced by `recv_server_request`.
+        server_requests: VecDeque<(String, serde_json::Value)>,
+        refusals: Vec<(String, ApprovalDecision)>,
+        cursor: usize,
+    }
+    impl FixtureTransport {
+        fn new(
+            responses: Vec<Result<serde_json::Value, DriverError>>,
+            notifications: Vec<serde_json::Value>,
+            server_requests: Vec<(String, serde_json::Value)>,
+        ) -> Self {
+            Self {
+                responses,
+                notifications: notifications
+                    .into_iter()
+                    .map(Some)
+                    .chain(std::iter::once(None))
+                    .collect(),
+                server_requests: server_requests.into(),
+                refusals: Vec::new(),
+                cursor: 0,
+            }
+        }
+    }
+    impl CodexTransport for FixtureTransport {
+        fn call(
+            &mut self,
+            _method: &str,
+            _params: &serde_json::Value,
+        ) -> Result<serde_json::Value, DriverError> {
+            let index = self.cursor;
+            self.cursor += 1;
+            self.responses
+                .get(index)
+                .cloned()
+                .unwrap_or(Err(DriverError::TransportFailed))
+        }
+        fn recv_notification(&mut self) -> Result<Option<serde_json::Value>, DriverError> {
+            Ok(self.notifications.pop_front().flatten())
+        }
+        fn recv_server_request(
+            &mut self,
+        ) -> Result<Option<(String, serde_json::Value)>, DriverError> {
+            Ok(self.server_requests.pop_front())
+        }
+        fn refuse_server_request(
+            &mut self,
+            method: &str,
+            _params: &serde_json::Value,
+            decision: ApprovalDecision,
+        ) -> Result<(), DriverError> {
+            self.refusals.push((method.to_owned(), decision));
+            Ok(())
+        }
+    }
+
+    fn thread_start_response() -> serde_json::Value {
+        serde_json::json!({"thread": {"id": "thr-1"}})
+    }
+    fn turn_start_response() -> serde_json::Value {
+        serde_json::json!({"turn": {"id": "turn-1"}})
+    }
+    fn turn_completed(status: &str) -> serde_json::Value {
+        serde_json::json!({
+            "method": "turn/completed",
+            "params": {"threadId": "thr-1", "turnId": "turn-1",
+                "turn": {"id": "turn-1", "status": status, "items": []}}
+        })
+    }
+
+    fn dispatch(task: &Task) -> Dispatch {
+        let host_id = HostId::new("host").unwrap();
+        let profile = RuntimeProfile {
+            id: RuntimeProfileId::new("profile").unwrap(),
+            revision: Revision(0),
+            runtime: RuntimeKind::ExternalHarness,
+            adapter: AgentRuntimeAdapterId::new("codex-harness").unwrap(),
+            installation: Some(InstallationId::new("codex-0-118-0").unwrap()),
+            provider: ProviderConnectionId::new("external").unwrap(),
+            credential: CredentialReferenceId::new("credential").unwrap(),
+            billing_entitlement: BillingEntitlementId::new("ent").unwrap(),
+            model: ModelId::new("model-fixture").unwrap(),
+            eligible_hosts: BTreeSet::from([host_id.clone()]),
+        };
+        let binding = WorkforceBinding {
+            id: BindingId::new("binding").unwrap(),
+            revision: Revision(0),
+            project_id: task.project_id().clone(),
+            role_id: task.role_id().clone(),
+            profile_id: profile.id.clone(),
+            profile_revision: profile.revision,
+            protocol: VersionedProtocol {
+                id: ProtocolId::new("protocol").unwrap(),
+                revision: Revision(1),
+            },
+            access: AccessSnapshot {
+                project_id: task.project_id().clone(),
+                roots: BTreeSet::from([task.root_id().clone()]),
+                grants: BTreeSet::from([Permission::MutateStream]),
+                policy_revision: Revision(1),
+            },
+            required_controls: BTreeSet::new(),
+            context: ContextPolicy {
+                bundle: ContextBundleId::new("context").unwrap(),
+                revision: Revision(1),
+                max_input_tokens: 500,
+                reserved_output_tokens: 300,
+            },
+            required_tools: BTreeSet::from(["edit_file".to_string()]),
+            required_skills: BTreeSet::new(),
+            escalation: EscalationPolicy::StopAndRequestHuman,
+        };
+        let host = Host {
+            id: host_id,
+            revision: Revision(0),
+            device: DeviceId::new("device").unwrap(),
+            fabric: None,
+            supported_runtimes: vec![RuntimeKind::ExternalHarness],
+            controls: [
+                Control::Filesystem,
+                Control::Cancellation,
+                Control::CompletionAuthority,
+            ]
+            .into_iter()
+            .map(|c| {
+                (
+                    c,
+                    EnforcementClaim {
+                        strength: EnforcementStrength::HostEnforced,
+                        evidence: EvidenceId::new("proof").unwrap(),
+                        verified_at: Timestamp(1),
+                        expires_at: Timestamp(1_000_000),
+                    },
+                )
+            })
+            .collect(),
+        };
+        let role = Role {
+            id: task.role_id().clone(),
+            project_id: task.project_id().clone(),
+            revision: Revision(0),
+            name: "Engineer".into(),
+            operating_contract: VersionedRoleContract {
+                id: RoleContractId::new("contract").unwrap(),
+                revision: Revision(1),
+            },
+        };
+        Dispatch::compile(
+            DispatchId::new("dispatch").unwrap(),
+            RuntimeContractId::new("rtc").unwrap(),
+            symbiote_domain::DispatchInputs {
+                task,
+                role: &role,
+                binding: &binding,
+                profile: &profile,
+                host: &host,
+                now: Timestamp(10),
+            },
+        )
+        .unwrap()
+    }
+
+    fn task() -> Task {
+        Task::new(
+            TaskId::new("task").unwrap(),
+            ProjectId::new("project").unwrap(),
+            RootId::new("root").unwrap(),
+            RoleId::new("role").unwrap(),
+            ChangeStreamId::new("stream").unwrap(),
+            VersionedTaskContract {
+                id: TaskContractId::new("contract").unwrap(),
+                revision: Revision(1),
+            },
+        )
+    }
+
+    fn session() -> ExternalSession {
+        ExternalSession::new(&dispatch(&task()), Timestamp(20)).unwrap()
+    }
+
+    fn transport_with(notifications: Vec<serde_json::Value>) -> FixtureTransport {
+        FixtureTransport::new(
+            vec![Ok(thread_start_response()), Ok(turn_start_response())],
+            notifications,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn single_turn_completes_with_message_and_usage() {
+        let mut session = session();
+        let notifications = vec![
+            serde_json::json!({
+                "method": "item/completed",
+                "params": {"threadId": "thr-1", "turnId": "turn-1",
+                    "item": {"type": "agentMessage", "id": "i1", "text": "done"}}
+            }),
+            serde_json::json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {"threadId": "thr-1", "turnId": "turn-1",
+                    "tokenUsage": {"last": {}, "total": {
+                        "inputTokens": 120, "outputTokens": 40,
+                        "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 160}}}
+            }),
+            turn_completed("completed"),
+        ];
+        let mut transport = transport_with(notifications);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        assert_eq!(session.harness_thread_id(), Some("thr-1"));
+        let kinds: Vec<_> = session.events().iter().map(|e| e.payload()).collect();
+        assert!(matches!(kinds[0], RuntimeEventKind::Ready {}));
+        assert!(matches!(kinds[1], RuntimeEventKind::Message { .. }));
+        assert!(matches!(kinds[2], RuntimeEventKind::Usage { .. }));
+        assert!(matches!(kinds[3], RuntimeEventKind::Exit { code: Some(0) }));
+        let run = session.run_summary();
+        assert_eq!(run.turns_observed, 1);
+        assert_eq!(run.usage_turns, 1);
+        assert_eq!(run.unreported_usage_turns, 0);
+        assert_eq!(run.stopped, Some(StopKind::Completed));
+        assert_eq!(run.dispatch_id, dispatch(&task()).id().clone());
+        // All events carry the external harness binding.
+        assert!(
+            session
+                .events()
+                .iter()
+                .all(|e| e.binding().runtime == RuntimeKind::ExternalHarness)
+        );
+    }
+
+    #[test]
+    fn failed_turn_yields_exit_one_and_failed_stop() {
+        let mut session = session();
+        let mut transport = transport_with(vec![turn_completed("failed")]);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        let run = session.run_summary();
+        assert_eq!(run.stopped, Some(StopKind::Failed));
+        assert!(matches!(
+            session.events().last().unwrap().payload(),
+            RuntimeEventKind::Exit { code: Some(1) }
+        ));
+    }
+
+    #[test]
+    fn command_and_file_observations_are_recorded_as_observations() {
+        let mut session = session();
+        let notifications = vec![
+            serde_json::json!({
+                "method": "item/completed",
+                "params": {"threadId": "thr-1", "turnId": "turn-1",
+                    "item": {"type": "commandExecution", "id": "i1",
+                        "command": "cargo test", "status": "completed",
+                        "aggregatedOutput": "ok", "exitCode": 0}}
+            }),
+            serde_json::json!({
+                "method": "item/completed",
+                "params": {"threadId": "thr-1", "turnId": "turn-1",
+                    "item": {"type": "fileChange", "id": "i2", "status": "completed",
+                        "changes": [{"path": "src/main.rs", "kind": "update"}]}}
+            }),
+            turn_completed("completed"),
+        ];
+        let mut transport = transport_with(notifications);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        let observations: Vec<_> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e.payload() {
+                RuntimeEventKind::Observation { resource, .. } => Some(resource.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            observations,
+            vec![
+                ObservationKind::ShellProcess,
+                ObservationKind::FilesystemMutation
+            ]
+        );
+    }
+
+    #[test]
+    fn every_approval_request_is_refused_and_counted() {
+        let mut session = session();
+        let mut transport = FixtureTransport::new(
+            vec![Ok(thread_start_response()), Ok(turn_start_response())],
+            vec![turn_completed("completed")],
+            vec![
+                (
+                    "execCommandApproval".to_string(),
+                    serde_json::json!({"callId": "c1", "conversationId": "thr-1",
+                        "command": ["rm", "-rf"], "cwd": "/tmp/worktree", "parsedCmd": []}),
+                ),
+                (
+                    "applyPatchApproval".to_string(),
+                    serde_json::json!({"callId": "c2", "conversationId": "thr-1",
+                        "fileChanges": {}}),
+                ),
+                (
+                    "item/permissions/requestApproval".to_string(),
+                    serde_json::json!({"itemId": "i1", "threadId": "thr-1",
+                        "turnId": "turn-1", "permissions": {}}),
+                ),
+                (
+                    "mcpServer/elicitation/request".to_string(),
+                    serde_json::json!({"serverName": "srv", "threadId": "thr-1"}),
+                ),
+                (
+                    "item/tool/requestUserInput".to_string(),
+                    serde_json::json!({"itemId": "i2", "threadId": "thr-1",
+                        "turnId": "turn-1", "questions": []}),
+                ),
+            ],
+        );
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        assert_eq!(transport.refusals.len(), 5);
+        assert!(
+            transport
+                .refusals
+                .iter()
+                .all(|(_, decision)| *decision == ApprovalDecision::Denied)
+        );
+        let run = session.run_summary();
+        assert_eq!(run.approvals_refused, 5);
+        let refusal_diagnostics: Vec<_> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e.payload() {
+                RuntimeEventKind::Diagnostic { message }
+                    if message
+                        .as_str()
+                        .contains("refused harness approval request") =>
+                {
+                    Some(message.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(refusal_diagnostics.len(), 5);
+        // The refusal diagnostics never leak the harness's request contents
+        // (the fixture's exec request carries "rm -rf"; only the method name
+        // may appear, and no method contains it).
+        assert!(!refusal_diagnostics.iter().any(|m| m.contains("\"rm\"")));
+        // Every refusal names the refused method, not its payload.
+        assert!(
+            refusal_diagnostics
+                .iter()
+                .any(|m| m.contains("execCommandApproval"))
+        );
+    }
+
+    #[test]
+    fn unknown_server_request_is_recorded_but_unanswered() {
+        let mut session = session();
+        let mut transport = FixtureTransport::new(
+            vec![Ok(thread_start_response()), Ok(turn_start_response())],
+            vec![turn_completed("completed")],
+            vec![(
+                "account/chatgptAuthTokens/refresh".to_string(),
+                serde_json::json!({"reason": "test"}),
+            )],
+        );
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        assert_eq!(transport.refusals.len(), 1);
+        assert_eq!(
+            transport.refusals[0].1,
+            ApprovalDecision::Denied,
+            "unknown requests refuse with the generic denial, never an approval"
+        );
+        assert_eq!(session.run_summary().approvals_refused, 1);
+    }
+
+    #[test]
+    fn transport_loss_during_turn_is_explicit_not_completelike() {
+        let mut session = session();
+        let mut transport = transport_with(vec![]);
+        let error = session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap_err();
+        assert_eq!(error, DriverError::TransportFailed);
+        let run = session.run_summary();
+        assert_eq!(run.stopped, Some(StopKind::TransportLost));
+        // A lost transport never reads as a normal stop.
+        assert_ne!(run.stopped, Some(StopKind::Completed));
+    }
+
+    #[test]
+    fn notification_flood_is_bounded() {
+        let mut session = session();
+        let flood: Vec<serde_json::Value> = (0..MAX_NOTIFICATIONS_PER_CALL * 16 + 1)
+            .map(|_| {
+                serde_json::json!({"method": "thread/status/changed",
+                    "params": {"threadId": "thr-1", "status": "idle"}})
+            })
+            .collect();
+        let mut transport = transport_with(flood);
+        let error = session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap_err();
+        assert_eq!(error, DriverError::TransportFailed);
+        // Event count stays bounded by the flood budget, not unbounded.
+        assert!(session.events().len() <= MAX_NOTIFICATIONS_PER_CALL * 16 + 8);
+    }
+
+    #[test]
+    fn native_dispatch_is_refused_by_the_external_driver() {
+        let host_id = HostId::new("host").unwrap();
+        let native_task = task();
+        let profile = RuntimeProfile {
+            id: RuntimeProfileId::new("profile").unwrap(),
+            revision: Revision(0),
+            runtime: RuntimeKind::NativeSymbiote,
+            adapter: AgentRuntimeAdapterId::new("native-agent").unwrap(),
+            installation: None,
+            provider: ProviderConnectionId::new("native").unwrap(),
+            credential: CredentialReferenceId::new("credential").unwrap(),
+            billing_entitlement: BillingEntitlementId::new("ent").unwrap(),
+            model: ModelId::new("model-fixture").unwrap(),
+            eligible_hosts: BTreeSet::from([host_id.clone()]),
+        };
+        let binding = WorkforceBinding {
+            id: BindingId::new("binding").unwrap(),
+            revision: Revision(0),
+            project_id: native_task.project_id().clone(),
+            role_id: native_task.role_id().clone(),
+            profile_id: profile.id.clone(),
+            profile_revision: profile.revision,
+            protocol: VersionedProtocol {
+                id: ProtocolId::new("protocol").unwrap(),
+                revision: Revision(1),
+            },
+            access: AccessSnapshot {
+                project_id: native_task.project_id().clone(),
+                roots: BTreeSet::from([native_task.root_id().clone()]),
+                grants: BTreeSet::from([Permission::MutateStream]),
+                policy_revision: Revision(1),
+            },
+            required_controls: BTreeSet::new(),
+            context: ContextPolicy {
+                bundle: ContextBundleId::new("context").unwrap(),
+                revision: Revision(1),
+                max_input_tokens: 500,
+                reserved_output_tokens: 300,
+            },
+            required_tools: BTreeSet::new(),
+            required_skills: BTreeSet::new(),
+            escalation: EscalationPolicy::StopAndRequestHuman,
+        };
+        let host = Host {
+            id: host_id,
+            revision: Revision(0),
+            device: DeviceId::new("device").unwrap(),
+            fabric: None,
+            supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+            controls: [
+                Control::Filesystem,
+                Control::Cancellation,
+                Control::CompletionAuthority,
+            ]
+            .into_iter()
+            .map(|c| {
+                (
+                    c,
+                    EnforcementClaim {
+                        strength: EnforcementStrength::HostEnforced,
+                        evidence: EvidenceId::new("proof").unwrap(),
+                        verified_at: Timestamp(1),
+                        expires_at: Timestamp(1_000_000),
+                    },
+                )
+            })
+            .collect(),
+        };
+        let role = Role {
+            id: native_task.role_id().clone(),
+            project_id: native_task.project_id().clone(),
+            revision: Revision(0),
+            name: "Engineer".into(),
+            operating_contract: VersionedRoleContract {
+                id: RoleContractId::new("contract").unwrap(),
+                revision: Revision(1),
+            },
+        };
+        let native_dispatch = Dispatch::compile(
+            DispatchId::new("dispatch").unwrap(),
+            RuntimeContractId::new("rtc").unwrap(),
+            symbiote_domain::DispatchInputs {
+                task: &native_task,
+                role: &role,
+                binding: &binding,
+                profile: &profile,
+                host: &host,
+                now: Timestamp(10),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            ExternalSession::new(&native_dispatch, Timestamp(20)),
+            Err(DriverError::NotExternalHarness)
+        ));
+    }
+
+    #[test]
+    fn expired_contract_and_bad_inputs_are_refused() {
+        assert!(matches!(
+            ExternalSession::new(&dispatch(&task()), Timestamp(2_000_000)),
+            Err(DriverError::InvalidContract)
+        ));
+        let mut session = session();
+        let mut transport = transport_with(vec![]);
+        assert!(matches!(
+            session.start_turn("  ", "/tmp/worktree", &mut transport),
+            Err(DriverError::InvalidInput)
+        ));
+        assert!(matches!(
+            session.start_turn("fix the bug", "relative/path", &mut transport),
+            Err(DriverError::InvalidInput)
+        ));
+        assert!(matches!(
+            session.request_completion(""),
+            Err(DriverError::InvalidInput)
+        ));
+        assert!(matches!(
+            session.request_completion(&"x".repeat(MAX_REPORT_BYTES + 1)),
+            Err(DriverError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn completion_report_is_evidence_and_double_filing_is_refused() {
+        let mut session = session();
+        session.request_completion("implemented the slice").unwrap();
+        assert_eq!(
+            session.request_completion("again"),
+            Err(DriverError::AlreadyComplete)
+        );
+        let kinds: Vec<_> = session.events().iter().map(|e| e.payload()).collect();
+        assert!(matches!(
+            kinds[0],
+            RuntimeEventKind::CompletionRequested { .. }
+        ));
+        let run = session.run_summary();
+        assert_eq!(
+            run.completion_report.as_deref(),
+            Some("implemented the slice")
+        );
+        // The report is evidence routed to the Host; it is not a state change.
+        assert!(run.stopped.is_none());
+    }
+
+    #[test]
+    fn oversized_harness_text_truncates_on_char_boundaries() {
+        let mut session = session();
+        let big = "🔍".repeat(MAX_EVENT_TEXT_BYTES); // 4-byte chars
+        let notifications = vec![
+            serde_json::json!({
+                "method": "item/completed",
+                "params": {"threadId": "thr-1", "turnId": "turn-1",
+                    "item": {"type": "agentMessage", "id": "i1", "text": big}}
+            }),
+            turn_completed("completed"),
+        ];
+        let mut transport = transport_with(notifications);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        let message = session
+            .events()
+            .iter()
+            .find_map(|e| match e.payload() {
+                RuntimeEventKind::Message { text } => Some(text.as_str().to_owned()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(message.len() <= MAX_EVENT_TEXT_BYTES);
+        assert!(message.ends_with("…[truncated]"));
+        assert!(message.chars().all(|c| c != char::REPLACEMENT_CHARACTER));
+    }
+
+    #[test]
+    fn usage_missing_fields_counts_as_unreported_not_free() {
+        let mut session = session();
+        let notifications = vec![
+            serde_json::json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {"threadId": "thr-1", "turnId": "turn-1",
+                    "tokenUsage": {"last": {}, "total": {
+                        "inputTokens": 10, "outputTokens": null,
+                        "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 10}}}
+            }),
+            turn_completed("completed"),
+        ];
+        let mut transport = transport_with(notifications);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        let run = session.run_summary();
+        assert_eq!(run.usage_turns, 0);
+        assert_eq!(run.unreported_usage_turns, 1);
+    }
+
+    #[test]
+    fn interrupted_turn_records_cancellation_not_exit() {
+        let mut session = session();
+        let mut transport = transport_with(vec![turn_completed("interrupted")]);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        assert_eq!(session.run_summary().stopped, Some(StopKind::Interrupted));
+        assert!(matches!(
+            session.events().last().unwrap().payload(),
+            RuntimeEventKind::CancelAcknowledged {}
+        ));
+    }
+
+    #[test]
+    fn foreign_turn_notifications_do_not_stop_observation() {
+        let mut session = session();
+        let notifications = vec![
+            serde_json::json!({
+                "method": "turn/completed",
+                "params": {"threadId": "thr-1", "turnId": "turn-OTHER",
+                    "turn": {"id": "turn-OTHER", "status": "failed", "items": []}}
+            }),
+            turn_completed("completed"),
+        ];
+        let mut transport = transport_with(notifications);
+        session
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .unwrap();
+        assert_eq!(session.run_summary().stopped, Some(StopKind::Completed));
+    }
+}
