@@ -483,6 +483,65 @@ mod tests {
     }
 
     #[test]
+    fn transport_factories_build_and_drive_both_runtimes() {
+        // The service→factory→boxed-runner chain with Some(factory): the
+        // native factory hands the loop a scripted transport, the external
+        // factory a scripted fixture, both through WorkerTransports.
+        let (mut store, task, dispatch) =
+            store_with_running_task("factory-native", RuntimeKind::NativeSymbiote);
+        let mut transports =
+            WorkerTransports::default().with_native(Box::new(fixture::EchoFactory {
+                text: "implemented the change".into(),
+            }));
+        let mut boxed = transports.native_build().unwrap();
+        let outcome = run_native_boxed(
+            &mut store,
+            &task,
+            &dispatch,
+            "do the work",
+            boxed.as_mut(),
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
+
+        let (mut store, task, dispatch) =
+            store_with_running_task("factory-external", RuntimeKind::ExternalHarness);
+        let mut transports =
+            WorkerTransports::default().with_external(Box::new(fixture::ScriptedFactory));
+        let mut boxed = transports.external_build().unwrap();
+        let outcome = run_external_boxed(
+            &mut store,
+            &task,
+            &dispatch,
+            "do the work",
+            "/workspace",
+            boxed.as_mut(),
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
+        // An empty factory is the production shape: typed refusal.
+        let mut empty = WorkerTransports::default();
+        assert!(matches!(
+            empty.native_build(),
+            Err(RunnerError::NoTransport)
+        ));
+        assert!(matches!(
+            empty.external_build(),
+            Err(RunnerError::NoTransport)
+        ));
+    }
+
+    #[test]
     fn native_runner_files_completion_evidence() {
         let (mut store, task, dispatch) =
             store_with_running_task("native-run", RuntimeKind::NativeSymbiote);
@@ -1250,6 +1309,49 @@ mod tests {
                 vec![codex_completed(status)],
                 Vec::new(),
             )
+        }
+
+        pub struct EchoFactory {
+            pub text: String,
+        }
+        impl super::NativeTransportFactory for EchoFactory {
+            fn build(
+                &mut self,
+            ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>
+            {
+                Ok(Box::new(EchoTransport {
+                    text: self.text.clone(),
+                }))
+            }
+        }
+
+        pub struct ScriptedFactory;
+        impl super::ExternalTransportFactory for ScriptedFactory {
+            fn build(
+                &mut self,
+            ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str>
+            {
+                Ok(Box::new(ScriptedCodex::new(
+                    vec![
+                        Ok(serde_json::json!({"userAgent": format!(
+                            "symbiote/{} (Linux)",
+                            symbiote_runtime_discovery::codex::CODEX_VERSION
+                        )})),
+                        Ok(serde_json::json!({"thread": {"id": "thr-fixture"}})),
+                        Ok(serde_json::json!({"turn": {"id": "turn-fixture"}})),
+                    ],
+                    vec![
+                        serde_json::json!({
+                            "method": "item/completed",
+                            "params": {"threadId": "thr-fixture", "turnId": "turn-fixture",
+                                "item": {"type": "agentMessage", "id": "i1",
+                                    "text": "implemented the change"}}
+                        }),
+                        codex_completed("completed"),
+                    ],
+                    Vec::new(),
+                )))
+            }
         }
 
         /// A native "provider" that reports a mid-turn cancellation.

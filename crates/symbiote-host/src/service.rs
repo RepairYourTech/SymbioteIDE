@@ -534,12 +534,18 @@ fn execute(
             // running anything, because live execution requires explicit
             // operator/user authorization for credentials and billing.
             let at = now_timestamp()?;
+            // Both preconditions are checked before any transport is built:
+            // the dispatch-id binding (a foreign id never reaches a factory)
+            // and the task's Running state (re-activating an already-filed
+            // task must not launch a transport it will never use).
             let task_record = store.task(task_id).map_err(storage_error)?;
             let current = task_record
                 .current_dispatch()
-                .ok_or_else(|| ProtocolError::new(ErrorCode::FailedPrecondition))?;
-            if current.id() != dispatch_id {
-                return Err(ProtocolError::new(ErrorCode::FailedPrecondition));
+                .ok_or_else(dispatch_binding_refused)?;
+            if current.id() != dispatch_id
+                || task_record.state() != &symbiote_domain::TaskState::Running
+            {
+                return Err(dispatch_binding_refused());
             }
             let runtime = current.contract().profile().runtime;
             match runtime {
@@ -1117,6 +1123,12 @@ fn origin_prompt(store: &mut Store, task_id: &TaskId) -> Result<String, Protocol
         return Err(ProtocolError::new(ErrorCode::FailedPrecondition));
     }
     Ok(description)
+}
+
+fn dispatch_binding_refused() -> ProtocolError {
+    let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    protocol_error.message = "task is not running under the requested dispatch".into();
+    protocol_error
 }
 
 fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {

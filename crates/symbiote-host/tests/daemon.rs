@@ -1123,12 +1123,18 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     let task_response = host.call(task_read);
     let task = ok(&task_response);
     assert_eq!(task["data"]["state"], "running");
-    // Activation against a foreign dispatch id is refused before anything.
+    // Activation against a foreign dispatch id is refused before anything
+    // (message pins the ordering: the binding check precedes any transport
+    // build, so this can never read as a no-transport refusal).
     let foreign = host.call(request(
         "activation-foreign",
         json!({"kind":"run_started_dispatch","task_id":"staffing-task","dispatch_id":"disp_ghost"}),
     ));
     assert_eq!(foreign["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        foreign["result"]["Err"]["message"],
+        "task is not running under the requested dispatch"
+    );
     host.crash();
     host.start();
     // The refusal left no residue: state replays identically.

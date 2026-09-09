@@ -40,6 +40,11 @@ pub fn serve_with_telemetry(
     // credential/billing authorization).
     let mut worker_transports = runner::WorkerTransports::production();
     eprintln!("symbioted: ready (local metadata capabilities only)");
+    // Known limitation: connections are served synchronously. With no
+    // worker transports configured this is irrelevant (activation refuses
+    // before any loop runs); if an operator ever provisions a transport,
+    // turns must move off this loop or every connection stalls for the
+    // turn's duration. See the worker-activation contract notes.
     for connection in local.listener.incoming() {
         let connection = connection?;
         if transport::LocalListener::authenticate(&connection).is_err() {

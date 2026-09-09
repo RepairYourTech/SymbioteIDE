@@ -1239,9 +1239,11 @@ pub struct StartedDispatch {
 }
 
 /// The outcome of one wired worker run. Completion evidence is journaled by
-/// the store; this reports only what the caller can observe. A run whose loop
-/// halted without a finished turn returns `completed: false` and files
-/// nothing — the task stays Running and retry policy is the Host's.
+/// the store; this reports only what the caller can observe. A run whose
+/// loop halted without a finished turn is an `Err` response (the task stays
+/// Running; retry policy is the Host's), so `completed` is `true` in every
+/// reachable `Ok` — it is the journaled-evidence marker, never a verified
+/// completion.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerRun {
