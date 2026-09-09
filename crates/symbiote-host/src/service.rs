@@ -520,6 +520,38 @@ fn execute(
                 started_at: at,
             })))
         }
+        Operation::RequestTaskCompletion {
+            task_id,
+            dispatch_id,
+            report,
+        } => {
+            // Route the worker's report through the domain lifecycle: the
+            // task moves Running -> CompletionRequested ONLY when the report
+            // comes from the dispatch's Worker actor. Verification and
+            // independent review remain Host gates after this.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Worker(dispatch_id.clone()),
+                at: Timestamp(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                        .as_millis()
+                        .try_into()
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+                ),
+                action: symbiote_domain::TaskAction::RequestCompletion {
+                    dispatch_id: dispatch_id.clone(),
+                    report: report.clone(),
+                },
+            };
+            store
+                .apply_task(task_id, command)
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::GetDispatchPreparation { task_id } => store
             .dispatch_preparation(task_id)
             .map(|preparation| ResponseBody::DispatchPreparation(Box::new(preparation)))

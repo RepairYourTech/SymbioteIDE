@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":11},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":12},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":11},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":12},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
@@ -922,6 +922,30 @@ fn start_prepared_task_transitions_running_and_holds_the_lease() {
     let task_response = host.call(request(
         "run-task-read",
         json!({"kind":"get_task","project_id":"run","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&task_response)["data"]["state"], "ready");
+}
+
+#[test]
+fn worker_completion_request_is_evidence_not_completion() {
+    let host = Host::new();
+    ok(&host.call(request("register-comp", project("comp"))));
+    ok(&host.call(request("comp-maintenance", maintenance("comp"))));
+    ok(&host.call(request("comp-task", task("comp-task", "comp"))));
+    // A completion request against a task that was never started is an
+    // illegal transition, and the Host keeps serving.
+    let request_completion = request(
+        "comp-request",
+        json!({"kind":"request_task_completion","task_id":"comp-task",
+               "dispatch_id":"ghost-dispatch","report":"done"}),
+    );
+    let response = host.call(request_completion);
+    assert_eq!(response["result"]["Err"]["code"], "invalid_request");
+    ok(&host.call(request("comp-alive", json!({"kind":"health"}))));
+    // The task remains Ready: worker evidence never bypasses verification.
+    let task_response = host.call(request(
+        "comp-task-read",
+        json!({"kind":"get_task","project_id":"comp","task_id":"comp-task"}),
     ));
     assert_eq!(ok(&task_response)["data"]["state"], "ready");
 }
