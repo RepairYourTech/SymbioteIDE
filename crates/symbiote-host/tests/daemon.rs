@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":12},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":13},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -363,6 +363,14 @@ fn work_hierarchy_replays_after_restart_and_never_accepts_client_completion() {
         "invalid_request"
     );
 }
+fn ok_step<'a>(step: &'static str, response: &'a Value) -> &'a Value {
+    response
+        .get("result")
+        .unwrap()
+        .get("Ok")
+        .unwrap_or_else(|| panic!("step {step} failed: {response}"))
+}
+
 fn ok(response: &Value) -> &Value {
     response
         .get("result")
@@ -589,7 +597,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":12},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":13},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
@@ -948,4 +956,187 @@ fn worker_completion_request_is_evidence_not_completion() {
         json!({"kind":"get_task","project_id":"comp","task_id":"comp-task"}),
     ));
     assert_eq!(ok(&task_response)["data"]["state"], "ready");
+}
+
+#[test]
+fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
+    let mut host = Host::new();
+    // Full composition for staffing-demo: team, binding, provider, model,
+    // classified objective origin, task, route, preparation.
+    let register: Value =
+        serde_json::from_str(include_str!("../../../fixtures/project-team/register.json")).unwrap();
+    let register_response = host.call(register);
+    if register_response["result"].get("Err").is_some() {
+        panic!("fixture step register failed: {register_response}");
+    }
+    // The team grants the engineer's role stream mutation (the dispatch
+    // compiles MutateStream from the binding, which must stay within the
+    // member's access and the ceiling).
+    let mut team: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/project-team/configure.json"
+    ))
+    .unwrap();
+    team["command_id"] = json!("activation-team");
+    for pointer in ["/access_ceiling/grants", "/members/1/access/grants"] {
+        let mut grants: Vec<Value> = team["operation"]["team"]
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        grants.push(json!("mutate_stream"));
+        *team["operation"]["team"].pointer_mut(pointer).unwrap() = json!(grants);
+    }
+    let team_response = host.call(team);
+    if team_response["result"].get("Err").is_some() {
+        panic!("fixture step team failed: {team_response}");
+    }
+    // The binding must name the live Host as eligible: resolve the real
+    // inventory identity first, then configure the workforce binding with
+    // it (the checked-in fixture pins a placeholder host).
+    let pulse_response = host.call(request(
+        "activation-pulse-early",
+        json!({"kind":"get_host_pulse"}),
+    ));
+    let host_id = pulse_response["result"]["Ok"]["data"]["host_id"].clone();
+    let mut binding: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/configure.json"
+    ))
+    .unwrap();
+    binding["command_id"] = json!("activation-binding");
+    binding["operation"]["configuration"]["primary"]["profile"]["eligible_hosts"] =
+        json!([host_id]);
+    for path in [
+        ["operation", "configuration", "primary", "access", "grants"],
+        ["operation", "configuration", "binding", "access", "grants"],
+    ] {
+        let mut grants: Vec<Value> = binding
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        grants.push(json!("mutate_stream"));
+        *binding
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap() = json!(grants);
+    }
+    let binding_response = host.call(binding);
+    if binding_response["result"].get("Err").is_some() {
+        panic!("fixture step binding failed: {binding_response}");
+    }
+    // Provider connection and model descriptor the binding's profile needs.
+    ok_step(
+        "activation-provider",
+        &host.call(request(
+            "activation-provider",
+            json!({"kind":"replace_provider_connection","attribution":"staffing-demo",
+            "connection":{"id":"native-openai","adapter":"openai-responses",
+            "endpoint_reference":"https://api.openai.example/v1","authentication":"api_credential"}}),
+        ),
+    ));
+    ok_step(
+        "activation-model",
+        &host.call(request(
+            "activation-model",
+            json!({"kind":"replace_model_descriptor","attribution":"staffing-demo",
+            "descriptor":{"schema_version":1,"id":"coding-model","provider_id":"native-openai",
+            "context_window_tokens":8192,"max_output_tokens":4096,
+            "capabilities":{"reasoning_efforts":[],"tools":true,"images":false,"streaming":false}}}),
+        ),
+    ));
+    // Classified origin the engineer's task can hang off.
+    ok_step(
+        "activation-objective",
+        &host.call(request(
+            "activation-objective",
+            json!({"kind":"create_work","work":{"id":{"kind":"objective","id":"staffing-objective"},
+            "project_id":"staffing-demo","role_id":"engineer","title":"Implement a bounded change",
+            "description":"Implement the bounded change described by this objective.",
+            "utterance":null,"objective_class":"maintenance","parent":null,"dependencies":[],
+            "requirements":[],"constraints":[],"risks":[],"acceptance":["done"],"priority":2,
+            "budget":null,"external_references":[]}}),
+        )),
+    );
+    ok_step(
+        "activation-task",
+        &host.call(request(
+            "activation-task",
+            json!({"kind":"create_task","task":{"id":"staffing-task","project_id":"staffing-demo",
+            "root_id":"staffing-root","role_id":"engineer",
+            "origin":{"kind":"objective","work":{"project_id":"staffing-demo",
+                "id":{"kind":"objective","id":"staffing-objective"}}},
+            "task_contract":{"id":"coding-contract","revision":1},
+            "stream":{"id":"staffing-stream","originating_chat":"chat","worktree":"staffing-worktree",
+            "branch":"task/staffing","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}),
+        ),
+    ));
+    // Route the task to the engineer explicitly.
+    ok_step(
+        "activation-route",
+        &host.call(request(
+            "activation-route",
+            json!({"kind":"record_route",
+            "request":{"project_id":"staffing-demo","work_id":{"kind":"objective","id":"staffing-objective"},
+            "requested":"engineer","domains":[]}}),
+        ),
+    ));
+    let prepare_response = host.call(request(
+        "activation-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    ));
+    if prepare_response["result"].get("Err").is_some() {
+        panic!("activation-prepare failed: {prepare_response}");
+    }
+    let preparation = prepare_response["result"]["Ok"]["data"].clone();
+    assert_eq!(preparation["outcome"], "ready");
+    // Start requires the Host's own inventory identity; a start against an
+    // unknown Host is permission-denied, so resolve the real one.
+    let start_response = host.call(request(
+        "activation-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    ));
+    if start_response["result"].get("Err").is_some() {
+        panic!("activation-start failed: {start_response}");
+    }
+    let started = start_response["result"]["Ok"]["data"].clone();
+    assert_eq!(started["task_id"], "staffing-task");
+    // Activation with the production transport configuration (none
+    // configured) refuses with a typed precondition and files nothing:
+    // live execution requires explicit authorization for credentials and
+    // billing. The task stays Running.
+    let refused = host.call(request(
+        "activation-run",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+            "dispatch_id":started["dispatch_id"]}),
+    ));
+    assert_eq!(refused["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        refused["result"]["Err"]["message"],
+        "no worker transport configured for this runtime kind"
+    );
+    let task_read = request(
+        "activation-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    );
+    let task_response = host.call(task_read);
+    let task = ok(&task_response);
+    assert_eq!(task["data"]["state"], "running");
+    // Activation against a foreign dispatch id is refused before anything.
+    let foreign = host.call(request(
+        "activation-foreign",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task","dispatch_id":"disp_ghost"}),
+    ));
+    assert_eq!(foreign["result"]["Err"]["code"], "failed_precondition");
+    host.crash();
+    host.start();
+    // The refusal left no residue: state replays identically.
+    let task_read = request(
+        "activation-task-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    );
+    let task_response = host.call(task_read);
+    let task = ok(&task_response);
+    assert_eq!(task["data"]["state"], "running");
 }

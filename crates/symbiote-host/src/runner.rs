@@ -47,6 +47,81 @@ pub struct WorkerOutcome {
     pub completion_filed: bool,
 }
 
+/// The Host's configured worker transports. The daemon holds one instance;
+/// the production constructor is empty — live native and external transports
+/// require the sandboxed launch path plus explicit user authorization for
+/// credentials and billing, so an unconfigured Host refuses activation with
+/// a typed error instead of silently doing nothing or falling back.
+#[derive(Default)]
+pub struct WorkerTransports {
+    native: Option<Box<dyn NativeTransportFactory>>,
+    external: Option<Box<dyn ExternalTransportFactory>>,
+}
+
+impl WorkerTransports {
+    /// The production configuration: no live transports. Activation refuses
+    /// with [`RunnerError::NoTransport`] until the operator explicitly
+    /// configures one.
+    pub fn production() -> Self {
+        Self::default()
+    }
+
+    pub fn with_native(mut self, factory: Box<dyn NativeTransportFactory>) -> Self {
+        self.native = Some(factory);
+        self
+    }
+
+    pub fn with_external(mut self, factory: Box<dyn ExternalTransportFactory>) -> Self {
+        self.external = Some(factory);
+        self
+    }
+
+    pub fn native_configured(&self) -> bool {
+        self.native.is_some()
+    }
+
+    pub fn external_configured(&self) -> bool {
+        self.external.is_some()
+    }
+
+    pub fn native_build(
+        &mut self,
+    ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, crate::runner::RunnerError>
+    {
+        match self.native.as_mut() {
+            Some(factory) => factory
+                .build()
+                .map_err(crate::runner::RunnerError::TransportBuild),
+            None => Err(crate::runner::RunnerError::NoTransport),
+        }
+    }
+
+    pub fn external_build(
+        &mut self,
+    ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, crate::runner::RunnerError> {
+        match self.external.as_mut() {
+            Some(factory) => factory
+                .build()
+                .map_err(crate::runner::RunnerError::TransportBuild),
+            None => Err(crate::runner::RunnerError::NoTransport),
+        }
+    }
+}
+
+/// Builds one native inference transport per run. Tests install a factory
+/// producing the scripted transport; production installs the live client
+/// only after explicit user authorization for credentials and billing.
+pub trait NativeTransportFactory {
+    fn build(&mut self)
+    -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>;
+}
+
+/// Builds one external Codex transport per run: the factory owns the
+/// sandboxed launch of the pinned binary (or, in tests, a scripted fixture).
+pub trait ExternalTransportFactory {
+    fn build(&mut self) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerError {
     /// The dispatch's runtime kind does not match the loop being run.
@@ -66,6 +141,12 @@ pub enum RunnerError {
     /// error (display form) so an idempotency collision is distinguishable
     /// from a state move.
     Store(String),
+    /// No transport is configured for this dispatch's runtime kind. The
+    /// Host operator has not authorized live execution; nothing ran and
+    /// nothing was filed.
+    NoTransport,
+    /// The configured transport factory refused to build a transport.
+    TransportBuild(&'static str),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -154,6 +235,18 @@ pub fn run_native(
     dispatch: &Dispatch,
     task_prompt: &str,
     transport: &mut impl symbiote_native_agent::InferenceTransport,
+    at: Timestamp,
+) -> Result<WorkerOutcome, RunnerError> {
+    run_native_boxed(store, task_id, dispatch, task_prompt, transport, at)
+}
+
+/// Object-safe entry for the service: same checks, dyn-dispatched transport.
+pub fn run_native_boxed(
+    store: &mut Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    task_prompt: &str,
+    transport: &mut dyn symbiote_native_agent::InferenceTransport,
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
     check_runnable(store, task_id, dispatch, RuntimeKind::NativeSymbiote)?;
@@ -246,6 +339,27 @@ pub fn run_external(
     task_prompt: &str,
     worktree_cwd: &str,
     transport: &mut impl symbiote_external_agent::CodexTransport,
+    at: Timestamp,
+) -> Result<WorkerOutcome, RunnerError> {
+    run_external_boxed(
+        store,
+        task_id,
+        dispatch,
+        task_prompt,
+        worktree_cwd,
+        transport,
+        at,
+    )
+}
+
+/// Object-safe entry for the service: same checks, dyn-dispatched transport.
+pub fn run_external_boxed(
+    store: &mut Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    task_prompt: &str,
+    worktree_cwd: &str,
+    transport: &mut dyn symbiote_external_agent::CodexTransport,
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
     check_runnable(store, task_id, dispatch, RuntimeKind::ExternalHarness)?;

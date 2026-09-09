@@ -34,6 +34,11 @@ pub fn serve_with_telemetry(
         nix::unistd::geteuid()
     ))?);
     let mut store = Store::open(directory.join("control.sqlite3"))?;
+    // Production configuration: no live worker transports are configured.
+    // Activation of a started dispatch refuses with a typed error until the
+    // operator provisions an authorized transport path (sandboxed launch +
+    // credential/billing authorization).
+    let mut worker_transports = runner::WorkerTransports::production();
     eprintln!("symbioted: ready (local metadata capabilities only)");
     for connection in local.listener.incoming() {
         let connection = connection?;
@@ -44,7 +49,13 @@ pub fn serve_with_telemetry(
             .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
             .and_then(|bytes| parse_request(&bytes));
         let (response, shutdown) = match request {
-            Ok(request) => service::handle(&mut store, &principal, &mut inventory, request),
+            Ok(request) => service::handle(
+                &mut store,
+                &principal,
+                &mut inventory,
+                &mut worker_transports,
+                request,
+            ),
             Err(error) => (
                 Response {
                     version: CURRENT_VERSION,

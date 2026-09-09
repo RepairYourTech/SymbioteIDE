@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use symbiote_domain::{
-    Actor, DispatchId, DomainError, HostId, RuntimeContractId, Timestamp, WorkCommand, WorkError,
-    WorkItem,
+    Actor, DispatchId, DomainError, HostId, RuntimeContractId, TaskId, Timestamp, WorkCommand,
+    WorkError, WorkItem,
 };
 use symbiote_protocol::*;
 use symbiote_store::{Store, StoreError};
@@ -230,6 +230,7 @@ fn execute(
     store: &mut Store,
     principal: &Principal,
     inventory: &mut crate::inventory::InventoryService,
+    workers: &mut crate::runner::WorkerTransports,
     request: &Request,
 ) -> Result<ResponseBody, ProtocolError> {
     authorize(principal, request)?;
@@ -519,6 +520,71 @@ fn execute(
                 fencing_token: lease.fencing_token,
                 started_at: at,
             })))
+        }
+        Operation::RunStartedDispatch {
+            task_id,
+            dispatch_id,
+        } => {
+            // Activation of an already-started dispatch. The runner
+            // re-checks every precondition against journaled state (Running
+            // under this dispatch, contract validity, runtime-kind match)
+            // and files completion evidence only on a genuinely finished
+            // turn. Transports come from the Host's configured factory:
+            // with none configured the activation refuses rather than
+            // running anything, because live execution requires explicit
+            // operator/user authorization for credentials and billing.
+            let at = now_timestamp()?;
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let current = task_record
+                .current_dispatch()
+                .ok_or_else(|| ProtocolError::new(ErrorCode::FailedPrecondition))?;
+            if current.id() != dispatch_id {
+                return Err(ProtocolError::new(ErrorCode::FailedPrecondition));
+            }
+            let runtime = current.contract().profile().runtime;
+            match runtime {
+                symbiote_domain::RuntimeKind::NativeSymbiote => {
+                    let prompt = origin_prompt(store, task_id)?;
+                    let mut transport = workers.native_build().map_err(worker_error)?;
+                    let outcome = crate::runner::run_native_boxed(
+                        store,
+                        task_id,
+                        current,
+                        &prompt,
+                        transport.as_mut(),
+                        at,
+                    )
+                    .map_err(worker_error)?;
+                    Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
+                        task_id: task_id.clone(),
+                        dispatch_id: outcome.dispatch_id,
+                        runtime,
+                        completed: outcome.completion_filed,
+                    })))
+                }
+                symbiote_domain::RuntimeKind::ExternalHarness => {
+                    let prompt = origin_prompt(store, task_id)?;
+                    let mut transport = workers.external_build().map_err(worker_error)?;
+                    // The sandboxed launcher mounts the reserved worktree at
+                    // /workspace; that is the only cwd the harness sees.
+                    let outcome = crate::runner::run_external_boxed(
+                        store,
+                        task_id,
+                        current,
+                        &prompt,
+                        "/workspace",
+                        transport.as_mut(),
+                        at,
+                    )
+                    .map_err(worker_error)?;
+                    Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
+                        task_id: task_id.clone(),
+                        dispatch_id: outcome.dispatch_id,
+                        runtime,
+                        completed: outcome.completion_filed,
+                    })))
+                }
+            }
         }
         Operation::RequestTaskCompletion {
             task_id,
@@ -1008,9 +1074,10 @@ pub fn handle(
     store: &mut Store,
     principal: &Principal,
     inventory: &mut crate::inventory::InventoryService,
+    workers: &mut crate::runner::WorkerTransports,
     request: Request,
 ) -> (Response, bool) {
-    let result = execute(store, principal, inventory, &request);
+    let result = execute(store, principal, inventory, workers, &request);
     let shutdown = result.is_ok() && matches!(request.operation, Operation::Shutdown {});
     (
         Response {
@@ -1020,6 +1087,57 @@ pub fn handle(
         },
         shutdown,
     )
+}
+
+fn now_timestamp() -> Result<Timestamp, ProtocolError> {
+    Ok(Timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+            .as_millis()
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    ))
+}
+
+/// The worker's task prompt comes from canonical state — the task origin's
+/// classified work item description — never from caller input.
+fn origin_prompt(store: &mut Store, task_id: &TaskId) -> Result<String, ProtocolError> {
+    let task = store.task(task_id).map_err(storage_error)?;
+    let origin = store
+        .task_origin(&task.project_id().clone(), task_id)
+        .map_err(storage_error)?
+        .ok_or_else(|| ProtocolError::new(ErrorCode::FailedPrecondition))?;
+    let reference = origin.reference();
+    let work = store
+        .work_item(&task.project_id().clone(), &reference.id)
+        .map_err(storage_error)?;
+    let description = work.spec().description.clone();
+    if description.trim().is_empty() {
+        return Err(ProtocolError::new(ErrorCode::FailedPrecondition));
+    }
+    Ok(description)
+}
+
+fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
+    // The runner's error kinds are stable identifiers, not input values;
+    // they reach the operator without leaking task content.
+    let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    protocol_error.message = match &error {
+        crate::runner::RunnerError::RuntimeMismatch => "runtime kind does not match loop".into(),
+        crate::runner::RunnerError::NotRunning => "task is not running under this dispatch".into(),
+        crate::runner::RunnerError::InvalidContract => "dispatch contract no longer valid".into(),
+        crate::runner::RunnerError::LoopFailed(_) => "worker loop halted without finishing".into(),
+        crate::runner::RunnerError::NoReport => "worker loop finished without a report".into(),
+        crate::runner::RunnerError::Store(_) => "completion filing refused by store".into(),
+        crate::runner::RunnerError::NoTransport => {
+            "no worker transport configured for this runtime kind".into()
+        }
+        crate::runner::RunnerError::TransportBuild(_) => {
+            "worker transport factory refused to build".into()
+        }
+    };
+    protocol_error
 }
 
 /// Resolves routing against the stored Team for the referenced canonical work
