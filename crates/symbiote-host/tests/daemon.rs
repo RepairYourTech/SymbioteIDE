@@ -563,63 +563,91 @@ fn concurrent_retry_and_dropped_reply_commit_once() {
 #[test]
 fn cli_attaches_and_explicit_shutdown_exits_cleanly() {
     let mut host = Host::new();
-    let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+    let result = Command::new(env!("CARGO_BIN_EXE_symbiote"))
         .arg("--state-dir")
         .arg(&host.directory)
-        .arg("request")
-        .stdin(Stdio::piped())
+        .arg("health")
         .stdout(Stdio::piped())
-        .spawn()
+        .output()
         .unwrap();
-    cli.stdin
-        .take()
-        .unwrap()
-        .write_all(
-            &serde_json::to_vec_pretty(&request("health", json!({"kind":"health"}))).unwrap(),
-        )
-        .unwrap();
-    let result = cli.wait_with_output().unwrap();
     assert!(result.status.success());
-    assert_eq!(
-        ok(&serde_json::from_slice::<Value>(&result.stdout).unwrap())["kind"],
-        "hello"
-    );
+    let body: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(body["kind"], "hello");
+    // Host pulse is owner-authorized over the same socket.
+    let pulse = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg(&host.directory)
+        .arg("host-pulse")
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(pulse.status.success());
+    let body: Value = serde_json::from_slice(&pulse.stdout).unwrap();
+    assert_eq!(body["kind"], "host_pulse");
     ok(&host.call(request("shutdown", json!({"kind":"shutdown"}))));
     assert!(host.child.take().unwrap().wait().unwrap().success());
     assert!(!host.directory.join("host.sock").exists());
 }
 
 #[test]
-fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
+fn cli_exit_codes_distinguish_daemon_refusal_from_usage_and_transport() {
     let host = Host::new();
-    let missing = serde_json::to_vec(&request(
-        "missing",
-        json!({"kind":"get_project","project_id":"missing"}),
-    ))
-    .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":13},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
-    for (input, rpc_response) in [(missing, true), (duplicate, false)] {
-        let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
-            .arg("--state-dir")
-            .arg(&host.directory)
-            .arg("request")
-            .stdin(Stdio::piped())
+    // Daemon refusal (unknown project): exit 2 with the typed error on
+    // stderr, nothing on stdout.
+    let refused = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg(&host.directory)
+        .args(["get-project", "missing"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(refused.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+    assert_eq!(error["code"], "not_found");
+    // Usage failure (unknown command, missing args): exit 1 before any
+    // connection attempt.
+    for arguments in [
+        vec![
+            "--state-dir".to_string(),
+            host.directory.display().to_string(),
+            "no-such-command".to_string(),
+        ],
+        vec![
+            "--state-dir".to_string(),
+            host.directory.display().to_string(),
+            "get-task".to_string(),
+        ],
+        vec![
+            "--state-dir".to_string(),
+            host.directory.display().to_string(),
+            "get-task".to_string(),
+            "p".to_string(),
+        ],
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .args(&arguments)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .output()
             .unwrap();
-        cli.stdin.take().unwrap().write_all(&input).unwrap();
-        let result = cli.wait_with_output().unwrap();
-        assert!(!result.status.success());
-        if rpc_response {
-            assert_eq!(
-                serde_json::from_slice::<Value>(&result.stdout).unwrap()["result"]["Err"]["code"],
-                "not_found"
-            );
-        } else {
-            assert!(result.stdout.is_empty());
-        }
+        assert_eq!(result.status.code(), Some(1));
+        assert!(result.stdout.is_empty());
     }
+    // Raw mode still types through: a duplicate-field operation file is
+    // rejected by the daemon before execution, exit 2.
+    let duplicate = host.directory.join("dup.json");
+    std::fs::write(&duplicate, br#"{"kind":"health"}"#).unwrap();
+    let raw_ok = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("--state-dir")
+        .arg(&host.directory)
+        .args(["raw"])
+        .arg(&duplicate)
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(raw_ok.status.success());
     ok(&host.call(request("still-alive", json!({"kind":"health"}))));
 }
 
@@ -1145,4 +1173,59 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     let task_response = host.call(task_read);
     let task = ok(&task_response);
     assert_eq!(task["data"]["state"], "running");
+}
+
+#[test]
+fn cli_administration_flow_uses_typed_commands_end_to_end() {
+    let host = Host::new();
+    let run = |_name: &str, arguments: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_symbiote"));
+        command
+            .arg("--state-dir")
+            .arg(&host.directory)
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let result = command.output().unwrap();
+        (
+            result.status.code().unwrap_or(-1),
+            result.stdout.clone(),
+            String::from_utf8_lossy(&result.stderr).to_string(),
+        )
+    };
+    // Project registration still needs the full typed draft: raw mode with
+    // a temporary file.
+    let project_json = host.directory.join("project.json");
+    // project() builds the operation object directly.
+    let operation = serde_json::to_value(project("cli")).unwrap();
+    std::fs::write(
+        &project_json,
+        serde_json::to_vec_pretty(&operation).unwrap(),
+    )
+    .unwrap();
+    let (code, stdout, stderr) = run("register-raw", &["raw", project_json.to_str().unwrap()]);
+    assert_eq!(code, 0, "raw register failed: {stderr}");
+    let registered: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(registered["kind"], "receipt");
+    // Read it back through the typed command.
+    let (code, stdout, stderr) = run("get-project", &["get-project", "cli"]);
+    assert_eq!(code, 0, "get-project failed: {stderr}");
+    let read: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(read["kind"], "project");
+    assert_eq!(read["data"]["id"], "cli");
+    // Journal read through the typed command shows the registration event.
+    let (code, stdout, stderr) = run("read-journal", &["read-journal", "cli", "0", "100"]);
+    assert_eq!(code, 0, "read-journal failed: {stderr}");
+    let journal: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(journal["kind"], "journal");
+    assert_eq!(journal["data"]["events"].as_array().unwrap().len(), 1);
+    // Scheduling projection explains an empty queue.
+    let (code, stdout, stderr) = run("scheduling-projection", &["scheduling-projection"]);
+    assert_eq!(code, 0, "scheduling-projection failed: {stderr}");
+    let projection: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(projection["kind"], "scheduler_sweep");
+    // Help exits 0 with the command table.
+    let (code, stdout, _) = run("help", &["help"]);
+    assert_eq!(code, 0);
+    assert!(String::from_utf8_lossy(&stdout).contains("run-started-dispatch"));
 }
