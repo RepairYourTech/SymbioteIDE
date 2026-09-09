@@ -21,6 +21,8 @@
 //! Everything is offline-testable: `GitExecutor` is injected, and tests use
 //! the real `git` binary against temporary repositories plus scripted
 //! failure executors.
+pub mod provision;
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -326,8 +328,11 @@ pub struct MaterializeRequest<'a> {
     /// The reserved, verified-empty worktree directory (the location layer's
     /// premise; the caller must have `verify`ed the reservation).
     pub worktree: &'a Path,
-    /// The fully-qualified branch to check out in the new worktree.
+    /// The new branch name to create (Symbiote's reserved derived name).
     pub branch: &'a str,
+    /// The start point the branch is created at: the caller-validated base
+    /// commit. Branch creation is explicit and documented, never DWIM.
+    pub start_point: &'a str,
 }
 
 /// Materializes `git worktree add <worktree> <branch>` against the source
@@ -341,31 +346,27 @@ pub fn materialize(
     if request.branch.is_empty() || request.branch.len() > MAX_BRANCH_BYTES {
         return Err(GitError::InvalidRequest);
     }
-    // The branch must already exist as a LOCAL branch in the source
-    // repository. Without this check, `worktree add`'s DWIM would silently
-    // create a new local branch from a matching remote-tracking ref — an
-    // undocumented ref mutation of the user's repository.
-    let reference = format!("refs/heads/{}", request.branch);
-    let verified = git.run(
-        request.repository,
-        &["rev-parse", "--verify", "--quiet", &reference],
-    )?;
-    let _commit = trimmed_hex(&verified)?;
-    // `git worktree add` needs the target path and branch. The executor is
-    // rooted at the source repository for this invocation.
+    // The work branch is CREATED here, explicitly, at the validated base
+    // commit: `worktree add -b <branch> -- <path> <start-point>`. This is
+    // not git's DWIM — the branch name is Symbiote's reserved derived name
+    // and the start point is the caller-validated base SHA, so there is no
+    // remote-tracking ambiguity and no silent ref mutation beyond the
+    // documented branch creation.
     git.run(
         request.repository,
         &[
             "worktree",
             "add",
             "--no-checkout",
+            "-b",
+            request.branch,
             "--",
             path_arg(request.worktree)?,
-            request.branch,
+            request.start_point,
         ],
     )?;
-    // Checkout the branch contents into the new worktree (git worktree add
-    // with --no-checkout leaves it bare of files; `checkout` fills it).
+    // Populate the worktree from the branch HEAD (--no-checkout leaves it
+    // empty of files; the explicit checkout fills it).
     git.run(request.worktree, &["checkout", request.branch])?;
     observe_head(git, request.worktree)
 }
@@ -580,25 +581,45 @@ mod tests {
     }
 
     #[test]
-    fn materialize_refuses_branches_that_only_exist_as_remote_refs() {
-        // A remote-tracking ref must never DWIM into a local branch: the
-        // local-ref pre-verification refuses before worktree add runs.
+    fn scripted_materialize_pins_the_explicit_branch_creation() {
+        // Branch creation is EXPLICIT (-b at the caller-validated start
+        // point), never git's DWIM: the invocation must carry -b, the
+        // reserved branch name, --, the worktree path, and the start point.
         let mut git = Scripted::new(vec![
-            // rev-parse --verify refs/heads/up-branch fails quietly: no
-            // local branch.
-            Err(GitError::GitRefused),
+            Ok(b"".to_vec()),                                           // worktree add -b
+            Ok(b"".to_vec()),                                           // checkout
+            Ok(b"task/stream\n".to_vec()),                              // symbolic-ref
+            Ok(b"abc123abc123abc123abc123abc123abc123abcd\n".to_vec()), // rev-parse
         ]);
-        let result = materialize(
+        let repository = Path::new("/source/repo");
+        let worktree = Path::new("/base/proj/st-x");
+        let head = materialize(
             &mut git,
             MaterializeRequest {
-                repository: Path::new("/source/repo"),
-                worktree: Path::new("/base/wt"),
-                branch: "up-branch",
+                repository,
+                worktree,
+                branch: "task/stream",
+                start_point: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             },
+        )
+        .unwrap();
+        assert!(matches!(&head.state, crate::HeadState::Branch { name } if name == "task/stream"));
+        assert_eq!(git.calls[0].0, repository);
+        assert_eq!(
+            git.calls[0].1,
+            vec![
+                "worktree".to_string(),
+                "add".to_string(),
+                "--no-checkout".to_string(),
+                "-b".to_string(),
+                "task/stream".to_string(),
+                "--".to_string(),
+                worktree.to_string_lossy().to_string(),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ]
         );
-        assert_eq!(result, Err(GitError::GitRefused));
-        // worktree add was never invoked.
-        assert_eq!(git.calls.len(), 1);
+        assert_eq!(git.calls[1].0, worktree);
+        assert_eq!(git.calls[1].1[0], "checkout");
     }
 
     #[test]
