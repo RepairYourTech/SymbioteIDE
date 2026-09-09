@@ -11,6 +11,12 @@ symbiote-host-inventory = { path = "../symbiote-host-inventory" }
 symbiote-domain = { path = "../symbiote-domain" }
 symbiote-protocol = { path = "../symbiote-protocol" }
 symbiote-store = { path = "../symbiote-store" }
+symbiote-native-agent = { path = "../symbiote-native-agent" }
+symbiote-external-agent = { path = "../symbiote-external-agent" }
+symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
+symbiote-runtime-discovery = { path = "../symbiote-runtime-discovery" }
+schemars.workspace = true
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 nix = { version = "=0.30.1", features = ["socket", "user", "fs"] }

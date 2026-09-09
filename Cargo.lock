@@ -388,11 +388,17 @@ name = "symbiote-host"
 version = "0.1.0"
 dependencies = [
  "nix",
+ "rusqlite",
+ "schemars",
  "serde",
  "serde_json",
  "symbiote-domain",
+ "symbiote-external-agent",
  "symbiote-host-inventory",
+ "symbiote-native-agent",
  "symbiote-protocol",
+ "symbiote-runtime-discovery",
+ "symbiote-runtime-sdk",
  "symbiote-store",
  "symbiote-workforce",
 ]

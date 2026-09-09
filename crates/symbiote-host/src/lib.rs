@@ -6,6 +6,7 @@ compile_error!(
 
 mod identity;
 mod inventory;
+pub mod runner;
 mod service;
 pub mod transport;
 
