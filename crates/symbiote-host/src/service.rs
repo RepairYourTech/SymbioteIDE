@@ -525,10 +525,12 @@ fn execute(
             dispatch_id,
             report,
         } => {
-            // Route the worker's report through the domain lifecycle: the
-            // task moves Running -> CompletionRequested ONLY when the report
-            // comes from the dispatch's Worker actor. Verification and
-            // independent review remain Host gates after this.
+            // Route the worker's report through the domain lifecycle. The
+            // local owner is proxying: the Host constructs the Worker actor
+            // from caller input, and safety comes from the domain binding
+            // that actor to the task's actual current dispatch. The task can
+            // only reach CompletionRequested; verification and independent
+            // review remain Host gates after this.
             let task_record = store.task(task_id).map_err(storage_error)?;
             let command = symbiote_domain::TaskCommand {
                 id: request.command_id.clone(),

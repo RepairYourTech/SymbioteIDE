@@ -14,7 +14,7 @@
 //! BeginVerification → Complete with independent review. Worker completion is
 //! evidence, never authority.
 use symbiote_domain::*;
-use symbiote_runtime_sdk::events::{RuntimeEvent, RuntimeEventKind, SessionBinding};
+use symbiote_runtime_sdk::events::{EventText, RuntimeEvent, RuntimeEventKind, SessionBinding};
 use symbiote_runtime_sdk::provider::{
     FinishReason, InputMessage, InputPart, MessageRole, ModelDescriptor, ProviderError,
     ProviderRequest, ProviderResponse, TokenUsage,
@@ -22,9 +22,14 @@ use symbiote_runtime_sdk::provider::{
 
 pub const NATIVE_LOOP_VERSION: u32 = 1;
 pub const MAX_TURNS_PER_RUN: u32 = 64;
-/// Turns whose aggregate text exceeds this are halted before the provider
-/// reports length exhaustion; the budget check is host-observable.
+/// Hard halt on accumulated assistant text even when usage goes unreported:
+/// the backstop that bounds runaway loops a provider reports nothing about.
 pub const MAX_ACCUMULATED_OUTPUT_BYTES: usize = 512 * 1024;
+/// EventText's own limit; reports and transport text are truncated to it
+/// rather than panicking.
+pub const MAX_EVENT_TEXT_BYTES: usize = 16_384;
+/// Completion reports are bounded by the same limit as event text.
+pub const MAX_REPORT_BYTES: usize = MAX_EVENT_TEXT_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoopError {
@@ -36,12 +41,14 @@ pub enum LoopError {
     TurnCapReached,
     /// Provider failed terminally; retry policy is the Host's, not the loop's.
     ProviderFailed,
-    /// The transport produced an envelope inconsistent with the request.
+    /// The transport produced an envelope failing SDK validation.
     EnvelopeMismatch,
     /// The model requested a tool the session has no definition for.
     UnknownTool,
     /// Completion was already requested; the loop is finished.
     AlreadyComplete,
+    /// Caller input failed local bounds.
+    InvalidInput,
 }
 
 impl std::fmt::Display for LoopError {
@@ -101,17 +108,28 @@ impl InferenceTransport for ScriptedTransport {
     }
 }
 
+/// The fallback envelope satisfies the SDK's own response validation
+/// (Stop requires non-empty text) and reports known usage so accounting
+/// stays exercised even in the scripted path.
 fn finish_response(request: &ProviderRequest, finish: FinishReason) -> ProviderResponse {
+    let text = if matches!(finish, FinishReason::Stop) {
+        "done".to_owned()
+    } else {
+        String::new()
+    };
     ProviderResponse {
         schema_version: request.schema_version,
         request_id: request.request_id.clone(),
         provider_id: request.provider_id.clone(),
         model_id: request.model_id.clone(),
-        text: String::new(),
+        text,
         tool_calls: Vec::new(),
         finish_reason: finish,
-        usage: TokenUsage::Unknown {
-            reason: symbiote_runtime_sdk::provider::UsageUnknownReason::NotReported,
+        usage: TokenUsage::Known {
+            input_tokens: 1,
+            output_tokens: 1,
+            cached_input_tokens: None,
+            reasoning_tokens: None,
         },
     }
 }
@@ -131,6 +149,7 @@ pub struct LoopRun {
     pub turns: u32,
     pub input_tokens_used: u64,
     pub output_tokens_used: u64,
+    pub unreported_usage_turns: u32,
     pub completion_report: Option<String>,
     pub halted: Option<HaltReason>,
 }
@@ -146,14 +165,21 @@ pub enum HaltReason {
     TurnCapReached,
     ProviderFailed,
     EnvelopeMismatch,
+    /// The model proposed a tool absent from the dispatch contract.
+    UnknownTool,
+    /// The accumulated-output byte backstop fired (unreported usage).
+    OutputBackstop,
 }
 
 /// The native turn engine. Created per dispatch from already-authorized
-/// state: the dispatch contract supplies the context budget and tools; the
-/// model descriptor supplies the envelope bounds. All emitted events carry
-/// the session binding so downstream consumers can attribute every effect.
+/// state: the dispatch contract supplies the context budget, tools and
+/// identities; the model descriptor supplies the envelope bounds. All
+/// emitted events carry the session binding so downstream consumers can
+/// attribute every effect.
 pub struct NativeSession {
     binding: SessionBinding,
+    task_id: TaskId,
+    provider_id: ProviderConnectionId,
     contract_context: ContextPolicy,
     tools: Vec<String>,
     model: ModelDescriptor,
@@ -163,6 +189,8 @@ pub struct NativeSession {
     turns: u32,
     input_tokens: u64,
     output_tokens: u64,
+    unreported_usage_turns: u32,
+    accumulated_output_bytes: usize,
     completion_report: Option<String>,
     halted: Option<HaltReason>,
     request_counter: u64,
@@ -190,6 +218,8 @@ impl NativeSession {
                 host_id: contract.host_id().clone(),
                 runtime: RuntimeKind::NativeSymbiote,
             },
+            task_id: contract.task_id().clone(),
+            provider_id: contract.profile().provider.clone(),
             contract_context: contract.binding().context.clone(),
             tools: contract.binding().required_tools.iter().cloned().collect(),
             model,
@@ -199,6 +229,8 @@ impl NativeSession {
             turns: 0,
             input_tokens: 0,
             output_tokens: 0,
+            unreported_usage_turns: 0,
+            accumulated_output_bytes: 0,
             completion_report: None,
             halted: None,
             request_counter: 0,
@@ -222,35 +254,43 @@ impl NativeSession {
         LoopRun {
             version: NATIVE_LOOP_VERSION,
             dispatch_id: self.binding.dispatch_id.clone(),
-            task_id: self.binding.dispatch_id.clone().into_task_id(),
-            provider_id: ProviderConnectionId::new("native").expect("static id"),
+            task_id: self.task_id.clone(),
+            provider_id: self.provider_id.clone(),
             model_id: self.model.id.clone(),
             turns: self.turns,
             input_tokens_used: self.input_tokens,
             output_tokens_used: self.output_tokens,
+            unreported_usage_turns: self.unreported_usage_turns,
             completion_report: self.completion_report.clone(),
             halted: self.halted,
         }
     }
 
-    fn record(&mut self, payload: RuntimeEventKind) {
+    /// Event ids stay within the 128-byte CommandId bound for any legal
+    /// dispatch id; a failure to build a valid event halts rather than drops.
+    fn record(&mut self, payload: RuntimeEventKind) -> Result<(), LoopError> {
         let sequence = self.next_event_sequence;
         self.next_event_sequence += 1;
-        let id = CommandId::new(format!(
-            "evt_{}_{}",
-            self.binding.session_id.as_str(),
-            sequence
-        ))
-        .expect("event ids are bounded");
-        if let Ok(event) = RuntimeEvent::new(id, sequence, self.binding.clone(), payload) {
-            self.events.push(event);
+        let session_suffix: String = self.binding.session_id.as_str().chars().take(97).collect();
+        let id = CommandId::new(format!("e{sequence}_{session_suffix}"))
+            .map_err(|_| LoopError::InvalidContract)?;
+        match RuntimeEvent::new(id, sequence, self.binding.clone(), payload) {
+            Ok(event) => {
+                self.events.push(event);
+                Ok(())
+            }
+            Err(_) => {
+                self.halted = Some(HaltReason::EnvelopeMismatch);
+                Err(LoopError::EnvelopeMismatch)
+            }
         }
     }
 
     /// Runs the turn loop until the model stops, requests completion, or a
     /// bound halts it. Each turn builds a fully validated ProviderRequest
     /// (bounded by the dispatch contract's context, not the model maximum),
-    /// calls the transport, validates the envelope, and records events.
+    /// calls the transport, validates the envelope via the SDK's own
+    /// `ProviderResponse::validate`, and records events.
     pub fn run(
         &mut self,
         task_prompt: &str,
@@ -259,6 +299,11 @@ impl NativeSession {
         if self.completion_report.is_some() || self.halted.is_some() {
             return Err(LoopError::AlreadyComplete);
         }
+        if task_prompt.trim().is_empty() || task_prompt.len() > 64 * 1024 {
+            return Err(LoopError::InvalidInput);
+        }
+        // The SDK's session consumers require Ready before Message/Exit.
+        self.record(RuntimeEventKind::Ready {})?;
         self.messages.push(InputMessage {
             role: MessageRole::User,
             content: vec![InputPart::Text {
@@ -269,28 +314,53 @@ impl NativeSession {
             if self.turns >= MAX_TURNS_PER_RUN {
                 self.halted = Some(HaltReason::TurnCapReached);
                 self.record(RuntimeEventKind::Diagnostic {
-                    message: bounded_text("turn cap reached"),
-                });
+                    message: truncate_event_text("turn cap reached"),
+                })?;
                 return Err(LoopError::TurnCapReached);
             }
             self.turns += 1;
             let request = self.build_request()?;
-            let response = transport.request(&request, &self.model).map_err(|e| {
-                self.halted = Some(HaltReason::ProviderFailed);
+            let response = match transport.request(&request, &self.model) {
+                Ok(response) => response,
+                Err(error) => {
+                    self.halted = Some(HaltReason::ProviderFailed);
+                    self.record(RuntimeEventKind::Diagnostic {
+                        message: truncate_event_text(&format!("provider error: {error}")),
+                    })?;
+                    return Err(LoopError::ProviderFailed);
+                }
+            };
+            // Full SDK envelope validation: schema version, tool-call
+            // coherence, finish/text consistency, duplicate call ids,
+            // usage-vs-window. The loop is the enforcement point.
+            if let Err(error) = response.validate(&request, &self.model) {
+                // The SDK already rejects undeclared tools against the
+                // request's tool set; attribute that specifically.
+                let (halt, error_code) = if matches!(
+                    error,
+                    symbiote_runtime_sdk::provider::ProviderError::UnknownTool
+                ) {
+                    (HaltReason::UnknownTool, LoopError::UnknownTool)
+                } else {
+                    (HaltReason::EnvelopeMismatch, LoopError::EnvelopeMismatch)
+                };
+                self.halted = Some(halt);
                 self.record(RuntimeEventKind::Diagnostic {
-                    message: bounded_text(&format!("provider error: {e}")),
-                });
-                LoopError::ProviderFailed
-            })?;
-            // Envelope consistency: the response must belong to this request.
-            if response.request_id != request.request_id
-                || response.provider_id != request.provider_id
-                || response.model_id != request.model_id
-            {
-                self.halted = Some(HaltReason::EnvelopeMismatch);
-                return Err(LoopError::EnvelopeMismatch);
+                    message: truncate_event_text(&format!("envelope rejected: {error}")),
+                })?;
+                return Err(error_code);
             }
-            self.accumulate_usage(&response.usage)?;
+            self.accumulate_usage(&response.usage, &request)?;
+            self.accumulated_output_bytes = self
+                .accumulated_output_bytes
+                .saturating_add(response.text.len());
+            if self.accumulated_output_bytes > MAX_ACCUMULATED_OUTPUT_BYTES {
+                self.halted = Some(HaltReason::OutputBackstop);
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text("accumulated output backstop"),
+                })?;
+                return Err(LoopError::BudgetExhausted);
+            }
             if !response.text.is_empty() {
                 self.messages.push(InputMessage {
                     role: MessageRole::Assistant,
@@ -299,45 +369,52 @@ impl NativeSession {
                     }],
                 });
                 self.record(RuntimeEventKind::Message {
-                    text: bounded_text(&response.text),
-                });
+                    text: truncate_event_text(&response.text),
+                })?;
             }
             for call in &response.tool_calls {
                 if !self.tools.iter().any(|t| t == &call.name) {
-                    self.halted = Some(LoopError::UnknownTool.into_halt());
-                    self.record(RuntimeEventKind::ToolFailed {
-                        tool_call_id: call.call_id.clone(),
-                        error: bounded_text("tool not in dispatch contract"),
-                    });
+                    // A Diagnostic, not ToolFailed: the SDK's session tracker
+                    // requires ToolFailed to follow a started tool, and this
+                    // proposal is refused before it ever starts.
+                    self.halted = Some(HaltReason::UnknownTool);
+                    self.record(RuntimeEventKind::Diagnostic {
+                        message: truncate_event_text(&format!(
+                            "undeclared tool proposed: {}",
+                            call.name
+                        )),
+                    })?;
                     // The loop reports and stops: an undeclared tool is a
                     // contract violation, not something to paper over.
                     return Err(LoopError::UnknownTool);
                 }
                 self.record(RuntimeEventKind::ToolProposed {
                     tool_call_id: call.call_id.clone(),
-                    name: bounded_text(&call.name),
-                    arguments: bounded_text(&call.arguments.to_string()),
-                });
+                    name: truncate_event_text(&call.name),
+                    arguments: truncate_event_text(&call.arguments.to_string()),
+                })?;
                 // Native tool execution (sandbox invocation) is the next
                 // slice; a proposed-but-unexecuted tool is recorded and the
-                // loop continues with the provider's turn.
+                // loop continues with the provider's turn. The conversation
+                // does not yet carry the proposal (message parts are
+                // text-only), documented as tool-turn amnesia.
             }
             match response.finish_reason {
                 FinishReason::Stop => {
                     self.halted = Some(HaltReason::Stop);
-                    self.record(RuntimeEventKind::Exit { code: Some(0) });
+                    self.record(RuntimeEventKind::Exit { code: Some(0) })?;
                     return Ok(self.run_summary());
                 }
                 FinishReason::Length => {
                     self.halted = Some(HaltReason::Length);
                     self.record(RuntimeEventKind::Diagnostic {
-                        message: bounded_text("provider length exhaustion"),
-                    });
+                        message: truncate_event_text("provider length exhaustion"),
+                    })?;
                     return Ok(self.run_summary());
                 }
                 FinishReason::Cancelled => {
                     self.halted = Some(HaltReason::Stop);
-                    self.record(RuntimeEventKind::CancelAcknowledged {});
+                    self.record(RuntimeEventKind::CancelAcknowledged {})?;
                     return Ok(self.run_summary());
                 }
                 FinishReason::ToolCalls => continue,
@@ -351,13 +428,13 @@ impl NativeSession {
         if self.completion_report.is_some() || self.halted.is_some() {
             return Err(LoopError::AlreadyComplete);
         }
-        if report.trim().is_empty() || report.len() > 64 * 1024 {
-            return Err(LoopError::EnvelopeMismatch);
+        if report.trim().is_empty() || report.len() > MAX_REPORT_BYTES {
+            return Err(LoopError::InvalidInput);
         }
         self.completion_report = Some(report.to_owned());
         self.record(RuntimeEventKind::CompletionRequested {
-            report: bounded_text(report),
-        });
+            report: truncate_event_text(report),
+        })?;
         Ok(())
     }
 
@@ -378,14 +455,14 @@ impl NativeSession {
         if remaining_input == 0 || remaining_output == 0 {
             self.halted = Some(HaltReason::BudgetExhausted);
             self.record(RuntimeEventKind::Diagnostic {
-                message: bounded_text("dispatch context budget exhausted"),
-            });
+                message: truncate_event_text("dispatch context budget exhausted"),
+            })?;
             return Err(LoopError::BudgetExhausted);
         }
         let request = ProviderRequest {
             schema_version: symbiote_runtime_sdk::provider::PROVIDER_CONTRACT_VERSION,
             request_id,
-            provider_id: ProviderConnectionId::new("native").expect("static id"),
+            provider_id: self.provider_id.clone(),
             model_id: self.model.id.clone(),
             messages: self.messages.clone(),
             tools: self
@@ -403,82 +480,80 @@ impl NativeSession {
             streaming: false,
         };
         if let Err(error) = request.validate(&self.model) {
-            self.halted = Some(HaltReason::BudgetExhausted);
-            let _ = error;
-            return Err(LoopError::BudgetExhausted);
+            self.halted = Some(HaltReason::EnvelopeMismatch);
+            self.record(RuntimeEventKind::Diagnostic {
+                message: truncate_event_text(&format!("request rejected: {error}")),
+            })?;
+            return Err(LoopError::EnvelopeMismatch);
         }
         Ok(request)
     }
 
-    fn accumulate_usage(&mut self, usage: &TokenUsage) -> Result<(), LoopError> {
-        if let Some(total) = usage.total().map_err(|_| LoopError::EnvelopeMismatch)? {
-            // Split the total conservatively: without provider detail, the
-            // whole total counts against the output remainder so the budget
-            // check can never over-spend the contract.
-            self.output_tokens = self.output_tokens.saturating_add(total);
-            if self.output_tokens > u64::from(self.contract_context.reserved_output_tokens)
-                || self.input_tokens + self.output_tokens
-                    > u64::from(self.contract_context.max_input_tokens)
-                        + u64::from(self.contract_context.reserved_output_tokens)
-            {
-                self.halted = Some(HaltReason::BudgetExhausted);
-                return Err(LoopError::BudgetExhausted);
+    /// Conservative accounting. Known usage splits input/output exactly.
+    /// Unknown usage is never free: the turn's full request budgets are
+    /// charged (the provider may have processed all of it), the turn counts
+    /// as unreported, and the accumulated-output byte backstop bounds
+    /// runaway loops that report nothing.
+    fn accumulate_usage(
+        &mut self,
+        usage: &TokenUsage,
+        request: &ProviderRequest,
+    ) -> Result<(), LoopError> {
+        match usage.total() {
+            Ok(Some(_)) => {
+                if let TokenUsage::Known {
+                    input_tokens,
+                    output_tokens,
+                    ..
+                } = usage
+                {
+                    self.input_tokens = self.input_tokens.saturating_add(*input_tokens);
+                    self.output_tokens = self.output_tokens.saturating_add(*output_tokens);
+                }
             }
+            Ok(None) => {
+                self.unreported_usage_turns += 1;
+                self.input_tokens = self.input_tokens.saturating_add(request.input_token_budget);
+                self.output_tokens = self.output_tokens.saturating_add(request.max_output_tokens);
+            }
+            Err(_) => {
+                self.halted = Some(HaltReason::EnvelopeMismatch);
+                self.record(RuntimeEventKind::Diagnostic {
+                    message: truncate_event_text("inconsistent usage envelope"),
+                })?;
+                return Err(LoopError::EnvelopeMismatch);
+            }
+        }
+        if self.output_tokens > u64::from(self.contract_context.reserved_output_tokens)
+            || self.input_tokens > u64::from(self.contract_context.max_input_tokens)
+        {
+            self.halted = Some(HaltReason::BudgetExhausted);
+            self.record(RuntimeEventKind::Diagnostic {
+                message: truncate_event_text("dispatch context budget exhausted"),
+            })?;
+            return Err(LoopError::BudgetExhausted);
         }
         Ok(())
     }
 }
 
-trait IntoHalt {
-    fn into_halt(self) -> HaltReason;
-}
-impl IntoHalt for LoopError {
-    fn into_halt(self) -> HaltReason {
-        match self {
-            LoopError::UnknownTool => HaltReason::ProviderFailed,
-            other => match other {
-                LoopError::BudgetExhausted => HaltReason::BudgetExhausted,
-                LoopError::TurnCapReached => HaltReason::TurnCapReached,
-                LoopError::ProviderFailed => HaltReason::ProviderFailed,
-                LoopError::EnvelopeMismatch => HaltReason::EnvelopeMismatch,
-                _ => HaltReason::ProviderFailed,
-            },
-        }
+/// EventText permits 16 KiB; transport text may legally be larger inside a
+/// 256 KiB envelope, so event payloads truncate on a char boundary instead
+/// of panicking. Truncation is visible (the marker), never silent.
+fn truncate_event_text(text: &str) -> EventText {
+    const MARKER: &str = "…[truncated]";
+    if text.len() <= MAX_EVENT_TEXT_BYTES {
+        return EventText::new(text).expect("within the checked bound");
     }
-}
-
-fn bounded_text(text: &str) -> symbiote_runtime_sdk::events::EventText {
-    symbiote_runtime_sdk::events::EventText::new(text).expect("event text is bounded")
-}
-
-// TaskId is not derivable from DispatchId in the domain; run_summary needs an
-// explicit task identity. Extend the summary construction instead.
-impl NativeSession {
-    pub fn run_summary_for_task(&self, task: &TaskId) -> LoopRun {
-        LoopRun {
-            version: NATIVE_LOOP_VERSION,
-            dispatch_id: self.binding.dispatch_id.clone(),
-            task_id: task.clone(),
-            provider_id: ProviderConnectionId::new("native").expect("static id"),
-            model_id: self.model.id.clone(),
-            turns: self.turns,
-            input_tokens_used: self.input_tokens,
-            output_tokens_used: self.output_tokens,
-            completion_report: self.completion_report.clone(),
-            halted: self.halted,
-        }
+    let budget = MAX_EVENT_TEXT_BYTES - MARKER.len();
+    let mut end = budget;
+    while !text.is_char_boundary(end) {
+        end -= 1;
     }
+    let mut truncated = String::from(&text[..end]);
+    truncated.push_str(MARKER);
+    EventText::new(truncated).expect("bounded by construction")
 }
-
-trait TaskIdFromDispatch {
-    fn into_task_id(self) -> TaskId;
-}
-impl TaskIdFromDispatch for DispatchId {
-    fn into_task_id(self) -> TaskId {
-        TaskId::new(self.as_str()).expect("dispatch ids are valid task ids")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,13 +706,19 @@ mod tests {
         let dispatch = dispatch(&task);
         let mut session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
         let mut transport = ScriptedTransport::new(Vec::new());
-        // Empty script falls back to a Stop response with no text.
+        // Empty script falls back to a valid Stop envelope with text.
         let run = session
             .run("Implement the fixture", &mut transport)
             .unwrap();
         assert_eq!(run.turns, 1);
         assert_eq!(run.halted, Some(HaltReason::Stop));
-        assert_eq!(session.events().len(), 1); // Exit event
+        // Ready precedes every other event (tracker-ingestible order);
+        // then the assistant Message and the Exit.
+        assert_eq!(session.events().len(), 3);
+        assert!(matches!(
+            session.events()[0].payload(),
+            RuntimeEventKind::Ready {}
+        ));
         // The request honored the contract budget, not the model window.
         let request = &transport.seen_requests()[0];
         assert!(request.input_token_budget <= 500);
@@ -650,6 +731,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["edit_file".to_string()]
         );
+        // The summary carries the real task and provider identities.
+        assert_eq!(run.task_id.as_str(), "task");
+        assert_eq!(run.provider_id.as_str(), "native");
     }
 
     #[test]
@@ -657,8 +741,6 @@ mod tests {
         let task = task();
         let dispatch = dispatch(&task);
         let mut session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
-        // ScriptedTransport's fallback is Stop, so inject explicit responses
-        // via a custom transport closure instead.
         struct TwoTurn {
             first: bool,
         }
@@ -697,10 +779,10 @@ mod tests {
         let mut transport = TwoTurn { first: true };
         let run = session.run("Implement", &mut transport).unwrap();
         assert_eq!(run.turns, 2);
-        // Turn 1: Message + ToolProposed; turn 2: Message + Exit.
-        assert_eq!(session.events().len(), 4);
+        // Ready + Message + ToolProposed + Message + Exit.
+        assert_eq!(session.events().len(), 5);
 
-        // Undeclared tool halts with UnknownTool.
+        // Undeclared tool halts with UnknownTool and a Diagnostic event.
         let mut session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
         struct Rogue;
         impl InferenceTransport for Rogue {
@@ -714,7 +796,7 @@ mod tests {
                     request_id: request.request_id.clone(),
                     provider_id: request.provider_id.clone(),
                     model_id: request.model_id.clone(),
-                    text: String::new(),
+                    text: "working".into(),
                     tool_calls: vec![ProviderToolCall {
                         call_id: RequestId::new("call-rogue").unwrap(),
                         name: "shell".into(),
@@ -735,6 +817,12 @@ mod tests {
             session.run("Implement", &mut rogue).unwrap_err(),
             LoopError::UnknownTool
         );
+        assert_eq!(session.run_summary().halted, Some(HaltReason::UnknownTool));
+        // The refusal is a Diagnostic the SDK tracker accepts.
+        assert!(matches!(
+            session.events().last().map(|e| e.payload()),
+            Some(RuntimeEventKind::Diagnostic { .. })
+        ));
     }
 
     #[test]
@@ -750,6 +838,50 @@ mod tests {
             LoopError::BudgetExhausted
         );
         assert!(transport.seen_requests().is_empty());
+    }
+
+    #[test]
+    fn unreported_usage_charges_conservatively_and_halts() {
+        let task = task();
+        let dispatch = dispatch(&task);
+        let mut session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        struct Silent;
+        impl InferenceTransport for Silent {
+            fn request(
+                &mut self,
+                request: &ProviderRequest,
+                _model: &ModelDescriptor,
+            ) -> Result<ProviderResponse, ProviderError> {
+                Ok(ProviderResponse {
+                    schema_version: request.schema_version,
+                    request_id: request.request_id.clone(),
+                    provider_id: request.provider_id.clone(),
+                    model_id: request.model_id.clone(),
+                    text: "chunk".into(),
+                    tool_calls: vec![ProviderToolCall {
+                        call_id: RequestId::new(format!("call-{}", request.request_id.as_str()))
+                            .unwrap(),
+                        name: "edit_file".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    finish_reason: FinishReason::ToolCalls,
+                    usage: TokenUsage::Unknown {
+                        reason: symbiote_runtime_sdk::provider::UsageUnknownReason::NotReported,
+                    },
+                })
+            }
+        }
+        // One unreported turn charges the full request budgets (500/300),
+        // exhausting the contract immediately — never 64 free turns.
+        let mut silent = Silent;
+        assert_eq!(
+            session.run("Implement", &mut silent).unwrap_err(),
+            LoopError::BudgetExhausted
+        );
+        let summary = session.run_summary();
+        assert_eq!(summary.unreported_usage_turns, 1);
+        assert!(summary.input_tokens_used >= 500);
+        assert_eq!(summary.halted, Some(HaltReason::BudgetExhausted));
     }
 
     #[test]
@@ -774,6 +906,13 @@ mod tests {
             session.request_completion("again").unwrap_err(),
             LoopError::AlreadyComplete
         );
+        // Oversized reports are typed errors, never panics.
+        let oversized = "x".repeat(MAX_REPORT_BYTES + 1);
+        let mut fresh = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        assert_eq!(
+            fresh.request_completion(&oversized).unwrap_err(),
+            LoopError::InvalidInput
+        );
     }
 
     #[test]
@@ -786,5 +925,38 @@ mod tests {
             NativeSession::new(&dispatch, model(), Timestamp(2_000_000)),
             Err(LoopError::InvalidContract)
         ));
+    }
+
+    #[test]
+    fn invalid_envelopes_are_rejected_by_sdk_validation() {
+        let task = task();
+        let dispatch = dispatch(&task);
+        let mut session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        struct BadEnvelope;
+        impl InferenceTransport for BadEnvelope {
+            fn request(
+                &mut self,
+                request: &ProviderRequest,
+                _model: &ModelDescriptor,
+            ) -> Result<ProviderResponse, ProviderError> {
+                let mut response = stop_response(request, "hi");
+                // Stop with tool calls attached violates SDK coherence.
+                response.tool_calls = vec![ProviderToolCall {
+                    call_id: RequestId::new("call-bad").unwrap(),
+                    name: "edit_file".into(),
+                    arguments: serde_json::json!({}),
+                }];
+                Ok(response)
+            }
+        }
+        let mut bad = BadEnvelope;
+        assert_eq!(
+            session.run("Implement", &mut bad).unwrap_err(),
+            LoopError::EnvelopeMismatch
+        );
+        assert_eq!(
+            session.run_summary().halted,
+            Some(HaltReason::EnvelopeMismatch)
+        );
     }
 }
