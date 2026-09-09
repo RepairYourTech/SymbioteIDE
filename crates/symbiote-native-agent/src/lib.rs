@@ -38,6 +38,9 @@ pub const MAX_TURNS_PER_RUN: u32 = 64;
 /// Hard halt on accumulated assistant text even when usage goes unreported:
 /// the backstop that bounds runaway loops a provider reports nothing about.
 pub const MAX_ACCUMULATED_OUTPUT_BYTES: usize = 512 * 1024;
+/// Bound on total tool-result text entered into the conversation: tool
+/// results are growth the provider never reports usage for.
+pub const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 /// EventText's own limit; reports and transport text are truncated to it
 /// rather than panicking.
 pub const MAX_EVENT_TEXT_BYTES: usize = 16_384;
@@ -205,6 +208,7 @@ pub struct NativeSession {
     binding: SessionBinding,
     task_id: TaskId,
     provider_id: ProviderConnectionId,
+    tool_result_bytes: usize,
     contract_context: ContextPolicy,
     tools: Vec<String>,
     tool_executor: Option<&'static mut dyn tools::ShellToolExecutor>,
@@ -250,6 +254,7 @@ impl NativeSession {
             contract_context: contract.binding().context.clone(),
             tools: contract.binding().required_tools.iter().cloned().collect(),
             tool_executor: None,
+            tool_result_bytes: 0,
             worktree: None,
             model,
             messages: Vec::new(),
@@ -474,13 +479,38 @@ impl NativeSession {
                         }
                     };
                     for event in events {
-                        if let RuntimeEventKind::ToolCompleted { output, .. } = &event {
-                            // The tool result enters the conversation so the
-                            // next request carries it (no tool-turn amnesia).
+                        // Both completions AND failures enter the
+                        // conversation so the model learns the result — a
+                        // failed tool must not be re-executed blind (the
+                        // amnesia fix covers failures too).
+                        let result_text = match &event {
+                            RuntimeEventKind::ToolCompleted { output, .. } => {
+                                Some(output.as_str().to_owned())
+                            }
+                            RuntimeEventKind::ToolFailed { error, .. } => {
+                                Some(error.as_str().to_owned())
+                            }
+                            _ => None,
+                        };
+                        if let Some(result) = result_text {
+                            // Tool results are conversation growth the
+                            // provider never reports usage for: charge them
+                            // against a dedicated bound so a tool storm
+                            // halts with BudgetExhausted instead of
+                            // inflating the envelope until it trips.
+                            self.tool_result_bytes =
+                                self.tool_result_bytes.saturating_add(result.len());
+                            if self.tool_result_bytes > MAX_TOOL_RESULT_BYTES {
+                                self.halted = Some(HaltReason::BudgetExhausted);
+                                self.record(RuntimeEventKind::Diagnostic {
+                                    message: truncate_event_text("tool result budget exhausted"),
+                                })?;
+                                return Err(LoopError::BudgetExhausted);
+                            }
                             self.messages.push(InputMessage {
                                 role: MessageRole::User,
                                 content: vec![InputPart::Text {
-                                    text: format!("tool {} result: {}", call.name, output.as_str()),
+                                    text: format!("tool {} result: {}", call.name, result),
                                 }],
                             });
                         }

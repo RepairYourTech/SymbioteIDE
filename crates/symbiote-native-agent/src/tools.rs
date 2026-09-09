@@ -39,8 +39,9 @@ pub fn classify(name: &str) -> Option<ToolClass> {
 }
 
 /// The model's tool arguments, strictly validated before any execution.
+/// Parsing is manual, so unknown keys are ignored at the data layer — the
+/// sandbox launcher's own command validation is the enforcement point.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ShellInvocation {
     /// The program to run, as a bare name (`cargo`, `ls`) or an absolute
     /// path. Bare names are resolved by the sandbox launcher against
@@ -147,10 +148,10 @@ pub const MAX_TOOL_OUTPUT_BYTES: usize = 16_384;
 fn tool_output_event(bytes: &[u8]) -> EventText {
     let text = String::from_utf8_lossy(bytes);
     const MARKER: &str = "…[truncated]";
-    if text.len() <= crate::MAX_EVENT_TEXT_BYTES {
+    if text.len() <= MAX_TOOL_OUTPUT_BYTES {
         return EventText::new(text.into_owned()).expect("within the checked bound");
     }
-    let budget = crate::MAX_EVENT_TEXT_BYTES - MARKER.len();
+    let budget = MAX_TOOL_OUTPUT_BYTES - MARKER.len();
     let mut end = budget;
     while !text.is_char_boundary(end) {
         end -= 1;
@@ -182,19 +183,42 @@ pub fn execute_shell_tool(
             tool_call_id: call_id.clone(),
             output,
         }),
-        _ => events.push(RuntimeEventKind::ToolFailed {
-            tool_call_id: call_id.clone(),
-            error: EventText::new(format!(
-                "shell tool exited {}: {}",
+        _ => {
+            // The prefix plus the bounded output can exceed the event-text
+            // bound (a full 16 KiB output plus the prefix); build with the
+            // same char-boundary truncate-to-bound discipline as every
+            // other event text — a failing tool must never panic the
+            // worker.
+            let prefix = format!(
+                "shell tool exited {}: ",
                 exit_code
                     .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".into()),
-                output.as_str()
-            ))
-            .expect("static prefix plus bounded output fits"),
-        }),
+                    .unwrap_or_else(|| "signal".into())
+            );
+            events.push(RuntimeEventKind::ToolFailed {
+                tool_call_id: call_id.clone(),
+                error: bounded_failure_text(&prefix, output.as_str()),
+            });
+        }
     }
     Ok(events)
+}
+
+/// Builds failure text within the event-text bound: the prefix plus as
+/// much of the output as fits, char-boundary safe, with a visible marker.
+fn bounded_failure_text(prefix: &str, output: &str) -> EventText {
+    const MARKER: &str = "…[truncated]";
+    if prefix.len() + output.len() <= MAX_TOOL_OUTPUT_BYTES {
+        return EventText::new(format!("{prefix}{output}")).expect("within the checked bound");
+    }
+    let budget = MAX_TOOL_OUTPUT_BYTES.saturating_sub(prefix.len() + MARKER.len());
+    let mut end = budget;
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = format!("{prefix}{}", &output[..end]);
+    truncated.push_str(MARKER);
+    EventText::new(truncated).expect("bounded by construction")
 }
 
 #[cfg(test)]
