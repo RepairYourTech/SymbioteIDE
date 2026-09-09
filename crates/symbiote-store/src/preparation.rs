@@ -151,6 +151,201 @@ impl Store {
         Ok((receipt, preparation))
     }
 
+    /// Starts a task from its durable `Ready` preparation: compiles the live
+    /// `WorkforceRuntimeContract`/`Dispatch` against the caller-supplied Host
+    /// record (the Host's own identity and current enforcement claims —
+    /// never client-supplied), applies the domain `Start` transition, and
+    /// verifies the resulting dispatch matches the preparation's lease and
+    /// routed Role. The command id carries the fencing token implicitly
+    /// through the preparation's compiled state; exact idempotency follows
+    /// the store convention.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_prepared_task(
+        &mut self,
+        command_id: CommandId,
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+        contract_id: RuntimeContractId,
+        host: &Host,
+        actor: UserId,
+        at: Timestamp,
+    ) -> Result<(Receipt, Dispatch)> {
+        if at.0 > i64::MAX as u64 {
+            return Err(StoreError::InvalidPreparation);
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let preparation = read(&transaction, &task_id)?.ok_or(StoreError::NotFound)?;
+        if preparation.outcome != PreparationOutcome::Ready {
+            return Err(StoreError::PreparationRefused);
+        }
+        // The preparation's recorded decisions bind the start: the routed
+        // Role must still hold. A live lease from a previous generation is
+        // refused; first-time starts acquire the lease below, transactionally
+        // after the domain Start transition succeeds.
+        let routed_role = preparation.role_id.clone().ok_or(StoreError::NotFound)?;
+        if let Some(existing) = lease::read(&transaction, &task_id)? {
+            if lease_holds(&existing, at) {
+                return Err(StoreError::LeaseConflict(
+                    symbiote_domain::LeaseError::StillHeld,
+                ));
+            }
+        }
+        let task = read_task(&transaction, &task_id)?;
+        if task.project_id() != &preparation.project_id {
+            return Err(StoreError::RelationshipMismatch);
+        }
+        // The routed Role must still be the Team's member record.
+        let role_body: String = transaction
+            .query_row(
+                "SELECT body FROM roles WHERE id=?1 AND project_id=?2",
+                params![routed_role.as_str(), preparation.project_id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::RelationshipMismatch)?;
+        let role: Role = serde_json::from_str(&role_body)?;
+        // The lease's dispatch was compiled against a profile bound to the
+        // routed Role's workforce binding; that binding is the profile source.
+        let binding_body: String = transaction
+            .query_row(
+                "SELECT body FROM workforce_bindings WHERE project_id=?1 AND role_id=?2",
+                params![preparation.project_id.as_str(), routed_role.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::RelationshipMismatch)?;
+        let binding: symbiote_workforce::BindingConfiguration =
+            serde_json::from_str(&binding_body).map_err(|_| StoreError::InvalidPreparation)?;
+        let profile = binding.primary.profile.clone();
+        if !profile.eligible_hosts.contains(&host.id) {
+            return Err(StoreError::RelationshipMismatch);
+        }
+        let dispatch = Dispatch::compile(
+            dispatch_id,
+            contract_id,
+            DispatchInputs {
+                task: &task,
+                role: &role,
+                binding: &binding.binding,
+                profile: &profile,
+                host,
+                now: at,
+            },
+        )
+        .map_err(StoreError::Domain)?;
+        let command = TaskCommand {
+            id: command_id.clone(),
+            expected_revision: task.revision(),
+            actor: Actor::Host(host.id.clone()),
+            at,
+            action: TaskAction::Start {
+                dispatch: Box::new(dispatch.clone()),
+            },
+        };
+        let receipt = {
+            let mut mutable_task = task.clone();
+            mutable_task
+                .apply(command.clone())
+                .map_err(StoreError::Domain)?;
+            let updated = transaction.execute(
+                "UPDATE tasks SET revision=?1,body=?2 WHERE id=?3 AND revision=?4",
+                params![
+                    sql_revision(mutable_task.revision())?,
+                    serde_json::to_string(&mutable_task)?,
+                    task_id.as_str(),
+                    sql_revision(task.revision())?
+                ],
+            )?;
+            if updated != 1 {
+                return Err(StoreError::Domain(DomainError::RevisionConflict));
+            }
+            let payload = EventPayload::TaskChanged {
+                task_id: task_id.clone(),
+                command: Box::new(command.clone()),
+                task: Box::new(mutable_task.clone()),
+            };
+            let request = serde_json::to_string(&payload)?;
+            if let Some(receipt) = replay(&transaction, &command_id, &request)? {
+                return Ok((receipt, dispatch));
+            }
+            append(
+                &transaction,
+                &preparation.project_id,
+                &command_id,
+                mutable_task.revision(),
+                &request,
+                &payload,
+            )?
+        };
+        // Acquire the governing lease for the now-Running dispatch in the
+        // same transaction: the fencing token is minted here and any later
+        // generation supersedes it.
+        let lease_command = CommandId::new(format!("{}-lease", command_id.as_str()))
+            .map_err(|_| StoreError::InvalidPreparation)?;
+        let expires_at = lease_expiry(at, DEFAULT_START_LEASE_MS)
+            .map_err(|_| StoreError::LeaseConflict(symbiote_domain::LeaseError::InvalidRequest))?;
+        let fencing_token = lease::read(&transaction, &task_id)?
+            .map(|previous| {
+                previous
+                    .fencing_token
+                    .checked_add(1)
+                    .ok_or(StoreError::LeaseConflict(
+                        symbiote_domain::LeaseError::ResourceLimit,
+                    ))
+            })
+            .transpose()?
+            .unwrap_or(1);
+        let lease = symbiote_domain::TaskLease {
+            version: symbiote_domain::LEASE_VERSION,
+            project_id: preparation.project_id.clone(),
+            task_id: task_id.clone(),
+            stream_id: dispatch.contract().stream_id().clone(),
+            dispatch_id: dispatch.id().clone(),
+            host_id: host.id.clone(),
+            fencing_token,
+            state: symbiote_domain::LeaseState::Held,
+            acquired_at: at,
+            expires_at,
+        };
+        lease
+            .validate_shape()
+            .map_err(|_| StoreError::InvalidLease)?;
+        let lease_payload = EventPayload::TaskLeased {
+            lease: Box::new(lease.clone()),
+            actor: actor.clone(),
+            at,
+        };
+        let lease_request = serde_json::to_string(&lease_payload)?;
+        let lease_body = serde_json::to_string(&lease)?;
+        transaction.execute(
+            "INSERT INTO task_leases(task_id,project_id,stream_id,dispatch_id,host_id,fencing_token,state,acquired_at,expires_at,body) VALUES (?1,?2,?3,?4,?5,?6,'held',?7,?8,?9)
+             ON CONFLICT(task_id) DO UPDATE SET dispatch_id=excluded.dispatch_id, host_id=excluded.host_id, fencing_token=excluded.fencing_token, state='held', acquired_at=excluded.acquired_at, expires_at=excluded.expires_at, body=excluded.body",
+            params![
+                lease.task_id.as_str(),
+                lease.project_id.as_str(),
+                lease.stream_id.as_str(),
+                lease.dispatch_id.as_str(),
+                lease.host_id.as_str(),
+                lease.fencing_token as i64,
+                at.0 as i64,
+                expires_at.0 as i64,
+                lease_body
+            ],
+        )?;
+        append(
+            &transaction,
+            &preparation.project_id,
+            &lease_command,
+            Revision(0),
+            &lease_request,
+            &lease_payload,
+        )?;
+        transaction.commit()?;
+        Ok((receipt, dispatch))
+    }
+
     pub fn dispatch_preparation(&self, task: &TaskId) -> Result<DispatchPreparation> {
         read(&self.connection, task)?.ok_or(StoreError::NotFound)
     }

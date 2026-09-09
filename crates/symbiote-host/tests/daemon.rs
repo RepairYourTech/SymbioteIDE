@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":10},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":11},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn cli_reports_rpc_failure_and_rejects_duplicate_fields_before_transmission() {
         json!({"kind":"get_project","project_id":"missing"}),
     ))
     .unwrap();
-    let duplicate = br#"{"version":{"major":1,"minor":10},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
+    let duplicate = br#"{"version":{"major":1,"minor":11},"correlation_id":"one","command_id":"one","operation":{"kind":"health"},"operation":{"kind":"shutdown"}}"#.to_vec();
     for (input, rpc_response) in [(missing, true), (duplicate, false)] {
         let mut cli = Command::new(env!("CARGO_BIN_EXE_symbiote"))
             .arg("--state-dir")
@@ -880,4 +880,48 @@ fn dispatch_preparation_records_composition_and_refusals() {
         .map(|event| event["payload"]["kind"].as_str().unwrap())
         .collect();
     assert!(kinds.contains(&"dispatch_prepared"));
+}
+
+#[test]
+fn start_prepared_task_transitions_running_and_holds_the_lease() {
+    let host = Host::new();
+    ok(&host.call(request("register-run", project("run"))));
+    ok(&host.call(request("run-maintenance", maintenance("run"))));
+    ok(&host.call(request("run-task", task("run-task", "run"))));
+    // A start before any preparation exists is NotFound.
+    let early = request(
+        "run-start-early",
+        json!({"kind":"start_prepared_task","task_id":"run-task","host_id":"unknown-host"}),
+    );
+    assert_eq!(
+        host.call(early)["result"]["Err"]["code"],
+        "permission_denied"
+    );
+    // Prepare records the composition (refused: no route/binding/provider).
+    let prepare = request(
+        "run-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"run-task"}),
+    );
+    let first = ok(&host.call(prepare.clone()))["data"].clone();
+    assert_eq!(first["outcome"], "refused");
+    // Starting from a refused preparation fails closed.
+    let host_id = ok(&host.call(request(
+        "run-host-pulse",
+        json!({"kind":"get_host_pulse"}),
+    )))["data"]["host_id"]
+        .clone();
+    let start_refused = request(
+        "run-start-refused",
+        json!({"kind":"start_prepared_task","task_id":"run-task","host_id":host_id}),
+    );
+    assert_eq!(
+        host.call(start_refused)["result"]["Err"]["code"],
+        "failed_precondition"
+    );
+    // The task remains Ready and no lease exists.
+    let task_response = host.call(request(
+        "run-task-read",
+        json!({"kind":"get_task","project_id":"run","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&task_response)["data"]["state"], "ready");
 }

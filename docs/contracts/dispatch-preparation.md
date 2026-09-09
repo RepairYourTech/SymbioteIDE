@@ -18,10 +18,16 @@ The outcome is `ready` only when scheduling, routing, lease, and provider all re
 
 `prepare_dispatch` and `get_dispatch_preparation` are local-owner operations, consistent with the scheduler endpoints; restricted worker identities arrive with #269. The preparation record carries no secret values: provider identity is a connection reference, and credential materialization stays with #217.
 
+## Starting from a preparation
+
+`start_prepared_task` (protocol v1.11 `start_prepared_task`) consumes a `Ready` preparation in one transaction: it re-verifies the routed Role still exists, refuses when a live lease from a previous generation is held, compiles the live `WorkforceRuntimeContract`/`Dispatch` via the domain `Dispatch::compile` (Role record, workforce binding, profile, and the Host record with its enforcement claims), applies the domain `Start` transition, and then **acquires the governing lease in the same transaction** — the fencing token is minted at start, journaling a `task_leased` event under a `<command>-lease` id. First-time starts can never pre-hold a lease (leases exist to fence Running dispatches), so the preparation's lease step is informational for renewals. The response carries the started dispatch identity, stream, and fencing token.
+
+The Host record's enforcement claims are operator-provisioned for the Host's own inventory identity (the service refuses a host identity that is not its own); claim windows are bounded, and the evidence ids are Host-derived, not client-supplied. A refused preparation (`failed_precondition`), a superseded preparation, or a second start all fail closed — the task stays Ready and no lease exists.
+
 ## Evidence and remaining acceptance
 
 Covered by a store test (composition steps, refusal recording, replay, readback, unknown-task refusal) and a daemon test (projection → prepare → refusal recorded → replay identical → restart replay → journal lineage).
 
-Pending #205 acceptance, tracked in the issue: consuming the preparation in a `Start` transition with dispatch-contract compilation against Host enforcement claims; worker-loop activation (#465 native, #464/#465 external); mixed-runtime staffing round-trips; completion/verification wiring; and the #269 least-privilege effective-access manifest at dispatch time.
+Pending #205 acceptance, tracked in the issue: worker-loop activation (#465 native, #464/#465 external) — the started dispatch is a control-plane record only, no runtime process is launched; mixed-runtime staffing round-trips; completion/verification wiring; and the #269 least-privilege effective-access manifest at dispatch time.
 
 Applicability: security/privacy — owner authority only, no secrets, refusals recorded as evidence. Accessibility not applicable to a headless composition layer. Performance bounded by per-task record count. Linux-first, matching the Host.
