@@ -12,6 +12,8 @@ symbiote-domain = { path = "../symbiote-domain" }
 symbiote-protocol = { path = "../symbiote-protocol" }
 symbiote-store = { path = "../symbiote-store" }
 symbiote-native-agent = { path = "../symbiote-native-agent" }
+symbiote-repo = { path = "../symbiote-repo" }
+symbiote-worktrees = { path = "../symbiote-worktrees" }
 symbiote-external-agent = { path = "../symbiote-external-agent" }
 symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
 symbiote-runtime-discovery = { path = "../symbiote-runtime-discovery" }

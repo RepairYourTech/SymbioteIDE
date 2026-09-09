@@ -548,6 +548,25 @@ fn execute(
                 return Err(dispatch_binding_refused());
             }
             let runtime = current.contract().profile().runtime;
+            // Worktree provisioning happens after the precondition checks
+            // and before any transport is built: the #211 composition
+            // verifies the stream's reserved location, validates the source
+            // repository's HEAD against the stream's recorded base, and
+            // materializes the derived worktree. A moved base or tampered
+            // location refuses before any transport factory runs.
+            // The reservation base is Host configuration, not store state:
+            // its absence is the production refusal and must fire before any
+            // store read or git call.
+            let reservation_base = workers.reservation_base().map_err(worker_error)?;
+            let this_host = inventory.host_id().clone();
+            let _provisioned_stage = crate::runner::provision_worktree(
+                store,
+                task_id,
+                &this_host,
+                &mut workers.git(),
+                &reservation_base,
+            )
+            .map_err(worker_error)?;
             match runtime {
                 symbiote_domain::RuntimeKind::NativeSymbiote => {
                     let prompt = origin_prompt(store, task_id)?;
@@ -1147,6 +1166,15 @@ fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
         }
         crate::runner::RunnerError::TransportBuild(_) => {
             "worker transport factory refused to build".into()
+        }
+        crate::runner::RunnerError::NoHostPath => "no repository placement for this host".into(),
+        crate::runner::RunnerError::NoReservationBase => {
+            "no worktree reservation base configured".into()
+        }
+        crate::runner::RunnerError::Provisioning(error) => {
+            // ProvisionError is a Copy enum of stage identifiers — never
+            // task content.
+            format!("worktree provisioning refused: {error:?}")
         }
     };
     protocol_error

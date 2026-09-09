@@ -464,10 +464,12 @@ dependencies = [
  "symbiote-host-inventory",
  "symbiote-native-agent",
  "symbiote-protocol",
+ "symbiote-repo",
  "symbiote-runtime-discovery",
  "symbiote-runtime-sdk",
  "symbiote-store",
  "symbiote-workforce",
+ "symbiote-worktrees",
 ]
 
 [[package]]
