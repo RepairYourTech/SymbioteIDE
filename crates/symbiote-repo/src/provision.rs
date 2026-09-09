@@ -127,14 +127,18 @@ pub fn provision(
         crate::GitError::GitRefused => ProvisionError::BaseUnresolved,
         other => ProvisionError::Git(other),
     })?;
+    // Unborn classification must precede the base comparison: an unborn
+    // HEAD has an empty commit string, which would otherwise read as
+    // BaseMoved and send "repo has no commits" into rebase/revalidation
+    // territory instead of the honest "does not resolve".
+    if head.commit.is_empty() {
+        return Err(ProvisionError::BaseUnresolved);
+    }
     if !head
         .commit
         .eq_ignore_ascii_case(inputs.stream.base().as_str())
     {
         return Err(ProvisionError::BaseMoved);
-    }
-    if head.commit.is_empty() {
-        return Err(ProvisionError::BaseUnresolved);
     }
     let observation = crate::materialize(
         git,
@@ -447,6 +451,68 @@ mod tests {
                 .map(|mut entries| entries.next().is_none())
                 .unwrap_or(true),
             "refused provisioning must not leave materialized content"
+        );
+        let _ = std::fs::remove_dir_all(&reservation_base);
+    }
+
+    #[test]
+    fn tampered_identity_refuses_before_any_git_call() {
+        // A seed mismatch must refuse at the identity check — BEFORE any
+        // git invocation. Pinned with a scripted executor that records
+        // every call: a reordering that ran git first would fail here.
+        let repo = SourceRepo::new("tamper-scripted");
+        let project = ProjectId::new("prov-tamper-s").unwrap();
+        let root = RootId::new("prov-tamper-s-root").unwrap();
+        let stream_id = ChangeStreamId::new("prov-tamper-s-stream").unwrap();
+        let branch = derived_branch(&project, &root, &stream_id);
+        let base = CommitSha::new(repo.base_sha.clone()).unwrap();
+        let stream = ChangeStream::new(symbiote_domain::NewChangeStream {
+            id: stream_id.clone(),
+            project_id: project.clone(),
+            root_id: root.clone(),
+            tasks: std::collections::BTreeSet::from([symbiote_domain::TaskId::new(
+                "prov-tamper-s-task",
+            )
+            .unwrap()]),
+            originating_chat: symbiote_domain::ChatId::new("chat-tamper-s").unwrap(),
+            worktree: symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
+                project_id: &project,
+                root_id: &root,
+                stream_id: &stream_id,
+                seed: "different-seed",
+            })
+            .unwrap()
+            .worktree_id,
+            branch: branch.clone(),
+            lineage: symbiote_domain::StreamLineage::Independent,
+            base,
+            target: CommitSha::new(repo.base_sha.clone()).unwrap(),
+        })
+        .unwrap();
+        let reservation_base =
+            std::env::temp_dir().join(format!("symbiote-prov-ts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&reservation_base);
+        std::fs::create_dir_all(&reservation_base).unwrap();
+        let mut git = crate::tests::RecordingExecutor::default();
+        assert_eq!(
+            provision(
+                &mut git,
+                ProvisionInputs {
+                    stream: &stream,
+                    root_id: &root,
+                    project_id: &project,
+                    stream_id: &stream_id,
+                    policy_seed: SEED,
+                    reservation_base: &reservation_base,
+                    source_repository: &repo.dir,
+                },
+            ),
+            Err(ProvisionError::Reservation)
+        );
+        assert!(
+            git.calls.is_empty(),
+            "tamper refusal must precede any git call, got {:?}",
+            git.calls
         );
         let _ = std::fs::remove_dir_all(&reservation_base);
     }

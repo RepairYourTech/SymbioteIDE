@@ -46,16 +46,38 @@ authorization or proof of remote identity.
 
 ## Materialization
 
-`materialize` first verifies the branch resolves as a LOCAL ref
-(`rev-parse --verify refs/heads/<branch>`), refusing remote-tracking-only
-names — without this, `worktree add`'s DWIM would silently create a new
-local branch from a matching remote-tracking ref, an undocumented ref
-mutation of the user's repository. It then runs `git worktree add
---no-checkout` rooted at the source repository followed by `checkout`
-rooted at the new worktree, then `observe_head` to confirm the result.
-The scripted test pins the full invocation sequence including the
-pre-verification and both rooting points; the live test materializes a
-real branch's content into the reserved directory.
+`materialize` CREATES the work branch explicitly at the
+caller-validated start point: `git worktree add --no-checkout -b
+<branch> -- <path> <start-point>` rooted at the source repository,
+followed by `checkout` rooted at the new worktree, then `observe_head` to
+confirm the result. Explicit `-b` with an explicit start point resolves
+the DWIM hazard structurally — there is no remote-tracking ambiguity for
+git to resolve, and `-b` on an existing branch fails (refuse, don't
+clobber). The caller supplies the start point from validated state:
+`provision` (below) passes the Change Stream's recorded base commit after
+validating the source repository's actual HEAD against it. The scripted
+test pins the full invocation sequence including both rooting points and
+the explicit `-b`; the live test materializes a real branch and asserts
+its HEAD equals the start point.
+
+## Dispatch-time provisioning (#211)
+
+`provision` is the composition a started dispatch runs before any work:
+(1) the Change Stream's reserved location is claimed and verified — the
+identity is re-derived from the canonical Project/Root/Stream identities
+and the policy seed, and a mismatch with the stream's recorded worktree
+id or branch refuses BEFORE any git call (pinned by a scripted-executor
+test with an empty call log); (2) the source repository's actual HEAD is
+observed and validated — an unborn HEAD is `BaseUnresolved` and a HEAD
+that moved off the stream's recorded base is `BaseMoved`, refused before
+materialization (pinned: the reserved location is claimed but holds no
+git content after the refusal); (3) the worktree is materialized at the
+stream's derived branch, created at the validated base. Errors are
+stage-honest (`Reservation` / `BaseUnresolved` / `BaseMoved` / `Git`) so
+retry policy can distinguish a compromised location from a stale premise
+from a git refusal. Provisioning is not idempotent across a crash between
+reserve and materialize: the reservation layer's O_EXCL marker refuses
+re-claim until an explicit `release()`.
 
 ## Tests
 

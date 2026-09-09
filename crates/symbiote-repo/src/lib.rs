@@ -449,6 +449,21 @@ mod tests {
         }
     }
 
+    /// A recording executor for test call-count pins.
+    #[derive(Default)]
+    pub struct RecordingExecutor {
+        pub calls: Vec<(PathBuf, Vec<String>)>,
+    }
+    impl GitExecutor for RecordingExecutor {
+        fn run(&mut self, worktree: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
+            self.calls.push((
+                worktree.to_path_buf(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
+            Ok(Vec::new())
+        }
+    }
+
     #[test]
     fn observe_head_reads_branch_detached_and_commit() {
         let repo = TempRepo::new("head");
