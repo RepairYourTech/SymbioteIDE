@@ -750,8 +750,10 @@ mod tests {
         let (store, task, _dispatch) =
             store_with_running_task("prov-wire", RuntimeKind::ExternalHarness);
         let host_id = HostId::new("unplaced-host").unwrap();
-        let reservation_base =
-            std::env::temp_dir().join(format!("symbiote-provwire-{}-base", std::process::id()));
+        let reservation_base = std::env::temp_dir().join(format!(
+            "symbiote-provwire-{}-base-nopl",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&reservation_base);
         std::fs::create_dir_all(&reservation_base).unwrap();
         let mut git = symbiote_repo::SystemGit::new();
@@ -813,7 +815,7 @@ mod tests {
         );
 
         let reservation_base =
-            std::env::temp_dir().join(format!("symbiote-provwire-{}-base", std::process::id()));
+            std::env::temp_dir().join(format!("symbiote-provwire-{}-base-mat", std::process::id()));
         let _ = std::fs::remove_dir_all(&reservation_base);
         std::fs::create_dir_all(&reservation_base).unwrap();
         let mut git = symbiote_repo::SystemGit::new();
