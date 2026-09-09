@@ -525,6 +525,8 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "symbiote-domain",
+ "symbiote-worktrees",
  "tempfile",
 ]
 

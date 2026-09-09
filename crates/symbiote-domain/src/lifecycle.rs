@@ -700,6 +700,15 @@ impl ChangeStream {
     pub fn target(&self) -> &CommitSha {
         &self.target
     }
+    /// The recorded base commit the stream's work must build on: dispatch
+    /// preparation validates the source repository's actual HEAD against
+    /// this before materializing the stream's worktree (#211).
+    pub fn base(&self) -> &CommitSha {
+        &self.base
+    }
+    pub fn worktree_id(&self) -> &WorktreeId {
+        &self.worktree
+    }
     pub fn state(&self) -> &StreamState {
         &self.state
     }
