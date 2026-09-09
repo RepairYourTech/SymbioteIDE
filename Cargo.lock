@@ -369,6 +369,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-external-agent"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "symbiote-domain",
+ "symbiote-runtime-sdk",
+]
+
+[[package]]
 name = "symbiote-host"
 version = "0.1.0"
 dependencies = [

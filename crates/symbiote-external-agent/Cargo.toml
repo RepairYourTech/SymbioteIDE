@@ -1,0 +1,12 @@
+[package]
+name = "symbiote-external-agent"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+symbiote-domain = { path = "../symbiote-domain" }
+symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
