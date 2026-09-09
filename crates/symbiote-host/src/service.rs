@@ -1160,7 +1160,18 @@ fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
         crate::runner::RunnerError::InvalidContract => "dispatch contract no longer valid".into(),
         crate::runner::RunnerError::LoopFailed(_) => "worker loop halted without finishing".into(),
         crate::runner::RunnerError::NoReport => "worker loop finished without a report".into(),
-        crate::runner::RunnerError::Store(_) => "completion filing refused by store".into(),
+        crate::runner::RunnerError::Store(payload) => {
+            // Stage-honest by payload: activation-time store failures
+            // (task/stream/root reads, integrity refusals) must not
+            // masquerade as completion-filing failures.
+            if payload.contains("policy seed") {
+                "worktree policy seed rejected".into()
+            } else if payload.contains("root id integrity") {
+                "root record integrity refused".into()
+            } else {
+                "store operation refused".into()
+            }
+        }
         crate::runner::RunnerError::NoTransport => {
             "no worker transport configured for this runtime kind".into()
         }
@@ -1170,6 +1181,10 @@ fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
         crate::runner::RunnerError::NoHostPath => "no repository placement for this host".into(),
         crate::runner::RunnerError::NoReservationBase => {
             "no worktree reservation base configured".into()
+        }
+        crate::runner::RunnerError::InvalidSeed => "worktree policy seed rejected".into(),
+        crate::runner::RunnerError::ProvisioningStore(_) => {
+            "provisioning store operation refused".into()
         }
         crate::runner::RunnerError::Provisioning(error) => {
             // ProvisionError is a Copy enum of stage identifiers — never

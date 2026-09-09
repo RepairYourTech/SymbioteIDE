@@ -468,6 +468,7 @@ dependencies = [
  "symbiote-runtime-discovery",
  "symbiote-runtime-sdk",
  "symbiote-store",
+ "symbiote-trust",
  "symbiote-workforce",
  "symbiote-worktrees",
 ]

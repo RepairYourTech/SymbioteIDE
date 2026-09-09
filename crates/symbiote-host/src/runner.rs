@@ -176,6 +176,10 @@ pub enum RunnerError {
     /// Worktree provisioning refused at a named stage (reservation
     /// verification, base validation, or git materialization).
     Provisioning(symbiote_repo::provision::ProvisionError),
+    /// The Host's policy seed was rejected by the worktrees crate.
+    InvalidSeed,
+    /// A provisioning-time store read or integrity check failed.
+    ProvisioningStore(String),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -278,23 +282,25 @@ pub fn provision_worktree(
     git: &mut impl symbiote_repo::GitExecutor,
     reservation_base: &std::path::Path,
 ) -> Result<WorktreeProvisioned, RunnerError> {
-    use symbiote_domain::RootId;
-    let task = store.task(task_id).map_err(store_error)?;
-    let stream = store.task_stream(task_id).map_err(store_error)?;
-    let root_record = store.root(&stream.root_id().clone()).map_err(store_error)?;
-    let root_id = RootId::new(stream.root_id().as_str())
-        .map_err(|_| RunnerError::Store("root id integrity".into()))?;
+    let task = store.task(task_id).map_err(provisioning_store_error)?;
+    let stream = store
+        .task_stream(task_id)
+        .map_err(provisioning_store_error)?;
+    assert_task_in_stream(&stream, task_id)?;
+    let root_record = store
+        .root(stream.root_id())
+        .map_err(provisioning_store_error)?;
     let placement = root_record
         .host_paths
         .get(host_id)
         .ok_or(RunnerError::NoHostPath)?;
     // The policy seed is Host-owned configuration, not client JSON; the
-    // store recorded the stream's identities at Task creation and the
-    // derivation must reproduce them (the tamper check inside provision).
+    // derivation must reproduce the stream's recorded identities (the
+    // tamper check inside provision).
     let policy_seed = symbiote_worktrees_policy_seed(stream.id())?;
     let inputs = symbiote_repo::provision::ProvisionInputs {
         stream: &stream,
-        root_id: &root_id,
+        root_id: stream.root_id(),
         project_id: task.project_id(),
         stream_id: task.stream_id(),
         policy_seed: &policy_seed,
@@ -309,8 +315,25 @@ pub fn provision_worktree(
     })
 }
 
-fn store_error(error: symbiote_store::StoreError) -> RunnerError {
-    RunnerError::Store(error.to_string())
+/// Provisioning-time store failures: stage-honest instead of reusing the
+/// completion-filing error identity.
+fn provisioning_store_error(error: symbiote_store::StoreError) -> RunnerError {
+    RunnerError::ProvisioningStore(error.to_string())
+}
+
+/// Cheap reader-side defense-in-depth: the stream's task set must contain
+/// the task whose stream id named it.
+fn assert_task_in_stream(
+    stream: &symbiote_domain::ChangeStream,
+    task: &TaskId,
+) -> Result<(), RunnerError> {
+    if stream.tasks().contains(task) {
+        Ok(())
+    } else {
+        Err(RunnerError::ProvisioningStore(
+            "stream task set integrity".into(),
+        ))
+    }
 }
 
 fn provision_error(error: symbiote_repo::provision::ProvisionError) -> RunnerError {
@@ -324,15 +347,16 @@ fn provision_error(error: symbiote_repo::provision::ProvisionError) -> RunnerErr
 fn symbiote_worktrees_policy_seed(
     stream: &symbiote_domain::ChangeStreamId,
 ) -> Result<String, RunnerError> {
-    // Host-owned policy: a stable prefix plus the stream id, validated by
-    // the worktrees crate's own seed rules (charset + 64-byte bound). A
-    // stream id outside the seed charset truncates deterministically —
-    // identity still binds: derivation is a pure function of seed + ids,
-    // and the store recorded the stream's worktree/branch from this same
-    // policy at Task creation.
-    symbiote_worktrees::policy_seed(&format!("sym-{}", stream.as_str()))
+    // Host-owned policy: a digest of the stream id, NOT the id itself.
+    // Domain ids allow up to 128 bytes but the worktrees crate's seed bound
+    // is 64 — embedding the raw id would break every legal id of 61+ bytes.
+    // A hex digest is always 64 bytes of legal charset and deterministic
+    // per stream, so the derivation binds the identity without embedding
+    // it.
+    let digest = symbiote_trust::Fingerprint::of(stream.as_str().as_bytes());
+    symbiote_worktrees::policy_seed(digest.as_str())
         .map(|seed| seed.to_owned())
-        .map_err(|_| RunnerError::Store("policy seed rejected".into()))
+        .map_err(|_| RunnerError::InvalidSeed)
 }
 
 /// Runs the native loop (#465 native side) against an already-started
@@ -806,9 +830,13 @@ mod tests {
         ));
         // Re-provisioning refuses honestly (non-empty worktree).
         let second = provision_worktree(&store, &task, &host_id, &mut git, &reservation_base);
+        // The stage must be Reservation (the reservation layer's
+        // non-empty rule), not a Store or wrong-stage error.
         assert!(matches!(
             second,
-            Err(RunnerError::Provisioning(_) | RunnerError::Store(_))
+            Err(RunnerError::Provisioning(
+                symbiote_repo::provision::ProvisionError::Reservation
+            ))
         ));
         let _ = std::fs::remove_dir_all(&repo_dir);
         let _ = std::fs::remove_dir_all(&reservation_base);
