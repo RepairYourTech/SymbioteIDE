@@ -47,6 +47,81 @@ pub struct WorkerOutcome {
     pub completion_filed: bool,
 }
 
+/// The Host's configured worker transports. The daemon holds one instance;
+/// the production constructor is empty — live native and external transports
+/// require the sandboxed launch path plus explicit user authorization for
+/// credentials and billing, so an unconfigured Host refuses activation with
+/// a typed error instead of silently doing nothing or falling back.
+#[derive(Default)]
+pub struct WorkerTransports {
+    native: Option<Box<dyn NativeTransportFactory>>,
+    external: Option<Box<dyn ExternalTransportFactory>>,
+}
+
+impl WorkerTransports {
+    /// The production configuration: no live transports. Activation refuses
+    /// with [`RunnerError::NoTransport`] until the operator explicitly
+    /// configures one.
+    pub fn production() -> Self {
+        Self::default()
+    }
+
+    pub fn with_native(mut self, factory: Box<dyn NativeTransportFactory>) -> Self {
+        self.native = Some(factory);
+        self
+    }
+
+    pub fn with_external(mut self, factory: Box<dyn ExternalTransportFactory>) -> Self {
+        self.external = Some(factory);
+        self
+    }
+
+    pub fn native_configured(&self) -> bool {
+        self.native.is_some()
+    }
+
+    pub fn external_configured(&self) -> bool {
+        self.external.is_some()
+    }
+
+    pub fn native_build(
+        &mut self,
+    ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, crate::runner::RunnerError>
+    {
+        match self.native.as_mut() {
+            Some(factory) => factory
+                .build()
+                .map_err(crate::runner::RunnerError::TransportBuild),
+            None => Err(crate::runner::RunnerError::NoTransport),
+        }
+    }
+
+    pub fn external_build(
+        &mut self,
+    ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, crate::runner::RunnerError> {
+        match self.external.as_mut() {
+            Some(factory) => factory
+                .build()
+                .map_err(crate::runner::RunnerError::TransportBuild),
+            None => Err(crate::runner::RunnerError::NoTransport),
+        }
+    }
+}
+
+/// Builds one native inference transport per run. Tests install a factory
+/// producing the scripted transport; production installs the live client
+/// only after explicit user authorization for credentials and billing.
+pub trait NativeTransportFactory {
+    fn build(&mut self)
+    -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>;
+}
+
+/// Builds one external Codex transport per run: the factory owns the
+/// sandboxed launch of the pinned binary (or, in tests, a scripted fixture).
+pub trait ExternalTransportFactory {
+    fn build(&mut self) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerError {
     /// The dispatch's runtime kind does not match the loop being run.
@@ -66,6 +141,12 @@ pub enum RunnerError {
     /// error (display form) so an idempotency collision is distinguishable
     /// from a state move.
     Store(String),
+    /// No transport is configured for this dispatch's runtime kind. The
+    /// Host operator has not authorized live execution; nothing ran and
+    /// nothing was filed.
+    NoTransport,
+    /// The configured transport factory refused to build a transport.
+    TransportBuild(&'static str),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -154,6 +235,18 @@ pub fn run_native(
     dispatch: &Dispatch,
     task_prompt: &str,
     transport: &mut impl symbiote_native_agent::InferenceTransport,
+    at: Timestamp,
+) -> Result<WorkerOutcome, RunnerError> {
+    run_native_boxed(store, task_id, dispatch, task_prompt, transport, at)
+}
+
+/// Object-safe entry for the service: same checks, dyn-dispatched transport.
+pub fn run_native_boxed(
+    store: &mut Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    task_prompt: &str,
+    transport: &mut dyn symbiote_native_agent::InferenceTransport,
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
     check_runnable(store, task_id, dispatch, RuntimeKind::NativeSymbiote)?;
@@ -246,6 +339,27 @@ pub fn run_external(
     task_prompt: &str,
     worktree_cwd: &str,
     transport: &mut impl symbiote_external_agent::CodexTransport,
+    at: Timestamp,
+) -> Result<WorkerOutcome, RunnerError> {
+    run_external_boxed(
+        store,
+        task_id,
+        dispatch,
+        task_prompt,
+        worktree_cwd,
+        transport,
+        at,
+    )
+}
+
+/// Object-safe entry for the service: same checks, dyn-dispatched transport.
+pub fn run_external_boxed(
+    store: &mut Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    task_prompt: &str,
+    worktree_cwd: &str,
+    transport: &mut dyn symbiote_external_agent::CodexTransport,
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
     check_runnable(store, task_id, dispatch, RuntimeKind::ExternalHarness)?;
@@ -366,6 +480,65 @@ mod tests {
         // fails loudly instead of testing against a phantom dispatch.
         assert_eq!(started.id(), dispatch.id());
         (store, task, dispatch)
+    }
+
+    #[test]
+    fn transport_factories_build_and_drive_both_runtimes() {
+        // The service→factory→boxed-runner chain with Some(factory): the
+        // native factory hands the loop a scripted transport, the external
+        // factory a scripted fixture, both through WorkerTransports.
+        let (mut store, task, dispatch) =
+            store_with_running_task("factory-native", RuntimeKind::NativeSymbiote);
+        let mut transports =
+            WorkerTransports::default().with_native(Box::new(fixture::EchoFactory {
+                text: "implemented the change".into(),
+            }));
+        let mut boxed = transports.native_build().unwrap();
+        let outcome = run_native_boxed(
+            &mut store,
+            &task,
+            &dispatch,
+            "do the work",
+            boxed.as_mut(),
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
+
+        let (mut store, task, dispatch) =
+            store_with_running_task("factory-external", RuntimeKind::ExternalHarness);
+        let mut transports =
+            WorkerTransports::default().with_external(Box::new(fixture::ScriptedFactory));
+        let mut boxed = transports.external_build().unwrap();
+        let outcome = run_external_boxed(
+            &mut store,
+            &task,
+            &dispatch,
+            "do the work",
+            "/workspace",
+            boxed.as_mut(),
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
+        // An empty factory is the production shape: typed refusal.
+        let mut empty = WorkerTransports::default();
+        assert!(matches!(
+            empty.native_build(),
+            Err(RunnerError::NoTransport)
+        ));
+        assert!(matches!(
+            empty.external_build(),
+            Err(RunnerError::NoTransport)
+        ));
     }
 
     #[test]
@@ -1136,6 +1309,49 @@ mod tests {
                 vec![codex_completed(status)],
                 Vec::new(),
             )
+        }
+
+        pub struct EchoFactory {
+            pub text: String,
+        }
+        impl super::NativeTransportFactory for EchoFactory {
+            fn build(
+                &mut self,
+            ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>
+            {
+                Ok(Box::new(EchoTransport {
+                    text: self.text.clone(),
+                }))
+            }
+        }
+
+        pub struct ScriptedFactory;
+        impl super::ExternalTransportFactory for ScriptedFactory {
+            fn build(
+                &mut self,
+            ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str>
+            {
+                Ok(Box::new(ScriptedCodex::new(
+                    vec![
+                        Ok(serde_json::json!({"userAgent": format!(
+                            "symbiote/{} (Linux)",
+                            symbiote_runtime_discovery::codex::CODEX_VERSION
+                        )})),
+                        Ok(serde_json::json!({"thread": {"id": "thr-fixture"}})),
+                        Ok(serde_json::json!({"turn": {"id": "turn-fixture"}})),
+                    ],
+                    vec![
+                        serde_json::json!({
+                            "method": "item/completed",
+                            "params": {"threadId": "thr-fixture", "turnId": "turn-fixture",
+                                "item": {"type": "agentMessage", "id": "i1",
+                                    "text": "implemented the change"}}
+                        }),
+                        codex_completed("completed"),
+                    ],
+                    Vec::new(),
+                )))
+            }
         }
 
         /// A native "provider" that reports a mid-turn cancellation.

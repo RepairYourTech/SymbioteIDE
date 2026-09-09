@@ -129,6 +129,34 @@ pub trait CodexTransport {
     ) -> Result<(), DriverError>;
 }
 
+/// Lets a Host hold `Box<dyn CodexTransport>` factories and pass
+/// `&mut dyn CodexTransport` into the driver.
+impl<T: CodexTransport + ?Sized> CodexTransport for &mut T {
+    fn call(
+        &mut self,
+        method: &str,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, DriverError> {
+        (**self).call(method, params)
+    }
+    fn notify(&mut self, method: &str, params: &serde_json::Value) -> Result<(), DriverError> {
+        (**self).notify(method, params)
+    }
+    fn recv_notification(&mut self) -> Result<Option<serde_json::Value>, DriverError> {
+        (**self).recv_notification()
+    }
+    fn recv_server_request(&mut self) -> Result<Option<ServerRequest>, DriverError> {
+        (**self).recv_server_request()
+    }
+    fn refuse_server_request(
+        &mut self,
+        request: &ServerRequest,
+        decision: ApprovalDecision,
+    ) -> Result<(), DriverError> {
+        (**self).refuse_server_request(request, decision)
+    }
+}
+
 /// How the driver disposed of one harness escalation request. Every refusal
 /// is recorded: the model text never gains permissions through the harness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -338,11 +366,11 @@ impl ExternalSession {
 
     /// Starts a harness thread bound to the task worktree and files the task
     /// prompt as the first turn: `begin_thread` + [`Self::turn`].
-    pub fn start_turn(
+    pub fn start_turn<T: CodexTransport + ?Sized>(
         &mut self,
         task_prompt: &str,
         worktree: &str,
-        transport: &mut impl CodexTransport,
+        transport: &mut T,
     ) -> Result<(), DriverError> {
         if self.completion_report.is_some() || self.stopped.is_some() {
             return Err(DriverError::AlreadyComplete);
@@ -370,10 +398,10 @@ impl ExternalSession {
     /// `TransportLost` stop and a diagnostic), because a retry would record
     /// a second Ready and make the journal unreplayable for the SDK's
     /// session tracker. Recovery is a fresh session with a fresh dispatch.
-    pub fn begin_thread(
+    pub fn begin_thread<T: CodexTransport + ?Sized>(
         &mut self,
         worktree_cwd: &str,
-        transport: &mut impl CodexTransport,
+        transport: &mut T,
     ) -> Result<(), DriverError> {
         if self.completion_report.is_some() || self.stopped.is_some() {
             return Err(DriverError::AlreadyComplete);
@@ -398,10 +426,10 @@ impl ExternalSession {
         Ok(())
     }
 
-    fn complete_handshake(
+    fn complete_handshake<T: CodexTransport + ?Sized>(
         &mut self,
         worktree_cwd: &str,
-        transport: &mut impl CodexTransport,
+        transport: &mut T,
     ) -> Result<(), DriverError> {
         // Handshake first: initialize → pinned version check → initialized.
         // The pin mirrors the #483 discovery probe exactly; a server that
@@ -447,10 +475,10 @@ impl ExternalSession {
     /// Files one turn and observes it to completion. All harness escalation
     /// requests surfaced while observing are refused; the dispatch's access
     /// snapshot is the only permission authority.
-    pub fn turn(
+    pub fn turn<T: CodexTransport + ?Sized>(
         &mut self,
         prompt: &str,
-        transport: &mut impl CodexTransport,
+        transport: &mut T,
     ) -> Result<(), DriverError> {
         if self.completion_report.is_some() || self.stopped.is_some() {
             return Err(DriverError::AlreadyComplete);
@@ -493,11 +521,11 @@ impl ExternalSession {
     /// every harness escalation request is refused and recorded. Once the
     /// terminal frame is seen, nothing further is absorbed: the stop is
     /// decided and later frames belong to no observed turn.
-    fn observe_turn(
+    fn observe_turn<T: CodexTransport + ?Sized>(
         &mut self,
         thread_id: &str,
         turn_id: &str,
-        transport: &mut impl CodexTransport,
+        transport: &mut T,
     ) -> Result<(), DriverError> {
         let mut stop: Option<StopKind> = None;
         let mut frames = 0usize;

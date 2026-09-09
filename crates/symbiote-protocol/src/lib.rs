@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 12,
+    minor: 13,
 };
 
 #[derive(
@@ -164,6 +164,10 @@ pub enum Operation {
         task_id: TaskId,
         host_id: HostId,
     },
+    RunStartedDispatch {
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+    },
     RequestTaskCompletion {
         task_id: TaskId,
         dispatch_id: DispatchId,
@@ -266,6 +270,7 @@ impl Operation {
             | Self::GetModelDescriptor { .. } => None,
             Self::PrepareDispatch { .. } | Self::GetDispatchPreparation { .. } => None,
             Self::StartPreparedTask { .. } => None,
+            Self::RunStartedDispatch { .. } => None,
             Self::RequestTaskCompletion { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
@@ -306,6 +311,7 @@ impl Operation {
                 | Self::ReplaceModelDescriptor { .. }
                 | Self::PrepareDispatch { .. }
                 | Self::StartPreparedTask { .. }
+                | Self::RunStartedDispatch { .. }
                 | Self::RegisterProject { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
@@ -543,6 +549,13 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // Local-owner authority only; the Host service separately
             // requires the requested host identity to be its own inventory
             // identity, so a client cannot start work on another Host.
+            principal.local_owner
+        }
+        Operation::RunStartedDispatch { .. } => {
+            // Activation is local-owner authority: the runner executes an
+            // already-started dispatch's loop. The dispatch binding is
+            // re-checked against journaled state, and with no transports
+            // configured the Host refuses rather than executing anything.
             principal.local_owner
         }
         Operation::RequestTaskCompletion { .. } => {
@@ -1225,6 +1238,24 @@ pub struct StartedDispatch {
     pub started_at: Timestamp,
 }
 
+/// The outcome of one wired worker run. Completion evidence is journaled by
+/// the store; this reports only what the caller can observe. A run whose
+/// loop halted without a finished turn is an `Err` response (the task stays
+/// Running; retry policy is the Host's), so `completed` is `true` in every
+/// reachable `Ok` — it is the journaled-evidence marker, never a verified
+/// completion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerRun {
+    pub task_id: TaskId,
+    pub dispatch_id: DispatchId,
+    /// The loop's runtime kind, echoed from the dispatch contract.
+    pub runtime: symbiote_domain::RuntimeKind,
+    /// Whether completion evidence was filed (task is now
+    /// CompletionRequested). Never implies verified completion.
+    pub completed: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExpiredLease {
@@ -1264,6 +1295,7 @@ pub enum ResponseBody {
     ModelDescriptor(Box<symbiote_runtime_sdk::provider::ModelDescriptor>),
     DispatchPreparation(Box<symbiote_domain::DispatchPreparation>),
     StartedDispatch(Box<StartedDispatch>),
+    WorkerRun(Box<WorkerRun>),
     Journal(JournalPage),
     Shutdown {},
 }

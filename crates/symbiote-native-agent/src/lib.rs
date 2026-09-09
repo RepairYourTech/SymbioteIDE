@@ -70,6 +70,18 @@ pub trait InferenceTransport {
     ) -> Result<ProviderResponse, ProviderError>;
 }
 
+/// Lets a Host hold `Box<dyn InferenceTransport>` factories and pass
+/// `&mut dyn InferenceTransport` into the generic loop.
+impl<T: InferenceTransport + ?Sized> InferenceTransport for &mut T {
+    fn request(
+        &mut self,
+        request: &ProviderRequest,
+        model: &ModelDescriptor,
+    ) -> Result<ProviderResponse, ProviderError> {
+        (**self).request(request, model)
+    }
+}
+
 /// Deterministic offline transport for tests: scripted responses consumed in
 /// order. Not a mock of verification — the loop's real logic runs against it.
 pub struct ScriptedTransport {
@@ -291,10 +303,10 @@ impl NativeSession {
     /// (bounded by the dispatch contract's context, not the model maximum),
     /// calls the transport, validates the envelope via the SDK's own
     /// `ProviderResponse::validate`, and records events.
-    pub fn run(
+    pub fn run<T: InferenceTransport + ?Sized>(
         &mut self,
         task_prompt: &str,
-        transport: &mut impl InferenceTransport,
+        transport: &mut T,
     ) -> Result<LoopRun, LoopError> {
         if self.completion_report.is_some() || self.halted.is_some() {
             return Err(LoopError::AlreadyComplete);
