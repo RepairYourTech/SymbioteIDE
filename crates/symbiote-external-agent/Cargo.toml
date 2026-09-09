@@ -7,6 +7,13 @@ publish = false
 [dependencies]
 symbiote-domain = { path = "../symbiote-domain" }
 symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
+symbiote-runtime-discovery = { path = "../symbiote-runtime-discovery" }
+symbiote-runtime-transport = { path = "../symbiote-runtime-transport" }
+symbiote-sandbox = { path = "../symbiote-sandbox" }
+symbiote-trust = { path = "../symbiote-trust" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[[example]]
+name = "codex_thread_smoke"
