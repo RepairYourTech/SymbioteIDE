@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 15,
+    minor: 16,
 };
 
 #[derive(
@@ -173,6 +173,12 @@ pub enum Operation {
         dispatch_id: DispatchId,
         report: String,
     },
+    RequestElevation {
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+        permission: Permission,
+        reason: String,
+    },
     GetDispatchPreparation {
         task_id: TaskId,
     },
@@ -285,7 +291,7 @@ impl Operation {
             Self::PrepareDispatch { .. } | Self::GetDispatchPreparation { .. } => None,
             Self::StartPreparedTask { .. } => None,
             Self::RunStartedDispatch { .. } => None,
-            Self::RequestTaskCompletion { .. } => None,
+            Self::RequestTaskCompletion { .. } | Self::RequestElevation { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -337,6 +343,7 @@ impl Operation {
                 | Self::RevokeResourceConsent { .. }
                 | Self::DecideElevation { .. }
                 | Self::RevokeElevation { .. }
+                | Self::RequestElevation { .. }
         )
     }
 }
@@ -449,6 +456,19 @@ impl Request {
                 snapshot.validate().map_err(|_| invalid())
             }
             Operation::DecideElevation { lease } => lease.validate().map_err(|_| invalid()),
+            Operation::RequestElevation { reason, .. } => {
+                // Same reason bound as a decided lease: nonempty, ≤1024,
+                // no control characters. The Host separately attributes the
+                // ask to a Running dispatch; filing it never licenses.
+                if reason.trim().is_empty()
+                    || reason.len() > 1024
+                    || reason.contains('\0')
+                    || reason.chars().any(char::is_control)
+                {
+                    return Err(invalid());
+                }
+                Ok(())
+            }
             Operation::ReadJournal { limit, .. } if *limit == 0 || *limit > MAX_PAGE_SIZE => {
                 Err(invalid())
             }
@@ -597,6 +617,13 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // submission is the current path; the Host enforces that the
             // actor maps to the dispatch's Worker identity and that this
             // NEVER advances the task beyond CompletionRequested.
+            principal.local_owner
+        }
+        Operation::RequestElevation { .. } => {
+            // A worker's elevation ask is evidence, never a grant. Local-owner
+            // proxy submission is the current path; the Host attributes the
+            // ask to a Running dispatch and journals it. Only decide_elevation
+            // can license anything.
             principal.local_owner
         }
         Operation::GetRoute { project_id, .. } => {
@@ -1072,6 +1099,9 @@ pub enum EventPayload {
         lease: Box<symbiote_domain::ElevationLease>,
         revoked_by: UserId,
     },
+    ElevationRequested {
+        ask: Box<symbiote_domain::ElevationRequest>,
+    },
     ProjectRegistered {
         project: Project,
         roots: Vec<Root>,
@@ -1111,6 +1141,7 @@ impl EventPayload {
             Self::ElevationDecided { lease } | Self::ElevationRevoked { lease, .. } => {
                 &lease.project_id
             }
+            Self::ElevationRequested { ask } => &ask.project_id,
             Self::ProjectRegistered { project, .. } => &project.id,
             Self::RootPlacementObserved { root, .. } => &root.project_id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
@@ -1180,6 +1211,9 @@ impl EventPayload {
                 lease.validate().is_ok()
                     && &lease.project_id == project_id
                     && lease.revoked_at.is_some()
+            }
+            Self::ElevationRequested { ask } => {
+                ask.validate().is_ok() && &ask.project_id == project_id
             }
             Self::ProjectRegistered {
                 project,

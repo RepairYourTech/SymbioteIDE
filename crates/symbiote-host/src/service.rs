@@ -861,6 +861,38 @@ fn execute(
         }
         Operation::Health {} => Ok(ResponseBody::Hello(negotiate(&[CURRENT_VERSION])?)),
         Operation::Shutdown {} => Ok(ResponseBody::Shutdown {}),
+        Operation::RequestElevation {
+            task_id,
+            dispatch_id,
+            permission,
+            reason,
+        } => {
+            // A worker's ask is evidence. The Host attributes it to a
+            // Running dispatch and journals it; it NEVER licenses. Only
+            // decide_elevation can grant a lease. The durable timestamp
+            // keeps retries byte-identical.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let at = match store
+                .elevation_request_timestamp(&request.command_id)
+                .map_err(storage_error)?
+            {
+                Some(at) => at,
+                None => now_timestamp()?,
+            };
+            let ask = symbiote_domain::ElevationRequest {
+                id: request.command_id.clone(),
+                project_id: task_record.project_id().clone(),
+                task_id: task_id.clone(),
+                dispatch_id: dispatch_id.clone(),
+                permission: permission.clone(),
+                reason: reason.clone(),
+                requested_at: at,
+            };
+            store
+                .request_elevation(request.command_id.clone(), ask)
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::DecideElevation { lease } => {
             // The deciding authority is the local owner; the store
             // verifies the lease's attribution (this dispatch, running),
@@ -1205,6 +1237,9 @@ fn execute(
                             }
                             symbiote_store::EventPayload::ElevationRevoked { lease, revoked_by } => {
                                 EventPayload::ElevationRevoked { lease, revoked_by }
+                            }
+                            symbiote_store::EventPayload::ElevationRequested { ask } => {
+                                EventPayload::ElevationRequested { ask }
                             }
                             symbiote_store::EventPayload::ProjectRegistered {
                                 project,

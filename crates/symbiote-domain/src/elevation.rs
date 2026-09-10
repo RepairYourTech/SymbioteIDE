@@ -98,6 +98,36 @@ impl ElevationLease {
     }
 }
 
+/// A worker's ask for one permission beyond its binding. Observation
+/// only: filing this never licenses anything. Only a later
+/// [`ElevationLease`] decided by the owner can.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ElevationRequest {
+    /// The requesting command's id: the ask's durable identity.
+    pub id: CommandId,
+    pub project_id: ProjectId,
+    pub task_id: TaskId,
+    pub dispatch_id: DispatchId,
+    pub permission: Permission,
+    /// Why the worker needs this. Never a secret or an unbounded path.
+    pub reason: String,
+    pub requested_at: Timestamp,
+}
+
+impl ElevationRequest {
+    pub fn validate(&self) -> Result<(), ElevationError> {
+        if self.reason.trim().is_empty()
+            || self.reason.len() > 1024
+            || self.reason.contains('\0')
+            || self.reason.chars().any(char::is_control)
+        {
+            return Err(ElevationError::InvalidLease);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +194,33 @@ mod tests {
         denying_window.expires_at = Timestamp(2_000);
         assert!(matches!(
             denying_window.validate(),
+            Err(ElevationError::InvalidLease)
+        ));
+    }
+
+    #[test]
+    fn an_elevation_request_is_evidence_and_has_no_license() {
+        let request = ElevationRequest {
+            id: CommandId::new("ask-1").unwrap(),
+            project_id: ProjectId::new("project").unwrap(),
+            task_id: TaskId::new("task").unwrap(),
+            dispatch_id: DispatchId::new("dispatch").unwrap(),
+            permission: Permission::UseCredential,
+            reason: "the run must read the operator's configured secret".into(),
+            requested_at: Timestamp(1_000),
+        };
+        assert!(request.validate().is_ok());
+        // There is no licenses() on a request: only a decided lease can.
+        let mut empty = request.clone();
+        empty.reason.clear();
+        assert!(matches!(
+            empty.validate(),
+            Err(ElevationError::InvalidLease)
+        ));
+        let mut control = request;
+        control.reason = "line\nbreak".into();
+        assert!(matches!(
+            control.validate(),
             Err(ElevationError::InvalidLease)
         ));
     }

@@ -27,7 +27,8 @@ halves the run must never conflate:
   access grants `Permission::UseCredential`, OR an explicit elevation
   lease (#269) that the owner decided for THIS dispatch and whose window
   is still open at the run's clock — the domain's typed authority that a
-  credential lease may issue at all. Attestation honesty: when the basis
+  credential lease may issue at all. A worker `request_elevation` is
+  journaled evidence of the ask and never satisfies this gate. Attestation honesty: when the basis
   is the binding grant, the dispatch compiler requires `Control::Credentials`
   host enforcement (the claim is in the contract); when the basis is an
   elevation, the contract carries no `Credentials` claim — the binding

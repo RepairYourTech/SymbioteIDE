@@ -13,6 +13,16 @@ pub(super) const MIGRATION_V11: &str = "CREATE TABLE elevations (
 ) STRICT;
 PRAGMA user_version = 11;";
 
+pub(super) const MIGRATION_V12: &str = "CREATE TABLE elevation_requests (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    dispatch_id TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    body TEXT NOT NULL CHECK(json_valid(body)),
+    UNIQUE(id, project_id)
+) STRICT;
+PRAGMA user_version = 12;";
+
 impl Store {
     /// Records the authority's decision: an approval that licenses the
     /// permission for exactly one dispatch until its window closes, or an
@@ -184,6 +194,77 @@ impl Store {
                 EventPayload::ElevationRevoked { lease, .. } => Ok(Some(
                     lease.revoked_at.ok_or(StoreError::IdempotencyConflict)?,
                 )),
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
+    /// Journals a worker's elevation ask. Observation only: this NEVER
+    /// inserts an elevations row and NEVER licenses a permission. Only
+    /// [`Self::decide_elevation`] can. Attribution is a Running dispatch.
+    pub fn request_elevation(
+        &mut self,
+        command_id: CommandId,
+        ask: ElevationRequest,
+    ) -> Result<Receipt> {
+        ask.validate().map_err(|_| StoreError::InvalidElevation)?;
+        if ask.id != command_id {
+            return Err(StoreError::InvalidElevation);
+        }
+        let payload = EventPayload::ElevationRequested {
+            ask: Box::new(ask.clone()),
+        };
+        let request = serde_json::to_string(&payload)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(receipt) = replay(&transaction, &command_id, &request)? {
+            return Ok(receipt);
+        }
+        let task = read_task(&transaction, &ask.task_id)?;
+        if task.project_id() != &ask.project_id {
+            return Err(StoreError::RelationshipMismatch);
+        }
+        let dispatch = task.current_dispatch().ok_or(StoreError::NotFound)?.clone();
+        if *task.state() != TaskState::Running || dispatch.id() != &ask.dispatch_id {
+            return Err(StoreError::RelationshipMismatch);
+        }
+        transaction.execute(
+            "INSERT INTO elevation_requests(id,project_id,dispatch_id,permission,body) VALUES (?1,?2,?3,?4,?5)",
+            params![
+                ask.id.as_str(),
+                ask.project_id.as_str(),
+                ask.dispatch_id.as_str(),
+                elevation_permission_name(&ask.permission),
+                serde_json::to_string(&ask)?
+            ],
+        )?;
+        let receipt = append(
+            &transaction,
+            &ask.project_id,
+            &command_id,
+            Revision(0),
+            &request,
+            &payload,
+        )?;
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
+    /// The request's durable timestamp, rebuilt for identical retries.
+    pub fn elevation_request_timestamp(&self, command_id: &CommandId) -> Result<Option<Timestamp>> {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [command_id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::ElevationRequested { ask } => Ok(Some(ask.requested_at)),
                 _ => Err(StoreError::IdempotencyConflict),
             },
         }
