@@ -56,10 +56,15 @@ pub enum DesktopError {
     Setup(String),
     /// The workflow step failed; the typed error is preserved.
     Workflow(WorkflowError),
-    /// The daemon exited before its socket was ready.
-    DaemonExited,
+    /// The daemon exited before its socket was ready; the child's exit
+    /// status is surfaced (exit code or signal) instead of discarded.
+    DaemonExited(String),
     /// The daemon's socket never became ready.
     DaemonUnready,
+    /// The persisted journal positions file exists but does not parse.
+    /// Surfaced — never silently ignored: silently resetting it would
+    /// discard the resume point the whole restart story depends on.
+    CorruptPositions(String),
 }
 
 impl std::fmt::Display for DesktopError {
@@ -69,8 +74,16 @@ impl std::fmt::Display for DesktopError {
             Self::NotARepository => write!(f, "repository is not a git work tree"),
             Self::Setup(message) => write!(f, "desktop setup failed: {message}"),
             Self::Workflow(error) => write!(f, "{error}"),
-            Self::DaemonExited => write!(f, "daemon exited before becoming ready"),
+            Self::DaemonExited(status) => {
+                write!(f, "daemon exited before becoming ready: {status}")
+            }
             Self::DaemonUnready => write!(f, "daemon socket never became ready"),
+            Self::CorruptPositions(error) => {
+                write!(
+                    f,
+                    "persisted journal positions are corrupt (delete or restore the file, never silently reset): {error}"
+                )
+            }
         }
     }
 }
@@ -159,8 +172,7 @@ impl DesktopController {
             {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = status;
-                return Err(DesktopError::DaemonExited);
+                return Err(DesktopError::DaemonExited(status.to_string()));
             }
             if Instant::now() > deadline {
                 let _ = child.kill();
@@ -184,7 +196,18 @@ impl DesktopController {
                 return Err(error.into());
             }
         };
-        let restored = self.read_positions_file();
+        // Restore the persisted journal positions. A corrupt file is an
+        // ERROR, never a silent reset — and every failure path here reaps
+        // the just-spawned daemon: the controller must not own a child it
+        // is not returning with.
+        let restored = match self.read_positions_file() {
+            Ok(restored) => restored,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         self.workflow = Some(match restored {
             Some(positions) => workflow.with_positions(positions),
             None => workflow,
@@ -285,9 +308,24 @@ impl DesktopController {
         self.state_dir.join("desktop-positions.json")
     }
 
-    fn read_positions_file(&self) -> Option<Vec<symbiote_client_sdk::JournalPosition>> {
-        let bytes = std::fs::read(self.positions_path()).ok()?;
-        serde_json::from_slice(&bytes).ok()
+    /// The persisted journal positions, if a file exists. A file that
+    /// exists but does not parse is an ERROR — silently treating it as
+    /// absent would reset the resume point the whole restart story
+    /// depends on.
+    fn read_positions_file(
+        &self,
+    ) -> Result<Option<Vec<symbiote_client_sdk::JournalPosition>>, DesktopError> {
+        let bytes = match std::fs::read(self.positions_path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(DesktopError::Setup(format!("positions read: {error}")));
+            }
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(positions) => Ok(Some(positions)),
+            Err(error) => Err(DesktopError::CorruptPositions(error.to_string())),
+        }
     }
 
     fn persist_positions(&mut self) -> Result<(), DesktopError> {

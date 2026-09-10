@@ -11,6 +11,19 @@ use std::{path::PathBuf, sync::Mutex};
 /// The managed controller. `None` until the operator begins a session.
 struct Session(Mutex<Option<DesktopController>>);
 
+/// Poison-proof session lock: a panicking command must not brick the
+/// whole session. Recovering the inner value after a poison is sound
+/// here — the guarded value is the controller itself, whose Drop still
+/// bounds the daemon and whose `begin_generation` is idempotent across
+/// whatever mid-operation state the unwinding command left. Every
+/// command takes the session through this helper.
+fn lock_session(session: &Session) -> std::sync::MutexGuard<'_, Option<DesktopController>> {
+    session
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Resolves the daemon binaries: `SYMBIOTE_BIN_DIR` when set (a bundled
 /// release or a test), otherwise the workspace target directory relative
 /// to this crate (development). Bundled sidecar packaging is future scope.
@@ -55,7 +68,7 @@ fn begin_session(
     controller
         .begin_generation()
         .map_err(|error| error.to_string())?;
-    *state.0.lock().expect("session lock") = Some(controller);
+    *lock_session(&state) = Some(controller);
     Ok("started".into())
 }
 
@@ -63,7 +76,7 @@ fn begin_session(
 /// describe the task, START the dispatch. Journaled — survives a crash.
 #[tauri::command]
 fn start_demo(state: tauri::State<Session>) -> Result<String, String> {
-    let mut guard = state.0.lock().expect("session lock");
+    let mut guard = lock_session(&state);
     let controller = guard.as_mut().ok_or("no session")?;
     controller.start_demo().map_err(|error| error.to_string())
 }
@@ -72,7 +85,7 @@ fn start_demo(state: tauri::State<Session>) -> Result<String, String> {
 /// journal cursor.
 #[tauri::command]
 fn read_journal(state: tauri::State<Session>) -> Result<u64, String> {
-    let mut guard = state.0.lock().expect("session lock");
+    let mut guard = lock_session(&state);
     let controller = guard.as_mut().ok_or("no session")?;
     controller.read_journal().map_err(|error| error.to_string())
 }
@@ -81,7 +94,7 @@ fn read_journal(state: tauri::State<Session>) -> Result<u64, String> {
 /// completion evidence and worktree diff.
 #[tauri::command]
 fn finish_demo(state: tauri::State<Session>, dispatch_id: String) -> Result<String, String> {
-    let mut guard = state.0.lock().expect("session lock");
+    let mut guard = lock_session(&state);
     let controller = guard.as_mut().ok_or("no session")?;
     let outcome = controller
         .finish_demo(&dispatch_id)
@@ -92,7 +105,7 @@ fn finish_demo(state: tauri::State<Session>, dispatch_id: String) -> Result<Stri
 /// The driver's journal cursor for the demo project.
 #[tauri::command]
 fn journal_position(state: tauri::State<Session>) -> u64 {
-    let guard = state.0.lock().expect("session lock");
+    let guard = lock_session(&state);
     guard.as_ref().map(|c| c.journal_position()).unwrap_or(0)
 }
 
@@ -100,7 +113,7 @@ fn journal_position(state: tauri::State<Session>) -> u64 {
 /// identical to what a crash would have preserved.
 #[tauri::command]
 fn stop_session(state: tauri::State<Session>) -> Result<String, String> {
-    let mut guard = state.0.lock().expect("session lock");
+    let mut guard = lock_session(&state);
     if let Some(mut controller) = guard.take() {
         controller.stop();
     }
