@@ -26,6 +26,14 @@ pub struct OperatorConfig {
     /// around it (provisioning, sandboxed tool execution, completion
     /// evidence) is real.
     pub native_fixture: Option<NativeFixture>,
+    /// The fixture harness conversation for external runs: the Codex
+    /// App-Server exchange is scripted (no binary, no model turn, no
+    /// spending) while everything the daemon does around it — runtime-kind
+    /// strictness, harness approval refusal, worktree provisioning,
+    /// completion evidence — is real. Clearly a fixture, symmetric with
+    /// `native_fixture`; a live Codex turn remains gated on explicit user
+    /// authorization for credentials and billing.
+    pub external_fixture: Option<ExternalFixture>,
     /// Credential registrations for the #217 broker. Values live in this
     /// operator-owned 0600 file only — never in the store or journal.
     /// Real secret material via keychain remains pending #217; these
@@ -47,6 +55,16 @@ pub struct NativeFixture {
     /// Optional turn-one tool proposal. The binding's required_tools must
     /// declare `shell` for it to execute.
     pub tool: Option<FixtureToolCall>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalFixture {
+    /// The scripted thread id the harness conversation runs in.
+    pub thread_id: String,
+    /// The agent message the scripted turn completes with (the run's
+    /// worker report).
+    pub agent_message: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
