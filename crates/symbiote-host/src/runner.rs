@@ -432,8 +432,37 @@ fn permission_name(permission: &Permission) -> &'static str {
     }
 }
 
+/// FNV-1a: stable across processes and Rust versions, unlike
+/// `DefaultHasher`, so a Host retry mints the same ask id after an
+/// upgrade and replays honestly instead of duplicating evidence.
+fn dispatch_id_digest(dispatch_id: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in dispatch_id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The ask id carries a bounded digest of the dispatch id — a DispatchId
+/// itself may run to 128 chars, which would overflow CommandId's own bound
+/// — plus the permission and clock in the clear.
+fn elevation_ask_command_id(
+    dispatch_id: &str,
+    permission: &Permission,
+    at: Timestamp,
+) -> Result<CommandId, RunnerError> {
+    CommandId::new(format!(
+        "worker-elevation-{:016x}-{}-{}",
+        dispatch_id_digest(dispatch_id),
+        permission_name(permission),
+        at.0
+    ))
+    .map_err(|error| RunnerError::Store(error.to_string()))
+}
+
 /// Files a worker elevation ask as journaled evidence. NEVER licenses:
-/// `active_elevation` still reads only decided leases. The command id is
+/// `active_elevation` still reads only decided leases. The id is
 /// dispatch+permission+clock so a Host retry of the same observed ask
 /// replays honestly.
 pub(crate) fn file_elevation_ask(
@@ -447,13 +476,7 @@ pub(crate) fn file_elevation_ask(
     let task = store
         .task(task_id)
         .map_err(|error| RunnerError::Store(error.to_string()))?;
-    let id = CommandId::new(format!(
-        "worker-elevation-{}-{}-{}",
-        dispatch.id().as_str(),
-        permission_name(&permission),
-        at.0
-    ))
-    .map_err(|error| RunnerError::Store(error.to_string()))?;
+    let id = elevation_ask_command_id(dispatch.id().as_str(), &permission, at)?;
     let ask = ElevationRequest {
         id: id.clone(),
         project_id: task.project_id().clone(),
@@ -769,9 +792,13 @@ pub fn run_external_boxed(
         .map_err(external_error)?;
     let turn_result = session.turn(task_prompt, transport).map_err(external_error);
     // File harness escalation asks even when the turn later fails: the
-    // driver already refused, and the journaled ask never licenses.
-    file_harness_elevation_asks(store, task_id, dispatch, session.refused_approvals(), at)?;
+    // driver already refused, and the journaled ask never licenses. The
+    // turn error outranks a filing failure so the operator sees why the
+    // run actually failed.
+    let refusals = session.refused_approvals();
+    let filing = file_harness_elevation_asks(store, task_id, dispatch, &refusals, at);
     turn_result?;
+    filing?;
     let stopped = session.run_summary().stopped;
     if stopped != Some(StopKind::Completed) {
         let name = match stopped {
@@ -1708,6 +1735,18 @@ mod tests {
             Err(RunnerError::CredentialRefused("revoked"))
         ));
         assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+    }
+
+    #[test]
+    fn elevation_ask_id_stays_within_the_command_id_bound() {
+        let dispatch_id = symbiote_domain::DispatchId::new("d".repeat(128)).unwrap();
+        let id = elevation_ask_command_id(
+            dispatch_id.as_str(),
+            &Permission::ExecuteProcess,
+            Timestamp(u64::MAX),
+        )
+        .unwrap();
+        assert!(id.as_str().len() <= 128);
     }
 
     #[test]

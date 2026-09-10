@@ -319,11 +319,11 @@ impl ExternalSession {
         self.harness_thread_id.as_deref()
     }
 
-    /// The harness escalations this turn refused. Observation only: the
-    /// Host may journal an elevation *ask* from these; the driver never
-    /// grants.
-    pub fn refused_approvals(&self) -> &[ApprovalRefusal] {
-        &self.refused
+    /// The harness escalations this turn refused, drained so a later turn
+    /// cannot re-file earlier turns' evidence. Observation only: the Host
+    /// may journal an elevation *ask* from these; the driver never grants.
+    pub fn refused_approvals(&mut self) -> Vec<ApprovalRefusal> {
+        std::mem::take(&mut self.refused)
     }
 
     pub fn run_summary(&self) -> ExternalRun {
