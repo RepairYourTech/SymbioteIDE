@@ -559,7 +559,7 @@ fn execute(
             // store read or git call.
             let reservation_base = workers.reservation_base().map_err(worker_error)?;
             let this_host = inventory.host_id().clone();
-            let _provisioned_stage = crate::runner::provision_worktree(
+            let provisioned = crate::runner::provision_worktree(
                 store,
                 task_id,
                 &this_host,
@@ -571,12 +571,38 @@ fn execute(
                 symbiote_domain::RuntimeKind::NativeSymbiote => {
                     let prompt = origin_prompt(store, task_id)?;
                     let mut transport = workers.native_build().map_err(worker_error)?;
+                    // Shell tool execution is the operator's composition:
+                    // with a configured executor factory, declared shell
+                    // tools run through the sandbox inside the provisioned
+                    // worktree under the operator's consent authority; with
+                    // none, declared tools stay propose-only (recorded,
+                    // never executed). The inputs come from the dispatch
+                    // contract and the provisioning outcome — never from
+                    // loop or model input.
+                    let inputs = crate::runner::ShellExecutorInputs {
+                        root_id: &provisioned.root_id,
+                        worktree: &provisioned.worktree,
+                        host: &this_host,
+                        project_id: task_record.project_id(),
+                        role_id: &current.contract().binding().role_id,
+                        profile_id: &current.contract().profile().id,
+                        access: &current.contract().binding().access,
+                    };
+                    let tool_execution = match workers.shell_build(inputs) {
+                        Ok(Some(executor)) => Some(crate::runner::ToolExecution {
+                            executor,
+                            worktree: provisioned.worktree.clone(),
+                        }),
+                        Ok(None) => None,
+                        Err(error) => return Err(worker_error(error)),
+                    };
                     let outcome = crate::runner::run_native_boxed(
                         store,
                         task_id,
                         current,
                         &prompt,
                         transport.as_mut(),
+                        tool_execution,
                         at,
                     )
                     .map_err(worker_error)?;
@@ -1177,6 +1203,9 @@ fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
         }
         crate::runner::RunnerError::TransportBuild(_) => {
             "worker transport factory refused to build".into()
+        }
+        crate::runner::RunnerError::ShellExecutorBuild(_) => {
+            "worker shell executor factory refused to build".into()
         }
         crate::runner::RunnerError::NoHostPath => "no repository placement for this host".into(),
         crate::runner::RunnerError::NoReservationBase => {

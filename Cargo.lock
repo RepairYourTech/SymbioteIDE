@@ -467,6 +467,8 @@ dependencies = [
  "symbiote-repo",
  "symbiote-runtime-discovery",
  "symbiote-runtime-sdk",
+ "symbiote-runtime-transport",
+ "symbiote-sandbox",
  "symbiote-store",
  "symbiote-trust",
  "symbiote-workforce",

@@ -54,15 +54,25 @@ the same composition the store's own preparation tests prove — with scripted
 native and external transports. Covered: both runtimes file evidence and the
 task reaches `CompletionRequested` (never `Completed`); foreign-runtime
 refusals leave the task `Running`; a failed loop files nothing; a task no
-longer `Running` is refused before any loop runs.
+longer `Running` is refused before any loop runs. Tool execution is wired
+end to end: a scripted transport proposing the declared `shell` tool runs
+through an attached executor (`run_native_boxed(..., Some(ToolExecution))`),
+the result enters the conversation, and completion still files; a consent
+refusal (`ToolExecError::Refused`) feeds back as ToolFailed and the turn
+still completes; a shell-executor factory that refuses to build is the
+typed `RunnerError::ShellExecutorBuild` before any loop runs.
 
 ## Honest non-claims
 
 The transports are deterministic fixtures; no live OpenAI Responses API
 call, no live Codex turn, no credential read, no spending. The live native
 transport and the live external turn each require explicit user
-authorization for credentials and billing. The runner is a library
-composition point; the daemon does not yet expose a worker-activation
-endpoint and nothing schedules runs automatically. Durable session
-resume/reconnect, tool execution, and multi-turn tool-result round trips
-remain pending (#465/#464 stay open).
+authorization for credentials and billing. The daemon wires the activation
+endpoint (`run_started_dispatch`): it provisions the worktree (#211), builds
+the transport from the operator's factory, and attaches the shell executor
+when one is configured. The REAL sandboxed shell tool path (bubblewrap +
+trusted launcher + exact-command consent) is proven at the executor layer in
+host-crate tests; the daemon-level path remains scripted because a live
+model turn is still gated on user authorization for credentials and billing.
+Nothing schedules runs automatically. Durable session resume/reconnect and
+multi-turn tool-result round trips remain pending (#465/#464 stay open).

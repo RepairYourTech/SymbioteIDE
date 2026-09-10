@@ -130,7 +130,18 @@ pub trait ShellToolExecutor {
 /// module's error identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolExecError {
+    /// The invocation could not be completed (transport/launch failure).
     Execution,
+    /// The operator's consent does not cover this exact command. Not a
+    /// transport failure: `execute_shell_tool` records it as a ToolFailed
+    /// event so the model learns the boundary and can adapt, and the run
+    /// continues — an operator refusal is feedback, not a crash.
+    Refused,
+    /// The command is outside the executable shape before any operator is
+    /// consulted (path rules, over-bound wrapped argv). Also recorded
+    /// feedback, with its own constant phrase — it must not claim an
+    /// operator refused, because none was asked.
+    InvalidCommand,
 }
 
 impl std::fmt::Display for ToolExecError {
@@ -142,6 +153,30 @@ impl std::error::Error for ToolExecError {}
 
 /// The total output recorded per executed tool.
 pub const MAX_TOOL_OUTPUT_BYTES: usize = 16_384;
+
+/// The stable refusal phrase for a tool the operator's consent does not
+/// cover. Deliberately constant: no command echo, no path, no task content.
+pub const REFUSAL_TEXT: &str = "shell tool refused: operator consent does not cover this command";
+
+/// The stable phrase for a command outside the executable shape — rejected
+/// at composition, before any operator authority was consulted.
+pub const INVALID_COMMAND_TEXT: &str = "shell tool rejected: command outside the executable shape";
+
+/// Builds the recorded Started+Failed event pair for a tool that did not
+/// run: the stable phrase is the only content, so the model learns the
+/// boundary without echoing the command or any task content.
+fn refused_events(call_id: &symbiote_domain::RequestId, phrase: &str) -> Vec<RuntimeEventKind> {
+    let call_id = call_id.clone();
+    vec![
+        RuntimeEventKind::ToolStarted {
+            tool_call_id: call_id.clone(),
+        },
+        RuntimeEventKind::ToolFailed {
+            tool_call_id: call_id,
+            error: EventText::new(phrase.to_owned()).expect("constant within the bound"),
+        },
+    ]
+}
 
 /// Truncates tool output to the event-text bound on a char boundary with a
 /// visible marker (the same discipline as the loop's other event text).
@@ -168,12 +203,26 @@ fn tool_output_event(bytes: &[u8]) -> EventText {
 /// with the exit code recorded (a tool that ran and failed is a fact, not
 /// a transport error).
 pub fn execute_shell_tool(
-    executor: &mut impl ShellToolExecutor,
+    executor: &mut dyn ShellToolExecutor,
     call_id: &symbiote_domain::RequestId,
     worktree: &std::path::Path,
     invocation: &ShellInvocation,
 ) -> Result<Vec<RuntimeEventKind>, ToolExecError> {
-    let (output_bytes, exit_code) = executor.run_shell(invocation, worktree)?;
+    let (output_bytes, exit_code) = match executor.run_shell(invocation, worktree) {
+        Ok(result) => result,
+        Err(ToolExecError::Refused) => {
+            // A consent refusal is recorded, not thrown: the tool did not
+            // run, the model is told why in a stable phrase (no task
+            // content, no command echo), and the run continues.
+            return Ok(refused_events(call_id, REFUSAL_TEXT));
+        }
+        Err(ToolExecError::InvalidCommand) => {
+            // Rejected at composition, before any operator was consulted —
+            // the phrase must not misattribute the refusal.
+            return Ok(refused_events(call_id, INVALID_COMMAND_TEXT));
+        }
+        Err(error) => return Err(error),
+    };
     let output = tool_output_event(&output_bytes);
     let mut events = vec![RuntimeEventKind::ToolStarted {
         tool_call_id: call_id.clone(),
@@ -393,5 +442,57 @@ mod tests {
             ),
             Err(ToolExecError::Execution)
         );
+    }
+
+    #[test]
+    fn consent_refusal_is_recorded_feedback_and_the_run_continues() {
+        // A refused tool is not a transport failure: ToolStarted +
+        // ToolFailed(constant) are recorded, the loop feeds the refusal to
+        // the model, and no error escapes.
+        let mut executor = ScriptedShell::new(vec![Err(ToolExecError::Refused)]);
+        let events = execute_shell_tool(
+            &mut executor,
+            &symbiote_domain::RequestId::new("call-5").unwrap(),
+            std::path::Path::new("/w"),
+            &invocation(),
+        )
+        .unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            RuntimeEventKind::ToolStarted { tool_call_id } if tool_call_id.as_str() == "call-5"
+        ));
+        match &events[1] {
+            RuntimeEventKind::ToolFailed {
+                tool_call_id,
+                error,
+            } => {
+                assert_eq!(tool_call_id.as_str(), "call-5");
+                assert_eq!(error.as_str(), REFUSAL_TEXT);
+            }
+            other => panic!("expected ToolFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn composition_rejection_is_recorded_without_claiming_operator_consent() {
+        // A shape rejection happens before any authority was consulted, so
+        // the recorded phrase is the composition identity, not the consent
+        // refusal phrase.
+        let mut executor = ScriptedShell::new(vec![Err(ToolExecError::InvalidCommand)]);
+        let events = execute_shell_tool(
+            &mut executor,
+            &symbiote_domain::RequestId::new("call-6").unwrap(),
+            std::path::Path::new("/w"),
+            &invocation(),
+        )
+        .unwrap();
+        match &events[1] {
+            RuntimeEventKind::ToolFailed { error, .. } => {
+                assert_eq!(error.as_str(), INVALID_COMMAND_TEXT);
+                assert_ne!(error.as_str(), REFUSAL_TEXT);
+            }
+            other => panic!("expected ToolFailed, got {other:?}"),
+        }
     }
 }

@@ -16,6 +16,8 @@ symbiote-repo = { path = "../symbiote-repo" }
 symbiote-worktrees = { path = "../symbiote-worktrees" }
 symbiote-trust = { path = "../symbiote-trust" }
 symbiote-external-agent = { path = "../symbiote-external-agent" }
+symbiote-sandbox = { path = "../symbiote-sandbox" }
+symbiote-runtime-transport = { path = "../symbiote-runtime-transport" }
 symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
 symbiote-runtime-discovery = { path = "../symbiote-runtime-discovery" }
 schemars.workspace = true

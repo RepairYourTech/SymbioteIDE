@@ -211,7 +211,7 @@ pub struct NativeSession {
     tool_result_bytes: usize,
     contract_context: ContextPolicy,
     tools: Vec<String>,
-    tool_executor: Option<&'static mut dyn tools::ShellToolExecutor>,
+    tool_executor: Option<Box<dyn tools::ShellToolExecutor>>,
     worktree: Option<std::path::PathBuf>,
     model: ModelDescriptor,
     messages: Vec<InputMessage>,
@@ -282,7 +282,7 @@ impl NativeSession {
     /// stay propose-only.
     pub fn with_tool_execution(
         mut self,
-        executor: &'static mut dyn tools::ShellToolExecutor,
+        executor: Box<dyn tools::ShellToolExecutor>,
         worktree: std::path::PathBuf,
     ) -> Self {
         self.tool_executor = Some(executor);
@@ -443,11 +443,19 @@ impl NativeSession {
                     arguments: truncate_event_text(&call.arguments.to_string()),
                 })?;
                 // Host-gated tool execution: a proposal the dispatch
-                // contract declared AND the Host has an executor for runs
-                // through the sandbox and its result enters the
-                // conversation; a declared tool with no executor stays
-                // propose-only (recorded, never silently dropped).
+                // contract declared AND whose class the Host has a safe
+                // execution path for runs through the sandbox; a declared
+                // tool of an unrecognized class stays propose-only (the
+                // contract declared it, so refusing would be a contract
+                // violation), and a declared shell tool with no executor
+                // attached stays propose-only too. Both are recorded, never
+                // silently dropped.
                 if let Some(executor) = self.tool_executor.as_mut() {
+                    if tools::classify(&call.name).is_none() {
+                        // No safe execution path for this class: propose-
+                        // only. The proposal is already recorded above.
+                        continue;
+                    }
                     let invocation = match tools::parse_shell_arguments(&call.arguments) {
                         Ok(invocation) => invocation,
                         Err(error) => {
@@ -462,7 +470,7 @@ impl NativeSession {
                     };
                     let worktree = self.worktree.clone().ok_or(LoopError::UnknownTool)?;
                     let events = match tools::execute_shell_tool(
-                        executor,
+                        &mut **executor,
                         &call.call_id,
                         &worktree,
                         &invocation,
@@ -945,6 +953,97 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_non_shell_tool_stays_propose_only_even_with_an_executor() {
+        // Regression (PR #507 review P1): the executor composition must not
+        // drag a declared non-shell tool through the shell argument parser.
+        // `edit_file` is declared by the fixture contract; with an executor
+        // attached the old path parsed its arguments, failed with
+        // InvalidProgram, and halted the run with EnvelopeMismatch. The
+        // classify gate keeps it propose-only: recorded, never executed,
+        // the run continues to a clean stop.
+        let task = task();
+        let dispatch = dispatch(&task);
+        let session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        struct TwoTurn {
+            first: bool,
+        }
+        impl InferenceTransport for TwoTurn {
+            fn request(
+                &mut self,
+                request: &ProviderRequest,
+                _model: &ModelDescriptor,
+            ) -> Result<ProviderResponse, ProviderError> {
+                if self.first {
+                    self.first = false;
+                    Ok(ProviderResponse {
+                        schema_version: request.schema_version,
+                        request_id: request.request_id.clone(),
+                        provider_id: request.provider_id.clone(),
+                        model_id: request.model_id.clone(),
+                        text: "Considering the edit".into(),
+                        tool_calls: vec![ProviderToolCall {
+                            call_id: RequestId::new("call-edit").unwrap(),
+                            name: "edit_file".into(),
+                            arguments: serde_json::json!({"path": "src/main.rs"}),
+                        }],
+                        finish_reason: FinishReason::ToolCalls,
+                        usage: TokenUsage::Known {
+                            input_tokens: 10,
+                            output_tokens: 10,
+                            cached_input_tokens: None,
+                            reasoning_tokens: None,
+                        },
+                    })
+                } else {
+                    // No shell-tool result may exist for edit_file, and the
+                    // conversation carries no shell-result message.
+                    assert!(
+                        !request.messages.iter().any(|m| m.content.iter().any(
+                            |p| matches!(p, InputPart::Text { text } if text.contains("tool result:"))
+                        )),
+                        "a non-shell proposal must not gain a tool result"
+                    );
+                    Ok(stop_response(request, "Done"))
+                }
+            }
+        }
+        struct FixedExecutor;
+        impl tools::ShellToolExecutor for FixedExecutor {
+            fn run_shell(
+                &mut self,
+                _invocation: &tools::ShellInvocation,
+                _worktree: &std::path::Path,
+            ) -> Result<(Vec<u8>, Option<i32>), tools::ToolExecError> {
+                panic!("a non-shell tool must never reach the executor")
+            }
+        }
+        let worktree =
+            std::env::temp_dir().join(format!("symbiote-nonshell-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&worktree);
+        let mut session = session.with_tool_execution(Box::new(FixedExecutor), worktree.clone());
+        let _ = std::fs::remove_dir_all(&worktree);
+        let run = session
+            .run("Edit the file", &mut TwoTurn { first: true })
+            .unwrap();
+        assert_eq!(run.turns, 2);
+        let kinds: Vec<_> = session.events().iter().map(|e| e.payload()).collect();
+        assert!(kinds.iter().any(|k| matches!(
+            k,
+            RuntimeEventKind::ToolProposed { name, .. } if name.as_str() == "edit_file"
+        )));
+        assert!(
+            !kinds
+                .iter()
+                .any(|k| matches!(k, RuntimeEventKind::ToolStarted { .. })),
+            "a non-shell proposal must never start"
+        );
+        assert!(matches!(
+            kinds.last().unwrap(),
+            RuntimeEventKind::Exit { code: Some(0) }
+        ));
+    }
+
+    #[test]
     fn shell_tools_execute_through_the_injected_executor() {
         // Turn 1 proposes a shell tool; the session has tool execution
         // enabled with a scripted executor. The tool runs, its lifecycle is
@@ -1014,8 +1113,7 @@ mod tests {
                 Ok((b"test result: ok".to_vec(), Some(0)))
             }
         }
-        let executor: &'static mut dyn tools::ShellToolExecutor =
-            Box::leak(Box::new(FixedExecutor));
+        let executor: Box<dyn tools::ShellToolExecutor> = Box::new(FixedExecutor);
         let worktree =
             std::env::temp_dir().join(format!("symbiote-shelltest-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&worktree);
