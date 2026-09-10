@@ -380,6 +380,7 @@ fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
             binding: &binding.binding,
             profile: &binding.primary.profile,
             host: &host,
+            minimum_enforcement: &std::collections::BTreeMap::new(),
             now: Timestamp(35),
         },
     )
@@ -494,5 +495,106 @@ fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
                 | Err(StoreError::Domain(DomainError::IllegalTransition))
         ),
         "second start must be refused, got {second:?}"
+    );
+}
+
+#[test]
+fn start_recompiles_the_durable_binding_and_refuses_when_policy_floor_exceeds_host_claims() {
+    let mut store = Store::memory().unwrap();
+    let (project_id, task) = full_fixture(&mut store, "floor");
+    // Record the task's route so the preparation's routing step resolves.
+    let task_role = store.task(&task).unwrap().role_id().clone();
+    let request = symbiote_workforce::RouteRequest {
+        project_id: project_id.clone(),
+        work_id: WorkId::Objective(id!(ObjectiveId, "project-prep-floor")),
+        requested: Some(task_role.clone()),
+        domains: BTreeSet::new(),
+    };
+    let team = store.get_team(&project_id).unwrap();
+    let decision = symbiote_workforce::resolve_route(&team, &request).unwrap();
+    store
+        .record_route(
+            id!(CommandId, "route-floor"),
+            decision,
+            id!(UserId, "owner"),
+            Timestamp(20),
+        )
+        .unwrap();
+    // The fixture's binding floors Filesystem at HostEnforced and the host
+    // claims exactly that: prepare and the compiled contract agree.
+    let (_, preparation) = store
+        .prepare_dispatch(
+            id!(CommandId, "prepare-floor"),
+            task.clone(),
+            id!(UserId, "owner"),
+            Timestamp(30),
+        )
+        .unwrap();
+    assert_eq!(preparation.outcome, PreparationOutcome::Ready);
+    // Between prepare and start, the binding's enforcement policy is
+    // raised to demand NATIVE filesystem enforcement. Re-staffing and
+    // mid-policy change never inherit the previous authorization: start
+    // recompiles from the durable binding and must refuse.
+    let mut raised = store
+        .get_binding(&project_id, &id!(BindingId, "binding-floor"))
+        .unwrap();
+    assert_eq!(raised.binding.revision, Revision(0));
+    raised.policies.minimum_enforcement.insert(
+        symbiote_domain::Control::Filesystem,
+        symbiote_domain::EnforcementStrength::Native,
+    );
+    raised.binding.revision = Revision(1);
+    store
+        .replace_binding(
+            id!(CommandId, "binding-floor-raise"),
+            Some(Revision(0)),
+            raised,
+            id!(UserId, "owner"),
+            Timestamp(32),
+        )
+        .unwrap();
+    // The host claims HostEnforced for the required controls — exactly the
+    // strength the raise now refuses to accept.
+    let host = Host {
+        id: id!(HostId, "host-floor"),
+        revision: Revision(0),
+        device: id!(DeviceId, "device-floor"),
+        fabric: None,
+        supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+        controls: [
+            symbiote_domain::Control::Filesystem,
+            symbiote_domain::Control::Cancellation,
+            symbiote_domain::Control::CompletionAuthority,
+            symbiote_domain::Control::Process,
+        ]
+        .into_iter()
+        .map(|c| {
+            (
+                c,
+                symbiote_domain::EnforcementClaim {
+                    strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                    evidence: id!(EvidenceId, "proof"),
+                    verified_at: Timestamp(1),
+                    expires_at: Timestamp(1_000_000),
+                },
+            )
+        })
+        .collect(),
+    };
+    let refused = store.start_prepared_task(
+        id!(CommandId, "start-floor"),
+        task,
+        id!(DispatchId, "dispatch-floor"),
+        id!(RuntimeContractId, "contract-floor"),
+        &host,
+        id!(UserId, "owner"),
+        Timestamp(35),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(StoreError::Domain(DomainError::UnsupportedControl))
+        ),
+        "start must refuse under an unmeetable enforcement floor, got {refused:?}"
     );
 }

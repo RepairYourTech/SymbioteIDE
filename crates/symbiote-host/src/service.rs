@@ -591,8 +591,7 @@ fn execute(
                     let profile_refs = [credential.clone()];
                     let use_credential_granted = current
                         .contract()
-                        .binding()
-                        .access
+                        .effective_access()
                         .grants
                         .contains(&symbiote_domain::Permission::UseCredential);
                     let lease = workers
@@ -622,7 +621,7 @@ fn execute(
                         project_id: task_record.project_id(),
                         role_id: &current.contract().binding().role_id,
                         profile_id: &current.contract().profile().id,
-                        access: &current.contract().binding().access,
+                        access: current.contract().effective_access(),
                         user_id: principal.user_id(),
                     };
                     let tool_execution = match workers.shell_build(inputs) {
@@ -1260,7 +1259,7 @@ fn resolve_run_context(
         project_id: &project_id,
         origin_work: &origin_work,
         context: contract.binding().context.clone(),
-        access: contract.binding().access.clone(),
+        access: contract.effective_access().clone(),
     };
     let source = crate::context_resolution::StoreContextSource { store };
     symbiote_context::resolve_context(&source, inputs).map_err(context_error)

@@ -789,6 +789,7 @@ mod tests {
                 binding: &binding,
                 profile: &profile,
                 host: &host,
+                minimum_enforcement: &std::collections::BTreeMap::new(),
                 now: Timestamp(10),
             },
         )

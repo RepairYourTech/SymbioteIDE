@@ -257,6 +257,7 @@ fn dispatch(runtime: RuntimeKind) -> Dispatch {
             binding: &binding,
             profile: &profile,
             host: &host,
+            minimum_enforcement: &BTreeMap::new(),
             now: Timestamp(2),
         },
     )
