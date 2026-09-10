@@ -162,17 +162,24 @@ impl DesktopController {
         let socket = self.state_dir.join("host.sock");
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            if socket.exists() {
-                if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-                    break;
+            if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+                break;
+            }
+            // Every observation of the child reaps it before returning:
+            // no early return between spawn and ownership transfer can
+            // leave a daemon behind.
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(DesktopError::DaemonExited(status.to_string()));
                 }
-            } else if let Some(status) = child
-                .try_wait()
-                .map_err(|error| DesktopError::Setup(format!("daemon status: {error}")))?
-            {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(DesktopError::DaemonExited(status.to_string()));
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(DesktopError::Setup(format!("daemon status: {error}")));
+                }
             }
             if Instant::now() > deadline {
                 let _ = child.kill();

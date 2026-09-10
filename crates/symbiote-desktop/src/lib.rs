@@ -15,8 +15,9 @@ struct Session(Mutex<Option<DesktopController>>);
 /// whole session. Recovering the inner value after a poison is sound
 /// here — the guarded value is the controller itself, whose Drop still
 /// bounds the daemon and whose `begin_generation` is idempotent across
-/// whatever mid-operation state the unwinding command left. Every
-/// command takes the session through this helper.
+/// the mid-operation states this crate's commands can leave (it cannot
+/// detect an externally dead daemon; that refusal is pre-existing and
+/// unchanged). Every command takes the session through this helper.
 fn lock_session(session: &Session) -> std::sync::MutexGuard<'_, Option<DesktopController>> {
     session
         .0
