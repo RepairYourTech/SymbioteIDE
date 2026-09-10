@@ -74,6 +74,12 @@ impl DemoWorkflow {
         self.driver.journal_position(project)
     }
 
+    /// The positions to persist across a desktop restart; restore with
+    /// [`Self::with_positions`].
+    pub fn positions(&self) -> Vec<symbiote_client_sdk::JournalPosition> {
+        self.driver.positions()
+    }
+
     fn register_operation() -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(include_str!(
             "../../../fixtures/project-team/register.json"
@@ -116,7 +122,7 @@ impl DemoWorkflow {
         // by the Host right after registration.
         let mut git = symbiote_repo::SystemGit::new();
         let head = symbiote_repo::observe_head(&mut git, &self.repository)
-            .map_err(|_| WorkflowError::Socket)?;
+            .map_err(|_| WorkflowError::LocalObservation)?;
         let base = head.commit.clone();
         let target = "b".repeat(40);
         let host_id = self.host_pulse()?;
@@ -187,15 +193,15 @@ impl DemoWorkflow {
         let stream_id = symbiote_domain::ChangeStreamId::new(STREAM).expect("fixture stream");
         let root_id = symbiote_domain::RootId::new(ROOT).expect("fixture root");
         let digest = symbiote_trust::Fingerprint::of(stream_id.as_str().as_bytes());
-        let seed =
-            symbiote_worktrees::policy_seed(digest.as_str()).map_err(|_| WorkflowError::Socket)?;
+        let seed = symbiote_worktrees::policy_seed(digest.as_str())
+            .map_err(|_| WorkflowError::LocalObservation)?;
         let derived = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
             project_id: &project,
             root_id: &root_id,
             stream_id: &stream_id,
             seed,
         })
-        .map_err(|_| WorkflowError::Socket)?;
+        .map_err(|_| WorkflowError::LocalObservation)?;
         self.call(
             "wf-task",
             serde_json::json!({"kind":"create_task","task":{"id":TASK,"project_id":PROJECT,

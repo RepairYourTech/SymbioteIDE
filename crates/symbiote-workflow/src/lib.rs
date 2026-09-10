@@ -40,6 +40,10 @@ pub enum WorkflowError {
     UnexpectedBody,
     /// Local filesystem/socket framing failure before anything was sent.
     Socket,
+    /// A local observation failed (git read, worktree derivation, status):
+    /// nothing touched the wire, and the failure is on this machine, not
+    /// the daemon's.
+    LocalObservation,
 }
 
 impl From<ClientError> for WorkflowError {
@@ -91,6 +95,12 @@ impl Driver {
         project: &symbiote_domain::ProjectId,
     ) -> symbiote_protocol::JournalCursor {
         self.session.journal_position(project)
+    }
+
+    /// The positions to persist across a driver restart; restore with
+    /// [`Driver::with_positions`].
+    pub fn positions(&self) -> Vec<symbiote_client_sdk::JournalPosition> {
+        self.session.positions().to_vec()
     }
 
     /// Sends one operation; a transport failure is recovered by replaying
@@ -163,19 +173,19 @@ pub fn observe_worktree_evidence(
     stream_id: &symbiote_domain::ChangeStreamId,
 ) -> Result<WorktreeEvidence, WorkflowError> {
     let digest = symbiote_trust::Fingerprint::of(stream_id.as_str().as_bytes());
-    let seed =
-        symbiote_worktrees::policy_seed(digest.as_str()).map_err(|_| WorkflowError::Socket)?;
+    let seed = symbiote_worktrees::policy_seed(digest.as_str())
+        .map_err(|_| WorkflowError::LocalObservation)?;
     let derived = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
         project_id,
         root_id,
         stream_id,
         seed,
     })
-    .map_err(|_| WorkflowError::Socket)?;
+    .map_err(|_| WorkflowError::LocalObservation)?;
     let worktree = derived.worktree_path(reservation_base);
     let mut git = symbiote_repo::SystemGit::new();
-    let status =
-        symbiote_repo::observe_status(&mut git, &worktree).map_err(|_| WorkflowError::Socket)?;
+    let status = symbiote_repo::observe_status(&mut git, &worktree)
+        .map_err(|_| WorkflowError::LocalObservation)?;
     Ok(WorktreeEvidence {
         worktree,
         uncommitted: status.uncommitted,

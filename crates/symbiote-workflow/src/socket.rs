@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use symbiote_protocol::MAX_RESPONSE_BYTES;
 
 pub const SOCKET_NAME: &str = "host.sock";
-const FRAME_LIMIT: usize = 64 * 1024;
 const DEADLINE: Duration = Duration::from_secs(30);
 
 fn invalid(message: &'static str) -> std::io::Error {
@@ -59,10 +58,15 @@ fn io_timeout(message: &'static str) -> std::io::Error {
 /// One bounded exchange: connect, authenticate, write the single JSON
 /// frame, read the bounded response. `Err` = transport failure (the
 /// command's disposition is unknown; the SDK's recover replays it).
+///
+/// Precondition: `request` is already bounded by `MAX_REQUEST_BYTES` and
+/// contains no newline — the SDK's `build_request` guarantees both. There
+/// is deliberately no local re-validation: the daemon's transport frame
+/// reader is the enforcement point, and an invalid or oversized frame is
+/// answered with a TYPED refusal (known disposition) rather than a
+/// locally-invented unknown disposition that would trigger pointless
+/// recover retries.
 pub fn exchange(directory: &Path, request: &[u8]) -> std::io::Result<Vec<u8>> {
-    if request.len() > FRAME_LIMIT || request.contains(&b'\n') {
-        return Err(invalid("request must be a single bounded JSON frame"));
-    }
     let mut stream = UnixStream::connect(directory.join(SOCKET_NAME))?;
     authenticate(&stream)?;
     stream.write_all(request)?;
