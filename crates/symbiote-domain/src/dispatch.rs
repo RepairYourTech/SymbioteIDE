@@ -137,6 +137,22 @@ impl WorkforceRuntimeContract {
                 return Err(DomainError::UnsupportedControl);
             }
         }
+        // The narrowed scope is a validated invariant, not a convention: a
+        // reconstructed contract (journal replay) must carry an
+        // effective_access that is exactly this Task's Root under the
+        // binding's own authorization — never broader, never another root.
+        if let Some(effective) = &self.effective_access {
+            let narrowed =
+                std::iter::once(self.root_id.clone()).collect::<std::collections::BTreeSet<_>>();
+            if effective.project_id != self.binding.access.project_id
+                || effective.policy_revision != self.binding.access.policy_revision
+                || effective.grants != self.binding.access.grants
+                || !self.binding.access.roots.is_superset(&narrowed)
+                || effective.roots != narrowed
+            {
+                return Err(DomainError::LineageMismatch);
+            }
+        }
         Ok(())
     }
 }
@@ -318,8 +334,11 @@ impl Dispatch {
 }
 
 /// The strength ordering from the runtime SDK's minimum-enforcement check,
-/// mirrored against enforcement CLAIMS at assignment time: Native and
-/// HostEnforced are enforcing; observed/emulated never satisfy a minimum.
+/// mirrored arm-for-arm against enforcement CLAIMS at assignment time.
+/// ExternallyObserved and Emulated are incomparable in the SDK, so the
+/// mirror keeps them distinct; at assignment the earlier gate already
+/// rejects any claim weaker than HostEnforced, so for reachable claims the
+/// distinguishing arms agree.
 fn strength_meets(minimum: &EnforcementStrength, claim: &EnforcementStrength) -> bool {
     match minimum {
         EnforcementStrength::Native => claim == &EnforcementStrength::Native,
@@ -327,11 +346,16 @@ fn strength_meets(minimum: &EnforcementStrength, claim: &EnforcementStrength) ->
             claim,
             EnforcementStrength::Native | EnforcementStrength::HostEnforced
         ),
-        EnforcementStrength::ExternallyObserved | EnforcementStrength::Emulated => matches!(
+        EnforcementStrength::ExternallyObserved => matches!(
             claim,
             EnforcementStrength::Native
                 | EnforcementStrength::HostEnforced
                 | EnforcementStrength::ExternallyObserved
+        ),
+        EnforcementStrength::Emulated => matches!(
+            claim,
+            EnforcementStrength::Native
+                | EnforcementStrength::HostEnforced
                 | EnforcementStrength::Emulated
         ),
         EnforcementStrength::Unsupported => false,

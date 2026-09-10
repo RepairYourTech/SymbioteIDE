@@ -591,8 +591,7 @@ fn execute(
                     let profile_refs = [credential.clone()];
                     let use_credential_granted = current
                         .contract()
-                        .binding()
-                        .access
+                        .effective_access()
                         .grants
                         .contains(&symbiote_domain::Permission::UseCredential);
                     let lease = workers
