@@ -47,6 +47,42 @@ pub struct WorkerOutcome {
     pub completion_filed: bool,
 }
 
+/// The sandbox shell executor plus the worktree it runs in, attached to one
+/// native run. The executor is operator composition: it consults the
+/// operator's consent authority per invocation (`crate::shell_executor`) and
+/// launches inside the reserved worktree. `None` leaves declared tools
+/// propose-only — recorded, never executed.
+pub struct ToolExecution {
+    pub executor: Box<dyn symbiote_native_agent::tools::ShellToolExecutor>,
+    pub worktree: std::path::PathBuf,
+}
+
+/// The trusted per-run inputs a shell executor factory receives, derived from
+/// the dispatch contract and the provisioned worktree — never from loop or
+/// model input.
+pub struct ShellExecutorInputs<'a> {
+    pub root_id: &'a symbiote_domain::RootId,
+    pub worktree: &'a std::path::Path,
+    pub host: &'a symbiote_domain::HostId,
+    pub project_id: &'a symbiote_domain::ProjectId,
+    pub role_id: &'a symbiote_domain::RoleId,
+    pub profile_id: &'a symbiote_domain::RuntimeProfileId,
+    /// The dispatch binding's access snapshot — the current policy the
+    /// sandbox checks the consent's recorded access against.
+    pub access: &'a symbiote_domain::AccessSnapshot,
+}
+
+/// Builds one shell executor per native run. Production installs the
+/// sandboxed launch composition with the operator's consent authority; tests
+/// install scripted executors — a model cannot cause a side effect in a test
+/// through any other path.
+pub trait ShellExecutorFactory {
+    fn build(
+        &mut self,
+        inputs: ShellExecutorInputs<'_>,
+    ) -> Result<Box<dyn symbiote_native_agent::tools::ShellToolExecutor>, &'static str>;
+}
+
 /// The Host's configured worker transports. The daemon holds one instance;
 /// the production constructor is empty — live native and external transports
 /// require the sandboxed launch path plus explicit user authorization for
@@ -56,6 +92,9 @@ pub struct WorkerOutcome {
 pub struct WorkerTransports {
     native: Option<Box<dyn NativeTransportFactory>>,
     external: Option<Box<dyn ExternalTransportFactory>>,
+    /// The operator's sandbox shell-executor composition. Absent means
+    /// declared shell tools stay propose-only on native runs.
+    shell: Option<Box<dyn ShellExecutorFactory>>,
     /// The Host's reserved-location base directory for derived worktrees
     /// (the premise symbiote-worktrees verifies). Empty means worktree
     /// provisioning has no configured base and refuses.
@@ -80,12 +119,21 @@ impl WorkerTransports {
         self
     }
 
+    pub fn with_shell_executor(mut self, factory: Box<dyn ShellExecutorFactory>) -> Self {
+        self.shell = Some(factory);
+        self
+    }
+
     pub fn native_configured(&self) -> bool {
         self.native.is_some()
     }
 
     pub fn external_configured(&self) -> bool {
         self.external.is_some()
+    }
+
+    pub fn shell_configured(&self) -> bool {
+        self.shell.is_some()
     }
 
     /// Configures the derived-worktree base directory. Provisioning is
@@ -125,6 +173,22 @@ impl WorkerTransports {
                 .build()
                 .map_err(crate::runner::RunnerError::TransportBuild),
             None => Err(crate::runner::RunnerError::NoTransport),
+        }
+    }
+
+    /// Builds the shell executor for one native run. Unconfigured is not an
+    /// error — it is the propose-only composition — while a configured
+    /// factory's refusal is a typed build failure.
+    pub fn shell_build(
+        &mut self,
+        inputs: ShellExecutorInputs<'_>,
+    ) -> Result<Option<Box<dyn symbiote_native_agent::tools::ShellToolExecutor>>, RunnerError> {
+        match self.shell.as_mut() {
+            Some(factory) => factory
+                .build(inputs)
+                .map(Some)
+                .map_err(RunnerError::ShellExecutorBuild),
+            None => Ok(None),
         }
     }
 }
@@ -180,6 +244,9 @@ pub enum RunnerError {
     InvalidSeed,
     /// A provisioning-time store read or integrity check failed.
     ProvisioningStore(String),
+    /// The configured shell executor factory refused to build. Nothing ran
+    /// and nothing was filed.
+    ShellExecutorBuild(&'static str),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -262,6 +329,9 @@ fn file_completion(
 /// dispatch's evidence trail). The branch is the stream's derived branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorktreeProvisioned {
+    /// The stream's Root identity — the consent descriptors for shell tool
+    /// execution carry it, never a caller-derived value.
+    pub root_id: symbiote_domain::RootId,
     pub worktree: std::path::PathBuf,
     pub branch: String,
     pub observed_head: String,
@@ -309,6 +379,7 @@ pub fn provision_worktree(
     };
     let provisioned = symbiote_repo::provision::provision(git, inputs).map_err(provision_error)?;
     Ok(WorktreeProvisioned {
+        root_id: stream.root_id().clone(),
         worktree: provisioned.worktree,
         branch: provisioned.branch,
         observed_head: provisioned.head.commit,
@@ -372,16 +443,19 @@ pub fn run_native(
     transport: &mut impl symbiote_native_agent::InferenceTransport,
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
-    run_native_boxed(store, task_id, dispatch, task_prompt, transport, at)
+    run_native_boxed(store, task_id, dispatch, task_prompt, transport, None, at)
 }
 
 /// Object-safe entry for the service: same checks, dyn-dispatched transport.
+/// `tool_execution` attaches the operator's sandbox shell executor to the
+/// reserved worktree; `None` leaves declared shell tools propose-only.
 pub fn run_native_boxed(
     store: &mut Store,
     task_id: &TaskId,
     dispatch: &Dispatch,
     task_prompt: &str,
     transport: &mut dyn symbiote_native_agent::InferenceTransport,
+    tool_execution: Option<ToolExecution>,
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
     check_runnable(store, task_id, dispatch, RuntimeKind::NativeSymbiote)?;
@@ -390,7 +464,11 @@ pub fn run_native_boxed(
     let model = store
         .model_descriptor(&dispatch.contract().profile().model)
         .map_err(|error| RunnerError::Store(error.to_string()))?;
-    let mut session = NativeSession::new(dispatch, model, at).map_err(native_error)?;
+    let session = NativeSession::new(dispatch, model, at).map_err(native_error)?;
+    let mut session = match tool_execution {
+        Some(execution) => session.with_tool_execution(execution.executor, execution.worktree),
+        None => session,
+    };
     let summary = session.run(task_prompt, transport).map_err(native_error)?;
     // Only a model-finished turn is a clean stop. The native loop maps
     // FinishReason::Cancelled to the same HaltReason::Stop as a normal
@@ -566,8 +644,23 @@ mod tests {
     use symbiote_domain::HostId;
 
     fn store_with_running_task(tag: &str, runtime: RuntimeKind) -> (Store, TaskId, Dispatch) {
+        store_with_running_task_tools(tag, runtime, &[])
+    }
+
+    fn store_with_running_task_tools(
+        tag: &str,
+        runtime: RuntimeKind,
+        required_tools: &[&str],
+    ) -> (Store, TaskId, Dispatch) {
         let mut store = Store::memory().unwrap();
-        let (project, task) = fixture::full_fixture(&mut store, tag, runtime);
+        let (project, task) = fixture::full_fixture_with_placement(
+            &mut store,
+            tag,
+            runtime,
+            None,
+            None,
+            required_tools,
+        );
         let task_role = store.task(&task).unwrap().role_id().clone();
         let request = symbiote_workforce::RouteRequest {
             project_id: project.clone(),
@@ -638,6 +731,7 @@ mod tests {
             &dispatch,
             "do the work",
             boxed.as_mut(),
+            None,
             Timestamp(60),
         )
         .unwrap();
@@ -693,6 +787,7 @@ mod tests {
             runtime,
             Some((host, repo_dir)),
             Some(base_sha),
+            &[],
         );
         let task_role = store.task(&task).unwrap().role_id().clone();
         let request = symbiote_workforce::RouteRequest {
@@ -1090,6 +1185,148 @@ mod tests {
         assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
     }
 
+    #[test]
+    fn shell_tool_execution_runs_through_the_attached_executor_and_files_completion() {
+        // The full dispatch→provision-free runner path with tool execution:
+        // the scripted transport proposes `shell` on turn one and the
+        // executor's recorded output must enter the conversation before the
+        // final report; the completion evidence is filed only after the turn
+        // finishes.
+        let (mut store, task, dispatch) =
+            store_with_running_task_tools("shell-exec", RuntimeKind::NativeSymbiote, &["shell"]);
+        let mut transport = fixture::ToolProposalTransport::new(
+            "ran the tool",
+            vec![symbiote_runtime_sdk::provider::ProviderToolCall {
+                call_id: symbiote_domain::RequestId::new("call-exec").unwrap(),
+                name: "shell".into(),
+                arguments: serde_json::json!({
+                    "program": "cargo",
+                    "arguments": ["test", "--locked"]
+                }),
+            }],
+        );
+        let executor = fixture::FixedOutputExecutor {
+            output: b"test result: ok. 1 passed".to_vec(),
+            code: Some(0),
+        };
+        let worktree = std::env::temp_dir().join(format!(
+            "symbiote-shell-exec-{}-{}",
+            std::process::id(),
+            "shell-exec"
+        ));
+        let _ = std::fs::remove_dir_all(&worktree);
+        std::fs::create_dir_all(&worktree).unwrap();
+        let outcome = run_native_boxed(
+            &mut store,
+            &task,
+            &dispatch,
+            "run the tests",
+            &mut transport,
+            Some(ToolExecution {
+                executor: Box::new(executor),
+                worktree: worktree.clone(),
+            }),
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
+
+    #[test]
+    fn a_refused_shell_tool_feeds_back_and_the_turn_can_still_complete() {
+        // Consent refusal is recorded feedback, not a crash: ToolFailed
+        // carries the constant refusal phrase, the run continues, and the
+        // turn still files its completion evidence.
+        let (mut store, task, dispatch) =
+            store_with_running_task_tools("shell-refuse", RuntimeKind::NativeSymbiote, &["shell"]);
+        let mut transport = fixture::ToolProposalTransport::new(
+            "adapted after refusal",
+            vec![symbiote_runtime_sdk::provider::ProviderToolCall {
+                call_id: symbiote_domain::RequestId::new("call-refused").unwrap(),
+                name: "shell".into(),
+                arguments: serde_json::json!({"program": "rm", "arguments": []}),
+            }],
+        );
+        let executor = fixture::RefusingExecutor;
+        let worktree = std::env::temp_dir().join(format!(
+            "symbiote-shell-exec-{}-{}",
+            std::process::id(),
+            "shell-refuse"
+        ));
+        let _ = std::fs::remove_dir_all(&worktree);
+        std::fs::create_dir_all(&worktree).unwrap();
+        let outcome = run_native_boxed(
+            &mut store,
+            &task,
+            &dispatch,
+            "do something",
+            &mut transport,
+            Some(ToolExecution {
+                executor: Box::new(executor),
+                worktree: worktree.clone(),
+            }),
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
+        // The transport already asserted the refusal entered the
+        // conversation as the constant phrase (no command echo, no task
+        // content); nothing else to check here.
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
+
+    #[test]
+    fn shell_executor_factory_refusal_is_a_typed_error_before_the_loop() {
+        // A configured factory that refuses to build halts activation with
+        // the typed build error — nothing ran, nothing was filed.
+        let (store, task, dispatch) =
+            store_with_running_task("shell-buildref", RuntimeKind::NativeSymbiote);
+        let mut transports = WorkerTransports::default()
+            .with_native(Box::new(fixture::EchoFactory {
+                text: "unused".into(),
+            }))
+            .with_shell_executor(Box::new(fixture::RefusingShellFactory));
+        struct NeverNative;
+        impl NativeTransportFactory for NeverNative {
+            fn build(
+                &mut self,
+            ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>
+            {
+                unreachable!("shell build must refuse first")
+            }
+        }
+        let _ = NeverNative;
+        let worktree = std::env::temp_dir().join("symbiote-shell-exec-buildref");
+        let _ = std::fs::remove_dir_all(&worktree);
+        std::fs::create_dir_all(&worktree).unwrap();
+        // Direct factory-level refusal through shell_build with the fixture
+        // contract's identities.
+        let inputs = ShellExecutorInputs {
+            root_id: &symbiote_domain::RootId::new("root-shell-buildref").unwrap(),
+            worktree: &worktree,
+            host: &symbiote_domain::HostId::new("host-shell-buildref").unwrap(),
+            project_id: &symbiote_domain::ProjectId::new("project-shell-buildref").unwrap(),
+            role_id: &symbiote_domain::RoleId::new("worker-shell-buildref").unwrap(),
+            profile_id: &symbiote_domain::RuntimeProfileId::new("profile-shell-buildref").unwrap(),
+            access: &dispatch.contract().binding().access,
+        };
+        assert!(matches!(
+            transports.shell_build(inputs),
+            Err(RunnerError::ShellExecutorBuild("operator refused"))
+        ));
+        assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
+
     /// Test fixtures for the store wiring. Mirrors the store's own
     /// preparation_tests fixture: a full project/team/binding/provider
     /// composition whose profile carries the requested runtime kind.
@@ -1121,23 +1358,13 @@ mod tests {
             PreparationOutcome::Ready
         }
 
-        /// Builds the full store fixture with the requested runtime kind on
-        /// the binding's profile. Mirrors the store's own preparation_tests
-        /// fixture composition (project/team/binding/provider/task/origin).
-        pub fn full_fixture(
-            store: &mut Store,
-            tag: &str,
-            runtime: RuntimeKind,
-        ) -> (ProjectId, TaskId) {
-            fixture::full_fixture_with_placement(store, tag, runtime, None, None)
-        }
-
         pub fn full_fixture_with_placement(
             store: &mut Store,
             tag: &str,
             runtime: RuntimeKind,
             host_placement: Option<(&HostId, &Path)>,
             base_override: Option<&str>,
+            required_tools: &[&str],
         ) -> (ProjectId, TaskId) {
             let project_id = ProjectId::new(format!("project-{tag}")).unwrap();
             let root_id = RootId::new(format!("root-{tag}")).unwrap();
@@ -1316,7 +1543,10 @@ mod tests {
                 profile: profile.clone(),
                 config_identity: "fixture".into(),
                 access: worker_access.clone(),
-                tools: BTreeSet::new(),
+                tools: required_tools
+                    .iter()
+                    .map(|tool| (*tool).to_owned())
+                    .collect(),
                 skills: BTreeSet::new(),
                 secret_scopes: BTreeSet::new(),
                 context: ContextPolicy {
@@ -1352,7 +1582,10 @@ mod tests {
                     access: worker_access_for_binding,
                     required_controls: BTreeSet::from([Control::Filesystem]),
                     context: primary.context.clone(),
-                    required_tools: BTreeSet::new(),
+                    required_tools: required_tools
+                        .iter()
+                        .map(|tool| (*tool).to_owned())
+                        .collect(),
                     required_skills: BTreeSet::new(),
                     escalation: EscalationPolicy::StopAndRequestHuman,
                 },
@@ -1683,6 +1916,128 @@ mod tests {
                     ],
                     Vec::new(),
                 )))
+            }
+        }
+
+        /// A native "provider" that proposes one tool call on the first turn
+        /// and completes on the second, asserting the tool result (or the
+        /// constant refusal phrase) entered the conversation before the
+        /// final report.
+        pub struct ToolProposalTransport {
+            final_text: String,
+            tool_calls: Vec<symbiote_runtime_sdk::provider::ProviderToolCall>,
+            expected_result_substring: &'static str,
+            proposed: bool,
+        }
+        impl ToolProposalTransport {
+            pub fn new(
+                final_text: &str,
+                tool_calls: Vec<symbiote_runtime_sdk::provider::ProviderToolCall>,
+            ) -> Self {
+                Self {
+                    final_text: final_text.to_owned(),
+                    expected_result_substring: "tool shell result: ",
+                    tool_calls,
+                    proposed: false,
+                }
+            }
+        }
+        impl symbiote_native_agent::InferenceTransport for ToolProposalTransport {
+            fn request(
+                &mut self,
+                request: &symbiote_runtime_sdk::provider::ProviderRequest,
+                _model: &symbiote_runtime_sdk::provider::ModelDescriptor,
+            ) -> Result<
+                symbiote_runtime_sdk::provider::ProviderResponse,
+                symbiote_runtime_sdk::provider::ProviderError,
+            > {
+                use symbiote_runtime_sdk::provider::{
+                    FinishReason, PROVIDER_CONTRACT_VERSION, ProviderResponse,
+                };
+                if !self.proposed {
+                    self.proposed = true;
+                    return Ok(ProviderResponse {
+                        schema_version: PROVIDER_CONTRACT_VERSION,
+                        request_id: request.request_id.clone(),
+                        provider_id: request.provider_id.clone(),
+                        model_id: request.model_id.clone(),
+                        text: "proposing the tool".into(),
+                        tool_calls: self.tool_calls.clone(),
+                        finish_reason: FinishReason::ToolCalls,
+                        usage: symbiote_runtime_sdk::provider::TokenUsage::Known {
+                            input_tokens: 1,
+                            output_tokens: 1,
+                            cached_input_tokens: None,
+                            reasoning_tokens: None,
+                        },
+                    });
+                }
+                // The tool result (or refusal) must be in the conversation
+                // before the model can finish: the amnesia fix under test.
+                assert!(
+                    request.messages.iter().any(|m| m.content.iter().any(
+                        |p| matches!(p, symbiote_runtime_sdk::provider::InputPart::Text { text }
+                            if text.starts_with(self.expected_result_substring))
+                    )),
+                    "the tool result must enter the conversation"
+                );
+                Ok(ProviderResponse {
+                    schema_version: PROVIDER_CONTRACT_VERSION,
+                    request_id: request.request_id.clone(),
+                    provider_id: request.provider_id.clone(),
+                    model_id: request.model_id.clone(),
+                    text: self.final_text.clone(),
+                    tool_calls: Vec::new(),
+                    finish_reason: FinishReason::Stop,
+                    usage: symbiote_runtime_sdk::provider::TokenUsage::Known {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        cached_input_tokens: None,
+                        reasoning_tokens: None,
+                    },
+                })
+            }
+        }
+
+        /// A scripted shell executor: returns a fixed output and exit code.
+        pub struct FixedOutputExecutor {
+            pub output: Vec<u8>,
+            pub code: Option<i32>,
+        }
+        impl symbiote_native_agent::tools::ShellToolExecutor for FixedOutputExecutor {
+            fn run_shell(
+                &mut self,
+                _invocation: &symbiote_native_agent::tools::ShellInvocation,
+                _worktree: &std::path::Path,
+            ) -> Result<(Vec<u8>, Option<i32>), symbiote_native_agent::tools::ToolExecError>
+            {
+                Ok((self.output.clone(), self.code))
+            }
+        }
+
+        /// A shell executor whose consent authority always refuses.
+        pub struct RefusingExecutor;
+        impl symbiote_native_agent::tools::ShellToolExecutor for RefusingExecutor {
+            fn run_shell(
+                &mut self,
+                _invocation: &symbiote_native_agent::tools::ShellInvocation,
+                _worktree: &std::path::Path,
+            ) -> Result<(Vec<u8>, Option<i32>), symbiote_native_agent::tools::ToolExecError>
+            {
+                Err(symbiote_native_agent::tools::ToolExecError::Refused)
+            }
+        }
+
+        /// A shell executor factory that refuses to build — the operator
+        /// config error path, before any loop runs.
+        pub struct RefusingShellFactory;
+        impl super::ShellExecutorFactory for RefusingShellFactory {
+            fn build(
+                &mut self,
+                _inputs: super::ShellExecutorInputs<'_>,
+            ) -> Result<Box<dyn symbiote_native_agent::tools::ShellToolExecutor>, &'static str>
+            {
+                Err("operator refused")
             }
         }
 

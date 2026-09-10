@@ -8,6 +8,10 @@ mod identity;
 mod inventory;
 pub mod runner;
 mod service;
+/// The sandboxed shell-tool executor composition (#218/#465): production
+/// `ShellToolExecutor` over `symbiote-sandbox::launch` plus the operator's
+/// consent authority seam.
+pub mod shell_executor;
 pub mod transport;
 
 use std::path::Path;

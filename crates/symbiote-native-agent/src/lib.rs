@@ -211,7 +211,7 @@ pub struct NativeSession {
     tool_result_bytes: usize,
     contract_context: ContextPolicy,
     tools: Vec<String>,
-    tool_executor: Option<&'static mut dyn tools::ShellToolExecutor>,
+    tool_executor: Option<Box<dyn tools::ShellToolExecutor>>,
     worktree: Option<std::path::PathBuf>,
     model: ModelDescriptor,
     messages: Vec<InputMessage>,
@@ -282,7 +282,7 @@ impl NativeSession {
     /// stay propose-only.
     pub fn with_tool_execution(
         mut self,
-        executor: &'static mut dyn tools::ShellToolExecutor,
+        executor: Box<dyn tools::ShellToolExecutor>,
         worktree: std::path::PathBuf,
     ) -> Self {
         self.tool_executor = Some(executor);
@@ -462,7 +462,7 @@ impl NativeSession {
                     };
                     let worktree = self.worktree.clone().ok_or(LoopError::UnknownTool)?;
                     let events = match tools::execute_shell_tool(
-                        executor,
+                        &mut **executor,
                         &call.call_id,
                         &worktree,
                         &invocation,
@@ -1014,8 +1014,7 @@ mod tests {
                 Ok((b"test result: ok".to_vec(), Some(0)))
             }
         }
-        let executor: &'static mut dyn tools::ShellToolExecutor =
-            Box::leak(Box::new(FixedExecutor));
+        let executor: Box<dyn tools::ShellToolExecutor> = Box::new(FixedExecutor);
         let worktree =
             std::env::temp_dir().join(format!("symbiote-shelltest-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&worktree);
