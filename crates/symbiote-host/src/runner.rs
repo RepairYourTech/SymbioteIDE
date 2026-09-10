@@ -2073,6 +2073,59 @@ mod tests {
         );
     }
 
+    /// The runtime-aware decide rule (#269): EVERY consumer gate lives on
+    /// the native loop, so a decision on an EXTERNAL_HARNESS dispatch
+    /// would journal an approval that licenses nothing — the harness
+    /// never consults active_elevation (its escalations are refused by
+    /// the driver regardless of any lease). The binding lacks both
+    /// permissions here, so the refusals are unambiguously the runtime
+    /// rule, not a re-grant accident.
+    #[test]
+    fn a_decision_on_an_external_dispatch_refuses_its_lease_entirely() {
+        let (mut store, task, dispatch) = store_with_running_task_worker_grants(
+            "elevate-external",
+            RuntimeKind::ExternalHarness,
+            &[Permission::ReadRoot, Permission::MutateStream],
+        );
+        let project = store.task(&task).unwrap().project_id().clone();
+        let lease = |id: &str, permission: Permission| symbiote_domain::ElevationLease {
+            id: CommandId::new(id).unwrap(),
+            project_id: project.clone(),
+            task_id: task.clone(),
+            dispatch_id: dispatch.id().clone(),
+            permission,
+            reason: "runtime-aware decide pin".into(),
+            approved: true,
+            approved_by: fixture::user(),
+            decided_at: Timestamp(60),
+            expires_at: Timestamp(60 + 300_000),
+            revoked_at: None,
+        };
+        for (id, permission) in [
+            ("elevate-ext-exec", Permission::ExecuteProcess),
+            ("elevate-ext-cred", Permission::UseCredential),
+        ] {
+            assert!(
+                matches!(
+                    store.decide_elevation(CommandId::new(id).unwrap(), lease(id, permission)),
+                    Err(symbiote_store::StoreError::InvalidElevation)
+                ),
+                "a decision on an EXTERNAL_HARNESS dispatch must refuse: {id}"
+            );
+        }
+        // Nothing was licensed: no active elevation on either permission.
+        assert!(
+            !store
+                .active_elevation(dispatch.id(), &Permission::ExecuteProcess, Timestamp(61))
+                .unwrap()
+        );
+        assert!(
+            !store
+                .active_elevation(dispatch.id(), &Permission::UseCredential, Timestamp(61))
+                .unwrap()
+        );
+    }
+
     #[test]
     fn a_binding_execute_process_grant_needs_no_lease() {
         let (store, _task, dispatch) =
