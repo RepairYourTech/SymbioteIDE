@@ -669,6 +669,105 @@ fn materialization_tampering_and_corrupt_v2_upgrade_are_not_repaired() {
 }
 
 #[test]
+fn root_placement_observation_advances_replays_and_audits() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, roots, roles) = records("placement");
+    store
+        .register_project(
+            id!(CommandId, "register-placement"),
+            project.clone(),
+            roots,
+            roles,
+        )
+        .unwrap();
+    let root_id = id!(RootId, "root-placement");
+    let host = id!(HostId, "host-placement");
+    let actor = id!(UserId, "owner");
+    let observe = |store: &mut Store, command: &str, expected: Revision, path: &str, at: u64| {
+        store.observe_root_placement(
+            id!(CommandId, command),
+            &project.id,
+            &root_id,
+            &host,
+            path,
+            expected,
+            &actor,
+            Timestamp(at),
+        )
+    };
+    // First observation: revision 0 → 1, with the server time recoverable
+    // for identical retries.
+    let first = observe(&mut store, "observe-1", Revision(0), "/repos/placement", 20).unwrap();
+    assert_eq!(first.revision, Revision(1));
+    assert!(!first.replayed);
+    assert_eq!(
+        store
+            .placement_command_timestamp(&id!(CommandId, "observe-1"))
+            .unwrap(),
+        Some(Timestamp(20))
+    );
+    // An exact retry replays the recorded receipt; a different intent under
+    // the same command id cannot.
+    let replay = observe(&mut store, "observe-1", Revision(0), "/repos/placement", 20).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.sequence, first.sequence);
+    assert!(matches!(
+        observe(&mut store, "observe-1", Revision(0), "/repos/changed", 20).unwrap_err(),
+        StoreError::IdempotencyConflict
+    ));
+    // A stale expected revision refuses without recording; the placement
+    // moves only from the current revision.
+    assert!(matches!(
+        observe(&mut store, "observe-stale", Revision(0), "/repos/next", 21).unwrap_err(),
+        StoreError::Domain(DomainError::RevisionConflict)
+    ));
+    let moved = observe(&mut store, "observe-2", Revision(1), "/repos/next", 22).unwrap();
+    assert_eq!(moved.revision, Revision(2));
+    // A placement under a foreign project identity refuses.
+    assert!(matches!(
+        store.observe_root_placement(
+            id!(CommandId, "observe-foreign"),
+            &id!(ProjectId, "project-other"),
+            &root_id,
+            &host,
+            "/repos/next",
+            Revision(2),
+            &actor,
+            Timestamp(23),
+        ),
+        Err(StoreError::RelationshipMismatch)
+    ));
+    // Reopening replays the journal audit across the observed placements.
+    drop(store);
+    let reopened = Store::open(temp.database()).unwrap();
+    let body: String = reopened
+        .connection
+        .query_row(
+            "SELECT body FROM roots WHERE id=?1",
+            [root_id.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    let root: Root = serde_json::from_str(&body).unwrap();
+    assert_eq!(root.revision, Revision(2));
+    assert_eq!(
+        root.host_paths.get(&host).map(String::as_str),
+        Some("/repos/next")
+    );
+    // The journal is append-only at the schema level: even a same-uid
+    // process cannot rewrite a revision cell to forge a receipt or a
+    // replayed one. The audit's row-revision check is the belt to this
+    // braces: it rejects any row that slips past the trigger's reach.
+    let tampered = reopened;
+    let rewrite = tampered.connection.execute(
+        "UPDATE journal SET revision=5 WHERE command_id=?1",
+        [id!(CommandId, "observe-2").as_str()],
+    );
+    assert!(matches!(rewrite, Err(rusqlite::Error::SqliteFailure(_, _))));
+}
+
+#[test]
 fn task_origin_target_cannot_be_invalidated_or_forged() {
     let temp = Temporary::new();
     let mut store = Store::open(temp.database()).unwrap();

@@ -1,1 +1,1 @@
-{"version":{"major":1,"minor":13},"correlation_id":"demo-read","command_id":"demo-read","operation":{"kind":"get_work","project_id":"demo","id":{"kind":"capability","id":"verified-change"}}}
+{"version":{"major":1,"minor":14},"correlation_id":"demo-read","command_id":"demo-read","operation":{"kind":"get_work","project_id":"demo","id":{"kind":"capability","id":"verified-change"}}}

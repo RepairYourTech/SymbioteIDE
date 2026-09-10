@@ -70,6 +70,8 @@ pub struct ShellExecutorInputs<'a> {
     /// The dispatch binding's access snapshot — the current policy the
     /// sandbox checks the consent's recorded access against.
     pub access: &'a symbiote_domain::AccessSnapshot,
+    /// The consenting principal (the daemon's local owner).
+    pub user_id: &'a symbiote_domain::UserId,
 }
 
 /// Builds one shell executor per native run. Production installs the
@@ -207,6 +209,14 @@ impl WorkerTransports {
                 .map_err(RunnerError::ShellExecutorBuild),
             None => Ok(None),
         }
+    }
+
+    /// Whether the operator provisioned a credential broker (#217). The
+    /// dispatch compiler turns this into the Host's `Credentials`
+    /// enforcement claim: a binding granting `UseCredential` cannot even
+    /// start a dispatch on a Host that has no broker to hold the lease.
+    pub fn has_credential_broker(&self) -> bool {
+        self.broker.is_some()
     }
 
     /// Resolves one credential lease for a dispatch from the operator's
@@ -1366,6 +1376,7 @@ mod tests {
             role_id: &symbiote_domain::RoleId::new("worker-shell-buildref").unwrap(),
             profile_id: &symbiote_domain::RuntimeProfileId::new("profile-shell-buildref").unwrap(),
             access: &dispatch.contract().binding().access,
+            user_id: &symbiote_domain::UserId::new("owner").unwrap(),
         };
         assert!(matches!(
             transports.shell_build(inputs),
@@ -2407,4 +2418,179 @@ mod tests {
             }
         }
     }
+}
+
+/// The operator-configured fixture model transport (#54): a SCRIPTED model
+/// turn for demonstrating the dispatch→provisioning→sandbox→completion
+/// mechanics without spending. Turn one proposes the configured tool call
+/// (or none); turn two completes with the configured report text. This is
+/// not a model and must never be presented as one — a live Responses-API
+/// transport remains gated on explicit user authorization for credentials
+/// and billing.
+pub struct FixtureNativeTransport {
+    echo_text: String,
+    tool: Option<FixtureToolCall>,
+    proposed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FixtureToolCall {
+    pub call_id: String,
+    pub arguments: serde_json::Value,
+}
+
+impl FixtureNativeTransport {
+    pub fn new(echo_text: String, tool: Option<FixtureToolCall>) -> Self {
+        Self {
+            echo_text,
+            tool,
+            proposed: false,
+        }
+    }
+}
+
+impl symbiote_native_agent::InferenceTransport for FixtureNativeTransport {
+    fn request(
+        &mut self,
+        request: &symbiote_runtime_sdk::provider::ProviderRequest,
+        _model: &symbiote_runtime_sdk::provider::ModelDescriptor,
+    ) -> Result<
+        symbiote_runtime_sdk::provider::ProviderResponse,
+        symbiote_runtime_sdk::provider::ProviderError,
+    > {
+        use symbiote_runtime_sdk::provider::{
+            FinishReason, PROVIDER_CONTRACT_VERSION, ProviderResponse,
+        };
+        let (text, tool_calls, finish) = if self.proposed {
+            (self.echo_text.clone(), Vec::new(), FinishReason::Stop)
+        } else {
+            self.proposed = true;
+            let mut calls = Vec::new();
+            if let Some(tool) = &self.tool {
+                let call_id = symbiote_domain::RequestId::new(&tool.call_id)
+                    .map_err(|_| symbiote_runtime_sdk::provider::ProviderError::Unavailable)?;
+                calls.push(symbiote_runtime_sdk::provider::ProviderToolCall {
+                    call_id,
+                    name: "shell".into(),
+                    arguments: tool.arguments.clone(),
+                });
+            }
+            (
+                "proposing the configured tool".into(),
+                calls,
+                FinishReason::ToolCalls,
+            )
+        };
+        Ok(ProviderResponse {
+            schema_version: PROVIDER_CONTRACT_VERSION,
+            request_id: request.request_id.clone(),
+            provider_id: request.provider_id.clone(),
+            model_id: request.model_id.clone(),
+            text,
+            tool_calls,
+            finish_reason: finish,
+            usage: symbiote_runtime_sdk::provider::TokenUsage::Known {
+                input_tokens: 1,
+                output_tokens: 1,
+                cached_input_tokens: None,
+                reasoning_tokens: None,
+            },
+        })
+    }
+}
+
+/// Builds one fixture transport per run (the factory contract).
+pub struct FixtureNativeFactory {
+    pub echo_text: String,
+    pub tool: Option<FixtureToolCall>,
+}
+impl NativeTransportFactory for FixtureNativeFactory {
+    fn build(
+        &mut self,
+    ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str> {
+        Ok(Box::new(FixtureNativeTransport::new(
+            self.echo_text.clone(),
+            self.tool.clone(),
+        )))
+    }
+}
+
+/// Builds the production sandboxed shell executor per run from the
+/// operator's launch configuration and the program-allowlist consent
+/// authority (#466 allowlist flow).
+pub struct SandboxShellExecutorFactory {
+    pub launcher_path: std::path::PathBuf,
+    pub protected_paths: Vec<std::path::PathBuf>,
+    pub allowed_programs: Vec<String>,
+}
+impl ShellExecutorFactory for SandboxShellExecutorFactory {
+    fn build(
+        &mut self,
+        inputs: ShellExecutorInputs<'_>,
+    ) -> Result<Box<dyn symbiote_native_agent::tools::ShellToolExecutor>, &'static str> {
+        Ok(Box::new(crate::shell_executor::SandboxShellExecutor {
+            launcher_path: self.launcher_path.clone(),
+            protected_paths: self.protected_paths.clone(),
+            authority: Box::new(crate::shell_executor::ProgramAllowlistAuthority {
+                allowed_programs: self.allowed_programs.clone(),
+            }),
+            root_id: inputs.root_id.clone(),
+            host: inputs.host.clone(),
+            project_id: inputs.project_id.clone(),
+            role_id: inputs.role_id.clone(),
+            profile_id: inputs.profile_id.clone(),
+            access: inputs.access.clone(),
+            user_id: inputs.user_id.clone(),
+        }))
+    }
+}
+
+/// Assembles the operator-provisioned transports from the configuration
+/// file (#54). Each element maps one operator authority onto the seam it
+/// owns: reservation base (#211), the explicitly-labeled fixture model
+/// transport (demonstration without spending), the #217 credential broker
+/// registrations, and the #466 program-allowlist consent authority behind
+/// the #507 sandbox shell executor. Values and paths stay in operator
+/// state — nothing here is client-reachable configuration.
+pub fn assemble_operator_transports(
+    config: crate::operator::OperatorConfig,
+) -> Result<WorkerTransports, &'static str> {
+    let mut transports =
+        WorkerTransports::default().with_reservation_base(config.reservation_base.clone());
+    if let Some(fixture) = &config.native_fixture {
+        transports = transports.with_native(Box::new(FixtureNativeFactory {
+            echo_text: fixture.echo_text.clone(),
+            tool: fixture.tool.as_ref().map(|tool| FixtureToolCall {
+                call_id: tool.call_id.clone(),
+                arguments: tool.arguments.clone(),
+            }),
+        }));
+    }
+    if !config.credential_broker.is_empty() {
+        let broker = std::rc::Rc::new(std::cell::RefCell::new(
+            symbiote_context::CredentialBroker::new(),
+        ));
+        for registration in &config.credential_broker {
+            broker
+                .borrow_mut()
+                .register(
+                    symbiote_domain::CredentialReferenceId::new(&registration.reference)
+                        .map_err(|_| "operator credential reference")?,
+                    symbiote_domain::ProjectId::new(&registration.project)
+                        .map_err(|_| "operator credential project")?,
+                    registration.environment.clone(),
+                    registration.value.clone().into_bytes(),
+                )
+                .map_err(|_| "operator credential registration refused")?;
+        }
+        transports = transports.with_credential_broker(broker);
+    }
+    if let Some(shell) = &config.shell_executor {
+        transports = transports.with_shell_executor(Box::new(SandboxShellExecutorFactory {
+            launcher_path: shell.launcher_path.clone(),
+            protected_paths: shell.protected_paths.clone(),
+            allowed_programs: shell.allowed_programs.clone(),
+        }));
+    }
+    Ok(transports)
 }

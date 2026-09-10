@@ -79,6 +79,9 @@ pub struct ShellConsentRequest<'a> {
     pub access: &'a AccessSnapshot,
     /// The run's observed time, for the consent's validity window.
     pub at: Timestamp,
+    /// The consenting principal (the daemon's local owner) — the consent
+    /// record's user, not model-supplied.
+    pub user_id: &'a symbiote_domain::UserId,
 }
 
 /// The fixed wrapper: run the first positional parameter (the model's
@@ -154,6 +157,59 @@ pub fn wrapped_command(
     Ok(("/usr/bin/sh".to_owned(), args))
 }
 
+/// The operator's program-allowlist consent authority (#466 allowlist
+/// flow): consents to a tool invocation when the model's program (the
+/// wrapped argument vector's fourth element — the resolved
+/// /usr/bin/<program>) is in the operator-authored allowlist. The consent
+/// is authored over the EXACT wrapped command via the sandbox's own
+/// fingerprint derivation, issued from the dispatch's identities, and
+/// expires with the 5-minute lease window. Programs outside the allowlist
+/// are refused — the executor never mints authority beyond this list.
+pub struct ProgramAllowlistAuthority {
+    pub allowed_programs: Vec<String>,
+}
+impl ShellConsentAuthority for ProgramAllowlistAuthority {
+    fn consent(
+        &mut self,
+        request: ShellConsentRequest<'_>,
+    ) -> Result<ResourceConsent, &'static str> {
+        let Some(model_program) = request.args.get(3) else {
+            return Err("malformed wrapped command");
+        };
+        let Some(bare) = model_program.strip_prefix("/usr/bin/") else {
+            return Err("program outside /usr/bin");
+        };
+        if !self.allowed_programs.iter().any(|allowed| allowed == bare) {
+            return Err("program not in the operator allowlist");
+        }
+        let fingerprint = symbiote_sandbox::fingerprint_command(
+            request.root_id,
+            request.worktree,
+            Profile::WorktreeWrite,
+            request.program,
+            request.args,
+        )
+        .map_err(|_| "command rejected")?;
+        Ok(ResourceConsent {
+            id: symbiote_domain::CommandId::new(format!("allowlist-{}", request.project_id))
+                .map_err(|_| "consent id")?,
+            snapshot: symbiote_trust::ResourceSnapshot {
+                project_id: request.project_id.clone(),
+                role_id: request.role_id.clone(),
+                profile_id: request.profile_id.clone(),
+                host_id: request.host.clone(),
+                resource_ref: "shell-tool".into(),
+                fingerprint,
+                access: request.access.clone(),
+            },
+            user_id: request.user_id.clone(),
+            issued_at: request.at,
+            expires_at: Timestamp(request.at.0.saturating_add(300_000)),
+            revoked_at: None,
+        })
+    }
+}
+
 /// The production executor. Constructed per run from the operator's launch
 /// configuration (trusted launcher path, protected Host directories) and the
 /// operator's consent authority; each `run_shell` consults the authority and
@@ -174,6 +230,8 @@ pub struct SandboxShellExecutor {
     /// time, checked against the consent's recorded access by the trust
     /// layer and against the operator's ceiling by the Host.
     pub access: AccessSnapshot,
+    /// The consenting principal (the daemon's local owner).
+    pub user_id: symbiote_domain::UserId,
 }
 
 impl SandboxShellExecutor {
@@ -249,6 +307,7 @@ impl ShellToolExecutor for SandboxShellExecutor {
                 profile_id: &self.profile_id,
                 access: &self.access,
                 at,
+                user_id: &self.user_id,
             })
             .map_err(|_| ToolExecError::Refused)?;
         // Clear any stale output file so the read-back is unambiguous.
@@ -606,6 +665,7 @@ mod tests {
             project_id: project,
             role_id: RoleId::new("worker-shell-e2e").unwrap(),
             profile_id: RuntimeProfileId::new("profile-shell-e2e").unwrap(),
+            user_id: symbiote_domain::UserId::new("operator").unwrap(),
             access,
         };
         let (output, exit) = executor
@@ -636,6 +696,7 @@ mod tests {
             project_id: project,
             role_id: RoleId::new("worker-shell-e2e").unwrap(),
             profile_id: RuntimeProfileId::new("profile-shell-e2e").unwrap(),
+            user_id: symbiote_domain::UserId::new("operator").unwrap(),
             access,
         };
         // `sh` is not in the consented shape: the authority refuses and the

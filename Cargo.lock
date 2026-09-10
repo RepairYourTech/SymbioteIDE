@@ -616,6 +616,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-workflow"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "serde_json",
+ "symbiote-client-sdk",
+ "symbiote-domain",
+ "symbiote-protocol",
+ "symbiote-repo",
+ "symbiote-trust",
+ "symbiote-worktrees",
+]
+
+[[package]]
 name = "symbiote-workforce"
 version = "0.1.0"
 dependencies = [
