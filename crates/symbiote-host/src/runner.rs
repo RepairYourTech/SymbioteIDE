@@ -436,9 +436,10 @@ fn permission_name(permission: &Permission) -> &'static str {
 /// widened with ExecuteProcess ONLY while an owner-decided elevation lease
 /// for THIS dispatch is active at the run's clock — the same per-run basis
 /// as the broker's UseCredential gate. A filed ask never widens (filing is
-/// evidence, never a grant); an expired or sticky-revoked lease stops
-/// widening at once. Every other grant stays exactly what the binding
-/// carries.
+/// evidence, never a grant). The policy is resolved once per run, so an
+/// expired or sticky-revoked lease stops the widening from the next run's
+/// clock onward; mid-run policy-change semantics remain #269 scope. Every
+/// other grant stays exactly what the binding carries.
 pub(crate) fn resolve_shell_access(
     store: &Store,
     dispatch: &Dispatch,
