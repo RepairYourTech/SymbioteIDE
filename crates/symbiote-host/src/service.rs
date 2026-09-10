@@ -567,10 +567,51 @@ fn execute(
                 &reservation_base,
             )
             .map_err(worker_error)?;
+            let context = resolve_run_context(store, task_id, current)?;
+            let prompt = symbiote_context::render_prompt(&context);
             match runtime {
                 symbiote_domain::RuntimeKind::NativeSymbiote => {
-                    let prompt = origin_prompt(store, task_id)?;
                     let mut transport = workers.native_build().map_err(worker_error)?;
+                    // Credential leases (#217): the dispatch's profile
+                    // references a credential, so the operator's broker
+                    // must be configured and THIS dispatch's binding
+                    // access must grant `UseCredential` — the typed
+                    // authority that a credential lease may issue at all.
+                    // Cross-project references are refused by the broker's
+                    // own project check; with no broker the run refuses
+                    // rather than proceeding without a credential it
+                    // declared. The lease is issued, held for this run's
+                    // scope check, and DROPPED UNMATERIALIZED: the native
+                    // loop has no environment-injection mechanism yet, so
+                    // no value moves anywhere. Values never enter the
+                    // journal — the lease lives in process memory only.
+                    let credential = current.contract().profile().credential.clone();
+                    let scope = symbiote_context::LeaseScope {
+                        dispatch_id: current.id().clone(),
+                        project_id: context.project_id.clone(),
+                        role_id: current.contract().binding().role_id.clone(),
+                        profile_id: current.contract().profile().id.clone(),
+                        host_id: this_host.clone(),
+                    };
+                    let profile_refs = [credential.clone()];
+                    let use_credential_granted = current
+                        .contract()
+                        .binding()
+                        .access
+                        .grants
+                        .contains(&symbiote_domain::Permission::UseCredential);
+                    let lease = workers
+                        .resolve_leases(
+                            &credential,
+                            symbiote_context::BrokerRequest {
+                                scope: &scope,
+                                profile_credential_refs: &profile_refs,
+                                use_credential_granted,
+                                at,
+                            },
+                        )
+                        .map_err(worker_error)?;
+                    drop(lease);
                     // Shell tool execution is the operator's composition:
                     // with a configured executor factory, declared shell
                     // tools run through the sandbox inside the provisioned
@@ -614,7 +655,6 @@ fn execute(
                     })))
                 }
                 symbiote_domain::RuntimeKind::ExternalHarness => {
-                    let prompt = origin_prompt(store, task_id)?;
                     let mut transport = workers.external_build().map_err(worker_error)?;
                     // The sandboxed launcher mounts the reserved worktree at
                     // /workspace; that is the only cwd the harness sees.
@@ -1151,23 +1191,41 @@ fn now_timestamp() -> Result<Timestamp, ProtocolError> {
     ))
 }
 
-/// The worker's task prompt comes from canonical state — the task origin's
-/// classified work item description — never from caller input.
-fn origin_prompt(store: &mut Store, task_id: &TaskId) -> Result<String, ProtocolError> {
-    let task = store.task(task_id).map_err(storage_error)?;
-    let origin = store
-        .task_origin(&task.project_id().clone(), task_id)
-        .map_err(storage_error)?
-        .ok_or_else(|| ProtocolError::new(ErrorCode::FailedPrecondition))?;
-    let reference = origin.reference();
-    let work = store
-        .work_item(&task.project_id().clone(), &reference.id)
-        .map_err(storage_error)?;
-    let description = work.spec().description.clone();
-    if description.trim().is_empty() {
-        return Err(ProtocolError::new(ErrorCode::FailedPrecondition));
-    }
-    Ok(description)
+/// The worker's task context comes from canonical state — the task origin's
+/// classified work item (description, requirements, constraints, risks,
+/// acceptance) plus the dispatch contract's own budget and access — never
+/// from caller input. Resolution failures map to stable protocol errors
+/// that carry no store or task text.
+fn resolve_run_context(
+    store: &Store,
+    task_id: &TaskId,
+    dispatch: &symbiote_domain::Dispatch,
+) -> Result<symbiote_context::ResolvedContext, ProtocolError> {
+    let (project_id, origin_work) =
+        crate::context_resolution::task_origin_work(store, task_id).map_err(context_error)?;
+    let contract = dispatch.contract();
+    let inputs = symbiote_context::ResolutionInputs {
+        dispatch_id: dispatch.id(),
+        task_id,
+        project_id: &project_id,
+        origin_work: &origin_work,
+        context: contract.binding().context.clone(),
+        access: contract.binding().access.clone(),
+    };
+    let source = crate::context_resolution::StoreContextSource { store };
+    symbiote_context::resolve_context(&source, inputs).map_err(context_error)
+}
+
+fn context_error(error: symbiote_context::ResolutionError) -> ProtocolError {
+    let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    protocol_error.message = match error {
+        symbiote_context::ResolutionError::NoPrompt => "task origin provides no run prompt".into(),
+        symbiote_context::ResolutionError::Overbound => {
+            "task origin text exceeds structural bounds".into()
+        }
+        symbiote_context::ResolutionError::StoreFailed => "store operation refused".into(),
+    };
+    protocol_error
 }
 
 fn dispatch_binding_refused() -> ProtocolError {
@@ -1206,6 +1264,12 @@ fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
         }
         crate::runner::RunnerError::ShellExecutorBuild(_) => {
             "worker shell executor factory refused to build".into()
+        }
+        crate::runner::RunnerError::NoCredentialBroker => {
+            "no credential broker configured for this dispatch's credential reference".into()
+        }
+        crate::runner::RunnerError::CredentialRefused(reason) => {
+            format!("credential lease refused: {reason}")
         }
         crate::runner::RunnerError::NoHostPath => "no repository placement for this host".into(),
         crate::runner::RunnerError::NoReservationBase => {

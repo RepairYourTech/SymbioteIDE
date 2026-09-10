@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/symbiote-worktrees", "crates/symbiote-native-agent", "crates/symbiote-external-agent", "crates/symbiote-client-sdk", "crates/symbiote-repo", "crates/symbiote-domain", "crates/symbiote-config", "crates/symbiote-architecture", "crates/symbiote-store", "crates/symbiote-protocol", "crates/symbiote-host", "crates/symbiote-runtime-sdk", "crates/symbiote-runtime-transport", "crates/symbiote-projection", "crates/symbiote-trust", "crates/symbiote-sandbox", "crates/symbiote-runtime-discovery", "crates/symbiote-host-inventory", "crates/symbiote-workforce"]
+members = ["crates/symbiote-context", "crates/symbiote-worktrees", "crates/symbiote-native-agent", "crates/symbiote-external-agent", "crates/symbiote-client-sdk", "crates/symbiote-repo", "crates/symbiote-domain", "crates/symbiote-config", "crates/symbiote-architecture", "crates/symbiote-store", "crates/symbiote-protocol", "crates/symbiote-host", "crates/symbiote-runtime-sdk", "crates/symbiote-runtime-transport", "crates/symbiote-projection", "crates/symbiote-trust", "crates/symbiote-sandbox", "crates/symbiote-runtime-discovery", "crates/symbiote-host-inventory", "crates/symbiote-workforce"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "1", features = ["derive"] }
+zeroize = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
