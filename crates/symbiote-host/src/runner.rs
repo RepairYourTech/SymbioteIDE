@@ -432,6 +432,28 @@ fn permission_name(permission: &Permission) -> &'static str {
     }
 }
 
+/// The shell tool path's current policy: the dispatch binding's access,
+/// widened with ExecuteProcess ONLY while an owner-decided elevation lease
+/// for THIS dispatch is active at the run's clock — the same per-run basis
+/// as the broker's UseCredential gate. A filed ask never widens (filing is
+/// evidence, never a grant); an expired or sticky-revoked lease stops
+/// widening at once. Every other grant stays exactly what the binding
+/// carries.
+pub(crate) fn resolve_shell_access(
+    store: &Store,
+    dispatch: &Dispatch,
+    at: Timestamp,
+) -> Result<symbiote_domain::AccessSnapshot, RunnerError> {
+    let mut access = dispatch.contract().effective_access().clone();
+    if store
+        .active_elevation(dispatch.id(), &Permission::ExecuteProcess, at)
+        .map_err(|error| RunnerError::Store(error.to_string()))?
+    {
+        access.grants.insert(Permission::ExecuteProcess);
+    }
+    Ok(access)
+}
+
 /// FNV-1a: stable across processes and Rust versions, unlike
 /// `DefaultHasher`, so a Host retry mints the same ask id after an
 /// upgrade and replays honestly instead of duplicating evidence.
@@ -868,14 +890,45 @@ mod tests {
         runtime: RuntimeKind,
         required_tools: &[&str],
     ) -> (Store, TaskId, Dispatch) {
+        store_with_running_task_composed(
+            tag,
+            runtime,
+            required_tools,
+            &[
+                Permission::ReadRoot,
+                Permission::ExecuteProcess,
+                Permission::MutateStream,
+                Permission::UseCredential,
+            ],
+        )
+    }
+
+    /// The elevation-consumer tests need a running dispatch whose binding
+    /// LACKS ExecuteProcess (so a decided lease is the only path to it)
+    /// while the Team ceiling still carries it (so the owner may decide).
+    fn store_with_running_task_worker_grants(
+        tag: &str,
+        runtime: RuntimeKind,
+        worker_grants: &[Permission],
+    ) -> (Store, TaskId, Dispatch) {
+        store_with_running_task_composed(tag, runtime, &[], worker_grants)
+    }
+
+    fn store_with_running_task_composed(
+        tag: &str,
+        runtime: RuntimeKind,
+        required_tools: &[&str],
+        worker_grants: &[Permission],
+    ) -> (Store, TaskId, Dispatch) {
         let mut store = Store::memory().unwrap();
-        let (project, task) = fixture::full_fixture_with_placement(
+        let (project, task) = fixture::full_fixture_with_worker_grants(
             &mut store,
             tag,
             runtime,
             None,
             None,
             required_tools,
+            worker_grants,
         );
         let task_role = store.task(&task).unwrap().role_id().clone();
         let request = symbiote_workforce::RouteRequest {
@@ -1873,6 +1926,170 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_decided_execute_process_lease_licenses_the_shell_path_alone() {
+        let (mut store, task, dispatch) = store_with_running_task_worker_grants(
+            "shell-elevate",
+            RuntimeKind::NativeSymbiote,
+            &[
+                Permission::ReadRoot,
+                Permission::MutateStream,
+                Permission::UseCredential,
+            ],
+        );
+        let at = Timestamp(60);
+        // The binding base carries no ExecuteProcess: the shell path's
+        // policy refuses to run tools before any elevation.
+        let base = resolve_shell_access(&store, &dispatch, at).unwrap();
+        assert!(!base.grants.contains(&Permission::ExecuteProcess));
+        assert!(base.grants.contains(&Permission::ReadRoot));
+        // A filed ASK is evidence only: it must not widen the policy.
+        file_elevation_ask(
+            &mut store,
+            &task,
+            &dispatch,
+            Permission::ExecuteProcess,
+            "the run needs the consented build tool",
+            at,
+        )
+        .unwrap();
+        assert!(
+            !resolve_shell_access(&store, &dispatch, at)
+                .unwrap()
+                .grants
+                .contains(&Permission::ExecuteProcess)
+        );
+        // The owner decides; the lease widens EXACTLY ExecuteProcess.
+        let project = store.task(&task).unwrap().project_id().clone();
+        store
+            .decide_elevation(
+                CommandId::new("elevate-shell-elevate").unwrap(),
+                symbiote_domain::ElevationLease {
+                    id: CommandId::new("elevate-shell-elevate").unwrap(),
+                    project_id: project.clone(),
+                    task_id: task.clone(),
+                    dispatch_id: dispatch.id().clone(),
+                    permission: Permission::ExecuteProcess,
+                    reason: "the run needs the consented build tool".into(),
+                    approved: true,
+                    approved_by: fixture::user(),
+                    decided_at: Timestamp(60),
+                    expires_at: Timestamp(60 + 300_000),
+                    revoked_at: None,
+                },
+            )
+            .unwrap();
+        let widened = resolve_shell_access(&store, &dispatch, at).unwrap();
+        assert!(widened.grants.contains(&Permission::ExecuteProcess));
+        assert_eq!(widened.grants.len(), base.grants.len() + 1);
+        assert_eq!(widened.roots, base.roots);
+        assert_eq!(widened.policy_revision, base.policy_revision);
+        // Expiry is the automatic revocation, checked at the use site.
+        assert!(
+            !resolve_shell_access(&store, &dispatch, Timestamp(60 + 300_000 + 1))
+                .unwrap()
+                .grants
+                .contains(&Permission::ExecuteProcess)
+        );
+        // Sticky manual revocation kills the lease inside its window.
+        store
+            .revoke_elevation(
+                CommandId::new("revoke-shell-elevate").unwrap(),
+                &project,
+                &CommandId::new("elevate-shell-elevate").unwrap(),
+                &fixture::user(),
+                Timestamp(70),
+            )
+            .unwrap();
+        assert!(
+            !resolve_shell_access(&store, &dispatch, Timestamp(71))
+                .unwrap()
+                .grants
+                .contains(&Permission::ExecuteProcess)
+        );
+    }
+
+    #[test]
+    fn the_store_decides_only_permissions_with_enforcement_consumers() {
+        // A compilable dispatch's binding always carries MutateStream
+        // (Dispatch::compile requires it), so this is the narrowest
+        // executable binding without ExecuteProcess.
+        let (mut store, task, dispatch) = store_with_running_task_worker_grants(
+            "elevate-allowlist",
+            RuntimeKind::NativeSymbiote,
+            &[
+                Permission::ReadRoot,
+                Permission::MutateStream,
+                Permission::UseCredential,
+            ],
+        );
+        let project = store.task(&task).unwrap().project_id().clone();
+        let lease = |id: &str, permission: Permission| symbiote_domain::ElevationLease {
+            id: CommandId::new(id).unwrap(),
+            project_id: project.clone(),
+            task_id: task.clone(),
+            dispatch_id: dispatch.id().clone(),
+            permission,
+            reason: "decide-scope pin".into(),
+            approved: true,
+            approved_by: fixture::user(),
+            decided_at: Timestamp(60),
+            expires_at: Timestamp(60 + 300_000),
+            revoked_at: None,
+        };
+        // Network has no enforcement consumer and the binding does not
+        // carry it, so the consumer allowlist (the first decide check) is
+        // what refuses — with the allowlist widened this would instead be
+        // an ElevationCeiling refusal (the fixture ceiling lacks Network).
+        assert!(matches!(
+            store.decide_elevation(
+                CommandId::new("elevate-allowlist-network").unwrap(),
+                lease("elevate-allowlist-network", Permission::Network),
+            ),
+            Err(symbiote_store::StoreError::InvalidElevation)
+        ));
+        // MutateStream is refused too; for a Running dispatch its binding
+        // always carries MutateStream, so the never-re-grant check shadows
+        // the allowlist here — either way deciding it refuses.
+        assert!(matches!(
+            store.decide_elevation(
+                CommandId::new("elevate-allowlist-mutate").unwrap(),
+                lease("elevate-allowlist-mutate", Permission::MutateStream),
+            ),
+            Err(symbiote_store::StoreError::InvalidElevation)
+        ));
+        // ExecuteProcess has the native shell-tool consumer (#269): the
+        // decision licenses, the ask alone never did.
+        store
+            .decide_elevation(
+                CommandId::new("elevate-allowlist-exec").unwrap(),
+                lease("elevate-allowlist-exec", Permission::ExecuteProcess),
+            )
+            .unwrap();
+        assert!(
+            store
+                .active_elevation(dispatch.id(), &Permission::ExecuteProcess, Timestamp(61))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_binding_execute_process_grant_needs_no_lease() {
+        let (store, _task, dispatch) =
+            store_with_running_task("shell-pregranted", RuntimeKind::NativeSymbiote);
+        assert!(
+            resolve_shell_access(&store, &dispatch, Timestamp(60))
+                .unwrap()
+                .grants
+                .contains(&Permission::ExecuteProcess)
+        );
+        assert!(
+            !store
+                .active_elevation(dispatch.id(), &Permission::ExecuteProcess, Timestamp(60))
+                .unwrap()
+        );
+    }
+
     /// Test fixtures for the store wiring. Mirrors the store's own
     /// preparation_tests fixture: a full project/team/binding/provider
     /// composition whose profile carries the requested runtime kind.
@@ -1911,6 +2128,31 @@ mod tests {
             host_placement: Option<(&HostId, &Path)>,
             base_override: Option<&str>,
             required_tools: &[&str],
+        ) -> (ProjectId, TaskId) {
+            full_fixture_with_worker_grants(
+                store,
+                tag,
+                runtime,
+                host_placement,
+                base_override,
+                required_tools,
+                &[
+                    Permission::ReadRoot,
+                    Permission::ExecuteProcess,
+                    Permission::MutateStream,
+                    Permission::UseCredential,
+                ],
+            )
+        }
+
+        pub fn full_fixture_with_worker_grants(
+            store: &mut Store,
+            tag: &str,
+            runtime: RuntimeKind,
+            host_placement: Option<(&HostId, &Path)>,
+            base_override: Option<&str>,
+            required_tools: &[&str],
+            worker_grants: &[Permission],
         ) -> (ProjectId, TaskId) {
             let project_id = ProjectId::new(format!("project-{tag}")).unwrap();
             let root_id = RootId::new(format!("root-{tag}")).unwrap();
@@ -1998,6 +2240,11 @@ mod tests {
                 independent_reviewers: BTreeSet::from([worker_id.clone()]),
                 fallbacks: vec![],
             };
+            // The Role policy keeps the Team's full general-executor
+            // access: team validation requires a GeneralExecution member
+            // carrying ExecuteProcess. Least privilege narrows at the
+            // BINDING, which may grant fewer permissions than its role —
+            // exactly the state an elevation lease elevates from.
             let mut worker_access = access.clone();
             worker_access.grants = BTreeSet::from([
                 Permission::ReadRoot,
@@ -2005,7 +2252,9 @@ mod tests {
                 Permission::MutateStream,
                 Permission::UseCredential,
             ]);
-            let worker_access_for_binding = worker_access.clone();
+            let mut binding_access = access.clone();
+            binding_access.grants = worker_grants.iter().cloned().collect();
+            let worker_access_for_binding = binding_access;
             let worker_policy = symbiote_domain::RolePolicy {
                 role_id: worker_id.clone(),
                 function: symbiote_domain::RoleFunction::GeneralExecution,
@@ -2096,7 +2345,10 @@ mod tests {
             let primary = symbiote_workforce::StaffingCandidate {
                 profile: profile.clone(),
                 config_identity: "fixture".into(),
-                access: worker_access.clone(),
+                // The primary scope's access must equal the binding's
+                // declared access (BindingConfiguration validation) — the
+                // narrowed least-privilege set, not the role's.
+                access: worker_access_for_binding.clone(),
                 tools: required_tools
                     .iter()
                     .map(|tool| (*tool).to_owned())

@@ -631,7 +631,13 @@ fn execute(
                     // none, declared tools stay propose-only (recorded,
                     // never executed). The inputs come from the dispatch
                     // contract and the provisioning outcome — never from
-                    // loop or model input.
+                    // loop or model input. The current policy is the
+                    // binding's access, widened with ExecuteProcess only
+                    // while an owner-decided elevation lease for this
+                    // dispatch is active (the sandbox independently
+                    // re-checks every grant it requires).
+                    let shell_access = crate::runner::resolve_shell_access(store, current, at)
+                        .map_err(worker_error)?;
                     let inputs = crate::runner::ShellExecutorInputs {
                         root_id: &provisioned.root_id,
                         worktree: &provisioned.worktree,
@@ -639,7 +645,7 @@ fn execute(
                         project_id: task_record.project_id(),
                         role_id: &current.contract().binding().role_id,
                         profile_id: &current.contract().profile().id,
-                        access: current.contract().effective_access(),
+                        access: &shell_access,
                         user_id: principal.user_id(),
                     };
                     let tool_execution = match workers.shell_build(inputs) {
