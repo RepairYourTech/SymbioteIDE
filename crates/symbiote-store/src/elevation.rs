@@ -50,6 +50,13 @@ impl Store {
         if *task.state() != TaskState::Running || dispatch.id() != &lease.dispatch_id {
             return Err(StoreError::RelationshipMismatch);
         }
+        // This slice's only enforcement consumer is the broker's
+        // UseCredential gate; deciding any other permission would journal
+        // an approval that licenses nothing and could mislead an auditor.
+        // Widen as each permission's enforcement point lands (#269).
+        if !matches!(lease.permission, Permission::UseCredential) {
+            return Err(StoreError::InvalidElevation);
+        }
         // Elevation, not re-grant: a permission the dispatch's binding
         // access already carries needs no lease.
         let binding_body: String = transaction

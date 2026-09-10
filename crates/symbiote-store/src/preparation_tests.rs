@@ -668,6 +668,34 @@ fn elevation_leases_are_attributable_bounded_and_sticky() {
             Timestamp(40),
         )
         .unwrap();
+    let lease = |command: &str| symbiote_domain::ElevationLease {
+        id: id!(CommandId, command),
+        project_id: project.clone(),
+        task_id: task.clone(),
+        dispatch_id: dispatch_id.clone(),
+        permission: Permission::UseCredential,
+        reason: "the run must read the operator's configured secret".into(),
+        approved: true,
+        approved_by: id!(UserId, "owner"),
+        decided_at: Timestamp(50),
+        expires_at: Timestamp(50 + 300_000),
+        revoked_at: None,
+    };
+
+    // The ceiling is law even before anything else: UseCredential is not
+    // in it yet, so the decision refuses.
+    assert!(matches!(
+        store.decide_elevation(id!(CommandId, "elevate-early"), lease("elevate-early")),
+        Err(StoreError::ElevationCeiling)
+    ));
+    // A permission with no enforcement consumer refuses outright (this
+    // slice's only consumer is the broker's UseCredential gate).
+    let mut unconsumed = lease("elevate-beyond");
+    unconsumed.permission = Permission::Network;
+    assert!(matches!(
+        store.decide_elevation(id!(CommandId, "elevate-beyond"), unconsumed),
+        Err(StoreError::InvalidElevation)
+    ));
     // Raise the ceiling to admit UseCredential (the binding grants stay
     // without it — that is what makes this an ELEVATION).
     let mut raised = store.get_team(&project).unwrap();
@@ -685,32 +713,12 @@ fn elevation_leases_are_attributable_bounded_and_sticky() {
             Timestamp(45),
         )
         .unwrap();
-    let lease = |command: &str| symbiote_domain::ElevationLease {
-        id: id!(CommandId, command),
-        project_id: project.clone(),
-        task_id: task.clone(),
-        dispatch_id: dispatch_id.clone(),
-        permission: Permission::UseCredential,
-        reason: "the run must read the operator's configured secret".into(),
-        approved: true,
-        approved_by: id!(UserId, "owner"),
-        decided_at: Timestamp(50),
-        expires_at: Timestamp(50 + 300_000),
-        revoked_at: None,
-    };
     // A permission the binding already grants is not an elevation.
     let mut regrant = lease("elevate-regrant");
     regrant.permission = Permission::MutateStream;
     assert!(matches!(
         store.decide_elevation(id!(CommandId, "elevate-regrant"), regrant),
         Err(StoreError::InvalidElevation)
-    ));
-    // A permission above the Team ceiling refuses the decision.
-    let mut beyond = lease("elevate-beyond");
-    beyond.permission = Permission::Network;
-    assert!(matches!(
-        store.decide_elevation(id!(CommandId, "elevate-beyond"), beyond),
-        Err(StoreError::ElevationCeiling)
     ));
     // The approval licenses exactly this dispatch, until it does not:
     // expiry is the automatic revocation, checked at every read.

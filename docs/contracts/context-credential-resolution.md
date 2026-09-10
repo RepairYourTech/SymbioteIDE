@@ -24,10 +24,16 @@ halves the run must never conflate:
   expiry-checked at materialization with distinct `Expired`/`NotYetValid`
   identities) only when the dispatch's profile references the credential,
   the owning project matches the dispatch's project, AND the binding
-  access grants `Permission::UseCredential` — the domain's typed authority
-  that a credential lease may issue at all (the dispatch compiler requires
-  `Control::Credentials` host enforcement whenever that permission is
-  granted). Distinct typed refusals: `UnknownReference`, `Revoked`,
+  access grants `Permission::UseCredential`, OR an explicit elevation
+  lease (#269) that the owner decided for THIS dispatch and whose window
+  is still open at the run's clock — the domain's typed authority that a
+  credential lease may issue at all. Attestation honesty: when the basis
+  is the binding grant, the dispatch compiler requires `Control::Credentials`
+  host enforcement (the claim is in the contract); when the basis is an
+  elevation, the contract carries no `Credentials` claim — the binding
+  did not grant the permission at compile time — so the broker's own
+  provisioning check is the enforcing gate and a future materialization
+  slice must not key its attestation on the contract's claim alone. Distinct typed refusals: `UnknownReference`, `Revoked`,
   `CrossProjectDenied`, `NotReferencedByProfile`, `UseCredentialNotGranted`,
   `InvalidEnvironmentLabel`, `Expired`, `NotYetValid`. Values are zeroized
   on drop, never serialized (no serde on the material type), never appear
