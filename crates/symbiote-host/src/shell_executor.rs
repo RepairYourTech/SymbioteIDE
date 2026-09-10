@@ -297,8 +297,16 @@ impl ShellToolExecutor for SandboxShellExecutor {
             }
         }
         let _ = process.cancel(Duration::from_secs(2));
-        let (mut output, truncated) =
-            Self::read_output(worktree).map_err(|_| ToolExecError::Execution)?;
+        let (mut output, truncated) = match Self::read_output(worktree) {
+            Ok(result) => result,
+            Err(_) => {
+                // A refused read-back (planted symlink/FIFO) must not leave
+                // the planted entry in the worker's diff: remove whatever
+                // sits at the capture path, then fail.
+                let _ = std::fs::remove_file(worktree.join(TOOL_OUTPUT_FILE));
+                return Err(ToolExecError::Execution);
+            }
+        };
         let _ = std::fs::remove_file(worktree.join(TOOL_OUTPUT_FILE));
         if truncated {
             output.extend_from_slice("\n…[truncated]".as_bytes());
@@ -512,9 +520,11 @@ mod tests {
         // the test fails loudly — a skip that looks like a pass is a
         // coverage hole.
         let workspace = manifest
+            // ancestors() includes the path itself: crates/symbiote-host →
+            // crates → workspace root, so the root is the second ancestor.
             .ancestors()
-            .nth(1)
-            .expect("crates/symbiote-host lives one level below the workspace root");
+            .nth(2)
+            .expect("crates/symbiote-host lives two levels below the workspace root");
         let status = std::process::Command::new("cargo")
             .args([
                 "build",
