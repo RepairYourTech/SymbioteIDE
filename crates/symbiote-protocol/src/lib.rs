@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 13,
+    minor: 14,
 };
 
 #[derive(
@@ -221,6 +221,13 @@ pub enum Operation {
     GetProject {
         project_id: ProjectId,
     },
+    ObserveRootPlacement {
+        project_id: ProjectId,
+        root_id: RootId,
+        host_id: HostId,
+        path: String,
+        expected_revision: Revision,
+    },
     CreateTask {
         task: TaskDraft,
     },
@@ -284,6 +291,7 @@ impl Operation {
             Self::CreateTask { task } => Some(&task.project_id),
             Self::RecordResourceConsent { snapshot, .. } => Some(&snapshot.project_id),
             Self::GetProject { project_id }
+            | Self::ObserveRootPlacement { project_id, .. }
             | Self::RevokeResourceConsent { project_id, .. }
             | Self::GetResourceConsent { project_id, .. }
             | Self::GetTask { project_id, .. }
@@ -313,6 +321,7 @@ impl Operation {
                 | Self::StartPreparedTask { .. }
                 | Self::RunStartedDispatch { .. }
                 | Self::RegisterProject { .. }
+                | Self::ObserveRootPlacement { .. }
                 | Self::CreateTask { .. }
                 | Self::Shutdown {}
                 | Self::RecordResourceConsent { .. }
@@ -412,6 +421,19 @@ impl Request {
             }
             Operation::RegisterProject { project } => project.validate(),
             Operation::CreateTask { task } => task.validate(),
+            Operation::ObserveRootPlacement { path, .. } => {
+                // A placement observation is an absolute, bounded Host path.
+                // The Host separately verifies the path is a real repository.
+                if path.is_empty()
+                    || path.len() > 4096
+                    || !path.starts_with('/')
+                    || path.trim().is_empty()
+                    || path.chars().any(char::is_control)
+                {
+                    return Err(invalid());
+                }
+                Ok(())
+            }
             Operation::RecordResourceConsent { snapshot, .. } => {
                 snapshot.validate().map_err(|_| invalid())
             }
@@ -598,6 +620,13 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         }
         Operation::RegisterProject { project } => {
             principal.permits(&project.id, ProjectPermission::Register)
+        }
+        Operation::ObserveRootPlacement { project_id, .. } => {
+            // Placement observation extends Project registration authority
+            // over an already-registered Project. The Host separately
+            // verifies the claimed Host identity is its own inventory
+            // identity and that the path is a real repository on it.
+            principal.permits(project_id, ProjectPermission::Register)
         }
         Operation::GetProject { project_id }
         | Operation::GetTask { project_id, .. }
@@ -1022,6 +1051,14 @@ pub enum EventPayload {
         roots: Vec<Root>,
         roles: Vec<Role>,
     },
+    RootPlacementObserved {
+        root: Box<Root>,
+        expected_revision: Revision,
+        host_id: HostId,
+        path: String,
+        actor: UserId,
+        at: Timestamp,
+    },
     TaskCreated {
         task: Box<Task>,
         stream: Box<ChangeStream>,
@@ -1046,6 +1083,7 @@ impl EventPayload {
             Self::ResourceConsentRecorded { consent }
             | Self::ResourceConsentRevoked { consent, .. } => &consent.snapshot.project_id,
             Self::ProjectRegistered { project, .. } => &project.id,
+            Self::RootPlacementObserved { root, .. } => &root.project_id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
             Self::WorkRouted { decision, .. } => &decision.project_id,
             Self::TaskDependenciesSet { project_id, .. } => project_id,
@@ -1114,6 +1152,19 @@ impl EventPayload {
                 &project.id == project_id
                     && roots.iter().all(|root| &root.project_id == project_id)
                     && roles.iter().all(|role| &role.project_id == project_id)
+            }
+            Self::RootPlacementObserved {
+                root,
+                expected_revision,
+                host_id,
+                path,
+                at,
+                ..
+            } => {
+                &root.project_id == project_id
+                    && at.0 <= i64::MAX as u64
+                    && expected_revision.0.checked_add(1) == Some(root.revision.0)
+                    && root.host_paths.get(host_id).map(String::as_str) == Some(path.as_str())
             }
             Self::TaskCreated {
                 task,

@@ -125,6 +125,14 @@ pub enum EventPayload {
         roots: Vec<Root>,
         roles: Vec<Role>,
     },
+    RootPlacementObserved {
+        root: Box<Root>,
+        expected_revision: Revision,
+        host_id: HostId,
+        path: String,
+        actor: UserId,
+        at: Timestamp,
+    },
     TaskCreated {
         task: Box<Task>,
         stream: Box<ChangeStream>,
@@ -332,6 +340,25 @@ impl Store {
         }
     }
 
+    /// Rebuild the server-assigned observation time for identical retries.
+    pub fn placement_command_timestamp(&self, command_id: &CommandId) -> Result<Option<Timestamp>> {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [command_id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::RootPlacementObserved { at, .. } => Ok(Some(at)),
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
     pub fn register_project(
         &mut self,
         command_id: CommandId,
@@ -430,6 +457,92 @@ impl Store {
             &project.id,
             &command_id,
             Revision(0),
+            &request,
+            &payload,
+        )?;
+        #[cfg(test)]
+        tests::fault_boundary("journal_before_commit");
+        transaction.commit()?;
+        #[cfg(test)]
+        tests::fault_boundary("after_commit");
+        Ok(receipt)
+    }
+
+    /// Record a Host-observed repository placement for a canonical Root. The
+    /// wire refuses client-declared placements at registration; only this
+    /// observation path mutates `host_paths`, under exact revision control.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_root_placement(
+        &mut self,
+        command_id: CommandId,
+        project_id: &ProjectId,
+        root_id: &RootId,
+        host_id: &HostId,
+        path: &str,
+        expected_revision: Revision,
+        actor: &UserId,
+        at: Timestamp,
+    ) -> Result<Receipt> {
+        let request = placement_request(
+            project_id,
+            root_id,
+            host_id,
+            path,
+            expected_revision,
+            actor,
+            at,
+        )?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(receipt) = replay(&transaction, &command_id, &request)? {
+            return Ok(receipt);
+        }
+        let (owner, body): (String, String) = transaction
+            .query_row(
+                "SELECT project_id,body FROM roots WHERE id=?1",
+                [root_id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or(StoreError::NotFound)?;
+        let root: Root = serde_json::from_str(&body)?;
+        if owner != project_id.as_str() || root.project_id != *project_id {
+            return Err(StoreError::RelationshipMismatch);
+        }
+        if root.revision != expected_revision || path.is_empty() || path.as_bytes().contains(&0) {
+            return Err(StoreError::Domain(DomainError::RevisionConflict));
+        }
+        let next_revision = expected_revision
+            .0
+            .checked_add(1)
+            .ok_or(StoreError::Domain(DomainError::RevisionExhausted))?;
+        let mut updated = root;
+        updated.revision = Revision(next_revision);
+        updated.host_paths.insert(host_id.clone(), path.to_string());
+        let payload = EventPayload::RootPlacementObserved {
+            root: Box::new(updated.clone()),
+            expected_revision,
+            host_id: host_id.clone(),
+            path: path.to_string(),
+            actor: actor.clone(),
+            at,
+        };
+        transaction.execute(
+            "UPDATE roots SET body=?1 WHERE id=?2 AND project_id=?3",
+            params![
+                serde_json::to_string(&updated)?,
+                root_id.as_str(),
+                project_id.as_str()
+            ],
+        )?;
+        #[cfg(test)]
+        tests::fault_boundary("state_before_journal");
+        let receipt = append(
+            &transaction,
+            project_id,
+            &command_id,
+            Revision(next_revision),
             &request,
             &payload,
         )?;
@@ -916,6 +1029,31 @@ fn revocation_request(
     ))?)
 }
 
+/// Input-deterministic idempotency bytes for a placement observation. The
+/// journaled event additionally carries the resulting Root, so a retry of an
+/// identical command replays even after the Root row has been updated.
+#[allow(clippy::too_many_arguments)]
+fn placement_request(
+    project: &ProjectId,
+    root: &RootId,
+    host: &HostId,
+    path: &str,
+    expected_revision: Revision,
+    actor: &UserId,
+    at: Timestamp,
+) -> Result<String> {
+    Ok(serde_json::to_string(&(
+        "observe_root_placement",
+        project,
+        root,
+        host,
+        path,
+        expected_revision,
+        actor,
+        at,
+    ))?)
+}
+
 fn mutation_request(task_id: &TaskId, command: &TaskCommand) -> Result<String> {
     #[derive(Serialize)]
     struct Mutation<'a> {
@@ -947,6 +1085,8 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         BTreeMap::new();
     let mut preparations: BTreeMap<TaskId, symbiote_domain::DispatchPreparation> = BTreeMap::new();
     let mut projects = BTreeMap::new();
+    // Named to avoid shadowing by destructured ProjectRegistered roots.
+    let mut audit_roots: BTreeMap<RootId, Root> = BTreeMap::new();
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
     let mut consents: BTreeMap<CommandId, ResourceConsent> = BTreeMap::new();
@@ -1100,9 +1240,57 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                             (*project.clone(), roots.clone(), roles.clone()),
                         )
                         .is_some()
+                    || roots.iter().any(|root| {
+                        root.project_id != project.id
+                            || audit_roots.insert(root.id.clone(), root.clone()).is_some()
+                    })
                 {
                     return Err(StoreError::Integrity(
                         "invalid project registration journal lineage".into(),
+                    ));
+                }
+            }
+            EventPayload::RootPlacementObserved {
+                root,
+                expected_revision,
+                host_id,
+                path,
+                actor,
+                at,
+            } => {
+                let previous = audit_roots
+                    .get(&root.id)
+                    .ok_or_else(|| StoreError::Integrity("placement precedes root".into()))?;
+                let next_revision = expected_revision
+                    .0
+                    .checked_add(1)
+                    .ok_or_else(|| StoreError::Integrity("root revision exhausted".into()))?;
+                let mut expected = previous.clone();
+                expected.revision = Revision(next_revision);
+                expected
+                    .host_paths
+                    .insert(host_id.clone(), path.to_string());
+                if root.project_id.as_str() != project_key
+                    || root.project_id != previous.project_id
+                    || previous.revision != *expected_revision
+                    || root.revision.0 != next_revision
+                    || root.as_ref() != &expected
+                    || request
+                        != placement_request(
+                            &root.project_id,
+                            &root.id,
+                            host_id,
+                            path,
+                            *expected_revision,
+                            actor,
+                            *at,
+                        )?
+                    || audit_roots
+                        .insert(root.id.clone(), (**root).clone())
+                        .is_none_or(|previous| previous.project_id != root.project_id)
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid root placement journal lineage".into(),
                     ));
                 }
             }
@@ -1427,21 +1615,6 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         }
         root_count += roots.len();
         role_count += roles.len();
-        for root in roots {
-            let (owner, body): (String, String) = connection.query_row(
-                "SELECT project_id,body FROM roots WHERE id=?1",
-                [root.id.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            if serde_json::from_str::<Root>(&body)? != root
-                || root.project_id != id
-                || owner != id.as_str()
-            {
-                return Err(StoreError::Integrity(
-                    "root state differs from journal".into(),
-                ));
-            }
-        }
         for role in roles {
             let (owner, body): (String, String) = connection.query_row(
                 "SELECT project_id,body FROM roles WHERE id=?1",
@@ -1456,6 +1629,20 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     "role state differs from journal".into(),
                 ));
             }
+        }
+    }
+    // Root bodies replay to their latest observed placement, not necessarily
+    // the registration-time state.
+    for root in audit_roots.values() {
+        let (owner, body): (String, String) = connection.query_row(
+            "SELECT project_id,body FROM roots WHERE id=?1",
+            [root.id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if serde_json::from_str::<Root>(&body)? != *root || root.project_id.as_str() != owner {
+            return Err(StoreError::Integrity(
+                "root state differs from journal".into(),
+            ));
         }
     }
     for (query, expected) in [

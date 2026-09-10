@@ -56,15 +56,17 @@ fn consent_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Prot
     {
         return Ok(at);
     }
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
-        .as_millis();
-    Ok(Timestamp(
-        millis
-            .try_into()
-            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
-    ))
+    now_timestamp()
+}
+
+fn placement_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .placement_command_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    now_timestamp()
 }
 
 fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
@@ -74,15 +76,7 @@ fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Protoc
     {
         return Ok(at);
     }
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
-        .as_millis();
-    Ok(Timestamp(
-        millis
-            .try_into()
-            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
-    ))
+    now_timestamp()
 }
 
 fn start_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
@@ -106,43 +100,44 @@ fn start_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Protoc
 /// The local Host's enforcement-claim record. Claims are operator-provisioned
 /// (see docs/contracts/dispatch-preparation.md); the Host asserts them for its
 /// own identity only, with a fixed one-hour verification window until
-/// sandbox-observed evidence lands (#269).
+/// sandbox-observed evidence lands (#269). `credentials_enforced` is true
+/// only when the operator provisioned a credential broker (#217): a Host
+/// with no broker never claims `Credentials`, so a dispatch granting
+/// `UseCredential` refuses at start instead of running unisolated.
 fn host_record(
     host_id: &HostId,
     inventory: &mut crate::inventory::InventoryService,
+    credentials_enforced: bool,
 ) -> Result<symbiote_domain::Host, ProtocolError> {
     if inventory.host_id() != host_id {
         return Err(ProtocolError::new(ErrorCode::PermissionDenied));
     }
-    let now = Timestamp(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
-            .as_millis()
-            .try_into()
-            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
-    );
+    let now = now_timestamp()?;
     let evidence = symbiote_domain::EvidenceId::new(format!("host-claims-{}", host_id.as_str()))
         .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
-    let claims = [
+    let mut controls = vec![
         symbiote_domain::Control::Filesystem,
         symbiote_domain::Control::Process,
         symbiote_domain::Control::Cancellation,
         symbiote_domain::Control::CompletionAuthority,
-    ]
-    .into_iter()
-    .map(|control| {
-        (
-            control,
-            symbiote_domain::EnforcementClaim {
-                strength: symbiote_domain::EnforcementStrength::HostEnforced,
-                evidence: evidence.clone(),
-                verified_at: now,
-                expires_at: Timestamp(now.0 + 3_600_000),
-            },
-        )
-    })
-    .collect();
+    ];
+    if credentials_enforced {
+        controls.push(symbiote_domain::Control::Credentials);
+    }
+    let claims = controls
+        .into_iter()
+        .map(|control| {
+            (
+                control,
+                symbiote_domain::EnforcementClaim {
+                    strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                    evidence: evidence.clone(),
+                    verified_at: now,
+                    expires_at: Timestamp(now.0 + 3_600_000),
+                },
+            )
+        })
+        .collect();
     Ok(symbiote_domain::Host {
         id: host_id.clone(),
         revision: symbiote_domain::Revision(0),
@@ -488,7 +483,7 @@ fn execute(
             // carries this process's enforcement claims: the claims are the
             // operator-provisioned set documented in dispatch-preparation.md, with
             // evidence windows owned by the Host operator.
-            let claims_host = host_record(host_id, inventory)?;
+            let claims_host = host_record(host_id, inventory, workers.has_credential_broker())?;
             let at = start_timestamp(store, request)?;
             // Dispatch and contract identities are minted by the Host from
             // its nonce-bearing inventory identity, deterministic per task.
@@ -628,6 +623,7 @@ fn execute(
                         role_id: &current.contract().binding().role_id,
                         profile_id: &current.contract().profile().id,
                         access: &current.contract().binding().access,
+                        user_id: principal.user_id(),
                     };
                     let tool_execution = match workers.shell_build(inputs) {
                         Ok(Some(executor)) => Some(crate::runner::ToolExecution {
@@ -919,6 +915,45 @@ fn execute(
             .project(project_id)
             .map(ResponseBody::Project)
             .map_err(storage_error),
+        Operation::ObserveRootPlacement {
+            project_id,
+            root_id,
+            host_id,
+            path,
+            expected_revision,
+        } => {
+            // A placement names a repository location on a specific Host. The
+            // claimed Host must be this Host's own inventory identity, and
+            // the path must observe as a real git work tree here, before any
+            // placement is recorded; no other Host's placement can be
+            // asserted through this daemon.
+            if inventory.host_id() != host_id {
+                return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+            }
+            let observed =
+                std::fs::canonicalize(path).map_err(|_| ProtocolError::new(ErrorCode::NotFound))?;
+            let canonical = observed
+                .into_os_string()
+                .into_string()
+                .map_err(|_| ProtocolError::new(ErrorCode::NotFound))?;
+            let mut git = symbiote_repo::SystemGit::new();
+            symbiote_repo::observe_head(&mut git, std::path::Path::new(&canonical))
+                .map_err(|_| ProtocolError::new(ErrorCode::NotFound))?;
+            let at = placement_timestamp(store, request)?;
+            store
+                .observe_root_placement(
+                    request.command_id.clone(),
+                    project_id,
+                    root_id,
+                    host_id,
+                    &canonical,
+                    *expected_revision,
+                    principal.user_id(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::CreateTask { task } => {
             let origin = task.origin.clone();
             let (task, stream) = task.clone().into_records()?;
@@ -1127,6 +1162,21 @@ fn execute(
                                 project: *project,
                                 roots,
                                 roles,
+                            },
+                            symbiote_store::EventPayload::RootPlacementObserved {
+                                root,
+                                expected_revision,
+                                host_id,
+                                path,
+                                actor,
+                                at,
+                            } => EventPayload::RootPlacementObserved {
+                                root,
+                                expected_revision,
+                                host_id,
+                                path,
+                                actor,
+                                at,
                             },
                             symbiote_store::EventPayload::TaskCreated {
                                 task,

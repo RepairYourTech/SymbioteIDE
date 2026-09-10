@@ -322,7 +322,7 @@ fn work_references_require_read_access_even_after_reference_is_removed() {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":13},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":14},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -331,7 +331,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor":13},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor":14},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 
@@ -450,6 +450,10 @@ fn versions_negotiate_only_explicitly_supported_versions() {
         ProtocolVersion {
             major: 1,
             minor: 12,
+        },
+        ProtocolVersion {
+            major: 1,
+            minor: 13,
         },
         ProtocolVersion { major: 2, minor: 0 },
     ] {
@@ -601,6 +605,125 @@ fn pagination_bounds_sequence_and_project_lineage() {
         has_more: false,
     };
     assert!(empty.validate(&project_id(), JournalCursor(3), 10).is_ok());
+}
+
+#[test]
+fn root_placement_observation_needs_registration_grant_and_absolute_paths() {
+    let operation = |path: &str| Operation::ObserveRootPlacement {
+        project_id: project_id(),
+        root_id: RootId::new("root-a").unwrap(),
+        host_id: HostId::new("host-a").unwrap(),
+        path: path.into(),
+        expected_revision: Revision(0),
+    };
+    // Only absolute, bounded, control-free paths parse.
+    assert!(
+        parse_request(&serde_json::to_vec(&request(operation("/repos/demo"))).unwrap()).is_ok()
+    );
+    for path in ["", " ", "relative/path", "/no\0nul"] {
+        assert!(parse_request(&serde_json::to_vec(&request(operation(path))).unwrap()).is_err());
+    }
+    // Registration authority: a read-only principal cannot record a
+    // placement, and the Host separately verifies the host identity and
+    // repository before storing anything.
+    let reader = Principal::restricted(
+        UserId::new("reader").unwrap(),
+        BTreeMap::from([(project_id(), BTreeSet::from([ProjectPermission::Read]))]),
+    );
+    let placed = request(operation("/repos/demo"));
+    assert_eq!(
+        authorize(&reader, &placed).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    assert!(authorize(&principal(), &placed).is_ok());
+    assert!(matches!(
+        placed.operation,
+        Operation::ObserveRootPlacement { .. }
+    ));
+    assert!(placed.operation.is_mutation());
+    assert_eq!(placed.operation.project_id(), Some(&project_id()));
+}
+
+#[test]
+fn placement_events_replay_lineage_with_exact_revision_transitions() {
+    let host = HostId::new("host-a").unwrap();
+    let actor = UserId::new("owner").unwrap();
+    let mut root = project_draft().roots.remove(0);
+    root.revision = Revision(1);
+    root.host_paths
+        .insert(host.clone(), "/repos/demo".to_string());
+    let event = |root: &Root| JournalEvent {
+        sequence: 5,
+        project_id: project_id(),
+        command_id: CommandId::new("placement-command").unwrap(),
+        revision: Revision(1),
+        payload: EventPayload::RootPlacementObserved {
+            root: Box::new(root.clone()),
+            expected_revision: Revision(0),
+            host_id: host.clone(),
+            path: "/repos/demo".into(),
+            actor: actor.clone(),
+            at: Timestamp(20),
+        },
+    };
+    let page = JournalPage {
+        events: vec![event(&root)],
+        next_cursor: JournalCursor(5),
+        has_more: false,
+    };
+    assert!(page.validate(&project_id(), JournalCursor(0), 10).is_ok());
+    // A revision jump that does not match expected+1 is corrupt lineage.
+    let mut stale = event(&root);
+    stale.payload = match stale.payload {
+        EventPayload::RootPlacementObserved {
+            root,
+            expected_revision: _,
+            host_id,
+            path,
+            actor,
+            at,
+        } => EventPayload::RootPlacementObserved {
+            root,
+            expected_revision: Revision(3),
+            host_id,
+            path,
+            actor,
+            at,
+        },
+        other => other,
+    };
+    let page = JournalPage {
+        events: vec![stale],
+        next_cursor: JournalCursor(5),
+        has_more: false,
+    };
+    assert!(page.validate(&project_id(), JournalCursor(0), 10).is_err());
+    // The recorded path must be the entry actually present on the Root.
+    let mut absent = event(&root);
+    absent.payload = match absent.payload {
+        EventPayload::RootPlacementObserved {
+            root,
+            expected_revision,
+            host_id,
+            actor,
+            at,
+            ..
+        } => EventPayload::RootPlacementObserved {
+            root,
+            expected_revision,
+            host_id,
+            path: "/repos/elsewhere".into(),
+            actor,
+            at,
+        },
+        other => other,
+    };
+    let page = JournalPage {
+        events: vec![absent],
+        next_cursor: JournalCursor(5),
+        has_more: false,
+    };
+    assert!(page.validate(&project_id(), JournalCursor(0), 10).is_err());
 }
 
 #[test]

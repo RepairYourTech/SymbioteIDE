@@ -10,6 +10,9 @@ compile_error!(
 pub(crate) mod context_resolution;
 mod identity;
 mod inventory;
+/// Operator provisioning (#54): the explicit configuration file that turns
+/// dispatch activation into a working execution path.
+pub mod operator;
 pub mod runner;
 mod service;
 /// The sandboxed shell-tool executor composition (#218/#465): production
@@ -33,6 +36,17 @@ pub fn serve_with_telemetry(
     directory: &Path,
     telemetry: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    serve_full(directory, telemetry, runner::WorkerTransports::production())
+}
+
+/// Serves with operator-provisioned worker transports (#54): the
+/// configuration is trusted operator state assembled by the binary — this
+/// entry point never reads client input.
+pub fn serve_full(
+    directory: &Path,
+    telemetry: bool,
+    mut worker_transports: runner::WorkerTransports,
+) -> Result<(), Box<dyn std::error::Error>> {
     let local = transport::LocalListener::bind(directory)?;
     let mut inventory = inventory::InventoryService::new(identity::load(directory)?, telemetry)?;
     // The same authenticated OS owner is the explicit bootstrap policy. This
@@ -42,12 +56,13 @@ pub fn serve_with_telemetry(
         nix::unistd::geteuid()
     ))?);
     let mut store = Store::open(directory.join("control.sqlite3"))?;
-    // Production configuration: no live worker transports are configured.
-    // Activation of a started dispatch refuses with a typed error until the
-    // operator provisions an authorized transport path (sandboxed launch +
-    // credential/billing authorization).
-    let mut worker_transports = runner::WorkerTransports::production();
-    eprintln!("symbioted: ready (local metadata capabilities only)");
+    if worker_transports.reservation_base().is_ok() {
+        eprintln!(
+            "symbioted: operator provisioning active (reservation base + configured transports)"
+        );
+    } else {
+        eprintln!("symbioted: ready (local metadata capabilities only)");
+    }
     // Known limitation: connections are served synchronously. With no
     // worker transports configured this is irrelevant (activation refuses
     // before any loop runs); if an operator ever provisions a transport,
