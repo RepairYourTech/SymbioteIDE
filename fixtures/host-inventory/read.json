@@ -1,1 +1,1 @@
-{"version":{"major":1,"minor":15},"correlation_id":"read-pulse","command_id":"read-pulse","operation":{"kind":"get_host_pulse"}}
+{"version":{"major":1,"minor":16},"correlation_id":"read-pulse","command_id":"read-pulse","operation":{"kind":"get_host_pulse"}}

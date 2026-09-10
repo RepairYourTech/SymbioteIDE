@@ -787,3 +787,115 @@ fn elevation_leases_are_attributable_bounded_and_sticky() {
     drop(store);
     Store::open(temp.database()).unwrap();
 }
+
+#[test]
+fn an_elevation_request_is_journaled_evidence_and_never_licenses() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, task) = full_fixture(&mut store, "ask");
+    let task_role = store.task(&task).unwrap().role_id().clone();
+    let request = symbiote_workforce::RouteRequest {
+        project_id: project.clone(),
+        work_id: WorkId::Objective(id!(ObjectiveId, "project-prep-ask")),
+        requested: Some(task_role.clone()),
+        domains: BTreeSet::new(),
+    };
+    let team = store.get_team(&project).unwrap();
+    let decision = symbiote_workforce::resolve_route(&team, &request).unwrap();
+    store
+        .record_route(
+            id!(CommandId, "route-ask"),
+            decision,
+            id!(UserId, "owner"),
+            Timestamp(20),
+        )
+        .unwrap();
+    store
+        .prepare_dispatch(
+            id!(CommandId, "prepare-ask"),
+            task.clone(),
+            id!(UserId, "owner"),
+            Timestamp(30),
+        )
+        .unwrap();
+    let host = Host {
+        id: id!(HostId, "host-ask"),
+        revision: Revision(0),
+        device: id!(DeviceId, "device-ask"),
+        fabric: None,
+        supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+        controls: [
+            symbiote_domain::Control::Filesystem,
+            symbiote_domain::Control::Cancellation,
+            symbiote_domain::Control::CompletionAuthority,
+            symbiote_domain::Control::Process,
+        ]
+        .into_iter()
+        .map(|c| {
+            (
+                c,
+                symbiote_domain::EnforcementClaim {
+                    strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                    evidence: id!(EvidenceId, "proof"),
+                    verified_at: Timestamp(1),
+                    expires_at: Timestamp(1_000_000),
+                },
+            )
+        })
+        .collect(),
+    };
+    let dispatch_id = id!(DispatchId, "dispatch-ask");
+    store
+        .start_prepared_task(
+            id!(CommandId, "start-ask"),
+            task.clone(),
+            dispatch_id.clone(),
+            id!(RuntimeContractId, "contract-ask"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(40),
+        )
+        .unwrap();
+    let ask = symbiote_domain::ElevationRequest {
+        id: id!(CommandId, "ask-usecredential"),
+        project_id: project.clone(),
+        task_id: task.clone(),
+        dispatch_id: dispatch_id.clone(),
+        permission: Permission::UseCredential,
+        reason: "the run must read the operator's configured secret".into(),
+        requested_at: Timestamp(50),
+    };
+    store
+        .request_elevation(id!(CommandId, "ask-usecredential"), ask.clone())
+        .unwrap();
+    // Filing the ask licenses nothing — only a decided lease can.
+    assert!(
+        !store
+            .active_elevation(&dispatch_id, &Permission::UseCredential, Timestamp(51))
+            .unwrap()
+    );
+    // An ask for a not-running dispatch is refused.
+    let mut ghost = ask.clone();
+    ghost.id = id!(CommandId, "ask-ghost");
+    ghost.dispatch_id = id!(DispatchId, "dispatch-ghost");
+    assert!(matches!(
+        store.request_elevation(id!(CommandId, "ask-ghost"), ghost),
+        Err(StoreError::RelationshipMismatch)
+    ));
+    // Exact retry replays; different intent under the same id cannot.
+    assert!(
+        store
+            .request_elevation(id!(CommandId, "ask-usecredential"), ask.clone())
+            .unwrap()
+            .replayed
+    );
+    let mut other = ask;
+    other.reason = "a different reason".into();
+    assert!(matches!(
+        store.request_elevation(id!(CommandId, "ask-usecredential"), other),
+        Err(StoreError::IdempotencyConflict)
+    ));
+    store.integrity_check().unwrap();
+    drop(store);
+    Store::open(temp.database()).unwrap();
+}

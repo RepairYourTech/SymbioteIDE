@@ -22,7 +22,7 @@ mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 11;
+const DATABASE_VERSION: i64 = 12;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -217,6 +217,9 @@ pub enum EventPayload {
         lease: Box<ElevationLease>,
         revoked_by: UserId,
     },
+    ElevationRequested {
+        ask: Box<ElevationRequest>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -314,6 +317,9 @@ impl Store {
         }
         if version < 11 {
             transaction.execute_batch(elevation::MIGRATION_V11)?;
+        }
+        if version < 12 {
+            transaction.execute_batch(elevation::MIGRATION_V12)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -1104,6 +1110,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut streams = BTreeMap::new();
     let mut consents: BTreeMap<CommandId, ResourceConsent> = BTreeMap::new();
     let mut elevations: BTreeMap<CommandId, ElevationLease> = BTreeMap::new();
+    let mut elevation_asks: BTreeMap<CommandId, ElevationRequest> = BTreeMap::new();
     let mut statement = connection.prepare("SELECT sequence,project_id,command_id,revision,request,payload FROM journal ORDER BY sequence")?;
     let rows = statement.query_map([], |r| {
         Ok((
@@ -1292,6 +1299,26 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     ));
                 }
                 elevations.insert(lease.id.clone(), *lease.clone());
+            }
+            EventPayload::ElevationRequested { ask } => {
+                ask.validate().map_err(|_| StoreError::InvalidElevation)?;
+                let task = tasks.get(&ask.task_id).ok_or(StoreError::NotFound)?;
+                if task.project_id() != &ask.project_id
+                    || *task.state() != TaskState::Running
+                    || task
+                        .current_dispatch()
+                        .is_none_or(|dispatch| dispatch.id() != &ask.dispatch_id)
+                    || ask.id.as_str() != command_key
+                    || revision != 0
+                    || request != serde_json::to_string(&event)?
+                    || elevation_asks
+                        .insert(ask.id.clone(), *ask.clone())
+                        .is_some()
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid elevation request journal lineage".into(),
+                    ));
+                }
             }
             EventPayload::ProjectRegistered {
                 project,
@@ -1744,7 +1771,13 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             ));
         }
     }
-    for (query, expected) in [("SELECT count(*) FROM elevations", elevations.len())] {
+    for (query, expected) in [
+        ("SELECT count(*) FROM elevations", elevations.len()),
+        (
+            "SELECT count(*) FROM elevation_requests",
+            elevation_asks.len(),
+        ),
+    ] {
         if connection.query_row(query, [], |r| sql_usize(r, 0))? != expected {
             return Err(StoreError::Integrity(
                 "current record count differs from journal".into(),
@@ -1760,6 +1793,18 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         if serde_json::from_str::<ElevationLease>(&body)? != lease {
             return Err(StoreError::Integrity(
                 "elevation state differs from journal".into(),
+            ));
+        }
+    }
+    for (id, ask) in elevation_asks {
+        let body: String = connection.query_row(
+            "SELECT body FROM elevation_requests WHERE id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )?;
+        if serde_json::from_str::<ElevationRequest>(&body)? != ask {
+            return Err(StoreError::Integrity(
+                "elevation request state differs from journal".into(),
             ));
         }
     }

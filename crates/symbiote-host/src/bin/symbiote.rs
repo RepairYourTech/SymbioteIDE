@@ -232,6 +232,19 @@ fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "request-elevation",
+            summary: "file a worker elevation ask as evidence (never grants a lease)",
+            usage: "request-elevation <task_id> <dispatch_id> <permission> <reason>",
+            build: |args, map| {
+                plain("kind", serde_json::json!("request_elevation"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                id_field(args, 1, "dispatch_id", "dispatch_id", map)?;
+                plain("permission", field(args, 2, "permission")?.into(), map);
+                plain("reason", field(args, 3, "reason")?.into(), map);
+                Ok(())
+            },
+        },
+        Command {
             name: "scheduling-projection",
             summary: "explain which tasks are schedulable/blocked and why",
             usage: "scheduling-projection",

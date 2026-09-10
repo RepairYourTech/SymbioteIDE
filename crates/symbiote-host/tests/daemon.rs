@@ -130,7 +130,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":15},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":16},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1340,6 +1340,16 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
                 "report",
             ],
             "invalid_request",
+        ),
+        (
+            vec![
+                "request-elevation",
+                "missing-task",
+                "disp_ghost",
+                "use_credential",
+                "need-secret",
+            ],
+            "not_found",
         ),
         (
             vec!["start-prepared-task", "cli-task", "ghost-host"],
