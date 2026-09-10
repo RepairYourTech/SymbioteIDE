@@ -169,14 +169,27 @@ impl DesktopController {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        self.daemon = Some(child);
-        let workflow =
-            DemoWorkflow::connect(&self.state_dir, &self.reservation_base, &self.repository)?;
+        // Connect before the controller owns the child: a connect failure
+        // takes the just-spawned daemon down with it instead of leaving a
+        // detached process behind.
+        let workflow = match DemoWorkflow::connect(
+            &self.state_dir,
+            &self.reservation_base,
+            &self.repository,
+        ) {
+            Ok(workflow) => workflow,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        };
         let restored = self.read_positions_file();
         self.workflow = Some(match restored {
             Some(positions) => workflow.with_positions(positions),
             None => workflow,
         });
+        self.daemon = Some(child);
         Ok(())
     }
 
@@ -228,10 +241,24 @@ impl DesktopController {
             let _ = workflow.shutdown();
         }
         self.workflow = None;
-        if let Some(child) = self.daemon.as_mut() {
-            let _ = child.wait();
+        let mut child = match self.daemon.take() {
+            Some(child) => child,
+            None => return,
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+            }
         }
-        self.daemon = None;
     }
 
     /// The crash path — the daemon dies exactly like a crashed process
@@ -285,12 +312,9 @@ impl DesktopController {
 
 impl Drop for DesktopController {
     fn drop(&mut self) {
-        // Never leave a daemon behind: stop gracefully, then make sure.
+        // Never leave a daemon behind: stop() bounds its wait and falls
+        // back to the crash path, so the guarantee is real.
         self.stop();
-        if let Some(child) = self.daemon.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 }
 
