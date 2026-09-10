@@ -173,19 +173,19 @@ pub fn observe_worktree_evidence(
     stream_id: &symbiote_domain::ChangeStreamId,
 ) -> Result<WorktreeEvidence, WorkflowError> {
     let digest = symbiote_trust::Fingerprint::of(stream_id.as_str().as_bytes());
-    let seed =
-        symbiote_worktrees::policy_seed(digest.as_str()).map_err(|_| WorkflowError::Socket)?;
+    let seed = symbiote_worktrees::policy_seed(digest.as_str())
+        .map_err(|_| WorkflowError::LocalObservation)?;
     let derived = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
         project_id,
         root_id,
         stream_id,
         seed,
     })
-    .map_err(|_| WorkflowError::Socket)?;
+    .map_err(|_| WorkflowError::LocalObservation)?;
     let worktree = derived.worktree_path(reservation_base);
     let mut git = symbiote_repo::SystemGit::new();
-    let status =
-        symbiote_repo::observe_status(&mut git, &worktree).map_err(|_| WorkflowError::Socket)?;
+    let status = symbiote_repo::observe_status(&mut git, &worktree)
+        .map_err(|_| WorkflowError::LocalObservation)?;
     Ok(WorktreeEvidence {
         worktree,
         uncommitted: status.uncommitted,
