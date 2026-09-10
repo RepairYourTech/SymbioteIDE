@@ -4,6 +4,10 @@ compile_error!(
     "symbiote-host currently requires Linux SO_PEERCRED; other transports remain unimplemented"
 );
 
+/// Context/credential resolution wiring (#217): the store-backed
+/// `ContextSource` and the dispatch-facet resolution the activation path
+/// uses. Credential VALUES live only in the operator's broker.
+pub(crate) mod context_resolution;
 mod identity;
 mod inventory;
 pub mod runner;

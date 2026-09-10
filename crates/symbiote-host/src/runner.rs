@@ -95,6 +95,12 @@ pub struct WorkerTransports {
     /// The operator's sandbox shell-executor composition. Absent means
     /// declared shell tools stay propose-only on native runs.
     shell: Option<Box<dyn ShellExecutorFactory>>,
+    /// The operator's credential broker (#217). Absent means runs resolve
+    /// context only — no credential leases are issued, and a profile
+    /// referencing a credential gets the typed `NoCredentialBroker`
+    /// refusal instead of a silent empty lease. The broker itself holds
+    /// the ONLY plaintext; nothing here serializes values.
+    pub(crate) broker: Option<std::rc::Rc<std::cell::RefCell<symbiote_context::CredentialBroker>>>,
     /// The Host's reserved-location base directory for derived worktrees
     /// (the premise symbiote-worktrees verifies). Empty means worktree
     /// provisioning has no configured base and refuses.
@@ -122,6 +128,21 @@ impl WorkerTransports {
     pub fn with_shell_executor(mut self, factory: Box<dyn ShellExecutorFactory>) -> Self {
         self.shell = Some(factory);
         self
+    }
+
+    /// Attaches the operator's credential broker. The broker is shared
+    /// (registration and revocation are operator surfaces outside the run
+    /// path); a run only ever reads leases from it.
+    pub fn with_credential_broker(
+        mut self,
+        broker: std::rc::Rc<std::cell::RefCell<symbiote_context::CredentialBroker>>,
+    ) -> Self {
+        self.broker = Some(broker);
+        self
+    }
+
+    pub fn broker_configured(&self) -> bool {
+        self.broker.is_some()
     }
 
     pub fn native_configured(&self) -> bool {
@@ -191,6 +212,38 @@ impl WorkerTransports {
             None => Ok(None),
         }
     }
+
+    /// Resolves credential leases for one dispatch from the operator's
+    /// broker. Refusal identities are mapped payload-free; a lease's
+    /// plaintext NEVER passes through the runner — leases are returned to
+    /// the caller, which materializes them only inside the sandbox launch
+    /// composition (native env) or hands nothing to the harness (external
+    /// credentials stay harness-owned; this method is native-only by
+    /// construction and is not called for external runs).
+    pub fn resolve_leases(
+        &self,
+        reference: &symbiote_domain::CredentialReferenceId,
+        request: symbiote_context::BrokerRequest<'_>,
+    ) -> Result<Option<symbiote_context::CredentialLease>, RunnerError> {
+        let Some(broker) = self.broker.as_ref() else {
+            return Err(RunnerError::NoCredentialBroker);
+        };
+        broker
+            .borrow()
+            .resolve(reference, request)
+            .map(Some)
+            .map_err(|error| RunnerError::CredentialRefused(broker_error_name(error)))
+    }
+}
+
+fn broker_error_name(error: symbiote_context::BrokerError) -> &'static str {
+    match error {
+        symbiote_context::BrokerError::UnknownReference => "unknown_reference",
+        symbiote_context::BrokerError::Revoked => "revoked",
+        symbiote_context::BrokerError::CrossProjectDenied => "cross_project_denied",
+        symbiote_context::BrokerError::NotReferencedByProfile => "not_referenced_by_profile",
+        symbiote_context::BrokerError::EnvironmentDenied => "environment_denied",
+    }
 }
 
 /// Builds one native inference transport per run. Tests install a factory
@@ -247,6 +300,13 @@ pub enum RunnerError {
     /// The configured shell executor factory refused to build. Nothing ran
     /// and nothing was filed.
     ShellExecutorBuild(&'static str),
+    /// The dispatch's profile references a credential, but the operator
+    /// has not configured a credential broker. Nothing ran and nothing
+    /// was filed — the run cannot receive its referenced credentials.
+    NoCredentialBroker,
+    /// The operator's broker refused this dispatch's lease (cross-project
+    /// reference, revoked, ungranted environment). Typed, payload-free.
+    CredentialRefused(&'static str),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -1317,6 +1377,140 @@ mod tests {
         let _ = std::fs::remove_dir_all(&worktree);
     }
 
+    #[test]
+    fn run_context_resolves_from_store_and_reaches_the_loop_prompt() {
+        // End to end through the real store fixture: the run prompt now
+        // carries the origin work item's description AND its structured
+        // guidance (requirements/constraints/acceptance), resolved by
+        // symbiote-context over the store-backed source. The scripted
+        // transport asserts the rendered sections arrived in the task
+        // prompt it received.
+        let (mut store, task, dispatch) =
+            store_with_running_task("ctx-resolve", RuntimeKind::NativeSymbiote);
+        struct PromptAssertor {
+            seen: std::cell::RefCell<Option<String>>,
+        }
+        impl symbiote_native_agent::InferenceTransport for PromptAssertor {
+            fn request(
+                &mut self,
+                request: &symbiote_runtime_sdk::provider::ProviderRequest,
+                _model: &symbiote_runtime_sdk::provider::ModelDescriptor,
+            ) -> Result<
+                symbiote_runtime_sdk::provider::ProviderResponse,
+                symbiote_runtime_sdk::provider::ProviderError,
+            > {
+                use symbiote_runtime_sdk::provider::{
+                    FinishReason, PROVIDER_CONTRACT_VERSION, ProviderResponse,
+                };
+                *self.seen.borrow_mut() = Some(
+                    request
+                        .messages
+                        .iter()
+                        .filter_map(|m| {
+                            m.content.iter().find_map(|p| match p {
+                                symbiote_runtime_sdk::provider::InputPart::Text { text } => {
+                                    Some(text.clone())
+                                }
+                                _ => None,
+                            })
+                        })
+                        .next()
+                        .unwrap_or_default(),
+                );
+                Ok(ProviderResponse {
+                    schema_version: PROVIDER_CONTRACT_VERSION,
+                    request_id: request.request_id.clone(),
+                    provider_id: request.provider_id.clone(),
+                    model_id: request.model_id.clone(),
+                    text: "done".into(),
+                    tool_calls: Vec::new(),
+                    finish_reason: FinishReason::Stop,
+                    usage: symbiote_runtime_sdk::provider::TokenUsage::Known {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        cached_input_tokens: None,
+                        reasoning_tokens: None,
+                    },
+                })
+            }
+        }
+        let assertor = PromptAssertor {
+            seen: std::cell::RefCell::new(None),
+        };
+        let mut transport = assertor;
+        let outcome = run_native(
+            &mut store,
+            &task,
+            &dispatch,
+            "Owns task ctx-resolve\n\nRequirements:\n- requirement-of-ctx-resolve\n\nConstraints:\n- constraint-of-ctx-resolve\n\nAcceptance criteria:\n- acceptance-of-ctx-resolve",
+            &mut transport,
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        // The store-backed resolution path: the task's origin work is
+        // resolvable and carries the fixture's structured guidance.
+        let (project, origin_work) =
+            crate::context_resolution::task_origin_work(&store, &task).unwrap();
+        let work = store.work_item(&project, &origin_work).unwrap();
+        let spec = work.spec();
+        assert_eq!(spec.requirements, vec!["requirement-of-ctx-resolve"]);
+        assert_eq!(spec.acceptance, vec!["acceptance-of-ctx-resolve"]);
+        // The loop received the prompt the daemon renders from these parts.
+        let seen = transport.seen.borrow().clone().unwrap_or_default();
+        assert!(seen.starts_with("Owns task ctx-resolve"));
+        assert!(seen.contains("Requirements:\n- requirement-of-ctx-resolve"));
+        assert!(seen.contains("Acceptance criteria:\n- acceptance-of-ctx-resolve"));
+    }
+
+    #[test]
+    fn lease_refusals_are_typed_and_broker_configured_gate() {
+        // The broker seam: without a broker, a credential-referencing
+        // dispatch refuses with NoCredentialBroker; with one, scope checks
+        // produce typed refusals (unknown → revoked ordering verified in
+        // symbiote-context's own tests; here the transport-level mapping).
+        let (store, _task, _dispatch) =
+            store_with_running_task("lease-refuse", RuntimeKind::NativeSymbiote);
+        let credential = symbiote_domain::CredentialReferenceId::new("credential").unwrap();
+        let transports = WorkerTransports::default();
+        let scope = symbiote_context::LeaseScope {
+            dispatch_id: symbiote_domain::DispatchId::new("disp-lease-refuse").unwrap(),
+            project_id: symbiote_domain::ProjectId::new("project-lease-refuse").unwrap(),
+            role_id: symbiote_domain::RoleId::new("worker-lease-refuse").unwrap(),
+            profile_id: symbiote_domain::RuntimeProfileId::new("profile-lease-refuse").unwrap(),
+            host_id: symbiote_domain::HostId::new("host-lease-refuse").unwrap(),
+        };
+        assert!(matches!(
+            transports.resolve_leases(
+                &credential,
+                symbiote_context::BrokerRequest {
+                    scope: &scope,
+                    profile_credential_refs: std::slice::from_ref(&credential),
+                    environment_grants: &[],
+                    at: Timestamp(60),
+                },
+            ),
+            Err(RunnerError::NoCredentialBroker)
+        ));
+        // With a broker configured but no registration: UnknownReference.
+        let with_broker = WorkerTransports::default().with_credential_broker(std::rc::Rc::new(
+            std::cell::RefCell::new(symbiote_context::CredentialBroker::new()),
+        ));
+        assert!(matches!(
+            with_broker.resolve_leases(
+                &credential,
+                symbiote_context::BrokerRequest {
+                    scope: &scope,
+                    profile_credential_refs: std::slice::from_ref(&credential),
+                    environment_grants: &[],
+                    at: Timestamp(60),
+                },
+            ),
+            Err(RunnerError::CredentialRefused("unknown_reference"))
+        ));
+        assert_eq!(store.task(&_task).unwrap().state(), &TaskState::Running);
+    }
+
     /// Test fixtures for the store wiring. Mirrors the store's own
     /// preparation_tests fixture: a full project/team/binding/provider
     /// composition whose profile carries the requested runtime kind.
@@ -1629,10 +1823,10 @@ mod tests {
                 objective_class: Some(ObjectiveClass::Maintenance),
                 parent: None,
                 dependencies: BTreeSet::new(),
-                requirements: vec![],
-                constraints: vec![],
+                requirements: vec![format!("requirement-of-{tag}")],
+                constraints: vec![format!("constraint-of-{tag}")],
                 risks: vec![],
-                acceptance: vec![],
+                acceptance: vec![format!("acceptance-of-{tag}")],
                 priority: 1,
                 budget: None,
                 external_references: vec![],

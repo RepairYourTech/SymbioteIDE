@@ -428,6 +428,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-context"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "symbiote-domain",
+ "zeroize",
+]
+
+[[package]]
 name = "symbiote-domain"
 version = "0.1.0"
 dependencies = [
@@ -459,6 +470,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "symbiote-context",
  "symbiote-domain",
  "symbiote-external-agent",
  "symbiote-host-inventory",
@@ -721,6 +733,12 @@ checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 
 [[package]]
 name = "zmij"
