@@ -774,17 +774,18 @@ mod tests {
             "KEY".into(),
             b"attacker-value".to_vec(),
         );
-        assert!(matches!(
-            broker.resolve(
-                &reference,
-                lease_request(
-                    &scope_self,
-                    std::slice::from_ref(&reference),
-                    Timestamp(1_000)
+        assert!(
+            broker
+                .resolve(
+                    &reference,
+                    lease_request(
+                        &scope_self,
+                        std::slice::from_ref(&reference),
+                        Timestamp(1_000)
+                    )
                 )
-            ),
-            Ok(_)
-        ));
+                .is_ok()
+        );
         // Same project but the binding profile does not reference it.
         assert!(matches!(
             broker.resolve(
