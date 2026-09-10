@@ -60,11 +60,16 @@ impl Store {
         if *task.state() != TaskState::Running || dispatch.id() != &lease.dispatch_id {
             return Err(StoreError::RelationshipMismatch);
         }
-        // This slice's only enforcement consumer is the broker's
-        // UseCredential gate; deciding any other permission would journal
-        // an approval that licenses nothing and could mislead an auditor.
-        // Widen as each permission's enforcement point lands (#269).
-        if !matches!(lease.permission, Permission::UseCredential) {
+        // Enforcement consumers so far (#269): the broker's UseCredential
+        // gate (#217) and the native shell-tool path's ExecuteProcess gate
+        // — both consult `active_elevation` at the run's clock. Deciding a
+        // permission with no enforcement consumer would journal an
+        // approval that licenses nothing and could mislead an auditor.
+        // Widen as each further permission's enforcement point lands.
+        if !matches!(
+            lease.permission,
+            Permission::UseCredential | Permission::ExecuteProcess
+        ) {
             return Err(StoreError::InvalidElevation);
         }
         // Elevation, not re-grant: a permission the dispatch's binding

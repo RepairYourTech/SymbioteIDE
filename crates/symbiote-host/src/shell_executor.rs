@@ -678,6 +678,45 @@ mod tests {
         assert!(!fixture.worktree.join(TOOL_OUTPUT_FILE).exists());
     }
 
+    /// The elevation-consumer boundary on the real sandbox: with the
+    /// resolved access LACKING ExecuteProcess (binding grant absent, no
+    /// decided lease), the sandbox refuses to launch even a command the
+    /// consent authority itself fingerprinted. A decided lease is the only
+    /// thing that can add the grant (see runner's `resolve_shell_access`
+    /// tests: an ask never does).
+    #[test]
+    fn the_sandbox_refuses_a_tool_when_the_resolved_access_lacks_execute_process() {
+        let launcher = obtain_launcher();
+        let fixture = WorktreeFixture::new("elevate-refuse");
+        let root = RootId::new("root-shell-e2e").unwrap();
+        let project = ProjectId::new("project-shell-e2e").unwrap();
+        let mut access = echo_access(&project, &root);
+        access
+            .grants
+            .remove(&symbiote_domain::Permission::ExecuteProcess);
+        let mut executor = SandboxShellExecutor {
+            launcher_path: launcher,
+            protected_paths: vec![fixture.base.join("protected-host")],
+            authority: Box::new(EchoOnlyAuthority {
+                access: access.clone(),
+            }),
+            root_id: root,
+            host: HostId::new("host-shell-e2e").unwrap(),
+            project_id: project,
+            role_id: RoleId::new("worker-shell-e2e").unwrap(),
+            profile_id: RuntimeProfileId::new("profile-shell-e2e").unwrap(),
+            user_id: symbiote_domain::UserId::new("operator").unwrap(),
+            access,
+        };
+        // PermissionDenied at the sandbox surfaces as Execution (launch
+        // failures halt for Host retry policy; only authority refusals
+        // feed back to the model).
+        assert_eq!(
+            executor.run_shell(&invocation("echo", &["hello-symbiote"]), &fixture.worktree),
+            Err(ToolExecError::Execution)
+        );
+    }
+
     #[test]
     fn a_command_outside_the_consented_shape_is_refused_without_launch() {
         let launcher = obtain_launcher();
