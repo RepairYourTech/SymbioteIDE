@@ -25,7 +25,7 @@ pub const STREAM: &str = "staffing-stream";
 
 /// What the first-release sequence observed, for the caller (desktop UI,
 /// test, operator) to inspect.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DemoOutcome {
     pub task_state: String,
     /// The worker's completion report (evidence — never verified
@@ -339,6 +339,18 @@ impl DemoWorkflow {
             }
         }
         Ok((cursor, events))
+    }
+
+    /// Graceful shutdown: the daemon exits cleanly (the journaled state
+    /// is the same state a crash would have preserved).
+    pub fn shutdown(&mut self) -> Result<(), WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(PROJECT).expect("fixture project");
+        self.call(
+            "wf-shutdown",
+            serde_json::json!({"kind":"shutdown"}),
+            Some(&project),
+        )?;
+        Ok(())
     }
 
     fn host_pulse(&mut self) -> Result<String, WorkflowError> {

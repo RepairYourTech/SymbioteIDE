@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The desktop shell's IPC surface: core events only; every capability flows through the typed commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

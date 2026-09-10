@@ -17,7 +17,7 @@
 pub mod demo;
 pub mod socket;
 
-pub use demo::DemoWorkflow;
+pub use demo::{DemoOutcome, DemoWorkflow};
 
 use std::path::{Path, PathBuf};
 use symbiote_client_sdk::{ClientError, ClientSession, FrameExchange, TransportFailure};
@@ -149,7 +149,7 @@ impl FrameExchange for SocketExchange {
 /// The current worktree status, observed from the REAL filesystem via
 /// `symbiote-repo` — the run's diff evidence. The lists are the uncommitted
 /// and untracked paths the run produced inside the reserved worktree.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorktreeEvidence {
     pub worktree: PathBuf,
     pub uncommitted: Vec<String>,

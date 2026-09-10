@@ -12,6 +12,7 @@ symbiote-protocol = { path = "../symbiote-protocol" }
 symbiote-repo = { path = "../symbiote-repo" }
 symbiote-trust = { path = "../symbiote-trust" }
 symbiote-worktrees = { path = "../symbiote-worktrees" }
+serde.workspace = true
 serde_json.workspace = true
 nix = { version = "=0.30.1", features = ["socket", "user", "signal"] }
 
