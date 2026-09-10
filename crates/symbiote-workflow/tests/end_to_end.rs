@@ -143,9 +143,14 @@ fn write_operator_config(
                     "arguments": ["-c",
                         "printf worker-output > produced.txt"]}}
         },
-        "credential_broker": [{"reference": "native-vault-ref",
-            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
-            "value": "fixture-not-a-real-secret"}],
+        "credential_broker": [
+            {"reference": "native-vault-ref",
+             "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+             "value": "fixture-not-a-real-secret"},
+            {"reference": "b-vault-ref",
+             "project": "project-isolation-b", "environment": "OPENAI_API_KEY",
+             "value": "fixture-b-not-a-real-secret"}
+        ],
         "shell_executor": {"launcher_path": launcher.display().to_string(),
             "protected_paths": ["/etc", "/var", "/home"],
             "allowed_programs": ["sh"]}
@@ -169,6 +174,9 @@ struct DemoEnv {
     state_dir: PathBuf,
     reservation_base: PathBuf,
     repo: PathBuf,
+    /// A SECOND real repository for the Project-isolation demo: two
+    /// projects, each rooted at its own repository, on ONE daemon.
+    repo_b: PathBuf,
     config_path: PathBuf,
 }
 impl Drop for DemoEnv {
@@ -187,13 +195,29 @@ fn demo_environment(tag: &str) -> DemoEnv {
     let reservation_base = scratch.join("worktrees");
     DirBuilder::new().mode(0o700).create(&state_dir).unwrap();
     std::fs::create_dir_all(&reservation_base).unwrap();
-    let repo = scratch.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    git(&repo, &["init", "-q", "-b", "main"]);
-    std::fs::write(repo.join("README.md"), "demo repository\n").unwrap();
-    git(&repo, &["add", "."]);
+    let repo = make_repo(&scratch.join("repo"), "demo repository\n");
+    let repo_b = make_repo(&scratch.join("repo-b"), "second project repository\n");
+    let config_path = scratch.join("operator-config.json");
+    write_operator_config(&config_path, &reservation_base, &launcher_binary(), true);
+    DemoEnv {
+        scratch,
+        state_dir,
+        reservation_base,
+        repo,
+        repo_b,
+        config_path,
+    }
+}
+
+/// A real one-commit git repository with one file — the Root placement
+/// each project observes.
+fn make_repo(path: &std::path::Path, readme: &str) -> PathBuf {
+    std::fs::create_dir_all(path).unwrap();
+    git(path, &["init", "-q", "-b", "main"]);
+    std::fs::write(path.join("README.md"), readme).unwrap();
+    git(path, &["add", "."]);
     git(
-        &repo,
+        path,
         &[
             "-c",
             "user.email=t@t",
@@ -205,15 +229,7 @@ fn demo_environment(tag: &str) -> DemoEnv {
             "base",
         ],
     );
-    let config_path = scratch.join("operator-config.json");
-    write_operator_config(&config_path, &reservation_base, &launcher_binary(), true);
-    DemoEnv {
-        scratch,
-        state_dir,
-        reservation_base,
-        repo,
-        config_path,
-    }
+    path.to_path_buf()
 }
 
 #[test]
@@ -512,5 +528,239 @@ fn an_external_binding_refuses_to_start_without_operator_provisioned_harness_sup
             );
         }
         other => panic!("the start must refuse at the daemon, got {other:?}"),
+    }
+}
+
+/// The Project-isolation demo (first-release definition of done): TWO
+/// projects on ONE daemon — each with its own repository, team, bindings,
+/// task, and stream — with the isolation between them made observable and
+/// pinned: project-scoped reads refuse foreign ids, each project's
+/// journal and worktree namespace never cross, and a credential
+/// registered for one project is REFUSED when another project's dispatch
+/// references it (the broker's owning-project check) while the correct
+/// per-project credential works. The model turns are the operator's
+/// explicitly labeled fixture transports; nothing is spent and no live
+/// turn is attempted.
+#[test]
+fn two_projects_on_one_daemon_without_work_configuration_or_credential_leakage() {
+    let env = demo_environment("two-projects");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let config_path = &env.config_path;
+
+    // The daemon stays alive for the whole test; its Drop cleans up.
+    let _daemon = Daemon::spawn(state_dir, config_path);
+    let mut workflow =
+        symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, &env.repo)
+            .expect("connect")
+            .with_repository("project-isolation-b", &env.repo_b);
+
+    // Lane A — the staffing project, full run (its worktree really
+    // produces the file through the sandboxed shell executor).
+    let a_dispatch = workflow.start_demo().expect("lane A start");
+    let a = workflow.finish_demo(&a_dispatch).expect("lane A run");
+    assert_eq!(a.task_state, "completion_requested");
+    assert!(a.worktree.contains("produced.txt"), "{:?}", a.worktree);
+
+    // Lane B, leak attempt: the binding references the credential
+    // PROJECT A registered. The gate (UseCredential) is satisfied — the
+    // broker's owning-project check is what must refuse.
+    let b_leak = symbiote_workflow::demo::DemoLane {
+        project: "project-isolation-b",
+        root: "isolation-b-root",
+        objective: "b-leak-objective",
+        task: "b-leak-task",
+        stream: "b-leak-stream",
+        chat: "chat-b-leak",
+        lead_role: "lead-b",
+        role: "engineer-b",
+        binding_id: "b-leak-binding",
+        provider: "b-openai",
+        model: "b-coding-model",
+        credential: "native-vault-ref",
+        with_external_lane: false,
+    };
+    let leak_dispatch = workflow
+        .start_demo_lane(&b_leak)
+        .expect("lane B (leak) start");
+    let leak_error = workflow
+        .finish_demo_lane(&b_leak, &leak_dispatch)
+        .expect_err("a foreign project's credential must be refused");
+    match leak_error {
+        symbiote_workflow::WorkflowError::Refused(protocol_error) => {
+            assert_eq!(
+                protocol_error.code,
+                symbiote_protocol::ErrorCode::FailedPrecondition,
+                "{}",
+                protocol_error.message
+            );
+            assert_eq!(
+                protocol_error.message, "credential lease refused: cross_project_denied",
+                "the refusal must be the broker's owning-project check"
+            );
+        }
+        other => panic!("the run must refuse at the daemon, got {other:?}"),
+    }
+    // The refusal left the dispatch intact for Host retry policy: the
+    // leak task stays Running, and the binding replacement does not
+    // rewire its already-compiled contract.
+    let leak_task = driver_reads_task(state_dir, "b-leak-task", "project-isolation-b");
+    assert_eq!(leak_task, "running");
+
+    // Lane B, correct configuration: the project's OWN credential. This
+    // lane's worktree cannot exist yet — project A's run never created
+    // anything under project B's derived namespace.
+    let b_ok = symbiote_workflow::demo::DemoLane {
+        project: "project-isolation-b",
+        root: "isolation-b-root",
+        objective: "b-objective",
+        task: "b-task",
+        stream: "b-stream",
+        chat: "chat-b",
+        lead_role: "lead-b",
+        role: "engineer-b",
+        binding_id: "b-leak-binding",
+        provider: "b-openai",
+        model: "b-coding-model",
+        credential: "b-vault-ref",
+        with_external_lane: false,
+    };
+    let b_worktree_before = symbiote_workflow::observe_worktree_evidence(
+        reservation_base,
+        &symbiote_domain::ProjectId::new(b_ok.project).unwrap(),
+        &symbiote_domain::RootId::new(b_ok.root).unwrap(),
+        &symbiote_domain::ChangeStreamId::new(b_ok.stream).unwrap(),
+    );
+    assert!(
+        b_worktree_before.is_err(),
+        "project B's worktree must not exist before its own run"
+    );
+    // The operator fixes the configuration: replace the binding with the
+    // project's own credential reference (revision-CAS replacement).
+    workflow
+        .replace_lane_binding(&b_ok, "b-vault-ref")
+        .expect("binding replacement");
+    let b_dispatch = workflow
+        .start_followon_lane(&b_ok, false)
+        .expect("lane B (ok) start");
+    let b = workflow
+        .finish_demo_lane(&b_ok, &b_dispatch)
+        .expect("lane B run with its own credential");
+    assert_eq!(b.task_state, "completion_requested");
+    assert!(b.worktree.contains("produced.txt"), "{:?}", b.worktree);
+    assert_ne!(
+        a.worktree.worktree, b.worktree.worktree,
+        "the projects must not share a worktree"
+    );
+
+    // Project-scoped reads: foreign ids are unreachable, not hidden.
+    let project_a = symbiote_domain::ProjectId::new("staffing-demo").unwrap();
+    let project_b = symbiote_domain::ProjectId::new("project-isolation-b").unwrap();
+    let mut driver = symbiote_workflow::Driver::connect(state_dir).expect("driver");
+    let foreign_task_a = driver
+        .call(
+            "iso-task-a-read",
+            serde_json::json!({"kind":"get_task","project_id":"staffing-demo",
+            "task_id":"b-task"}),
+            Some(&project_a),
+        )
+        .expect_err("project A must not see project B's task");
+    // Task ids live in one global namespace: a foreign read is DENIED
+    // (PermissionDenied) rather than reported absent — cross-project
+    // existence is never revealed.
+    assert_eq!(
+        refused_code(foreign_task_a),
+        symbiote_protocol::ErrorCode::PermissionDenied
+    );
+    let foreign_task_b = driver
+        .call(
+            "iso-task-b-read",
+            serde_json::json!({"kind":"get_task","project_id":"project-isolation-b",
+            "task_id":"staffing-task"}),
+            Some(&project_b),
+        )
+        .expect_err("project B must not see project A's task");
+    assert_eq!(
+        refused_code(foreign_task_b),
+        symbiote_protocol::ErrorCode::PermissionDenied
+    );
+    let foreign_binding = driver
+        .call(
+            "iso-binding-read",
+            serde_json::json!({"kind":"get_binding","project_id":"staffing-demo",
+            "binding_id":"b-binding"}),
+            Some(&project_a),
+        )
+        .expect_err("project A must not see project B's binding");
+    // Binding reads are (project, id)-scoped: a foreign id is simply
+    // absent from the requesting project's namespace.
+    assert_eq!(
+        refused_code(foreign_binding),
+        symbiote_protocol::ErrorCode::NotFound
+    );
+
+    // Journal scoping: each project's evidence trail carries only its own
+    // work. Page both journals fully and check the absence of the other
+    // project's identities.
+    let journals = [
+        ("staffing-demo", &project_a, "project-isolation-b"),
+        ("project-isolation-b", &project_b, "staffing-demo"),
+    ];
+    for (name, project, foreign) in journals {
+        let mut cursor = 0u64;
+        let mut blob = String::new();
+        loop {
+            let page = driver
+                .call(
+                    &format!("iso-journal-{name}-{cursor}"),
+                    serde_json::json!({"kind":"read_journal","project_id":name,
+                    "after":cursor,"limit":100}),
+                    Some(project),
+                )
+                .expect("journal page");
+            let ResponseBody::Journal(page) = page else {
+                panic!("journal page body");
+            };
+            cursor = page.next_cursor.0;
+            for event in &page.events {
+                blob.push_str(&serde_json::to_string(event).expect("event serializes"));
+            }
+            if !page.has_more {
+                break;
+            }
+        }
+        assert!(
+            !blob.contains(foreign),
+            "project {name}'s journal must not carry project {foreign}'s identities"
+        );
+    }
+}
+
+/// Reads one task's state over the wire through a fresh driver.
+fn driver_reads_task(state_dir: &std::path::Path, task: &str, project: &str) -> String {
+    let mut driver = symbiote_workflow::Driver::connect(state_dir).expect("driver");
+    let project = symbiote_domain::ProjectId::new(project).unwrap();
+    let read = driver
+        .call(
+            &format!("iso-task-read-{task}"),
+            serde_json::json!({"kind":"get_task","project_id":project,
+            "task_id":task}),
+            Some(&project),
+        )
+        .expect("task read");
+    let ResponseBody::Task(task) = read else {
+        panic!("task read body");
+    };
+    serde_json::to_value(task.state())
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .expect("task state")
+}
+
+/// The typed wire code a driver refusal carries.
+fn refused_code(error: symbiote_workflow::WorkflowError) -> symbiote_protocol::ErrorCode {
+    match error {
+        symbiote_workflow::WorkflowError::Refused(protocol_error) => protocol_error.code,
+        other => panic!("expected a daemon refusal, got {other:?}"),
     }
 }
