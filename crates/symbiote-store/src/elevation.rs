@@ -72,6 +72,16 @@ impl Store {
         ) {
             return Err(StoreError::InvalidElevation);
         }
+        // Runtime-aware consumer rule: every consumer gate lives on the
+        // NATIVE loop. The external harness never consults
+        // `active_elevation` — its escalations are refused by the driver
+        // regardless of any lease — so a decision on an
+        // EXTERNAL_HARNESS dispatch would journal an approval that
+        // licenses nothing and could mislead an auditor, whichever
+        // permission it names.
+        if dispatch.contract().profile().runtime == symbiote_domain::RuntimeKind::ExternalHarness {
+            return Err(StoreError::InvalidElevation);
+        }
         // Elevation, not re-grant: a permission the dispatch's binding
         // access already carries needs no lease.
         let binding_body: String = transaction
