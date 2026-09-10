@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 1,
-    "minor": 14
+    "minor": 15
   },
   "correlation_id": "configure-binding",
   "command_id": "configure-binding",

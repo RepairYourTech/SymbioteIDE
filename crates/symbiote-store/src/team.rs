@@ -75,7 +75,7 @@ fn validate_relationships(connection: &Connection, team: &TeamConfiguration) -> 
     }
     Ok(())
 }
-fn read(
+pub(super) fn read(
     connection: &Connection,
     project: &ProjectId,
 ) -> Result<Option<(TeamConfiguration, UserId, Timestamp)>> {

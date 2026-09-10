@@ -4,6 +4,7 @@
 
 mod dependency;
 mod dispatch;
+mod elevation;
 mod ids;
 mod lease;
 mod lifecycle;
@@ -14,6 +15,7 @@ mod work;
 
 pub use dependency::*;
 pub use dispatch::*;
+pub use elevation::*;
 pub use ids::*;
 pub use lease::*;
 pub use lifecycle::*;

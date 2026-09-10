@@ -19,7 +19,10 @@ fn storage_error(error: StoreError) -> ProtocolError {
         | StoreError::InvalidLease => ErrorCode::InvalidRequest,
         StoreError::DependenciesUnresolved => ErrorCode::Conflict,
         StoreError::InvalidProvider | StoreError::InvalidPreparation => ErrorCode::InvalidRequest,
-        StoreError::PreparationRefused => ErrorCode::FailedPrecondition,
+        StoreError::PreparationRefused | StoreError::ElevationCeiling => {
+            ErrorCode::FailedPrecondition
+        }
+        StoreError::InvalidElevation => ErrorCode::InvalidRequest,
         StoreError::LeaseConflict(_) => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
@@ -589,11 +592,22 @@ fn execute(
                         host_id: this_host.clone(),
                     };
                     let profile_refs = [credential.clone()];
+                    // The typed authority to hold a credential lease:
+                    // the binding's own grant, or an explicit elevation
+                    // lease the owner approved for THIS dispatch and
+                    // whose window is still open at the run's clock.
                     let use_credential_granted = current
                         .contract()
                         .effective_access()
                         .grants
-                        .contains(&symbiote_domain::Permission::UseCredential);
+                        .contains(&symbiote_domain::Permission::UseCredential)
+                        || store
+                            .active_elevation(
+                                current.id(),
+                                &symbiote_domain::Permission::UseCredential,
+                                at,
+                            )
+                            .map_err(storage_error)?;
                     let lease = workers
                         .resolve_leases(
                             &credential,
@@ -847,6 +861,39 @@ fn execute(
         }
         Operation::Health {} => Ok(ResponseBody::Hello(negotiate(&[CURRENT_VERSION])?)),
         Operation::Shutdown {} => Ok(ResponseBody::Shutdown {}),
+        Operation::DecideElevation { lease } => {
+            // The deciding authority is the local owner; the store
+            // verifies the lease's attribution (this dispatch, running),
+            // that the permission is not already granted, and the Team
+            // ceiling. The client-supplied decision time keeps retries
+            // byte-identical and the window is bounded by domain law.
+            store
+                .decide_elevation(request.command_id.clone(), lease.as_ref().clone())
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::RevokeElevation {
+            project_id,
+            elevation_id,
+        } => {
+            let at = match store
+                .elevation_revocation_timestamp(&request.command_id)
+                .map_err(storage_error)?
+            {
+                Some(at) => at,
+                None => now_timestamp()?,
+            };
+            store
+                .revoke_elevation(
+                    request.command_id.clone(),
+                    project_id,
+                    elevation_id,
+                    principal.user_id(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::RecordResourceConsent {
             snapshot,
             expires_at,
@@ -1153,6 +1200,12 @@ fn execute(
                                 consent,
                                 revoked_by,
                             },
+                            symbiote_store::EventPayload::ElevationDecided { lease } => {
+                                EventPayload::ElevationDecided { lease }
+                            }
+                            symbiote_store::EventPayload::ElevationRevoked { lease, revoked_by } => {
+                                EventPayload::ElevationRevoked { lease, revoked_by }
+                            }
                             symbiote_store::EventPayload::ProjectRegistered {
                                 project,
                                 roots,
