@@ -1,0 +1,35 @@
+[package]
+name = "symbiote-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The Symbiote desktop shell: a Tauri 2 application driving the symbiote-workflow control-plane sequencer."
+
+[lib]
+name = "symbiote_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "symbiote-desktop"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+symbiote-workflow = { path = "../symbiote-workflow" }
+symbiote-client-sdk = { path = "../symbiote-client-sdk" }
+symbiote-repo = { path = "../symbiote-repo" }
+symbiote-domain = { path = "../symbiote-domain" }
+symbiote-protocol = { path = "../symbiote-protocol" }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+symbiote-client-sdk = { path = "../symbiote-client-sdk" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

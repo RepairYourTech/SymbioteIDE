@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Symbiote",
+  "version": "0.1.0",
+  "identifier": "ide.symbiote.desktop",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Symbiote",
+        "width": 1024,
+        "height": 720,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' "
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
