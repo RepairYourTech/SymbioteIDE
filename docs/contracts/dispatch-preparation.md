@@ -30,6 +30,6 @@ Least privilege at assignment (first #269 core): `Dispatch::compile` attaches an
 
 Covered by a store test (composition steps, refusal recording, replay, readback, unknown-task refusal) and a daemon test (projection → prepare → refusal recorded → replay identical → restart replay → journal lineage).
 
-Pending #205 acceptance, tracked in the issue: mixed-runtime staffing round-trips; and the remaining #269 scope: skill/MCP/secret-scope trust metadata, worker-loop elevation-request emission, mid-run policy change semantics, per-denial enforcement-layer reporting. Worker elevation asks (`request_elevation`) are journaled evidence and never license a permission; only a later owner `decide_elevation` can.
+Pending #205 acceptance, tracked in the issue: mixed-runtime staffing round-trips; and the remaining #269 scope: skill/MCP/secret-scope trust metadata, mid-run policy change semantics, per-denial enforcement-layer reporting. Both worker loops now emit elevation *asks* through the Host (`file_elevation_ask` / harness refusal mapping): a native `use_credential_not_granted` refusal and an external harness capability request are journaled as `ElevationRequested` evidence and never license a permission; only a later owner `decide_elevation` can.
 
 Applicability: security/privacy — owner authority only, no secrets, refusals recorded as evidence. Accessibility not applicable to a headless composition layer. Performance bounded by per-task record count. Linux-first, matching the Host.

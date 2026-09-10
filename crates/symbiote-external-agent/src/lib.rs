@@ -264,6 +264,7 @@ pub struct ExternalSession {
     harness_thread_id: Option<String>,
     turns_observed: u32,
     approvals_refused: u32,
+    refused: Vec<ApprovalRefusal>,
     usage_turns: u32,
     unreported_usage_turns: u32,
     completion_report: Option<String>,
@@ -298,6 +299,7 @@ impl ExternalSession {
             harness_thread_id: None,
             turns_observed: 0,
             approvals_refused: 0,
+            refused: Vec::new(),
             usage_turns: 0,
             unreported_usage_turns: 0,
             completion_report: None,
@@ -315,6 +317,13 @@ impl ExternalSession {
 
     pub fn harness_thread_id(&self) -> Option<&str> {
         self.harness_thread_id.as_deref()
+    }
+
+    /// The harness escalations this turn refused. Observation only: the
+    /// Host may journal an elevation *ask* from these; the driver never
+    /// grants.
+    pub fn refused_approvals(&self) -> &[ApprovalRefusal] {
+        &self.refused
     }
 
     pub fn run_summary(&self) -> ExternalRun {
@@ -567,6 +576,7 @@ impl ExternalSession {
             while let Some(request) = transport.recv_server_request()? {
                 let refusal = ApprovalRefusal::from_method(&request.method);
                 self.approvals_refused += 1;
+                self.refused.push(refusal);
                 let decision = if refusal.has_shaped_denial() {
                     ApprovalDecision::Denied
                 } else {

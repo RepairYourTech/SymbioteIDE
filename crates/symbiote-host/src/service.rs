@@ -609,7 +609,10 @@ fn execute(
                             )
                             .map_err(storage_error)?;
                     let lease = workers
-                        .resolve_leases(
+                        .resolve_native_credential(
+                            store,
+                            task_id,
+                            current,
                             &credential,
                             symbiote_context::BrokerRequest {
                                 scope: &scope,
@@ -617,6 +620,7 @@ fn execute(
                                 use_credential_granted,
                                 at,
                             },
+                            at,
                         )
                         .map_err(worker_error)?;
                     drop(lease);
