@@ -289,9 +289,9 @@ impl std::fmt::Debug for CredentialBroker {
 pub enum BrokerError {
     /// The reference is unknown to the broker.
     UnknownReference,
-    /// The reference was explicitly revoked; it cannot be re-registered
-    /// under a different project (re-registration under the SAME project
-    /// is rotation and is allowed).
+    /// The reference was explicitly revoked. Revocation is STICKY per
+    /// reference id: it can never be re-registered under ANY project —
+    /// rotation after revocation uses a NEW reference id.
     Revoked,
     /// The dispatch's project does not match the secret's owning project.
     CrossProjectDenied,
@@ -411,28 +411,19 @@ impl CredentialBroker {
         if environment.is_empty() || environment.len() > 128 {
             return Err(BrokerError::InvalidEnvironmentLabel);
         }
-        if let Some(existing) = self.secrets.remove(&reference) {
-            if owning_project != existing.owning_project {
-                // Project immutability: restore the ORIGINAL record shell
-                // (its value was scrubbed by the remove above) so a later
-                // same-owner rotation still works, then refuse.
-                let owner = existing.owning_project.clone();
-                let label = existing.environment.clone();
-                drop(existing);
-                self.secrets.insert(
-                    reference,
-                    RegisteredSecret {
-                        owning_project: owner,
-                        environment: label,
-                        value: SecretBytes::new(Vec::new()),
-                    },
-                );
+        if let Some(existing) = self.secrets.get(&reference) {
+            if existing.owning_project != owning_project {
+                // Project immutability: the original record (value
+                // INCLUDED) stays untouched — a refused registration must
+                // not disturb the owner's live secret.
                 return Err(BrokerError::CrossProjectDenied);
             }
-            // Drop the previous record BEFORE building the new one: the
-            // old value is zeroized here, not when the map insert drops a
-            // shadowed record.
-            drop(existing);
+        }
+        if self.secrets.contains_key(&reference) {
+            // Same-owner replacement: drop the previous record BEFORE
+            // building the new one, so the old value is zeroized here,
+            // not when a shadowing insert drops it later.
+            drop(self.secrets.remove(&reference));
         } else if self.revoked.contains(&reference) {
             // Revocation is STICKY per reference id: re-registering the
             // same id would silently resurrect a compromised secret.
@@ -773,6 +764,26 @@ mod tests {
                 )
             ),
             Err(BrokerError::CrossProjectDenied)
+        ));
+        // A refused cross-project registration leaves the owner's record
+        // (and value) untouched: the owner can still resolve and
+        // materialize the ORIGINAL value afterwards.
+        let _ = broker.register(
+            reference.clone(),
+            other.clone(),
+            "KEY".into(),
+            b"attacker-value".to_vec(),
+        );
+        assert!(matches!(
+            broker.resolve(
+                &reference,
+                lease_request(
+                    &scope_self,
+                    std::slice::from_ref(&reference),
+                    Timestamp(1_000)
+                )
+            ),
+            Ok(_)
         ));
         // Same project but the binding profile does not reference it.
         assert!(matches!(
