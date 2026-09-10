@@ -1285,26 +1285,16 @@ mod tests {
     }
 
     #[test]
-    fn shell_executor_factory_refusal_is_a_typed_error_before_the_loop() {
-        // A configured factory that refuses to build halts activation with
-        // the typed build error — nothing ran, nothing was filed.
+    fn shell_executor_factory_refusal_is_a_typed_error() {
+        // A configured factory that refuses to build surfaces the typed
+        // build error at the WorkerTransports level. Service-level ordering
+        // (the build happens after provisioning, before run_native_boxed)
+        // means this refusal files nothing; the pinned daemon expectations
+        // (reservation-base refusal first) are separate tests.
         let (store, task, dispatch) =
             store_with_running_task("shell-buildref", RuntimeKind::NativeSymbiote);
         let mut transports = WorkerTransports::default()
-            .with_native(Box::new(fixture::EchoFactory {
-                text: "unused".into(),
-            }))
             .with_shell_executor(Box::new(fixture::RefusingShellFactory));
-        struct NeverNative;
-        impl NativeTransportFactory for NeverNative {
-            fn build(
-                &mut self,
-            ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>
-            {
-                unreachable!("shell build must refuse first")
-            }
-        }
-        let _ = NeverNative;
         let worktree = std::env::temp_dir().join("symbiote-shell-exec-buildref");
         let _ = std::fs::remove_dir_all(&worktree);
         std::fs::create_dir_all(&worktree).unwrap();

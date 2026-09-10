@@ -82,10 +82,22 @@ pub struct ShellConsentRequest<'a> {
 }
 
 /// The fixed wrapper: run the first positional parameter (the model's
-/// program) with the remaining parameters as its arguments, redirecting
-/// stdout and stderr into the output file inside the worktree. POSIX sh
-/// (`shift` + `"$@"`), no quoting of model input anywhere.
-const WRAPPER_SCRIPT: &str = "p=\"$1\"; shift; exec \"$p\" \"$@\" > .symbiote-tool-output 2>&1";
+/// program) with the remaining parameters as its arguments, capturing
+/// stdout and stderr through a FIFO into the output file inside the
+/// worktree. POSIX sh (`shift` + `"$@"`), no quoting of model input
+/// anywhere. The capture is bounded AT THE SOURCE by `head -c` (1 MiB, four
+/// times the Host read bound): a tool spamming its output gets SIGPIPE and
+/// dies instead of filling the Host's disk for the whole deadline, while
+/// the tool's own (unrelated) file writes in the worktree are NOT limited —
+/// no `ulimit -f`, which would break every consented build tool. The tool's
+/// exit status is taken directly (`st=$?` before the wait), and the FIFO
+/// lives in the per-launch private /tmp so nothing residues in the
+/// worktree.
+const WRAPPER_SCRIPT: &str = "p=\"$1\"; shift; mkfifo /tmp/.symbiote-cappipe; head -c 1048576 > .symbiote-tool-output < /tmp/.symbiote-cappipe & \"$p\" \"$@\" > /tmp/.symbiote-cappipe 2>&1; st=$?; wait $!; rm -f /tmp/.symbiote-cappipe; exit $st";
+/// The capture bound enforced by the wrapper's `head -c` (bytes). Four
+/// times the Host read bound: the read-back is the tight bound, the
+/// wrapper bound is the disk-safety backstop.
+pub const WRAPPER_CAPTURE_CAP_BYTES: usize = 1_048_576;
 /// The wrapper's `$0` slot (never used by the script; keeps argv shape explicit).
 const WRAPPER_NAME: &str = "symbiote-tool";
 /// The tool-output file, relative to the worktree (= `/workspace` inside).
@@ -107,18 +119,24 @@ fn now() -> Timestamp {
 /// Resolves the model's invocation into the wrapped command the sandbox
 /// launches: `/usr/bin/sh -c <WRAPPER> <name> <program> <args...>`. Bare
 /// program names resolve against /usr/bin only (the launcher's rule); any
-/// other path is refused — the sandbox cannot execute it, so consent could
-/// never cover it honestly.
+/// other path is rejected — the sandbox cannot execute it. The wrapped
+/// vector is checked against the sandbox's own validation bounds (64
+/// arguments, 128 KiB total) because the wrapper adds four fixed slots —
+/// without this check a legal-shape 61–64-argument proposal would fail
+/// later inside `fingerprint_command` and surface as a confusing consent
+/// refusal instead of the honest shape rejection. Both rejections are
+/// `InvalidCommand` (recorded composition feedback), never `Refused` (the
+/// operator is not consulted for a command that cannot be composed).
 pub fn wrapped_command(
     invocation: &ShellInvocation,
 ) -> Result<(String, Vec<String>), ToolExecError> {
     let program = if let Some(suffix) = invocation.program.strip_prefix("/usr/bin/") {
         if suffix.is_empty() {
-            return Err(ToolExecError::Refused);
+            return Err(ToolExecError::InvalidCommand);
         }
         invocation.program.clone()
     } else if invocation.program.contains('/') {
-        return Err(ToolExecError::Refused);
+        return Err(ToolExecError::InvalidCommand);
     } else {
         format!("/usr/bin/{}", invocation.program)
     };
@@ -128,6 +146,11 @@ pub fn wrapped_command(
     args.push(WRAPPER_NAME.to_owned());
     args.push(program);
     args.extend(invocation.arguments.iter().cloned());
+    // The sandbox validates the WRAPPED vector: mirror its exact bounds
+    // here so a wrap-overhead overflow is a composition rejection.
+    if args.len() > 64 || args.iter().map(String::len).sum::<usize>() > 131_072 {
+        return Err(ToolExecError::InvalidCommand);
+    }
     Ok(("/usr/bin/sh".to_owned(), args))
 }
 
@@ -157,8 +180,33 @@ impl SandboxShellExecutor {
     /// Reads the tool-output file back, bounded; `truncated` marks an
     /// over-bound file (the caller keeps the prefix — the same discipline as
     /// every other bounded read).
+    ///
+    /// The worktree is model-writable DURING the run (WorktreeWrite), so the
+    /// capture file can be replaced by a consented command while it runs:
+    /// the open follows the sandbox crate's own path discipline —
+    /// O_NOFOLLOW (a symlinked capture file is refused, never dereferenced:
+    /// no host file can leak into model context) and O_NONBLOCK (a planted
+    /// FIFO cannot wedge the read; it is refused by the regular-file
+    /// check). run_shell executes inside the daemon's synchronous
+    /// connection loop, so a blocking open would brick the whole Host.
     fn read_output(worktree: &Path) -> std::io::Result<(Vec<u8>, bool)> {
-        let mut file = std::fs::File::open(worktree.join(TOOL_OUTPUT_FILE))?;
+        use std::os::fd::AsFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                nix::fcntl::OFlag::O_NOFOLLOW.bits() | nix::fcntl::OFlag::O_NONBLOCK.bits(),
+            )
+            .open(worktree.join(TOOL_OUTPUT_FILE))?;
+        let stat = nix::sys::stat::fstat(file.as_fd())
+            .map_err(|_| std::io::Error::other("capture fstat"))?;
+        if nix::sys::stat::SFlag::from_bits_truncate(stat.st_mode) & nix::sys::stat::SFlag::S_IFMT
+            != nix::sys::stat::SFlag::S_IFREG
+        {
+            // Not a regular file (FIFO, device, socket): refuse, never read.
+            return Err(std::io::Error::other("capture file is not a regular file"));
+        }
+        let mut file = file;
         let mut buffer = Vec::new();
         let mut chunk = [0u8; 8192];
         loop {
@@ -227,6 +275,9 @@ impl ShellToolExecutor for SandboxShellExecutor {
         loop {
             if Instant::now() >= deadline {
                 let _ = process.cancel(Duration::from_secs(2));
+                // The capture file (if the wrapper created it) is residue in
+                // the worker's diff — remove it on the deadline path too.
+                let _ = std::fs::remove_file(worktree.join(TOOL_OUTPUT_FILE));
                 return Err(ToolExecError::Execution);
             }
             match process.recv(Duration::from_millis(250)) {
@@ -299,18 +350,55 @@ mod tests {
         let (program, args) = wrapped_command(&invocation("/usr/bin/python3", &["-V"])).unwrap();
         assert_eq!(program, "/usr/bin/sh");
         assert_eq!(args[3], "/usr/bin/python3");
-        // A path outside /usr/bin can never launch: refuse at composition.
+        // A path outside /usr/bin can never launch: reject at composition
+        // (InvalidCommand — no operator is consulted for an incomposable
+        // command).
         assert_eq!(
             wrapped_command(&invocation("/tmp/evil", &[])),
-            Err(ToolExecError::Refused)
+            Err(ToolExecError::InvalidCommand)
         );
         assert_eq!(
             wrapped_command(&invocation("relative/path", &[])),
-            Err(ToolExecError::Refused)
+            Err(ToolExecError::InvalidCommand)
         );
         assert_eq!(
             wrapped_command(&invocation("/usr/bin/", &[])),
-            Err(ToolExecError::Refused)
+            Err(ToolExecError::InvalidCommand)
+        );
+    }
+
+    #[test]
+    fn wrapped_argv_overhead_is_rejected_at_composition_not_as_consent() {
+        // The sandbox validates the WRAPPED vector (64 args / 128 KiB); the
+        // wrapper adds four fixed slots, so 61+ model arguments are
+        // incomposable (60 + 4 is the last legal shape). It must be the
+        // shape rejection, never a consent refusal (the operator is not
+        // consulted for an incomposable command).
+        let arguments = (0..60).map(|i| i.to_string()).collect::<Vec<_>>();
+        assert!(
+            wrapped_command(&ShellInvocation {
+                program: "ls".into(),
+                arguments: arguments.clone(),
+            })
+            .is_ok()
+        );
+        let mut arguments = arguments;
+        arguments.push("61st".into()); // 65 wrapped > 64
+        assert_eq!(
+            wrapped_command(&ShellInvocation {
+                program: "ls".into(),
+                arguments,
+            }),
+            Err(ToolExecError::InvalidCommand)
+        );
+        // Total-bytes bound: 64 args of 2 KiB ≈ 131 KiB wrapped > 128 KiB.
+        let big = vec!["x".repeat(2048); 64];
+        assert_eq!(
+            wrapped_command(&ShellInvocation {
+                program: "ls".into(),
+                arguments: big,
+            }),
+            Err(ToolExecError::InvalidCommand)
         );
     }
 
@@ -388,9 +476,16 @@ mod tests {
         }
     }
 
-    fn find_launcher() -> Option<PathBuf> {
+    /// Locates (or builds) the trusted launcher. A partial `-p symbiote-host`
+    /// build may not have compiled the sandbox crate's binary, so the test
+    /// builds it directly — the e2e coverage must not silently degrade to a
+    /// counted-as-passed skip (PR #507 review P2).
+    fn obtain_launcher() -> PathBuf {
         if let Ok(path) = std::env::var("SYMBIOTE_SANDBOX_LAUNCHER") {
-            return Some(PathBuf::from(path));
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return path;
+            }
         }
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         for ancestor in manifest.ancestors().skip(1) {
@@ -400,18 +495,54 @@ mod tests {
             }
             let direct = target.join("debug").join("symbiote-sandbox-launch");
             if direct.is_file() {
-                return Some(direct);
+                return direct;
             }
             if let Ok(entries) = std::fs::read_dir(&target) {
                 for entry in entries.flatten() {
                     let candidate = entry.path().join("debug").join("symbiote-sandbox-launch");
                     if candidate.is_file() {
-                        return Some(candidate);
+                        return candidate;
                     }
                 }
             }
         }
-        None
+        // Build the launcher in the workspace target directory. `cargo
+        // test --workspace` has already compiled everything; this only
+        // fires for a partial single-crate build. If even the build fails
+        // the test fails loudly — a skip that looks like a pass is a
+        // coverage hole.
+        let workspace = manifest
+            .ancestors()
+            .nth(1)
+            .expect("crates/symbiote-host lives one level below the workspace root");
+        let status = std::process::Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "symbiote-sandbox",
+                "--bin",
+                "symbiote-sandbox-launch",
+            ])
+            .current_dir(workspace)
+            .status()
+            .expect("cargo build for the sandbox launcher");
+        assert!(
+            status.success(),
+            "the sandbox launcher could not be built; the real-sandbox e2e cannot run"
+        );
+        workspace
+            .join("target/debug/symbiote-sandbox-launch")
+            .assert_exists()
+    }
+
+    trait AssertExists {
+        fn assert_exists(self) -> PathBuf;
+    }
+    impl AssertExists for PathBuf {
+        fn assert_exists(self) -> PathBuf {
+            assert!(self.is_file(), "launcher missing after build: {self:?}");
+            self
+        }
     }
 
     /// A 0o700 private fixture root with a worktree the launch validation
@@ -449,10 +580,7 @@ mod tests {
 
     #[test]
     fn a_real_sandboxed_shell_turn_captures_tool_output_in_the_reserved_worktree() {
-        let Some(launcher) = find_launcher() else {
-            eprintln!("SKIP: symbiote-sandbox-launch not built; run the workspace gauntlet");
-            return;
-        };
+        let launcher = obtain_launcher();
         let fixture = WorktreeFixture::new("echo");
         let root = RootId::new("root-shell-e2e").unwrap();
         let project = ProjectId::new("project-shell-e2e").unwrap();
@@ -482,10 +610,7 @@ mod tests {
 
     #[test]
     fn a_command_outside_the_consented_shape_is_refused_without_launch() {
-        let Some(launcher) = find_launcher() else {
-            eprintln!("SKIP: symbiote-sandbox-launch not built; run the workspace gauntlet");
-            return;
-        };
+        let launcher = obtain_launcher();
         let fixture = WorktreeFixture::new("refuse");
         let root = RootId::new("root-shell-e2e").unwrap();
         let project = ProjectId::new("project-shell-e2e").unwrap();

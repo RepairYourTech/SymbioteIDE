@@ -137,6 +137,11 @@ pub enum ToolExecError {
     /// event so the model learns the boundary and can adapt, and the run
     /// continues — an operator refusal is feedback, not a crash.
     Refused,
+    /// The command is outside the executable shape before any operator is
+    /// consulted (path rules, over-bound wrapped argv). Also recorded
+    /// feedback, with its own constant phrase — it must not claim an
+    /// operator refused, because none was asked.
+    InvalidCommand,
 }
 
 impl std::fmt::Display for ToolExecError {
@@ -152,6 +157,26 @@ pub const MAX_TOOL_OUTPUT_BYTES: usize = 16_384;
 /// The stable refusal phrase for a tool the operator's consent does not
 /// cover. Deliberately constant: no command echo, no path, no task content.
 pub const REFUSAL_TEXT: &str = "shell tool refused: operator consent does not cover this command";
+
+/// The stable phrase for a command outside the executable shape — rejected
+/// at composition, before any operator authority was consulted.
+pub const INVALID_COMMAND_TEXT: &str = "shell tool rejected: command outside the executable shape";
+
+/// Builds the recorded Started+Failed event pair for a tool that did not
+/// run: the stable phrase is the only content, so the model learns the
+/// boundary without echoing the command or any task content.
+fn refused_events(call_id: &symbiote_domain::RequestId, phrase: &str) -> Vec<RuntimeEventKind> {
+    let call_id = call_id.clone();
+    vec![
+        RuntimeEventKind::ToolStarted {
+            tool_call_id: call_id.clone(),
+        },
+        RuntimeEventKind::ToolFailed {
+            tool_call_id: call_id,
+            error: EventText::new(phrase.to_owned()).expect("constant within the bound"),
+        },
+    ]
+}
 
 /// Truncates tool output to the event-text bound on a char boundary with a
 /// visible marker (the same discipline as the loop's other event text).
@@ -189,17 +214,12 @@ pub fn execute_shell_tool(
             // A consent refusal is recorded, not thrown: the tool did not
             // run, the model is told why in a stable phrase (no task
             // content, no command echo), and the run continues.
-            let call_id = call_id.clone();
-            return Ok(vec![
-                RuntimeEventKind::ToolStarted {
-                    tool_call_id: call_id.clone(),
-                },
-                RuntimeEventKind::ToolFailed {
-                    tool_call_id: call_id,
-                    error: EventText::new(REFUSAL_TEXT.to_owned())
-                        .expect("constant within the bound"),
-                },
-            ]);
+            return Ok(refused_events(call_id, REFUSAL_TEXT));
+        }
+        Err(ToolExecError::InvalidCommand) => {
+            // Rejected at composition, before any operator was consulted —
+            // the phrase must not misattribute the refusal.
+            return Ok(refused_events(call_id, INVALID_COMMAND_TEXT));
         }
         Err(error) => return Err(error),
     };
@@ -449,6 +469,28 @@ mod tests {
             } => {
                 assert_eq!(tool_call_id.as_str(), "call-5");
                 assert_eq!(error.as_str(), REFUSAL_TEXT);
+            }
+            other => panic!("expected ToolFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn composition_rejection_is_recorded_without_claiming_operator_consent() {
+        // A shape rejection happens before any authority was consulted, so
+        // the recorded phrase is the composition identity, not the consent
+        // refusal phrase.
+        let mut executor = ScriptedShell::new(vec![Err(ToolExecError::InvalidCommand)]);
+        let events = execute_shell_tool(
+            &mut executor,
+            &symbiote_domain::RequestId::new("call-6").unwrap(),
+            std::path::Path::new("/w"),
+            &invocation(),
+        )
+        .unwrap();
+        match &events[1] {
+            RuntimeEventKind::ToolFailed { error, .. } => {
+                assert_eq!(error.as_str(), INVALID_COMMAND_TEXT);
+                assert_ne!(error.as_str(), REFUSAL_TEXT);
             }
             other => panic!("expected ToolFailed, got {other:?}"),
         }
