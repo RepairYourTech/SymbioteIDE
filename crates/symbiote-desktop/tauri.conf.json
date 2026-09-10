@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "ide.symbiote.desktop",
   "build": {
-    "frontendDist": "ui"
+    "frontendDist": "app/dist",
+    "beforeBuildCommand": "npm --prefix app run build"
   },
   "app": {
-    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Symbiote",

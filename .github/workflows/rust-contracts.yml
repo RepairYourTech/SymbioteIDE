@@ -9,6 +9,27 @@ permissions:
   contents: read
 
 jobs:
+  desktop-workbench:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: crates/symbiote-desktop/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: crates/symbiote-desktop/app/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Fixture-transport notice is in the production bundle
+        run: grep -F "explicitly labeled fixture transport" dist/assets/index.js
+      - name: Committed dist matches the rebuild
+        working-directory: ${{ github.workspace }}
+        run: git diff --exit-code -- crates/symbiote-desktop/app/dist
   contracts:
     # Noble's default runner rejects isolated loopback setup. Keep that failure
     # documented; do not disable AppArmor or relax the invocation to pass tests.
