@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 14,
+    minor: 15,
 };
 
 #[derive(
@@ -235,6 +235,13 @@ pub enum Operation {
         project_id: ProjectId,
         task_id: TaskId,
     },
+    DecideElevation {
+        lease: Box<symbiote_domain::ElevationLease>,
+    },
+    RevokeElevation {
+        project_id: ProjectId,
+        elevation_id: CommandId,
+    },
     RecordResourceConsent {
         snapshot: ResourceSnapshot,
         expires_at: Timestamp,
@@ -290,6 +297,8 @@ impl Operation {
             Self::RegisterProject { project } => Some(&project.id),
             Self::CreateTask { task } => Some(&task.project_id),
             Self::RecordResourceConsent { snapshot, .. } => Some(&snapshot.project_id),
+            Self::DecideElevation { lease } => Some(&lease.project_id),
+            Self::RevokeElevation { project_id, .. } => Some(project_id),
             Self::GetProject { project_id }
             | Self::ObserveRootPlacement { project_id, .. }
             | Self::RevokeResourceConsent { project_id, .. }
@@ -326,6 +335,8 @@ impl Operation {
                 | Self::Shutdown {}
                 | Self::RecordResourceConsent { .. }
                 | Self::RevokeResourceConsent { .. }
+                | Self::DecideElevation { .. }
+                | Self::RevokeElevation { .. }
         )
     }
 }
@@ -437,6 +448,7 @@ impl Request {
             Operation::RecordResourceConsent { snapshot, .. } => {
                 snapshot.validate().map_err(|_| invalid())
             }
+            Operation::DecideElevation { lease } => lease.validate().map_err(|_| invalid()),
             Operation::ReadJournal { limit, .. } if *limit == 0 || *limit > MAX_PAGE_SIZE => {
                 Err(invalid())
             }
@@ -616,6 +628,13 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::GetHostPulse {} => principal.local_owner,
         Operation::Shutdown {} => principal.local_owner,
         Operation::RecordResourceConsent { .. } | Operation::RevokeResourceConsent { .. } => {
+            principal.local_owner
+        }
+        Operation::DecideElevation { .. } | Operation::RevokeElevation { .. } => {
+            // The deciding/revoking authority is the authenticated
+            // same-UID owner. The Host separately verifies the lease's
+            // attribution (a Running dispatch), the Team ceiling, and
+            // that the permission is not already granted.
             principal.local_owner
         }
         Operation::RegisterProject { project } => {
@@ -1046,6 +1065,13 @@ pub enum EventPayload {
         consent: Box<ResourceConsent>,
         revoked_by: UserId,
     },
+    ElevationDecided {
+        lease: Box<symbiote_domain::ElevationLease>,
+    },
+    ElevationRevoked {
+        lease: Box<symbiote_domain::ElevationLease>,
+        revoked_by: UserId,
+    },
     ProjectRegistered {
         project: Project,
         roots: Vec<Root>,
@@ -1082,6 +1108,9 @@ impl EventPayload {
             Self::TaskOriginAssigned { project_id, .. } => project_id,
             Self::ResourceConsentRecorded { consent }
             | Self::ResourceConsentRevoked { consent, .. } => &consent.snapshot.project_id,
+            Self::ElevationDecided { lease } | Self::ElevationRevoked { lease, .. } => {
+                &lease.project_id
+            }
             Self::ProjectRegistered { project, .. } => &project.id,
             Self::RootPlacementObserved { root, .. } => &root.project_id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
@@ -1143,6 +1172,14 @@ impl EventPayload {
                 consent.validate().is_ok()
                     && &consent.snapshot.project_id == project_id
                     && consent.revoked_at.is_some()
+            }
+            Self::ElevationDecided { lease } => {
+                lease.validate().is_ok() && &lease.project_id == project_id
+            }
+            Self::ElevationRevoked { lease, .. } => {
+                lease.validate().is_ok()
+                    && &lease.project_id == project_id
+                    && lease.revoked_at.is_some()
             }
             Self::ProjectRegistered {
                 project,

@@ -13,6 +13,7 @@ use symbiote_trust::ResourceConsent;
 use symbiote_workforce::{BindingConfiguration, RouteDecision};
 mod binding;
 mod dependency;
+mod elevation;
 mod lease;
 mod preparation;
 mod provider;
@@ -21,7 +22,7 @@ mod team;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 10;
+const DATABASE_VERSION: i64 = 11;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -61,6 +62,8 @@ pub enum StoreError {
     InvalidProvider,
     InvalidPreparation,
     PreparationRefused,
+    InvalidElevation,
+    ElevationCeiling,
     ResourceExhausted,
 }
 impl fmt::Display for StoreError {
@@ -207,6 +210,13 @@ pub enum EventPayload {
         consent: Box<ResourceConsent>,
         revoked_by: UserId,
     },
+    ElevationDecided {
+        lease: Box<ElevationLease>,
+    },
+    ElevationRevoked {
+        lease: Box<ElevationLease>,
+        revoked_by: UserId,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -301,6 +311,9 @@ impl Store {
         }
         if version < 10 {
             transaction.execute_batch(preparation::MIGRATION_V10)?;
+        }
+        if version < 11 {
+            transaction.execute_batch(elevation::MIGRATION_V11)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -1090,6 +1103,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
     let mut streams = BTreeMap::new();
     let mut consents: BTreeMap<CommandId, ResourceConsent> = BTreeMap::new();
+    let mut elevations: BTreeMap<CommandId, ElevationLease> = BTreeMap::new();
     let mut statement = connection.prepare("SELECT sequence,project_id,command_id,revision,request,payload FROM journal ORDER BY sequence")?;
     let rows = statement.query_map([], |r| {
         Ok((
@@ -1225,6 +1239,59 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                         "invalid consent revocation lineage".into(),
                     ));
                 }
+            }
+            EventPayload::ElevationDecided { lease } => {
+                lease.validate().map_err(|_| StoreError::InvalidElevation)?;
+                let task = tasks.get(&lease.task_id).ok_or(StoreError::NotFound)?;
+                if task.project_id() != &lease.project_id
+                    || *task.state() != TaskState::Running
+                    || task
+                        .current_dispatch()
+                        .is_none_or(|dispatch| dispatch.id() != &lease.dispatch_id)
+                    || lease.id.as_str() != command_key
+                    || revision != 0
+                    || request != serde_json::to_string(&event)?
+                    || elevations
+                        .insert(lease.id.clone(), *lease.clone())
+                        .is_some()
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid elevation decision journal lineage".into(),
+                    ));
+                }
+            }
+            EventPayload::ElevationRevoked { lease, revoked_by } => {
+                let previous = elevations
+                    .get_mut(&lease.id)
+                    .ok_or_else(|| StoreError::Integrity("revocation precedes elevation".into()))?;
+                if previous.revoked_at.is_some() {
+                    return Err(StoreError::Integrity("elevation already revoked".into()));
+                }
+                let mut expected = previous.clone();
+                expected.revoked_at = lease.revoked_at;
+                expected
+                    .validate()
+                    .map_err(|_| StoreError::InvalidElevation)?;
+                if previous.project_id != lease.project_id
+                    || previous.permission != lease.permission
+                    || previous.dispatch_id != lease.dispatch_id
+                    || previous.task_id != lease.task_id
+                    || lease.as_ref() != &expected
+                    || lease.project_id.as_str() != project_key
+                    || revision != 1
+                    || request
+                        != elevation::elevation_revocation_request(
+                            &lease.project_id,
+                            &lease.id,
+                            revoked_by,
+                            lease.revoked_at.ok_or(StoreError::InvalidElevation)?,
+                        )?
+                {
+                    return Err(StoreError::Integrity(
+                        "invalid elevation revocation journal lineage".into(),
+                    ));
+                }
+                elevations.insert(lease.id.clone(), *lease.clone());
             }
             EventPayload::ProjectRegistered {
                 project,
@@ -1674,6 +1741,25 @@ fn audit_journal(connection: &Connection) -> Result<()> {
         if read_consent(connection, &consent.snapshot.project_id, &id)? != consent {
             return Err(StoreError::Integrity(
                 "consent state differs from journal".into(),
+            ));
+        }
+    }
+    for (query, expected) in [("SELECT count(*) FROM elevations", elevations.len())] {
+        if connection.query_row(query, [], |r| sql_usize(r, 0))? != expected {
+            return Err(StoreError::Integrity(
+                "current record count differs from journal".into(),
+            ));
+        }
+    }
+    for (id, lease) in elevations {
+        let body: String = connection.query_row(
+            "SELECT body FROM elevations WHERE id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )?;
+        if serde_json::from_str::<ElevationLease>(&body)? != lease {
+            return Err(StoreError::Integrity(
+                "elevation state differs from journal".into(),
             ));
         }
     }

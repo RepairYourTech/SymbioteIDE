@@ -1,1 +1,1 @@
-{"version":{"major":1,"minor":14},"correlation_id":"demo-shutdown","command_id":"demo-shutdown","operation":{"kind":"shutdown"}}
+{"version":{"major":1,"minor":15},"correlation_id":"demo-shutdown","command_id":"demo-shutdown","operation":{"kind":"shutdown"}}

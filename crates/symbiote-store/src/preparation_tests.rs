@@ -598,3 +598,192 @@ fn start_recompiles_the_durable_binding_and_refuses_when_policy_floor_exceeds_ho
         "start must refuse under an unmeetable enforcement floor, got {refused:?}"
     );
 }
+
+#[test]
+fn elevation_leases_are_attributable_bounded_and_sticky() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, task) = full_fixture(&mut store, "elev");
+    // Route, prepare, and start: the elevated dispatch must be live.
+    let task_role = store.task(&task).unwrap().role_id().clone();
+    let request = symbiote_workforce::RouteRequest {
+        project_id: project.clone(),
+        work_id: WorkId::Objective(id!(ObjectiveId, "project-prep-elev")),
+        requested: Some(task_role.clone()),
+        domains: BTreeSet::new(),
+    };
+    let team = store.get_team(&project).unwrap();
+    let decision = symbiote_workforce::resolve_route(&team, &request).unwrap();
+    store
+        .record_route(
+            id!(CommandId, "route-elev"),
+            decision,
+            id!(UserId, "owner"),
+            Timestamp(20),
+        )
+        .unwrap();
+    store
+        .prepare_dispatch(
+            id!(CommandId, "prepare-elev"),
+            task.clone(),
+            id!(UserId, "owner"),
+            Timestamp(30),
+        )
+        .unwrap();
+    let host = Host {
+        id: id!(HostId, "host-elev"),
+        revision: Revision(0),
+        device: id!(DeviceId, "device-elev"),
+        fabric: None,
+        supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+        controls: [
+            symbiote_domain::Control::Filesystem,
+            symbiote_domain::Control::Cancellation,
+            symbiote_domain::Control::CompletionAuthority,
+            symbiote_domain::Control::Process,
+        ]
+        .into_iter()
+        .map(|c| {
+            (
+                c,
+                symbiote_domain::EnforcementClaim {
+                    strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                    evidence: id!(EvidenceId, "proof"),
+                    verified_at: Timestamp(1),
+                    expires_at: Timestamp(1_000_000),
+                },
+            )
+        })
+        .collect(),
+    };
+    let dispatch_id = id!(DispatchId, "dispatch-elev");
+    store
+        .start_prepared_task(
+            id!(CommandId, "start-elev"),
+            task.clone(),
+            dispatch_id.clone(),
+            id!(RuntimeContractId, "contract-elev"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(40),
+        )
+        .unwrap();
+    let lease = |command: &str| symbiote_domain::ElevationLease {
+        id: id!(CommandId, command),
+        project_id: project.clone(),
+        task_id: task.clone(),
+        dispatch_id: dispatch_id.clone(),
+        permission: Permission::UseCredential,
+        reason: "the run must read the operator's configured secret".into(),
+        approved: true,
+        approved_by: id!(UserId, "owner"),
+        decided_at: Timestamp(50),
+        expires_at: Timestamp(50 + 300_000),
+        revoked_at: None,
+    };
+
+    // The ceiling is law even before anything else: UseCredential is not
+    // in it yet, so the decision refuses.
+    assert!(matches!(
+        store.decide_elevation(id!(CommandId, "elevate-early"), lease("elevate-early")),
+        Err(StoreError::ElevationCeiling)
+    ));
+    // A permission with no enforcement consumer refuses outright (this
+    // slice's only consumer is the broker's UseCredential gate).
+    let mut unconsumed = lease("elevate-beyond");
+    unconsumed.permission = Permission::Network;
+    assert!(matches!(
+        store.decide_elevation(id!(CommandId, "elevate-beyond"), unconsumed),
+        Err(StoreError::InvalidElevation)
+    ));
+    // Raise the ceiling to admit UseCredential (the binding grants stay
+    // without it — that is what makes this an ELEVATION).
+    let mut raised = store.get_team(&project).unwrap();
+    raised
+        .access_ceiling
+        .grants
+        .insert(Permission::UseCredential);
+    raised.revision = Revision(1);
+    store
+        .replace_team(
+            id!(CommandId, "team-elev-raise"),
+            Some(Revision(0)),
+            raised,
+            id!(UserId, "owner"),
+            Timestamp(45),
+        )
+        .unwrap();
+    // A permission the binding already grants is not an elevation.
+    let mut regrant = lease("elevate-regrant");
+    regrant.permission = Permission::MutateStream;
+    assert!(matches!(
+        store.decide_elevation(id!(CommandId, "elevate-regrant"), regrant),
+        Err(StoreError::InvalidElevation)
+    ));
+    // The approval licenses exactly this dispatch, until it does not:
+    // expiry is the automatic revocation, checked at every read.
+    let approved = lease("elevate-usecredential");
+    store
+        .decide_elevation(id!(CommandId, "elevate-usecredential"), approved.clone())
+        .unwrap();
+    assert!(
+        store
+            .active_elevation(&dispatch_id, &Permission::UseCredential, Timestamp(60))
+            .unwrap()
+    );
+    assert!(
+        !store
+            .active_elevation(
+                &dispatch_id,
+                &Permission::UseCredential,
+                Timestamp(50 + 300_000)
+            )
+            .unwrap()
+    );
+    assert!(
+        !store
+            .active_elevation(
+                &id!(DispatchId, "dispatch-other"),
+                &Permission::UseCredential,
+                Timestamp(60)
+            )
+            .unwrap()
+    );
+    // Sticky manual revocation kills the lease inside its window.
+    store
+        .revoke_elevation(
+            id!(CommandId, "revoke-elev"),
+            &project,
+            &id!(CommandId, "elevate-usecredential"),
+            &id!(UserId, "owner"),
+            Timestamp(70),
+        )
+        .unwrap();
+    assert!(
+        !store
+            .active_elevation(&dispatch_id, &Permission::UseCredential, Timestamp(71))
+            .unwrap()
+    );
+    // Revocation is one-way.
+    assert!(matches!(
+        store.revoke_elevation(
+            id!(CommandId, "revoke-elev-2"),
+            &project,
+            &id!(CommandId, "elevate-usecredential"),
+            &id!(UserId, "owner"),
+            Timestamp(72),
+        ),
+        Err(StoreError::InvalidElevation)
+    ));
+    // An exact retry replays; different intent under the same id cannot.
+    assert!(
+        store
+            .decide_elevation(id!(CommandId, "elevate-usecredential"), approved)
+            .unwrap()
+            .replayed
+    );
+    // Reopen replays the audit over the elevation lifecycle.
+    store.integrity_check().unwrap();
+    drop(store);
+    Store::open(temp.database()).unwrap();
+}
