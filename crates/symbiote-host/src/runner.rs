@@ -141,10 +141,6 @@ impl WorkerTransports {
         self
     }
 
-    pub fn broker_configured(&self) -> bool {
-        self.broker.is_some()
-    }
-
     pub fn native_configured(&self) -> bool {
         self.native.is_some()
     }
@@ -213,13 +209,12 @@ impl WorkerTransports {
         }
     }
 
-    /// Resolves credential leases for one dispatch from the operator's
-    /// broker. Refusal identities are mapped payload-free; a lease's
-    /// plaintext NEVER passes through the runner — leases are returned to
-    /// the caller, which materializes them only inside the sandbox launch
-    /// composition (native env) or hands nothing to the harness (external
-    /// credentials stay harness-owned; this method is native-only by
-    /// construction and is not called for external runs).
+    /// Resolves one credential lease for a dispatch from the operator's
+    /// broker. Refusal identities are mapped payload-free. The lease's
+    /// plaintext does not leave the broker/lease objects — no materialize
+    /// call exists in this crate (environment injection into a transport
+    /// is the pending next slice), and external runs never call this
+    /// (harness credentials stay harness-owned).
     pub fn resolve_leases(
         &self,
         reference: &symbiote_domain::CredentialReferenceId,
@@ -242,7 +237,10 @@ fn broker_error_name(error: symbiote_context::BrokerError) -> &'static str {
         symbiote_context::BrokerError::Revoked => "revoked",
         symbiote_context::BrokerError::CrossProjectDenied => "cross_project_denied",
         symbiote_context::BrokerError::NotReferencedByProfile => "not_referenced_by_profile",
-        symbiote_context::BrokerError::EnvironmentDenied => "environment_denied",
+        symbiote_context::BrokerError::UseCredentialNotGranted => "use_credential_not_granted",
+        symbiote_context::BrokerError::InvalidEnvironmentLabel => "invalid_environment_label",
+        symbiote_context::BrokerError::Expired => "expired",
+        symbiote_context::BrokerError::NotYetValid => "not_yet_valid",
     }
 }
 
@@ -1464,51 +1462,120 @@ mod tests {
     }
 
     #[test]
-    fn lease_refusals_are_typed_and_broker_configured_gate() {
-        // The broker seam: without a broker, a credential-referencing
-        // dispatch refuses with NoCredentialBroker; with one, scope checks
-        // produce typed refusals (unknown → revoked ordering verified in
-        // symbiote-context's own tests; here the transport-level mapping).
-        let (store, _task, _dispatch) =
-            store_with_running_task("lease-refuse", RuntimeKind::NativeSymbiote);
-        let credential = symbiote_domain::CredentialReferenceId::new("credential").unwrap();
-        let transports = WorkerTransports::default();
+    fn lease_resolution_runs_through_the_real_contract_scope() {
+        // The reviewer-required end-to-end seam test (PR #508 round 1): a
+        // broker configured, the fixture's own credential reference
+        // registered, and the scope fields taken from the REAL dispatch
+        // contract — proving the passing lease, the UseCredential gate,
+        // and the typed refusals through WorkerTransports.
+        let (store, task, dispatch) =
+            store_with_running_task("lease-e2e", RuntimeKind::NativeSymbiote);
+        let credential = dispatch.contract().profile().credential.clone();
         let scope = symbiote_context::LeaseScope {
-            dispatch_id: symbiote_domain::DispatchId::new("disp-lease-refuse").unwrap(),
-            project_id: symbiote_domain::ProjectId::new("project-lease-refuse").unwrap(),
-            role_id: symbiote_domain::RoleId::new("worker-lease-refuse").unwrap(),
-            profile_id: symbiote_domain::RuntimeProfileId::new("profile-lease-refuse").unwrap(),
-            host_id: symbiote_domain::HostId::new("host-lease-refuse").unwrap(),
+            dispatch_id: dispatch.id().clone(),
+            project_id: store.task(&task).unwrap().project_id().clone(),
+            role_id: dispatch.contract().binding().role_id.clone(),
+            profile_id: dispatch.contract().profile().id.clone(),
+            host_id: symbiote_domain::HostId::new("host-lease-e2e").unwrap(),
         };
+        // No broker: the typed daemon gate.
+        let empty = WorkerTransports::default();
         assert!(matches!(
-            transports.resolve_leases(
+            empty.resolve_leases(
                 &credential,
                 symbiote_context::BrokerRequest {
                     scope: &scope,
                     profile_credential_refs: std::slice::from_ref(&credential),
-                    environment_grants: &[],
+                    use_credential_granted: true,
                     at: Timestamp(60),
                 },
             ),
             Err(RunnerError::NoCredentialBroker)
         ));
-        // With a broker configured but no registration: UnknownReference.
-        let with_broker = WorkerTransports::default().with_credential_broker(std::rc::Rc::new(
+        // Broker without a registration: UnknownReference.
+        let bare_broker = WorkerTransports::default().with_credential_broker(std::rc::Rc::new(
             std::cell::RefCell::new(symbiote_context::CredentialBroker::new()),
         ));
         assert!(matches!(
-            with_broker.resolve_leases(
+            bare_broker.resolve_leases(
                 &credential,
                 symbiote_context::BrokerRequest {
                     scope: &scope,
                     profile_credential_refs: std::slice::from_ref(&credential),
-                    environment_grants: &[],
+                    use_credential_granted: true,
                     at: Timestamp(60),
                 },
             ),
             Err(RunnerError::CredentialRefused("unknown_reference"))
         ));
-        assert_eq!(store.task(&_task).unwrap().state(), &TaskState::Running);
+        // Registered under the dispatch's project: the lease issues and
+        // its scope matches the contract verbatim.
+        let broker = std::rc::Rc::new(std::cell::RefCell::new(
+            symbiote_context::CredentialBroker::new(),
+        ));
+        broker
+            .borrow_mut()
+            .register(
+                credential.clone(),
+                scope.project_id.clone(),
+                "OPENAI_API_KEY".into(),
+                b"sk-fixture-lease-e2e".to_vec(),
+            )
+            .unwrap();
+        let configured = WorkerTransports::default().with_credential_broker(broker.clone());
+        let lease = configured
+            .resolve_leases(
+                &credential,
+                symbiote_context::BrokerRequest {
+                    scope: &scope,
+                    profile_credential_refs: std::slice::from_ref(&credential),
+                    use_credential_granted: dispatch
+                        .contract()
+                        .binding()
+                        .access
+                        .grants
+                        .contains(&symbiote_domain::Permission::UseCredential),
+                    at: Timestamp(60),
+                },
+            )
+            .unwrap()
+            .expect("the fixture grants UseCredential");
+        assert_eq!(lease.scope, scope);
+        let (label, value) = lease.materialize(Timestamp(61)).unwrap();
+        assert_eq!(label, "OPENAI_API_KEY");
+        assert_eq!(value, "sk-fixture-lease-e2e");
+        // A cross-project dispatch scope for the SAME reference: refused.
+        let foreign = symbiote_context::LeaseScope {
+            project_id: symbiote_domain::ProjectId::new("project-foreign").unwrap(),
+            ..scope.clone()
+        };
+        assert!(matches!(
+            configured.resolve_leases(
+                &credential,
+                symbiote_context::BrokerRequest {
+                    scope: &foreign,
+                    profile_credential_refs: std::slice::from_ref(&credential),
+                    use_credential_granted: true,
+                    at: Timestamp(60),
+                },
+            ),
+            Err(RunnerError::CredentialRefused("cross_project_denied"))
+        ));
+        // Revocation flips the next resolution to the sticky refusal.
+        broker.borrow_mut().revoke(&credential);
+        assert!(matches!(
+            configured.resolve_leases(
+                &credential,
+                symbiote_context::BrokerRequest {
+                    scope: &scope,
+                    profile_credential_refs: std::slice::from_ref(&credential),
+                    use_credential_granted: true,
+                    at: Timestamp(60),
+                },
+            ),
+            Err(RunnerError::CredentialRefused("revoked"))
+        ));
+        assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
     }
 
     /// Test fixtures for the store wiring. Mirrors the store's own
@@ -1610,10 +1677,17 @@ mod tests {
                     roles.clone(),
                 )
                 .unwrap();
+            // UseCredential is in the base grants so the credential-lease
+            // path (#217) can pass for profiles that reference a credential
+            // (the daemon gates leases on it).
             let access = AccessSnapshot {
                 project_id: project.id.clone(),
                 roots: project.roots.clone(),
-                grants: BTreeSet::from([Permission::ReadRoot, Permission::ExecuteProcess]),
+                grants: BTreeSet::from([
+                    Permission::ReadRoot,
+                    Permission::ExecuteProcess,
+                    Permission::UseCredential,
+                ]),
                 policy_revision: Revision(1),
             };
             let lead_policy = symbiote_domain::RolePolicy {
@@ -1634,6 +1708,7 @@ mod tests {
                 Permission::ReadRoot,
                 Permission::ExecuteProcess,
                 Permission::MutateStream,
+                Permission::UseCredential,
             ]);
             let worker_access_for_binding = worker_access.clone();
             let worker_policy = symbiote_domain::RolePolicy {
@@ -1792,6 +1867,7 @@ mod tests {
                         Control::Cancellation,
                         Control::CompletionAuthority,
                         Control::Process,
+                        Control::Credentials,
                     ]
                     .into_iter()
                     .map(|c| (c, EnforcementStrength::HostEnforced))
@@ -1890,6 +1966,7 @@ mod tests {
                     Control::Cancellation,
                     Control::CompletionAuthority,
                     Control::Process,
+                    Control::Credentials,
                 ]
                 .into_iter()
                 .map(|c| {

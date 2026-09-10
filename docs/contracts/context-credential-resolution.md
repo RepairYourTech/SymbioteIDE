@@ -18,15 +18,22 @@ halves the run must never conflate:
 
 - **Credentials (what the run may use).** `CredentialBroker` is the
   operator's process-local registry: secrets registered per
-  `CredentialReferenceId` with an owning project and an environment label.
+  `CredentialReferenceId` with an owning project and an environment label
+  (the label is the materialization NAME, not an authorization surface).
   `resolve` issues a short-lived `CredentialLease` (5-minute window,
-  expiry-checked at materialization) only when the dispatch's profile
-  references the credential, the owning project matches the dispatch's
-  project, and the environment label is granted by the binding access.
-  Distinct typed refusals: `UnknownReference`, `Revoked`, `CrossProjectDenied`,
-  `NotReferencedByProfile`, `EnvironmentDenied`. Values are zeroized on
-  drop, never serialized (no serde on the material type), never appear in
-  Debug, the store, the journal, manifests, task text, or events.
+  expiry-checked at materialization with distinct `Expired`/`NotYetValid`
+  identities) only when the dispatch's profile references the credential,
+  the owning project matches the dispatch's project, AND the binding
+  access grants `Permission::UseCredential` — the domain's typed authority
+  that a credential lease may issue at all (the dispatch compiler requires
+  `Control::Credentials` host enforcement whenever that permission is
+  granted). Distinct typed refusals: `UnknownReference`, `Revoked`,
+  `CrossProjectDenied`, `NotReferencedByProfile`, `UseCredentialNotGranted`,
+  `InvalidEnvironmentLabel`, `Expired`, `NotYetValid`. Values are zeroized
+  on drop, never serialized (no serde on the material type), never appear
+  in Debug, the store, the journal, manifests, task text, or events.
+  Rotation scrubs the previous value at replacement time; the caller must
+  hand `register` the only owning `Vec` of the value.
 
 ## Wiring
 
@@ -47,16 +54,20 @@ boundary). Refusals surface as `credential lease refused: <reason>` /
   typed refusal, never a stale value. OS keychain integration and the
   encrypted-at-rest fallback are later slices.
 - **Revocation is sticky per reference id**: a revoked reference can never
-  be re-registered (rotation uses a NEW reference id). Revocation of active
-  processes' retained values, lease cleanup of materialized files, and
+  be re-registered (rotation uses a NEW reference id). A lease ALREADY
+  issued before revocation still materializes until its own expiry —
+  active-process invalidation, lease cleanup of materialized files, and
   audit query surfaces are pending.
-- **Lease materialization is not yet consumed by a loop transport**: the
-  native loop has no environment-injection mechanism yet, so the daemon
-  holds the lease for the run boundary and drops it; env/file/stdin/header
+- **Lease materialization is not yet consumed by a loop transport**: no
+  `materialize` call exists on the daemon path — the lease is issued,
+  scope-checked, and dropped unmaterialized. Env/file/stdin/header
   injection according to adapter capability is the next slice. No live
   model turn exists — credential plumbing is exercised with fixture values
   only, and live verification remains gated on explicit user authorization
-  for credentials and billing.
+  for credentials and billing. The daemon-level positive lease path is
+  proven at the `WorkerTransports` seam with the real fixture contract
+  (the daemon's operator-provisioning surface for brokers does not exist
+  yet, so no `Host::call` test drives it).
 - Redaction across logs, terminals, artifacts, crash reports and export
   corpora, environment/resource-plan resolution (#176), and the full
   secret-descriptor model (versions, rotation windows, per-role/profile

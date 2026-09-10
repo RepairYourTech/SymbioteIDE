@@ -574,12 +574,17 @@ fn execute(
                     let mut transport = workers.native_build().map_err(worker_error)?;
                     // Credential leases (#217): the dispatch's profile
                     // references a credential, so the operator's broker
-                    // must be configured and must grant THIS dispatch's
-                    // scope. Cross-project references are refused by
-                    // construction; with no broker the run refuses rather
-                    // than proceeding without a credential it declared.
-                    // Values never enter the journal — the lease stays in
-                    // process memory and is dropped with the run.
+                    // must be configured and THIS dispatch's binding
+                    // access must grant `UseCredential` — the typed
+                    // authority that a credential lease may issue at all.
+                    // Cross-project references are refused by the broker's
+                    // own project check; with no broker the run refuses
+                    // rather than proceeding without a credential it
+                    // declared. The lease is issued, held for this run's
+                    // scope check, and DROPPED UNMATERIALIZED: the native
+                    // loop has no environment-injection mechanism yet, so
+                    // no value moves anywhere. Values never enter the
+                    // journal — the lease lives in process memory only.
                     let credential = current.contract().profile().credential.clone();
                     let scope = symbiote_context::LeaseScope {
                         dispatch_id: current.id().clone(),
@@ -589,34 +594,24 @@ fn execute(
                         host_id: this_host.clone(),
                     };
                     let profile_refs = [credential.clone()];
-                    let grants: Vec<String> = current
+                    let use_credential_granted = current
                         .contract()
                         .binding()
                         .access
                         .grants
-                        .iter()
-                        .map(|g| format!("{g:?}"))
-                        .collect();
+                        .contains(&symbiote_domain::Permission::UseCredential);
                     let lease = workers
                         .resolve_leases(
                             &credential,
                             symbiote_context::BrokerRequest {
                                 scope: &scope,
                                 profile_credential_refs: &profile_refs,
-                                environment_grants: &grants,
+                                use_credential_granted,
                                 at,
                             },
                         )
                         .map_err(worker_error)?;
-                    // A lease materializes into the loop's prompt envelope
-                    // boundary only: the value itself stays inside the
-                    // process and is dropped after the run. The native loop
-                    // transport composition receives the prompt; lease
-                    // injection into the sandbox env is the next slice
-                    // (the current loop carries no env mechanism yet), so
-                    // holding an unmaterialized lease here documents the
-                    // boundary without pretending injection exists.
-                    let _materialization_pending = lease;
+                    drop(lease);
                     // Shell tool execution is the operator's composition:
                     // with a configured executor factory, declared shell
                     // tools run through the sandbox inside the provisioned

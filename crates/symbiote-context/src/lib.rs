@@ -12,14 +12,19 @@
 //!
 //! - [`CredentialBroker`]: everything the run may USE. The operator
 //!   registers secret values against `CredentialReferenceId`s (owning
-//!   project, environment label, sensitivity); at run time the broker
-//!   issues a short-lived [`CredentialLease`] ONLY when the dispatch's
-//!   binding profile references that credential AND the owning project
-//!   matches the dispatch's project. A lease is the only path to the
-//!   plaintext, it expires by timestamp, it is scoped to
-//!   project+role+profile+host, and materialized names are cleaned on
-//!   drop. Values live in process memory only (zeroized on drop); they
-//!   never enter the store, the journal, manifests, task text, or events.
+//!   project, environment label); at run time the broker issues a
+//!   short-lived [`CredentialLease`] ONLY when the dispatch's binding
+//!   profile references that credential, the owning project matches the
+//!   dispatch's project, AND the binding access grants `UseCredential`.
+//!   A lease is the only path to the plaintext and it expires by
+//!   timestamp. Environment labels are materialization NAMES chosen by
+//!   the operator at registration — they are not authorization surfaces.
+//!   Values live in process memory only (zeroized on drop); they never
+//!   enter the store, the journal, manifests, task text, or events.
+//!   NOT yet provided: environment/file/header injection into a running
+//!   transport, and invalidation of leases already issued before a
+//!   revocation (an outstanding lease still materializes until it
+//!   expires).
 //!
 //! Boundary: this crate never decides WHO may register a secret (operator
 //! surface, canonical owner #217/H04) and never performs OS keychain or
@@ -36,7 +41,7 @@
 //! dependency is injected as a trait so this crate does not depend on
 //! symbiote-store.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use symbiote_domain::{
     AccessSnapshot, CredentialReferenceId, DispatchId, HostId, ProjectId, RoleId, RuntimeProfileId,
     TaskId, Timestamp, WorkId,
@@ -234,7 +239,6 @@ pub fn render_prompt(context: &ResolvedContext) -> String {
 pub struct RegisteredSecret {
     owning_project: ProjectId,
     environment: String,
-    sensitive: bool,
     value: SecretBytes,
 }
 
@@ -270,24 +274,14 @@ impl std::fmt::Debug for SecretBytes {
 #[derive(Default)]
 pub struct CredentialBroker {
     secrets: BTreeMap<CredentialReferenceId, RegisteredSecret>,
-    revoked: BTreeMap<CredentialReferenceId, ProjectId>,
+    revoked: BTreeSet<CredentialReferenceId>,
 }
 impl std::fmt::Debug for CredentialBroker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CredentialBroker")
             .field("registered", &self.secrets.keys().collect::<Vec<_>>())
-            .field("revoked", &self.revoked.keys().collect::<Vec<_>>())
+            .field("revoked", &self.revoked.iter().collect::<Vec<_>>())
             .finish()
-    }
-}
-
-/// The sensitive flag is metadata for the operator's own classification
-/// (it gates later #217 redaction/export decisions); the broker's
-/// resolution path never reads it, so keep it observable instead.
-impl RegisteredSecret {
-    #[allow(dead_code)]
-    fn is_sensitive(&self) -> bool {
-        self.sensitive
     }
 }
 
@@ -303,9 +297,15 @@ pub enum BrokerError {
     CrossProjectDenied,
     /// The dispatch's binding profile does not reference this credential.
     NotReferencedByProfile,
-    /// The dispatch's binding access does not carry this reference's
-    /// declared environment label in its grants — an access-scoped denial.
-    EnvironmentDenied,
+    /// The dispatch's binding access does not grant `UseCredential` — the
+    /// typed authority that any credential lease may issue at all.
+    UseCredentialNotGranted,
+    /// A registration's environment label was empty or over-bound.
+    InvalidEnvironmentLabel,
+    /// The lease window has closed.
+    Expired,
+    /// The lease window has not opened (a backdated clock cannot reuse).
+    NotYetValid,
 }
 
 impl std::fmt::Display for BrokerError {
@@ -344,8 +344,11 @@ impl CredentialLease {
     /// environment. Refuses an expired or not-yet-valid lease. The name
     /// is the caller's declared binding name, NOT model input.
     pub fn materialize(&self, at: Timestamp) -> Result<(String, String), BrokerError> {
-        if at.0 < self.issued_at.0 || at.0 >= self.expires_at.0 {
-            return Err(BrokerError::EnvironmentDenied);
+        if at.0 < self.issued_at.0 {
+            return Err(BrokerError::NotYetValid);
+        }
+        if at.0 >= self.expires_at.0 {
+            return Err(BrokerError::Expired);
         }
         Ok((self.environment.clone(), self.text()))
     }
@@ -372,14 +375,16 @@ impl std::fmt::Debug for CredentialLease {
 }
 
 /// The dispatch facet the broker checks against. `profile_credential_refs`
-/// are the binding profile's credential references; `environment_grants`
-/// are the binding's access grants interpreted as environment labels the
-/// run may receive (the Host maps policy to labels; a label not granted
-/// is denied here before any value moves).
+/// are the binding profile's credential references;
+/// `use_credential_granted` is the binding access's `Permission::
+/// UseCredential` grant — the typed authority that a credential lease may
+/// issue at all (the Host computes it from the dispatch contract; PR #508
+/// review P0: environment labels are NOT authorization surfaces, they are
+/// materialization names chosen by the operator at registration).
 pub struct BrokerRequest<'a> {
     pub scope: &'a LeaseScope,
     pub profile_credential_refs: &'a [CredentialReferenceId],
-    pub environment_grants: &'a [String],
+    pub use_credential_granted: bool,
     pub at: Timestamp,
 }
 
@@ -388,25 +393,47 @@ impl CredentialBroker {
         Self::default()
     }
 
-    /// Registers (or rotates) a secret. Rotation is same-reference with a
-    /// fresh value; the reference's owning project is immutable — a
-    /// different project on an existing reference is refused.
+    /// Registers a secret, or replaces its value (same project). The
+    /// reference's owning project is immutable; a different project on an
+    /// existing reference is refused, and a revoked reference can never be
+    /// re-registered — rotation after revocation uses a NEW reference id.
+    /// The caller MUST hand this method the only owning `Vec` of the
+    /// value: the broker scrubs the PREVIOUS record immediately (zeroized
+    /// at replacement, not at some later drop), but bytes the caller kept
+    /// are the caller's to manage.
     pub fn register(
         &mut self,
         reference: CredentialReferenceId,
         owning_project: ProjectId,
         environment: String,
-        sensitive: bool,
         value: Vec<u8>,
     ) -> Result<(), BrokerError> {
         if environment.is_empty() || environment.len() > 128 {
-            return Err(BrokerError::EnvironmentDenied);
+            return Err(BrokerError::InvalidEnvironmentLabel);
         }
-        if let Some(existing) = self.secrets.get(&reference) {
-            if existing.owning_project != owning_project {
+        if let Some(existing) = self.secrets.remove(&reference) {
+            if owning_project != existing.owning_project {
+                // Project immutability: restore the ORIGINAL record shell
+                // (its value was scrubbed by the remove above) so a later
+                // same-owner rotation still works, then refuse.
+                let owner = existing.owning_project.clone();
+                let label = existing.environment.clone();
+                drop(existing);
+                self.secrets.insert(
+                    reference,
+                    RegisteredSecret {
+                        owning_project: owner,
+                        environment: label,
+                        value: SecretBytes::new(Vec::new()),
+                    },
+                );
                 return Err(BrokerError::CrossProjectDenied);
             }
-        } else if self.revoked.contains_key(&reference) {
+            // Drop the previous record BEFORE building the new one: the
+            // old value is zeroized here, not when the map insert drops a
+            // shadowed record.
+            drop(existing);
+        } else if self.revoked.contains(&reference) {
             // Revocation is STICKY per reference id: re-registering the
             // same id would silently resurrect a compromised secret.
             // Rotation is the operator registering a NEW reference id and
@@ -418,20 +445,22 @@ impl CredentialBroker {
             RegisteredSecret {
                 owning_project,
                 environment,
-                sensitive,
                 value: SecretBytes::new(value),
             },
         );
         Ok(())
     }
 
-    /// Revokes: the reference can no longer be resolved, and re-resolution
-    /// fails closed even if a new registration never happens.
+    /// Revokes: the reference can no longer be resolved, its registered
+    /// value is zeroized immediately, and re-registration is refused
+    /// forever (sticky). A lease already issued from the revoked record
+    /// still holds its own copy until it expires — the honest disclosure
+    /// of the #217 'revocation blocks new dispatches' boundary; actively
+    /// invalidating outstanding leases is pending canonical scope.
     pub fn revoke(&mut self, reference: &CredentialReferenceId) {
-        if let Some(secret) = self.secrets.remove(reference) {
-            self.revoked
-                .insert(reference.clone(), secret.owning_project);
-        }
+        // Remove-then-drop scrubs the value at this point, not later.
+        drop(self.secrets.remove(reference));
+        self.revoked.insert(reference.clone());
     }
 
     /// Issues a lease if and only if every scope check passes. Checks are
@@ -441,7 +470,7 @@ impl CredentialBroker {
         reference: &CredentialReferenceId,
         request: BrokerRequest<'_>,
     ) -> Result<CredentialLease, BrokerError> {
-        if self.revoked.contains_key(reference) {
+        if self.revoked.contains(reference) {
             return Err(BrokerError::Revoked);
         }
         let secret = self
@@ -458,8 +487,8 @@ impl CredentialBroker {
         if secret.owning_project != request.scope.project_id {
             return Err(BrokerError::CrossProjectDenied);
         }
-        if !request.environment_grants.contains(&secret.environment) {
-            return Err(BrokerError::EnvironmentDenied);
+        if !request.use_credential_granted {
+            return Err(BrokerError::UseCredentialNotGranted);
         }
         let window = Timestamp(
             request.at.0.saturating_add(300_000), // 5-minute lease window
@@ -660,13 +689,12 @@ mod tests {
     fn lease_request<'a>(
         scope: &'a LeaseScope,
         refs: &'a [CredentialReferenceId],
-        grants: &'a [String],
         at: Timestamp,
     ) -> BrokerRequest<'a> {
         BrokerRequest {
             scope,
             profile_credential_refs: refs,
-            environment_grants: grants,
+            use_credential_granted: true,
             at,
         }
     }
@@ -681,7 +709,6 @@ mod tests {
                 reference.clone(),
                 project.clone(),
                 "OPENAI_API_KEY".into(),
-                true,
                 b"sk-fixture-value".to_vec(),
             )
             .unwrap();
@@ -695,12 +722,7 @@ mod tests {
         let lease = broker
             .resolve(
                 &reference,
-                lease_request(
-                    &scope,
-                    std::slice::from_ref(&reference),
-                    &["OPENAI_API_KEY".into()],
-                    Timestamp(1_000),
-                ),
+                lease_request(&scope, std::slice::from_ref(&reference), Timestamp(1_000)),
             )
             .unwrap();
         // Scope is carried verbatim from the dispatch contract.
@@ -726,7 +748,6 @@ mod tests {
                 reference.clone(),
                 project.clone(),
                 "KEY".into(),
-                true,
                 b"v".to_vec(),
             )
             .unwrap();
@@ -748,7 +769,6 @@ mod tests {
                 lease_request(
                     &scope_other,
                     std::slice::from_ref(&reference),
-                    &["KEY".into()],
                     Timestamp(1_000)
                 )
             ),
@@ -758,22 +778,22 @@ mod tests {
         assert!(matches!(
             broker.resolve(
                 &reference,
-                lease_request(&scope_self, &[], &["KEY".into()], Timestamp(1_000))
+                lease_request(&scope_self, &[], Timestamp(1_000))
             ),
             Err(BrokerError::NotReferencedByProfile)
         ));
-        // Referenced but the environment label is not granted.
+        // Referenced and project-matched but UseCredential not granted.
         assert!(matches!(
             broker.resolve(
                 &reference,
-                lease_request(
-                    &scope_self,
-                    std::slice::from_ref(&reference),
-                    &[],
-                    Timestamp(1_000)
-                )
+                BrokerRequest {
+                    scope: &scope_self,
+                    profile_credential_refs: std::slice::from_ref(&reference),
+                    use_credential_granted: false,
+                    at: Timestamp(1_000),
+                }
             ),
-            Err(BrokerError::EnvironmentDenied)
+            Err(BrokerError::UseCredentialNotGranted)
         ));
         // Unknown reference.
         let unknown = CredentialReferenceId::new("nope").unwrap();
@@ -783,12 +803,31 @@ mod tests {
                 lease_request(
                     &scope_self,
                     std::slice::from_ref(&unknown),
-                    &["KEY".into()],
                     Timestamp(1_000)
                 )
             ),
             Err(BrokerError::UnknownReference)
         ));
+        // Invalid environment labels are refused at registration with
+        // their own identity (not an access denial).
+        assert_eq!(
+            broker.register(
+                CredentialReferenceId::new("bad-label").unwrap(),
+                project.clone(),
+                String::new(),
+                b"v".to_vec()
+            ),
+            Err(BrokerError::InvalidEnvironmentLabel)
+        );
+        assert_eq!(
+            broker.register(
+                CredentialReferenceId::new("bad-label").unwrap(),
+                project.clone(),
+                "x".repeat(129),
+                b"v".to_vec()
+            ),
+            Err(BrokerError::InvalidEnvironmentLabel)
+        );
     }
 
     #[test]
@@ -802,7 +841,6 @@ mod tests {
                 reference.clone(),
                 project.clone(),
                 "KEY".into(),
-                true,
                 b"v".to_vec(),
             )
             .unwrap();
@@ -817,12 +855,7 @@ mod tests {
         assert!(matches!(
             broker.resolve(
                 &reference,
-                lease_request(
-                    &scope,
-                    std::slice::from_ref(&reference),
-                    &["KEY".into()],
-                    Timestamp(1_000)
-                )
+                lease_request(&scope, std::slice::from_ref(&reference), Timestamp(1_000))
             ),
             Err(BrokerError::Revoked)
         ));
@@ -835,7 +868,6 @@ mod tests {
                 reference.clone(),
                 other.clone(),
                 "KEY".into(),
-                true,
                 b"v".to_vec()
             ),
             Err(BrokerError::Revoked)
@@ -845,7 +877,6 @@ mod tests {
                 reference.clone(),
                 project.clone(),
                 "KEY".into(),
-                true,
                 b"v2".to_vec()
             ),
             Err(BrokerError::Revoked)
@@ -854,12 +885,7 @@ mod tests {
         assert!(matches!(
             broker.resolve(
                 &reference,
-                lease_request(
-                    &scope,
-                    std::slice::from_ref(&reference),
-                    &["KEY".into()],
-                    Timestamp(1_000)
-                )
+                lease_request(&scope, std::slice::from_ref(&reference), Timestamp(1_000))
             ),
             Err(BrokerError::Revoked)
         ));
@@ -871,7 +897,6 @@ mod tests {
                     rotated.clone(),
                     project.clone(),
                     "KEY".into(),
-                    true,
                     b"v2".to_vec()
                 )
                 .is_ok()
@@ -880,12 +905,7 @@ mod tests {
             broker
                 .resolve(
                     &rotated,
-                    lease_request(
-                        &scope,
-                        std::slice::from_ref(&rotated),
-                        &["KEY".into()],
-                        Timestamp(1_000)
-                    )
+                    lease_request(&scope, std::slice::from_ref(&rotated), Timestamp(1_000))
                 )
                 .is_ok()
         );
@@ -901,7 +921,6 @@ mod tests {
                 reference.clone(),
                 project.clone(),
                 "KEY".into(),
-                true,
                 b"v".to_vec(),
             )
             .unwrap();
@@ -915,18 +934,20 @@ mod tests {
         let lease = broker
             .resolve(
                 &reference,
-                lease_request(
-                    &scope,
-                    std::slice::from_ref(&reference),
-                    &["KEY".into()],
-                    Timestamp(1_000),
-                ),
+                lease_request(&scope, std::slice::from_ref(&reference), Timestamp(1_000)),
             )
             .unwrap();
-        // Within the window it materializes; at expiry it refuses.
+        // Within the window it materializes; at expiry it refuses with the
+        // distinct window identities (not an access denial).
         assert!(lease.materialize(Timestamp(300_999)).is_ok());
-        assert!(lease.materialize(Timestamp(301_000)).is_err());
+        assert_eq!(
+            lease.materialize(Timestamp(301_000)),
+            Err(BrokerError::Expired)
+        );
         // Before issuance it refuses too (a backdated clock cannot reuse).
-        assert!(lease.materialize(Timestamp(999)).is_err());
+        assert_eq!(
+            lease.materialize(Timestamp(999)),
+            Err(BrokerError::NotYetValid)
+        );
     }
 }
