@@ -2554,7 +2554,6 @@ impl ShellExecutorFactory for SandboxShellExecutorFactory {
 /// state — nothing here is client-reachable configuration.
 pub fn assemble_operator_transports(
     config: crate::operator::OperatorConfig,
-    user_id: &symbiote_domain::UserId,
 ) -> Result<WorkerTransports, &'static str> {
     let mut transports =
         WorkerTransports::default().with_reservation_base(config.reservation_base.clone());
@@ -2593,6 +2592,5 @@ pub fn assemble_operator_transports(
             allowed_programs: shell.allowed_programs.clone(),
         }));
     }
-    let _ = user_id;
     Ok(transports)
 }

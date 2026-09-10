@@ -1274,6 +1274,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     || root.project_id != previous.project_id
                     || previous.revision != *expected_revision
                     || root.revision.0 != next_revision
+                    || revision != root.revision.0
                     || root.as_ref() != &expected
                     || request
                         != placement_request(

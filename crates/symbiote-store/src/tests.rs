@@ -755,6 +755,16 @@ fn root_placement_observation_advances_replays_and_audits() {
         root.host_paths.get(&host).map(String::as_str),
         Some("/repos/next")
     );
+    // The journal is append-only at the schema level: even a same-uid
+    // process cannot rewrite a revision cell to forge a receipt or a
+    // replayed one. The audit's row-revision check is the belt to this
+    // braces: it rejects any row that slips past the trigger's reach.
+    let tampered = reopened;
+    let rewrite = tampered.connection.execute(
+        "UPDATE journal SET revision=5 WHERE command_id=?1",
+        [id!(CommandId, "observe-2").as_str()],
+    );
+    assert!(matches!(rewrite, Err(rusqlite::Error::SqliteFailure(_, _))));
 }
 
 #[test]

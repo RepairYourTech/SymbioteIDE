@@ -34,14 +34,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         {
             let config = symbiote_host::operator::load(std::path::Path::new(config_path))
                 .map_err(|error| format!("operator config: {error}"))?;
-            // The same authenticated-OS-owner bootstrap policy as serve.
-            let user_id = symbiote_domain::UserId::new(format!(
-                "local-uid-{}",
-                nix::unistd::geteuid().as_raw()
-            ))
-            .map_err(|_| "local principal identity")?;
-            let transports =
-                symbiote_host::runner::assemble_operator_transports(config, &user_id)?;
+            let transports = symbiote_host::runner::assemble_operator_transports(config)?;
             symbiote_host::serve_full(std::path::Path::new(state_dir), telemetry, transports)
         }
         _ => Err("usage: symbioted --state-dir PRIVATE_DIRECTORY [--operator-config FILE] [--no-telemetry]".into()),
