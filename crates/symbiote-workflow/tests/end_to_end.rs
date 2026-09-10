@@ -601,6 +601,11 @@ fn two_projects_on_one_daemon_without_work_configuration_or_credential_leakage()
         }
         other => panic!("the run must refuse at the daemon, got {other:?}"),
     }
+    // The refusal left the dispatch intact for Host retry policy: the
+    // leak task stays Running, and the binding replacement does not
+    // rewire its already-compiled contract.
+    let leak_task = driver_reads_task(state_dir, "b-leak-task", "project-isolation-b");
+    assert_eq!(leak_task, "running");
 
     // Lane B, correct configuration: the project's OWN credential. This
     // lane's worktree cannot exist yet — project A's run never created
@@ -729,6 +734,27 @@ fn two_projects_on_one_daemon_without_work_configuration_or_credential_leakage()
             "project {name}'s journal must not carry project {foreign}'s identities"
         );
     }
+}
+
+/// Reads one task's state over the wire through a fresh driver.
+fn driver_reads_task(state_dir: &std::path::Path, task: &str, project: &str) -> String {
+    let mut driver = symbiote_workflow::Driver::connect(state_dir).expect("driver");
+    let project = symbiote_domain::ProjectId::new(project).unwrap();
+    let read = driver
+        .call(
+            &format!("iso-task-read-{task}"),
+            serde_json::json!({"kind":"get_task","project_id":project,
+            "task_id":task}),
+            Some(&project),
+        )
+        .expect("task read");
+    let ResponseBody::Task(task) = read else {
+        panic!("task read body");
+    };
+    serde_json::to_value(task.state())
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .expect("task state")
 }
 
 /// The typed wire code a driver refusal carries.

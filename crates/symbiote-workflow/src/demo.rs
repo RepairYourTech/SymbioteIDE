@@ -251,7 +251,9 @@ impl DemoWorkflow {
             .as_array_mut()
             .ok_or(WorkflowError::UnexpectedBody)?;
         roles[0]["id"] = serde_json::json!(lane.lead_role);
+        roles[0]["name"] = serde_json::json!(lane.lead_role);
         roles[1]["id"] = serde_json::json!(lane.role);
+        roles[1]["name"] = serde_json::json!(lane.role);
         for role in roles.iter_mut() {
             role["project_id"] = serde_json::json!(lane.project);
         }
@@ -345,10 +347,11 @@ impl DemoWorkflow {
             binding,
             Some(&project),
         )?;
-        // 4. Provider connection and model descriptor — the SAME ids as
-        // every lane: they are project-scoped records, so equal ids in two
-        // projects are equal NAMES, not shared configuration. The fixture
-        // transport ignores the endpoint — nothing contacts it.
+        // 4. Provider connection and model descriptor — HOST-GLOBAL
+        // records (keyed by id alone, not per project), so each lane names
+        // its own; reusing another lane's id would overwrite its record.
+        // The fixture transport ignores the endpoint — nothing contacts
+        // it.
         self.call(
             &format!("wf-provider-{}", lane.project),
             serde_json::json!({"kind":"replace_provider_connection","attribution":lane.project,
@@ -840,9 +843,6 @@ impl DemoWorkflow {
         }
     }
 
-    /// The checked-in binding fixture, patched for the demo: this Host
-    /// eligible, stream mutation + credential use granted, and the `shell`
-    /// tool declared (both sides of the validator's equality rule).
     /// The checked-in binding fixture, patched for a lane: the lane's
     /// binding id and credential reference, this Host eligible, stream
     /// mutation + credential use granted, and the `shell` tool declared
