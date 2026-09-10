@@ -39,8 +39,8 @@ export function parseDemoOutcome(payload: string): DemoOutcome {
   if (typeof parsed.dispatch_id !== "string") {
     throw new Error("demo outcome missing dispatch_id");
   }
-  if (typeof parsed.journal_cursor !== "number") {
-    throw new Error("demo outcome missing journal_cursor");
+  if (typeof parsed.journal_cursor !== "number" || !Number.isInteger(parsed.journal_cursor)) {
+    throw new Error("demo outcome journal_cursor is not an integer");
   }
   if (parsed.report !== null && typeof parsed.report !== "string") {
     throw new Error("demo outcome report is not a string or null");
