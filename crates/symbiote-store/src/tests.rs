@@ -977,6 +977,7 @@ fn start_command(task: &Task, role: &Role) -> TaskCommand {
             binding: &binding,
             profile: &profile,
             host: &host,
+            minimum_enforcement: &std::collections::BTreeMap::new(),
             now: Timestamp(10),
         },
     )

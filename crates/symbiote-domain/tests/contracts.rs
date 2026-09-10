@@ -148,6 +148,7 @@ impl Fixture {
                 binding: &self.binding,
                 profile: &self.profile,
                 host: &self.host,
+                minimum_enforcement: &std::collections::BTreeMap::new(),
                 now: Timestamp(10),
             },
         )
@@ -834,4 +835,95 @@ fn dispatch_pins_root_stream_task_contract_and_start_time() {
     too_early.at = Timestamp(9);
     assert_eq!(f.task.apply(too_early), Err(DomainError::InvalidTimestamp));
     assert_eq!(f.task.revision(), Revision(0));
+}
+
+#[test]
+fn effective_access_narrows_the_binding_scope_to_the_tasks_root() {
+    let mut f = Fixture::new(RuntimeKind::NativeSymbiote);
+    let second_root = id!(RootId, "other-root");
+    f.binding.access.roots.insert(second_root);
+    let dispatch = f.compile().unwrap();
+    // The binding snapshot retains the Role's whole authorized scope.
+    assert_eq!(dispatch.contract().binding().access.roots.len(), 2);
+    // The dispatch operates on exactly this Task's Root: least privilege is
+    // recomputed per Dispatch, not inherited wholesale from the binding.
+    let effective = dispatch.contract().effective_access();
+    assert_eq!(
+        effective.roots,
+        BTreeSet::from([id!(RootId, "root")]),
+        "effective access must be narrowed to the task's root"
+    );
+    assert_eq!(
+        effective.grants,
+        dispatch.contract().binding().access.grants
+    );
+    assert_eq!(effective.project_id, f.binding.access.project_id);
+    assert_eq!(effective.policy_revision, f.binding.access.policy_revision);
+    // Serialize -> strip the field -> deserialize: contracts journaled
+    // before narrowing must still replay, falling back to the binding
+    // snapshot they were compiled with.
+    let mut wire = serde_json::to_value(&dispatch).unwrap();
+    assert!(wire["contract"]["effective_access"].is_object());
+    wire["contract"]
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_access");
+    let restored: Dispatch = serde_json::from_value(wire).unwrap();
+    assert_eq!(restored.contract().effective_access().roots.len(), 2);
+    assert_eq!(
+        restored.contract().effective_access(),
+        &restored.contract().binding().access
+    );
+}
+
+#[test]
+fn binding_enforcement_floor_refuses_weaker_host_claims_at_assignment() {
+    let f = Fixture::new(RuntimeKind::NativeSymbiote);
+    let compile_with = |minimum: EnforcementStrength| {
+        Dispatch::compile(
+            id!(DispatchId, "dispatch-floor"),
+            id!(RuntimeContractId, "runtime-contract"),
+            DispatchInputs {
+                task: &f.task,
+                role: &f.role,
+                binding: &f.binding,
+                profile: &f.profile,
+                host: &f.host,
+                minimum_enforcement: &BTreeMap::from([(Control::Filesystem, minimum)]),
+                now: Timestamp(10),
+            },
+        )
+        .map(|_| ())
+    };
+    // The host claims HostEnforced for Filesystem: a matching floor binds.
+    assert_eq!(compile_with(EnforcementStrength::HostEnforced), Ok(()));
+    // Demanding native enforcement from a host-enforced claim refuses the
+    // assignment: the dispatch never launches under weaker isolation.
+    assert_eq!(
+        compile_with(EnforcementStrength::Native),
+        Err(DomainError::UnsupportedControl)
+    );
+    // A floor on a control this dispatch does not require is vacuous:
+    // Process is only required when ExecuteProcess is granted, which this
+    // binding does not grant.
+    let dispatch = Dispatch::compile(
+        id!(DispatchId, "dispatch-vacuous"),
+        id!(RuntimeContractId, "runtime-contract"),
+        DispatchInputs {
+            task: &f.task,
+            role: &f.role,
+            binding: &f.binding,
+            profile: &f.profile,
+            host: &f.host,
+            minimum_enforcement: &BTreeMap::from([(Control::Network, EnforcementStrength::Native)]),
+            now: Timestamp(10),
+        },
+    )
+    .unwrap();
+    assert!(
+        !dispatch
+            .contract()
+            .enforcement()
+            .contains_key(&Control::Network)
+    );
 }

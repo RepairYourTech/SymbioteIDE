@@ -1375,7 +1375,7 @@ mod tests {
             project_id: &symbiote_domain::ProjectId::new("project-shell-buildref").unwrap(),
             role_id: &symbiote_domain::RoleId::new("worker-shell-buildref").unwrap(),
             profile_id: &symbiote_domain::RuntimeProfileId::new("profile-shell-buildref").unwrap(),
-            access: &dispatch.contract().binding().access,
+            access: dispatch.contract().effective_access(),
             user_id: &symbiote_domain::UserId::new("owner").unwrap(),
         };
         assert!(matches!(
@@ -2042,6 +2042,7 @@ mod tests {
                     binding: &binding.binding,
                     profile: &binding.primary.profile,
                     host,
+                    minimum_enforcement: &std::collections::BTreeMap::new(),
                     now: Timestamp(40),
                 },
             )

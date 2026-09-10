@@ -122,6 +122,7 @@ fn started_task(store: &mut Store, tag: &str) -> (ProjectId, TaskId, DispatchId,
             binding: &binding,
             profile: &profile,
             host: &host,
+            minimum_enforcement: &std::collections::BTreeMap::new(),
             now: Timestamp(10),
         },
     )

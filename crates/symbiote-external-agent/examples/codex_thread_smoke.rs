@@ -200,6 +200,7 @@ fn smoke_dispatch(task: &Task) -> Result<Dispatch, Box<dyn std::error::Error>> {
             binding: &binding,
             profile: &profile,
             host: &host,
+            minimum_enforcement: &std::collections::BTreeMap::new(),
             now: Timestamp(2),
         },
     )?)

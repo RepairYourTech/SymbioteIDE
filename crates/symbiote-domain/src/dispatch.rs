@@ -20,6 +20,12 @@ pub struct WorkforceRuntimeContract {
     task_contract: VersionedTaskContract,
     gates: std::collections::BTreeSet<Gate>,
     enforcement: BTreeMap<Control, EnforcementClaim>,
+    /// The least-privilege access this dispatch operates under: the binding's
+    /// authorized access narrowed to exactly this Task's Root. `None` only on
+    /// contracts journaled before narrowing existed (they fall back to the
+    /// full binding snapshot they were compiled with).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effective_access: Option<AccessSnapshot>,
     compiled_at: Timestamp,
 }
 
@@ -29,6 +35,13 @@ impl WorkforceRuntimeContract {
     }
     pub fn enforcement(&self) -> &BTreeMap<Control, EnforcementClaim> {
         &self.enforcement
+    }
+    /// The narrowed access this dispatch runs under. Contracts compiled
+    /// before per-dispatch narrowing fell back to the full binding snapshot.
+    pub fn effective_access(&self) -> &AccessSnapshot {
+        self.effective_access
+            .as_ref()
+            .unwrap_or(&self.binding.access)
     }
     pub fn role(&self) -> &Role {
         &self.role
@@ -145,6 +158,8 @@ impl<'de> Deserialize<'de> for WorkforceRuntimeContract {
             task_contract: VersionedTaskContract,
             gates: std::collections::BTreeSet<Gate>,
             enforcement: BTreeMap<Control, EnforcementClaim>,
+            #[serde(default)]
+            effective_access: Option<AccessSnapshot>,
             compiled_at: Timestamp,
         }
         let w = Wire::deserialize(deserializer)?;
@@ -161,6 +176,7 @@ impl<'de> Deserialize<'de> for WorkforceRuntimeContract {
             task_contract: w.task_contract,
             gates: w.gates,
             enforcement: w.enforcement,
+            effective_access: w.effective_access,
             compiled_at: w.compiled_at,
         };
         value
@@ -199,6 +215,7 @@ impl Dispatch {
             binding,
             profile,
             host,
+            minimum_enforcement,
             now,
         } = inputs;
         if task.role_id() != &role.id
@@ -257,8 +274,26 @@ impl Dispatch {
             {
                 return Err(DomainError::UnsupportedControl);
             }
+            // The binding's enforcement policy is binding at assignment: a
+            // host claim weaker than the declared minimum refuses the
+            // dispatch (re-staffing recompiles, so a fallback that cannot
+            // meet the policy is rejected, never inherited).
+            if let Some(minimum) = minimum_enforcement.get(&control) {
+                if !strength_meets(minimum, &claim.strength) {
+                    return Err(DomainError::UnsupportedControl);
+                }
+            }
             enforcement.insert(control, claim.clone());
         }
+        // Least privilege per dispatch: the binding authorizes the Role's
+        // whole scope, but THIS dispatch operates on exactly this Task's
+        // Root — the narrow snapshot is what consumers (sandbox consent,
+        // credential scope, context resolution) must enforce.
+        let effective = {
+            let mut access = binding.access.clone();
+            access.roots = std::iter::once(task.root_id().clone()).collect();
+            access
+        };
         Ok(Self {
             id,
             contract_id,
@@ -275,9 +310,31 @@ impl Dispatch {
                 task_contract: task.task_contract().clone(),
                 gates: Gate::required(),
                 enforcement,
+                effective_access: Some(effective),
                 compiled_at: now,
             },
         })
+    }
+}
+
+/// The strength ordering from the runtime SDK's minimum-enforcement check,
+/// mirrored against enforcement CLAIMS at assignment time: Native and
+/// HostEnforced are enforcing; observed/emulated never satisfy a minimum.
+fn strength_meets(minimum: &EnforcementStrength, claim: &EnforcementStrength) -> bool {
+    match minimum {
+        EnforcementStrength::Native => claim == &EnforcementStrength::Native,
+        EnforcementStrength::HostEnforced => matches!(
+            claim,
+            EnforcementStrength::Native | EnforcementStrength::HostEnforced
+        ),
+        EnforcementStrength::ExternallyObserved | EnforcementStrength::Emulated => matches!(
+            claim,
+            EnforcementStrength::Native
+                | EnforcementStrength::HostEnforced
+                | EnforcementStrength::ExternallyObserved
+                | EnforcementStrength::Emulated
+        ),
+        EnforcementStrength::Unsupported => false,
     }
 }
 
@@ -287,5 +344,8 @@ pub struct DispatchInputs<'a> {
     pub binding: &'a WorkforceBinding,
     pub profile: &'a RuntimeProfile,
     pub host: &'a Host,
+    /// The binding's declared per-control enforcement floor. Controls the
+    /// dispatch does not require are unconstrained by it.
+    pub minimum_enforcement: &'a BTreeMap<Control, EnforcementStrength>,
     pub now: Timestamp,
 }

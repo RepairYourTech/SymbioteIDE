@@ -24,10 +24,12 @@ The outcome is `ready` only when scheduling, routing, and provider all resolve. 
 
 The Host record's enforcement claims are operator-provisioned for the Host's own inventory identity (the service refuses a host identity that is not its own); claim windows are bounded, and the evidence ids are Host-derived, not client-supplied. A refused preparation (`failed_precondition`), a superseded preparation, or a second start all fail closed — the task stays Ready and no lease exists.
 
+Least privilege at assignment (first #269 core): `Dispatch::compile` attaches an immutable `effective_access` snapshot to the contract — the binding's authorized access narrowed to exactly the Task's Root — and consumers (sandbox tool consent, context resolution) enforce the narrowed snapshot, not the Role's whole scope. The binding's declared per-control `minimum_enforcement` floor is binding at assignment: a Host claim weaker than the floor refuses the start (`unsupported_control`), so re-staffing/fallback recompiles and rejects rather than inheriting. Contracts journaled before narrowing deserialize without the field and fall back to their compiled binding snapshot.
+
 ## Evidence and remaining acceptance
 
 Covered by a store test (composition steps, refusal recording, replay, readback, unknown-task refusal) and a daemon test (projection → prepare → refusal recorded → replay identical → restart replay → journal lineage).
 
-Pending #205 acceptance, tracked in the issue: worker-loop activation (#465 native, #464/#465 external) — the started dispatch is a control-plane record only, no runtime process is launched; mixed-runtime staffing round-trips; completion/verification wiring; and the #269 least-privilege effective-access manifest at dispatch time.
+Pending #205 acceptance, tracked in the issue: worker-loop activation (#465 native, #464/#465 external) — the started dispatch is a control-plane record only, no runtime process is launched; mixed-runtime staffing round-trips; completion/verification wiring; and the remaining #269 scope: skill/MCP/secret-scope trust metadata, explicit elevation leases, mid-run policy change semantics, per-denial enforcement-layer reporting.
 
 Applicability: security/privacy — owner authority only, no secrets, refusals recorded as evidence. Accessibility not applicable to a headless composition layer. Performance bounded by per-task record count. Linux-first, matching the Host.
