@@ -50,6 +50,27 @@ pub struct DemoOutcome {
     pub dispatch_id: String,
 }
 
+/// The seed-derived worktree identity for a stream — the exact derivation
+/// provisioning verifies (the Host computes the same value from the
+/// stream's recorded identity). Shared by both demo lanes and kept in one
+/// place so the derivation cannot diverge from the evidence reader.
+fn derive_stream_worktree(
+    project: &symbiote_domain::ProjectId,
+    root: &symbiote_domain::RootId,
+    stream_id: &symbiote_domain::ChangeStreamId,
+) -> Result<symbiote_worktrees::Derived, WorkflowError> {
+    let digest = symbiote_trust::Fingerprint::of(stream_id.as_str().as_bytes());
+    let seed = symbiote_worktrees::policy_seed(digest.as_str())
+        .map_err(|_| WorkflowError::LocalObservation)?;
+    symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
+        project_id: project,
+        root_id: root,
+        stream_id,
+        seed,
+    })
+    .map_err(|_| WorkflowError::LocalObservation)
+}
+
 /// One driver for the whole sequence; connect once per daemon lifetime.
 pub struct DemoWorkflow {
     driver: Driver,
@@ -237,16 +258,7 @@ impl DemoWorkflow {
         )?;
         let stream_id = symbiote_domain::ChangeStreamId::new(STREAM).expect("fixture stream");
         let root_id = symbiote_domain::RootId::new(ROOT).expect("fixture root");
-        let digest = symbiote_trust::Fingerprint::of(stream_id.as_str().as_bytes());
-        let seed = symbiote_worktrees::policy_seed(digest.as_str())
-            .map_err(|_| WorkflowError::LocalObservation)?;
-        let derived = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
-            project_id: &project,
-            root_id: &root_id,
-            stream_id: &stream_id,
-            seed,
-        })
-        .map_err(|_| WorkflowError::LocalObservation)?;
+        let derived = derive_stream_worktree(&project, &root_id, &stream_id)?;
         self.call(
             "wf-task",
             serde_json::json!({"kind":"create_task","task":{"id":TASK,"project_id":PROJECT,
@@ -434,16 +446,7 @@ impl DemoWorkflow {
         let target = "b".repeat(40);
         let stream_id = symbiote_domain::ChangeStreamId::new(EXTERNAL_STREAM).expect("stream");
         let root_id = symbiote_domain::RootId::new(ROOT).expect("fixture root");
-        let digest = symbiote_trust::Fingerprint::of(stream_id.as_str().as_bytes());
-        let seed = symbiote_worktrees::policy_seed(digest.as_str())
-            .map_err(|_| WorkflowError::LocalObservation)?;
-        let derived = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
-            project_id: &project,
-            root_id: &root_id,
-            stream_id: &stream_id,
-            seed,
-        })
-        .map_err(|_| WorkflowError::LocalObservation)?;
+        let derived = derive_stream_worktree(&project, &root_id, &stream_id)?;
         self.call(
             "wf-task-external",
             serde_json::json!({"kind":"create_task","task":{"id":EXTERNAL_TASK,"project_id":PROJECT,
@@ -469,14 +472,13 @@ impl DemoWorkflow {
             serde_json::json!({"kind":"prepare_dispatch","task_id":EXTERNAL_TASK}),
             Some(&project),
         )?;
-        if let ResponseBody::DispatchPreparation(preparation) = &prepared {
-            if preparation.outcome != symbiote_domain::PreparationOutcome::Ready {
-                eprintln!(
-                    "DEBUG-PREP {}",
-                    serde_json::to_string(&preparation).unwrap_or_default()
-                );
-                return Err(WorkflowError::UnexpectedBody);
-            }
+        let ResponseBody::DispatchPreparation(preparation) = &prepared else {
+            return Err(WorkflowError::UnexpectedBody);
+        };
+        if preparation.outcome != symbiote_domain::PreparationOutcome::Ready {
+            // The recorded refusal is durable evidence; the caller reads it
+            // through `get_dispatch_preparation`.
+            return Err(WorkflowError::UnexpectedBody);
         }
         let started = self.call(
             "wf-start-external",

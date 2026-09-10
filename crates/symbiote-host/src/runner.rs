@@ -144,18 +144,6 @@ impl WorkerTransports {
         self
     }
 
-    pub fn native_configured(&self) -> bool {
-        self.native.is_some()
-    }
-
-    pub fn external_configured(&self) -> bool {
-        self.external.is_some()
-    }
-
-    pub fn shell_configured(&self) -> bool {
-        self.shell.is_some()
-    }
-
     /// Configures the derived-worktree base directory. Provisioning is
     /// refused with a typed error until this is set.
     pub fn with_reservation_base(mut self, base: std::path::PathBuf) -> Self {

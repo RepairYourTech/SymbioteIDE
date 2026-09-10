@@ -132,8 +132,9 @@ fn write_operator_config(
     path: &std::path::Path,
     reservation_base: &std::path::Path,
     launcher: &std::path::Path,
+    with_external_fixture: bool,
 ) {
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "reservation_base": reservation_base.display().to_string(),
         "native_fixture": {
             "echo_text": "implemented the bounded change; produced.txt written by the sandboxed tool",
@@ -145,12 +146,14 @@ fn write_operator_config(
         "credential_broker": [{"reference": "native-vault-ref",
             "project": "staffing-demo", "environment": "OPENAI_API_KEY",
             "value": "fixture-not-a-real-secret"}],
-        "external_fixture": {"thread_id": "thr-demo-external",
-            "agent_message": "external harness implemented the bounded change"},
         "shell_executor": {"launcher_path": launcher.display().to_string(),
             "protected_paths": ["/etc", "/var", "/home"],
             "allowed_programs": ["sh"]}
     });
+    if with_external_fixture {
+        config["external_fixture"] = serde_json::json!({"thread_id": "thr-demo-external",
+            "agent_message": "external harness implemented the bounded change"});
+    }
     let mut file = std::fs::File::create(path).expect("config file");
     file.write_all(serde_json::to_string_pretty(&config).unwrap().as_bytes())
         .unwrap();
@@ -203,7 +206,7 @@ fn demo_environment(tag: &str) -> DemoEnv {
         ],
     );
     let config_path = scratch.join("operator-config.json");
-    write_operator_config(&config_path, &reservation_base, &launcher_binary());
+    write_operator_config(&config_path, &reservation_base, &launcher_binary(), true);
     DemoEnv {
         scratch,
         state_dir,
@@ -457,4 +460,57 @@ fn two_harness_demo_native_and_external_workers_on_one_project_without_leakage()
         native.primary.profile.runtime,
         external.primary.profile.runtime
     );
+}
+
+/// The no-fallback pin (review P2): with an operator config that does NOT
+/// provision the external execution path, the Host record must not
+/// advertise `ExternalHarness`, so the external lane's preparation records
+/// a durable refusal — while the native lane still works. A future
+/// refactor that advertises both runtimes unconditionally fails here
+/// instead of silently reintroducing a native fallback for external
+/// execution (the thing the runtime-kind contract forbids).
+#[test]
+fn an_external_binding_refuses_to_start_without_operator_provisioned_harness_support() {
+    let env = demo_environment("no-external");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let repo = &env.repo;
+    let config_path = &env.config_path;
+
+    // Overwrite the shared config with one that does NOT provision the
+    // external execution path.
+    write_operator_config(config_path, reservation_base, &launcher_binary(), false);
+    // The daemon stays alive for the whole test; its Drop cleans up.
+    let _daemon = Daemon::spawn(state_dir, config_path);
+    let mut workflow = symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, repo)
+        .expect("connect");
+    // The native lane is unaffected: no harness support is needed for it.
+    let native_dispatch = workflow.start_demo().expect("native lane works");
+    assert!(!native_dispatch.is_empty());
+    // The external lane refuses AT THE DAEMON with a typed refusal: the
+    // start recompiles the dispatch against the live Host record, whose
+    // supported runtimes exclude the harness. It is never rerouted to the
+    // native runtime. (Preparation is host-agnostic by design, so it is
+    // here that the refusal must surface.)
+    let error = workflow
+        .start_demo_external()
+        .expect_err("external start must refuse without provisioning");
+    match error {
+        symbiote_workflow::WorkflowError::Refused(protocol_error) => {
+            // The domain's IneligibleHost refusal currently maps to the
+            // coarse invalid_request wire code; the meaningful pin is that
+            // the START REFUSES — the lane is never rerouted to native.
+            assert!(
+                matches!(
+                    protocol_error.code,
+                    symbiote_protocol::ErrorCode::InvalidRequest
+                        | symbiote_protocol::ErrorCode::FailedPrecondition
+                ),
+                "the start must refuse, got {:?}: {}",
+                protocol_error.code,
+                protocol_error.message
+            );
+        }
+        other => panic!("the start must refuse at the daemon, got {other:?}"),
+    }
 }
