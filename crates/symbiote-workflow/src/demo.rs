@@ -34,6 +34,58 @@ pub const EXTERNAL_STREAM: &str = "external-stream";
 pub const EXTERNAL_ROLE: &str = "engineer-external";
 pub const EXTERNAL_OBJECTIVE: &str = "external-objective";
 
+/// One project's full canonical identity for the demo flow. Every id is
+/// project-scoped at the daemon, so two lanes may reuse the same role,
+/// provider, and model NAMES while remaining entirely separate
+/// configuration; what must differ (project, root, objective, task,
+/// stream, binding, credential reference) is explicit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DemoLane {
+    pub project: &'static str,
+    pub root: &'static str,
+    pub objective: &'static str,
+    pub task: &'static str,
+    pub stream: &'static str,
+    pub chat: &'static str,
+    /// The lane's lead Role id and executor Role id. Role ids (and Root
+    /// ids) are GLOBALLY unique across the daemon — two projects cannot
+    /// reuse a role name — so each lane names its own.
+    pub lead_role: &'static str,
+    pub role: &'static str,
+    pub binding_id: &'static str,
+    /// The lane's provider connection and model descriptor ids. These
+    /// records are HOST-GLOBAL (not project-scoped), so each lane names
+    /// its own.
+    pub provider: &'static str,
+    pub model: &'static str,
+    /// The credential reference this lane's profile names. It must be
+    /// registered with the operator's broker FOR THIS PROJECT — a
+    /// reference registered for another project is refused by the broker
+    /// (the Project-isolation demo pins exactly that refusal).
+    pub credential: &'static str,
+    /// Whether the project's Team carries the external-harness lane
+    /// (registered only for the staffing project, whose Team the
+    /// two-harness demo extends with a third member).
+    pub with_external_lane: bool,
+}
+
+/// The default lane: the checked-in fixtures' identities.
+pub const STAFFING: DemoLane = DemoLane {
+    project: PROJECT,
+    root: ROOT,
+    objective: "staffing-objective",
+    task: TASK,
+    stream: STREAM,
+    chat: "chat",
+    lead_role: "lead",
+    role: "engineer",
+    binding_id: "engineer-binding",
+    provider: "native-openai",
+    model: "coding-model",
+    credential: "native-vault-ref",
+    with_external_lane: true,
+};
+
 /// What the first-release sequence observed, for the caller (desktop UI,
 /// test, operator) to inspect.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -76,8 +128,13 @@ pub struct DemoWorkflow {
     driver: Driver,
     /// The operator's reservation base (for worktree evidence).
     reservation_base: PathBuf,
-    /// The open repository's path (registered as the Root placement).
+    /// The open repository's path (registered as the Root placement) for
+    /// the default lane.
     repository: PathBuf,
+    /// Additional projects' open repositories, registered with
+    /// [`Self::with_repository`] — one daemon can host several projects,
+    /// each rooted at its own repository.
+    repositories: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl DemoWorkflow {
@@ -90,7 +147,23 @@ impl DemoWorkflow {
             driver: Driver::connect(state_directory)?,
             reservation_base: reservation_base.to_path_buf(),
             repository: repository.to_path_buf(),
+            repositories: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// Registers an additional project's open repository — the
+    /// Project-isolation demo opens two repositories on one daemon.
+    pub fn with_repository(mut self, project: &str, repository: &Path) -> Self {
+        self.repositories
+            .insert(project.to_owned(), repository.to_path_buf());
+        self
+    }
+
+    fn repository_for(&self, lane: &DemoLane) -> PathBuf {
+        self.repositories
+            .get(lane.project)
+            .cloned()
+            .unwrap_or_else(|| self.repository.clone())
     }
 
     /// Restores journal positions after a driver restart.
@@ -142,49 +215,85 @@ impl DemoWorkflow {
         .expect("fixture operation")
     }
 
-    /// The first half of the sequence: open the repository, describe the
-    /// task, route, prepare, and START the dispatch. Everything here is
-    /// journaled canonical state — it survives a daemon SIGKILL, which is
-    /// exactly what the restart/resume proof does between the halves.
+    /// The first half of the sequence for the default lane: open the
+    /// repository, describe the task, route, prepare, and START the
+    /// dispatch.
     pub fn start_demo(&mut self) -> Result<String, WorkflowError> {
-        let project = symbiote_domain::ProjectId::new(PROJECT).expect("fixture project");
-        // 1. Open the repository: the real HEAD becomes the stream base.
-        // The register fixture carries an empty host_paths map — client
-        // declared placements are refused — and the placement is observed
-        // by the Host right after registration.
+        self.start_demo_lane(&STAFFING)
+    }
+
+    /// The same first half, driven for an explicit project lane: every
+    /// canonical identity comes from the lane, so ONE daemon can host
+    /// several fully isolated projects. Everything here is journaled
+    /// canonical state — it survives a daemon SIGKILL, which is exactly
+    /// what the restart/resume proof does between the halves.
+    pub fn start_demo_lane(&mut self, lane: &DemoLane) -> Result<String, WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
+        let repository = self.repository_for(lane);
         let mut git = symbiote_repo::SystemGit::new();
-        let head = symbiote_repo::observe_head(&mut git, &self.repository)
+        let head = symbiote_repo::observe_head(&mut git, &repository)
             .map_err(|_| WorkflowError::LocalObservation)?;
         let base = head.commit.clone();
         let target = "b".repeat(40);
         let host_id = self.host_pulse()?;
-        // The team gains the second staffing lane: a third role in the
-        // registration and an external-harness engineer member whose
-        // grants carry stream mutation but NOT UseCredential — harness
-        // credentials stay harness-owned, and the operator's broker has
-        // no registration for the external profile's reference.
+        // 1. Open the repository: the real HEAD becomes the stream base.
+        // The register fixture carries an empty host_paths map — client
+        // declared placements are refused — and the placement is observed
+        // by the Host right after registration. The fixture's project
+        // identities are rewritten for the lane.
         let mut register = Self::register_operation();
+        register["project"]["id"] = serde_json::json!(lane.project);
+        register["project"]["name"] = serde_json::json!(format!("Demo {}", lane.project));
+        register["project"]["lead"] = serde_json::json!(lane.lead_role);
+        register["project"]["roots"][0]["id"] = serde_json::json!(lane.root);
+        register["project"]["roots"][0]["project_id"] = serde_json::json!(lane.project);
         let roles = register["project"]["roles"]
             .as_array_mut()
             .ok_or(WorkflowError::UnexpectedBody)?;
-        roles.push(serde_json::json!({
-            "id": EXTERNAL_ROLE,
-            "project_id": PROJECT,
-            "revision": 0,
-            "name": EXTERNAL_ROLE,
-            "operating_contract": {"id": "engineer-external-contract", "revision": 1}
-        }));
-        self.call("wf-register", register, Some(&project))?;
+        roles[0]["id"] = serde_json::json!(lane.lead_role);
+        roles[1]["id"] = serde_json::json!(lane.role);
+        for role in roles.iter_mut() {
+            role["project_id"] = serde_json::json!(lane.project);
+        }
+        if lane.with_external_lane {
+            register["project"]["roles"]
+                .as_array_mut()
+                .ok_or(WorkflowError::UnexpectedBody)?
+                .push(serde_json::json!({
+                    "id": EXTERNAL_ROLE,
+                    "project_id": lane.project,
+                    "revision": 0,
+                    "name": EXTERNAL_ROLE,
+                    "operating_contract": {"id": "engineer-external-contract", "revision": 1}
+                }));
+        }
         self.call(
-            "wf-observe-placement",
-            serde_json::json!({"kind":"observe_root_placement","project_id":PROJECT,
-            "root_id":ROOT,"host_id":host_id,
-            "path":self.repository.display().to_string(),"expected_revision":0}),
+            &format!("wf-register-{}", lane.project),
+            register,
             Some(&project),
         )?;
-        // 2. Team: the engineer may mutate streams (the demo's worker
-        // writes in the reserved worktree).
+        self.call(
+            &format!("wf-place-{}", lane.project),
+            serde_json::json!({"kind":"observe_root_placement","project_id":lane.project,
+            "root_id":lane.root,"host_id":host_id,
+            "path":repository.display().to_string(),"expected_revision":0}),
+            Some(&project),
+        )?;
+        // 2. Team: rewrite the fixture's project identities for the lane;
+        // the engineer may mutate streams (the demo's worker writes in the
+        // reserved worktree) and use its OWN project's credentials.
         let mut team = Self::team_operation();
+        team["team"]["project_id"] = serde_json::json!(lane.project);
+        team["team"]["lead_role_id"] = serde_json::json!(lane.lead_role);
+        team["team"]["access_ceiling"]["project_id"] = serde_json::json!(lane.project);
+        team["team"]["access_ceiling"]["roots"][0] = serde_json::json!(lane.root);
+        let members = team["team"]["members"]
+            .as_array_mut()
+            .ok_or(WorkflowError::UnexpectedBody)?;
+        members[0]["role_id"] = serde_json::json!(lane.lead_role);
+        members[0]["independent_reviewers"][0] = serde_json::json!(lane.role);
+        members[1]["role_id"] = serde_json::json!(lane.role);
+        members[1]["independent_reviewers"][0] = serde_json::json!(lane.lead_role);
         for pointer in [
             "/team/access_ceiling/grants",
             "/team/members/1/access/grants",
@@ -198,57 +307,152 @@ impl DemoWorkflow {
             grants.push(serde_json::json!("use_credential"));
             *team.pointer_mut(pointer).unwrap() = serde_json::json!(grants);
         }
-        team["team"]["members"]
+        for member in team["team"]["members"]
             .as_array_mut()
             .ok_or(WorkflowError::UnexpectedBody)?
-            .push(serde_json::json!({
-                "role_id": EXTERNAL_ROLE,
-                "function": "general_execution",
-                "responsibilities": ["Implement bounded coding tasks"],
-                "task_domains": ["coding"],
-                "access": {"project_id": PROJECT, "roots": [ROOT],
-                    "grants": ["read_root", "execute_process", "mutate_stream"],
-                    "policy_revision": 1},
-                "context_policy_ref": "default-context",
-                "tool_policy_ref": "default-tools",
-                "skill_policy_ref": "default-skills",
-                "execution_policy_ref": "bounded-execution",
-                "independent_reviewers": ["lead"],
-                "fallbacks": []
-            }));
-        self.call("wf-team", team, Some(&project))?;
+            .iter_mut()
+        {
+            member["access"]["project_id"] = serde_json::json!(lane.project);
+            member["access"]["roots"][0] = serde_json::json!(lane.root);
+        }
+        if lane.with_external_lane {
+            team["team"]["members"]
+                .as_array_mut()
+                .ok_or(WorkflowError::UnexpectedBody)?
+                .push(serde_json::json!({
+                    "role_id": EXTERNAL_ROLE,
+                    "function": "general_execution",
+                    "responsibilities": ["Implement bounded coding tasks"],
+                    "task_domains": ["coding"],
+                    "access": {"project_id": lane.project, "roots": [lane.root],
+                        "grants": ["read_root", "execute_process", "mutate_stream"],
+                        "policy_revision": 1},
+                    "context_policy_ref": "default-context",
+                    "tool_policy_ref": "default-tools",
+                    "skill_policy_ref": "default-skills",
+                    "execution_policy_ref": "bounded-execution",
+                    "independent_reviewers": [lane.lead_role],
+                    "fallbacks": []
+                }));
+        }
+        self.call(&format!("wf-team-{}", lane.project), team, Some(&project))?;
         // 3. Binding: this Host eligible, stream mutation + credential use
         // granted, the `shell` tool declared (primary.tools must equal
         // binding.required_tools — the workforce validator's rule).
-        let binding = self.binding_operation(&host_id)?;
-        self.call("wf-binding", binding, Some(&project))?;
-        // 4. Provider connection and model descriptor (canonical facts the
-        // contract's profile references; the fixture transport ignores the
-        // endpoint — nothing contacts it).
+        let binding = self.binding_operation_for(lane, &host_id)?;
         self.call(
-            "wf-provider",
-            serde_json::json!({"kind":"replace_provider_connection","attribution":"staffing-demo",
-            "connection":{"id":"native-openai","adapter":"openai-responses",
+            &format!("wf-binding-{}", lane.binding_id),
+            binding,
+            Some(&project),
+        )?;
+        // 4. Provider connection and model descriptor — the SAME ids as
+        // every lane: they are project-scoped records, so equal ids in two
+        // projects are equal NAMES, not shared configuration. The fixture
+        // transport ignores the endpoint — nothing contacts it.
+        self.call(
+            &format!("wf-provider-{}", lane.project),
+            serde_json::json!({"kind":"replace_provider_connection","attribution":lane.project,
+            "connection":{"id":lane.provider,"adapter":"openai-responses",
             "endpoint_reference":"https://api.openai.example/v1","authentication":"api_credential"}}),
             Some(&project),
         )?;
         self.call(
-            "wf-model",
-            serde_json::json!({"kind":"replace_model_descriptor","attribution":"staffing-demo",
-            "descriptor":{"schema_version":1,"id":"coding-model","provider_id":"native-openai",
+            &format!("wf-model-{}", lane.project),
+            serde_json::json!({"kind":"replace_model_descriptor","attribution":lane.project,
+            "descriptor":{"schema_version":1,"id":lane.model,"provider_id":lane.provider,
             "context_window_tokens":16384,"max_output_tokens":4096,
             "capabilities":{"reasoning_efforts":[],"tools":true,"images":false,"streaming":false}}}),
             Some(&project),
         )?;
+        self.start_lane_tail(lane, &host_id, &base, &target)
+    }
+
+    /// The per-lane tail — binding (optional), objective, task, route,
+    /// prepare, and START — for a lane whose project is already
+    /// registered (its project-level composition exists). A lane carries
+    /// its OWN binding and credential reference; pass `with_binding =
+    /// false` to reuse the role's CURRENT binding (e.g. after the
+    /// operator replaced it to fix a credential reference).
+    pub fn start_followon_lane(
+        &mut self,
+        lane: &DemoLane,
+        with_binding: bool,
+    ) -> Result<String, WorkflowError> {
+        let host_id = self.host_pulse()?;
+        if with_binding {
+            let binding = self.binding_operation_for(lane, &host_id)?;
+            let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
+            self.call(
+                &format!("wf-binding-{}", lane.binding_id),
+                binding,
+                Some(&project),
+            )?;
+        }
+        let repository = self.repository_for(lane);
+        let mut git = symbiote_repo::SystemGit::new();
+        let head = symbiote_repo::observe_head(&mut git, &repository)
+            .map_err(|_| WorkflowError::LocalObservation)?;
+        let base = head.commit.clone();
+        let target = "b".repeat(40);
+        self.start_lane_tail(lane, &host_id, &base, &target)
+    }
+
+    /// The operator's correction flow: read the lane's binding, then
+    /// replace it under an exact revision CAS with a corrected credential
+    /// reference. The dispatch contracts compiled BEFORE the replacement
+    /// keep the old snapshot — a running dispatch is not silently
+    /// rewired; the next start compiles the corrected binding.
+    pub fn replace_lane_binding(
+        &mut self,
+        lane: &DemoLane,
+        credential: &str,
+    ) -> Result<(), WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
+        let host_id = self.host_pulse()?;
+        let read = self.call(
+            &format!("wf-binding-read-{}", lane.binding_id),
+            serde_json::json!({"kind":"get_binding","project_id":lane.project,
+            "binding_id":lane.binding_id}),
+            Some(&project),
+        )?;
+        let current_revision = match &read {
+            ResponseBody::Binding(configuration) => configuration.binding.revision,
+            _ => return Err(WorkflowError::UnexpectedBody),
+        };
+        let mut binding = self.binding_operation_for(lane, &host_id)?;
+        binding["expected_revision"] = serde_json::json!(current_revision.0);
+        binding["configuration"]["binding"]["revision"] = serde_json::json!(current_revision.0 + 1);
+        binding["configuration"]["primary"]["profile"]["credential"] =
+            serde_json::json!(credential);
+        self.call(
+            &format!(
+                "wf-binding-replace-{}-{}",
+                lane.binding_id,
+                current_revision.0 + 1
+            ),
+            binding,
+            Some(&project),
+        )?;
+        Ok(())
+    }
+
+    fn start_lane_tail(
+        &mut self,
+        lane: &DemoLane,
+        host_id: &str,
+        base: &str,
+        target: &str,
+    ) -> Result<String, WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
         // 5. Describe the coding task: a classified objective the task
         // hangs off, with the requirements the run's context will carry.
         // The stream's worktree identity and branch are the seed-derived
-        // ones provisioning verifies — the driver derives them exactly like
-        // the Host does, from the stream's recorded identity.
+        // ones provisioning verifies — the driver derives them exactly
+        // like the Host does, from the stream's recorded identity.
         self.call(
-            "wf-objective",
-            serde_json::json!({"kind":"create_work","work":{"id":{"kind":"objective","id":"staffing-objective"},
-            "project_id":"staffing-demo","role_id":"engineer","title":"Implement a bounded change",
+            &format!("wf-objective-{}", lane.objective),
+            serde_json::json!({"kind":"create_work","work":{"id":{"kind":"objective","id":lane.objective},
+            "project_id":lane.project,"role_id":lane.role,"title":"Implement a bounded change",
             "description":"Implement the bounded change described by this objective.",
             "utterance":null,"objective_class":"maintenance","parent":null,"dependencies":[],
             "requirements":["the produced file exists"],"constraints":[],"risks":[],
@@ -256,17 +460,17 @@ impl DemoWorkflow {
             "budget":null,"external_references":[]}}),
             Some(&project),
         )?;
-        let stream_id = symbiote_domain::ChangeStreamId::new(STREAM).expect("fixture stream");
-        let root_id = symbiote_domain::RootId::new(ROOT).expect("fixture root");
+        let stream_id = symbiote_domain::ChangeStreamId::new(lane.stream).expect("lane stream");
+        let root_id = symbiote_domain::RootId::new(lane.root).expect("lane root");
         let derived = derive_stream_worktree(&project, &root_id, &stream_id)?;
         self.call(
-            "wf-task",
-            serde_json::json!({"kind":"create_task","task":{"id":TASK,"project_id":PROJECT,
-            "root_id":ROOT,"role_id":"engineer",
-            "origin":{"kind":"objective","work":{"project_id":PROJECT,
-                "id":{"kind":"objective","id":"staffing-objective"}}},
+            &format!("wf-task-{}", lane.task),
+            serde_json::json!({"kind":"create_task","task":{"id":lane.task,"project_id":lane.project,
+            "root_id":lane.root,"role_id":lane.role,
+            "origin":{"kind":"objective","work":{"project_id":lane.project,
+                "id":{"kind":"objective","id":lane.objective}}},
             "task_contract":{"id":"coding-contract","revision":1},
-            "stream":{"id":STREAM,"originating_chat":"chat",
+            "stream":{"id":lane.stream,"originating_chat":lane.chat,
             "worktree":derived.worktree_id.as_str(),
             "branch":derived.branch,"base":base,
             "target":target}}}),
@@ -274,20 +478,20 @@ impl DemoWorkflow {
         )?;
         // 6. Route, prepare, start.
         self.call(
-            "wf-route",
+            &format!("wf-route-{}", lane.objective),
             serde_json::json!({"kind":"record_route",
-            "request":{"project_id":PROJECT,"work_id":{"kind":"objective","id":"staffing-objective"},
-            "requested":"engineer","domains":[]}}),
+            "request":{"project_id":lane.project,"work_id":{"kind":"objective","id":lane.objective},
+            "requested":lane.role,"domains":[]}}),
             Some(&project),
         )?;
         self.call(
-            "wf-prepare",
-            serde_json::json!({"kind":"prepare_dispatch","task_id":TASK}),
+            &format!("wf-prepare-{}", lane.task),
+            serde_json::json!({"kind":"prepare_dispatch","task_id":lane.task}),
             Some(&project),
         )?;
         let started = self.call(
-            "wf-start",
-            serde_json::json!({"kind":"start_prepared_task","task_id":TASK,"host_id":host_id}),
+            &format!("wf-start-{}", lane.task),
+            serde_json::json!({"kind":"start_prepared_task","task_id":lane.task,"host_id":host_id}),
             Some(&project),
         )?;
         let dispatch_id = match started {
@@ -302,27 +506,43 @@ impl DemoWorkflow {
     /// This is how a desktop shell follows the evidence trail — and what a
     /// restarted driver restores via [`Self::with_positions`].
     pub fn read_journal(&mut self) -> Result<u64, WorkflowError> {
-        self.journal_to_head().map(|(cursor, _)| cursor)
+        let project = symbiote_domain::ProjectId::new(PROJECT).expect("fixture project");
+        self.journal_to_head(&project).map(|(cursor, _)| cursor)
     }
 
-    /// The second half: execute the started dispatch (real provisioning,
-    /// real sandboxed tool execution, fixture model turn), then read the
-    /// completion evidence, the journal trail, and the worktree diff.
-    /// `dispatch_id` comes from [`Self::start_demo`] — possibly across a
-    /// daemon restart.
+    /// Follows the evidence trail for an explicit lane's project — each
+    /// project's journal is read and tracked independently.
+    pub fn read_journal_lane(&mut self, lane: &DemoLane) -> Result<u64, WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
+        self.journal_to_head(&project).map(|(cursor, _)| cursor)
+    }
+
+    /// The second half for the default lane: execute the started dispatch
+    /// (real provisioning, real sandboxed tool execution, fixture model
+    /// turn), then read the completion evidence, the journal trail, and
+    /// the worktree diff.
     pub fn finish_demo(&mut self, dispatch_id: &str) -> Result<DemoOutcome, WorkflowError> {
-        let project = symbiote_domain::ProjectId::new(PROJECT).expect("fixture project");
+        self.finish_demo_lane(&STAFFING, dispatch_id)
+    }
+
+    /// The second half for an explicit project lane. `dispatch_id` comes
+    /// from [`Self::start_demo_lane`] — possibly across a daemon restart.
+    pub fn finish_demo_lane(
+        &mut self,
+        lane: &DemoLane,
+        dispatch_id: &str,
+    ) -> Result<DemoOutcome, WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
         let run = self.call(
-            "wf-run",
-            serde_json::json!({"kind":"run_started_dispatch","task_id":TASK,
+            &format!("wf-run-{}", lane.task),
+            serde_json::json!({"kind":"run_started_dispatch","task_id":lane.task,
             "dispatch_id":dispatch_id}),
             Some(&project),
         )?;
         let _completed = match &run {
             ResponseBody::WorkerRun(run) => {
-                // The lane this method drives is the native one: the
-                // runtime comes from the dispatch contract, never from
-                // the caller.
+                // The lane is native: the runtime comes from the dispatch
+                // contract, never from the caller.
                 if run.runtime != symbiote_domain::RuntimeKind::NativeSymbiote {
                     return Err(WorkflowError::UnexpectedBody);
                 }
@@ -333,8 +553,8 @@ impl DemoWorkflow {
         // 8. Completion is evidence: the task is CompletionRequested, and
         // Host verification + independent review remain the gates.
         let task = self.call(
-            "wf-task-read",
-            serde_json::json!({"kind":"get_task","project_id":PROJECT,"task_id":TASK}),
+            &format!("wf-task-read-{}", lane.task),
+            serde_json::json!({"kind":"get_task","project_id":lane.project,"task_id":lane.task}),
             Some(&project),
         )?;
         let task_state = match &task {
@@ -345,14 +565,16 @@ impl DemoWorkflow {
             _ => return Err(WorkflowError::UnexpectedBody),
         };
         // 9. The journal is the durable evidence trail; read our position.
+        // The filter is per task: another project's (or lane's) completion
+        // must never surface here.
         let mut report = None;
-        let (_cursor, events) = self.journal_to_head()?;
+        let (_cursor, events) = self.journal_to_head(&project)?;
         for event in &events {
             if let symbiote_protocol::EventPayload::TaskChanged {
                 task_id, command, ..
             } = &event.payload
             {
-                if task_id.as_str() != TASK {
+                if task_id.as_str() != lane.task {
                     continue;
                 }
                 if let symbiote_domain::TaskAction::RequestCompletion {
@@ -369,9 +591,9 @@ impl DemoWorkflow {
         // worktree (observed from the filesystem, not from the protocol).
         let worktree = crate::observe_worktree_evidence(
             &self.reservation_base,
-            &symbiote_domain::ProjectId::new(PROJECT).expect("fixture project"),
-            &symbiote_domain::RootId::new(ROOT).expect("fixture root"),
-            &symbiote_domain::ChangeStreamId::new(STREAM).expect("fixture stream"),
+            &symbiote_domain::ProjectId::new(lane.project).expect("lane project"),
+            &symbiote_domain::RootId::new(lane.root).expect("lane root"),
+            &symbiote_domain::ChangeStreamId::new(lane.stream).expect("lane stream"),
         )?;
         Ok(DemoOutcome {
             task_state,
@@ -530,7 +752,7 @@ impl DemoWorkflow {
             _ => return Err(WorkflowError::UnexpectedBody),
         };
         let mut report = None;
-        let (_cursor, events) = self.journal_to_head()?;
+        let (_cursor, events) = self.journal_to_head(&project)?;
         for event in &events {
             if let symbiote_protocol::EventPayload::TaskChanged {
                 task_id, command, ..
@@ -570,16 +792,16 @@ impl DemoWorkflow {
     /// which is what survives a restart via the recorded positions.
     fn journal_to_head(
         &mut self,
+        project: &symbiote_domain::ProjectId,
     ) -> Result<(u64, Vec<symbiote_protocol::JournalEvent>), WorkflowError> {
-        let project = symbiote_domain::ProjectId::new(PROJECT).expect("fixture project");
-        let mut cursor = self.driver.journal_position(&project).0;
+        let mut cursor = self.driver.journal_position(project).0;
         let mut events = Vec::new();
         loop {
             let page = self.call(
-                &format!("wf-journal-{cursor}"),
-                serde_json::json!({"kind":"read_journal","project_id":PROJECT,
+                &format!("wf-journal-{}-{cursor}", project.as_str()),
+                serde_json::json!({"kind":"read_journal","project_id":project.as_str(),
                 "after":cursor,"limit":100}),
-                Some(&project),
+                Some(project),
             )?;
             let ResponseBody::Journal(page) = page else {
                 return Err(WorkflowError::UnexpectedBody);
@@ -621,8 +843,35 @@ impl DemoWorkflow {
     /// The checked-in binding fixture, patched for the demo: this Host
     /// eligible, stream mutation + credential use granted, and the `shell`
     /// tool declared (both sides of the validator's equality rule).
-    fn binding_operation(&self, host_id: &str) -> Result<serde_json::Value, WorkflowError> {
+    /// The checked-in binding fixture, patched for a lane: the lane's
+    /// binding id and credential reference, this Host eligible, stream
+    /// mutation + credential use granted, and the `shell` tool declared
+    /// (both sides of the validator's equality rule).
+    fn binding_operation_for(
+        &self,
+        lane: &DemoLane,
+        host_id: &str,
+    ) -> Result<serde_json::Value, WorkflowError> {
         let mut binding = Self::binding_operation_fixture();
+        binding["configuration"]["binding"]["id"] = serde_json::json!(lane.binding_id);
+        binding["configuration"]["binding"]["role_id"] = serde_json::json!(lane.role);
+        binding["configuration"]["binding"]["project_id"] = serde_json::json!(lane.project);
+        for pointer in [
+            "/configuration/binding/access",
+            "/configuration/primary/access",
+        ] {
+            *binding
+                .pointer_mut(&format!("{pointer}/project_id"))
+                .ok_or(WorkflowError::UnexpectedBody)? = serde_json::json!(lane.project);
+            *binding
+                .pointer_mut(&format!("{pointer}/roots/0"))
+                .ok_or(WorkflowError::UnexpectedBody)? = serde_json::json!(lane.root);
+        }
+        binding["configuration"]["primary"]["profile"]["provider"] =
+            serde_json::json!(lane.provider);
+        binding["configuration"]["primary"]["profile"]["model"] = serde_json::json!(lane.model);
+        binding["configuration"]["primary"]["profile"]["credential"] =
+            serde_json::json!(lane.credential);
         binding["configuration"]["primary"]["profile"]["eligible_hosts"] =
             serde_json::json!([host_id]);
         for pointer in [
