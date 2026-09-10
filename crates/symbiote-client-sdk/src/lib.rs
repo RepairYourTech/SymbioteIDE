@@ -24,7 +24,8 @@ use symbiote_protocol::{
 /// re-read from `cursor` after reconnect; pages advance it only over events
 /// actually returned. Cursor 0 means "bootstrap from the beginning" — the
 /// caller decides whether a full bootstrap or a tail read is appropriate.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The JSON form is what a desktop shell persists across its own restart.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct JournalPosition {
     pub project: ProjectId,
     pub cursor: JournalCursor,
@@ -108,6 +109,12 @@ impl ClientSession {
             .find(|p| &p.project == project)
             .map(|p| p.cursor)
             .unwrap_or(JournalCursor(0))
+    }
+
+    /// The positions to persist across a process restart; restore them
+    /// with [`Self::with_positions`].
+    pub fn positions(&self) -> &[JournalPosition] {
+        &self.positions
     }
 
     fn observe_page(&mut self, page: &Value, project: &ProjectId) {

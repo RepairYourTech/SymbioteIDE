@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use symbiote_protocol::MAX_RESPONSE_BYTES;
 
 pub const SOCKET_NAME: &str = "host.sock";
-const FRAME_LIMIT: usize = 64 * 1024;
 const DEADLINE: Duration = Duration::from_secs(30);
 
 fn invalid(message: &'static str) -> std::io::Error {
@@ -60,9 +59,11 @@ fn io_timeout(message: &'static str) -> std::io::Error {
 /// frame, read the bounded response. `Err` = transport failure (the
 /// command's disposition is unknown; the SDK's recover replays it).
 pub fn exchange(directory: &Path, request: &[u8]) -> std::io::Result<Vec<u8>> {
-    if request.len() > FRAME_LIMIT || request.contains(&b'\n') {
-        return Err(invalid("request must be a single bounded JSON frame"));
-    }
+    // No local re-validation of the frame: the driver's requests are
+    // built and bounded by the SDK's `build_request`, and the daemon's
+    // own `parse_request` is the enforcement point — an invalid or
+    // oversized frame comes back as a TYPED refusal (known disposition)
+    // rather than a locally-invented unknown disposition.
     let mut stream = UnixStream::connect(directory.join(SOCKET_NAME))?;
     authenticate(&stream)?;
     stream.write_all(request)?;

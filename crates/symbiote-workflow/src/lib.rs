@@ -40,6 +40,10 @@ pub enum WorkflowError {
     UnexpectedBody,
     /// Local filesystem/socket framing failure before anything was sent.
     Socket,
+    /// A local observation failed (git read, worktree derivation, status):
+    /// nothing touched the wire, and the failure is on this machine, not
+    /// the daemon's.
+    LocalObservation,
 }
 
 impl From<ClientError> for WorkflowError {
@@ -91,6 +95,12 @@ impl Driver {
         project: &symbiote_domain::ProjectId,
     ) -> symbiote_protocol::JournalCursor {
         self.session.journal_position(project)
+    }
+
+    /// The positions to persist across a driver restart; restore with
+    /// [`Driver::with_positions`].
+    pub fn positions(&self) -> Vec<symbiote_client_sdk::JournalPosition> {
+        self.session.positions().to_vec()
     }
 
     /// Sends one operation; a transport failure is recovered by replaying
