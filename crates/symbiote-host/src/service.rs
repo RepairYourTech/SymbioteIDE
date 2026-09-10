@@ -111,6 +111,7 @@ fn host_record(
     host_id: &HostId,
     inventory: &mut crate::inventory::InventoryService,
     credentials_enforced: bool,
+    external_enforced: bool,
 ) -> Result<symbiote_domain::Host, ProtocolError> {
     if inventory.host_id() != host_id {
         return Err(ProtocolError::new(ErrorCode::PermissionDenied));
@@ -141,13 +142,26 @@ fn host_record(
             )
         })
         .collect();
+    // The Host advertises `ExternalHarness` only when the operator
+    // provisioned the external execution path (the explicitly labeled
+    // fixture harness; a live pinned-binary path stays gated on explicit
+    // user authorization). Without it, a binding with an external profile
+    // refuses at start — never a silent fallback to the native runtime.
+    let supported_runtimes = if external_enforced {
+        vec![
+            symbiote_domain::RuntimeKind::NativeSymbiote,
+            symbiote_domain::RuntimeKind::ExternalHarness,
+        ]
+    } else {
+        vec![symbiote_domain::RuntimeKind::NativeSymbiote]
+    };
     Ok(symbiote_domain::Host {
         id: host_id.clone(),
         revision: symbiote_domain::Revision(0),
         device: symbiote_domain::DeviceId::new(format!("device-{}", host_id.as_str()))
             .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
         fabric: None,
-        supported_runtimes: vec![symbiote_domain::RuntimeKind::NativeSymbiote],
+        supported_runtimes,
         controls: claims,
     })
 }
@@ -486,7 +500,12 @@ fn execute(
             // carries this process's enforcement claims: the claims are the
             // operator-provisioned set documented in dispatch-preparation.md, with
             // evidence windows owned by the Host operator.
-            let claims_host = host_record(host_id, inventory, workers.has_credential_broker())?;
+            let claims_host = host_record(
+                host_id,
+                inventory,
+                workers.has_credential_broker(),
+                workers.has_external_transport(),
+            )?;
             let at = start_timestamp(store, request)?;
             // Dispatch and contract identities are minted by the Host from
             // its nonce-bearing inventory identity, deterministic per task.

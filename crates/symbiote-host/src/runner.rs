@@ -220,6 +220,17 @@ impl WorkerTransports {
         self.broker.is_some()
     }
 
+    /// Whether the operator provisioned the external execution path (the
+    /// explicitly labeled fixture harness; a live pinned-binary path stays
+    /// gated on explicit user authorization). The Host record advertises
+    /// `ExternalHarness` support only when this is set: without operator
+    /// provisioning the Host cannot execute external dispatches, so a
+    /// binding with an external profile is refused at start instead of
+    /// falling back to anything else.
+    pub fn has_external_transport(&self) -> bool {
+        self.external.is_some()
+    }
+
     /// Resolves one credential lease for a dispatch from the operator's
     /// broker. Refusal identities are mapped payload-free. The lease's
     /// plaintext does not leave the broker/lease objects — no materialize
@@ -3053,6 +3064,103 @@ impl NativeTransportFactory for FixtureNativeFactory {
     }
 }
 
+/// The operator-configured fixture harness transport (#54/#269): a SCRIPTED
+/// Codex App-Server conversation — version/thread/turn responses, one agent
+/// message, one clean turn completion — so external runs can be
+/// demonstrated without the pinned binary, a model turn, or any spending.
+/// This is not Codex and must never be presented as one: every harness
+/// escalation is still refused (there are none scripted), and a live Codex
+/// turn remains gated on explicit user authorization for credentials and
+/// billing.
+pub struct ScriptedCodexTransport {
+    responses:
+        std::collections::VecDeque<Result<serde_json::Value, symbiote_external_agent::DriverError>>,
+    notifications: std::collections::VecDeque<Option<serde_json::Value>>,
+}
+
+impl ScriptedCodexTransport {
+    pub fn new(thread_id: &str, agent_message: &str) -> Self {
+        let turn_id = format!("turn-{thread_id}");
+        Self {
+            responses: std::collections::VecDeque::from([
+                Ok(serde_json::json!({"userAgent": format!(
+                    "symbiote/{} (Linux)",
+                    symbiote_runtime_discovery::codex::CODEX_VERSION
+                )})),
+                Ok(serde_json::json!({"thread": {"id": thread_id}})),
+                Ok(serde_json::json!({"turn": {"id": turn_id}})),
+            ]),
+            notifications: std::collections::VecDeque::from([
+                Some(serde_json::json!({
+                    "method": "item/completed",
+                    "params": {"threadId": thread_id, "turnId": turn_id,
+                        "item": {"type": "agentMessage", "id": "i1",
+                            "text": agent_message}}
+                })),
+                Some(serde_json::json!({
+                    "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turnId": turn_id,
+                        "turn": {"id": turn_id, "status": "completed", "items": []}}
+                })),
+                None,
+            ]),
+        }
+    }
+}
+
+impl symbiote_external_agent::CodexTransport for ScriptedCodexTransport {
+    fn call(
+        &mut self,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> Result<serde_json::Value, symbiote_external_agent::DriverError> {
+        self.responses
+            .pop_front()
+            .unwrap_or(Err(symbiote_external_agent::DriverError::TransportFailed))
+    }
+    fn notify(
+        &mut self,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> Result<(), symbiote_external_agent::DriverError> {
+        Ok(())
+    }
+    fn recv_notification(
+        &mut self,
+    ) -> Result<Option<serde_json::Value>, symbiote_external_agent::DriverError> {
+        Ok(self.notifications.pop_front().flatten())
+    }
+    fn recv_server_request(
+        &mut self,
+    ) -> Result<Option<symbiote_external_agent::ServerRequest>, symbiote_external_agent::DriverError>
+    {
+        // No escalations are scripted: the fixture conversation stays
+        // inside the binding, so the run completes with nothing refused.
+        Ok(None)
+    }
+    fn refuse_server_request(
+        &mut self,
+        _request: &symbiote_external_agent::ServerRequest,
+        _decision: symbiote_external_agent::ApprovalDecision,
+    ) -> Result<(), symbiote_external_agent::DriverError> {
+        Ok(())
+    }
+}
+
+/// Builds one fixture harness transport per run (the factory contract).
+pub struct FixtureExternalFactory {
+    pub thread_id: String,
+    pub agent_message: String,
+}
+impl ExternalTransportFactory for FixtureExternalFactory {
+    fn build(&mut self) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str> {
+        Ok(Box::new(ScriptedCodexTransport::new(
+            &self.thread_id.clone(),
+            &self.agent_message.clone(),
+        )))
+    }
+}
+
 /// Builds the production sandboxed shell executor per run from the
 /// operator's launch configuration and the program-allowlist consent
 /// authority (#466 allowlist flow).
@@ -3086,7 +3194,8 @@ impl ShellExecutorFactory for SandboxShellExecutorFactory {
 /// Assembles the operator-provisioned transports from the configuration
 /// file (#54). Each element maps one operator authority onto the seam it
 /// owns: reservation base (#211), the explicitly-labeled fixture model
-/// transport (demonstration without spending), the #217 credential broker
+/// transport and fixture harness transport (demonstration without
+/// spending, native and external), the #217 credential broker
 /// registrations, and the #466 program-allowlist consent authority behind
 /// the #507 sandbox shell executor. Values and paths stay in operator
 /// state — nothing here is client-reachable configuration.
@@ -3102,6 +3211,12 @@ pub fn assemble_operator_transports(
                 call_id: tool.call_id.clone(),
                 arguments: tool.arguments.clone(),
             }),
+        }));
+    }
+    if let Some(fixture) = &config.external_fixture {
+        transports = transports.with_external(Box::new(FixtureExternalFactory {
+            thread_id: fixture.thread_id.clone(),
+            agent_message: fixture.agent_message.clone(),
         }));
     }
     if !config.credential_broker.is_empty() {

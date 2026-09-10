@@ -13,6 +13,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use symbiote_protocol::ResponseBody;
 
 struct Daemon {
     child: Child,
@@ -144,6 +145,8 @@ fn write_operator_config(
         "credential_broker": [{"reference": "native-vault-ref",
             "project": "staffing-demo", "environment": "OPENAI_API_KEY",
             "value": "fixture-not-a-real-secret"}],
+        "external_fixture": {"thread_id": "thr-demo-external",
+            "agent_message": "external harness implemented the bounded change"},
         "shell_executor": {"launcher_path": launcher.display().to_string(),
             "protected_paths": ["/etc", "/var", "/home"],
             "allowed_programs": ["sh"]}
@@ -327,5 +330,131 @@ fn driver_restart_restores_serialized_journal_positions_and_resumes() {
         outcome.worktree.contains("produced.txt"),
         "worktree evidence must list produced.txt: {:?}",
         outcome.worktree
+    );
+}
+
+/// The two-harness demo (#269): native AND external workers staffing ONE
+/// project, driven end to end over the wire across a daemon SIGKILL. Both
+/// lanes run the real daemon path — provisioning, runtime-kind strictness,
+/// harness approval refusal, completion-evidence filing — with the
+/// operator's explicitly labeled fixture transports (no binary, no model
+/// turn, nothing spent; live turns for BOTH runtimes remain gated on
+/// explicit user authorization for credentials and billing). The
+/// assertions pin what "without leakage" means observably: the lanes'
+/// reports and worktrees never cross, and the external binding carries no
+/// UseCredential grant and its own credential reference, so the operator's
+/// broker has nothing to give it.
+#[test]
+fn two_harness_demo_native_and_external_workers_on_one_project_without_leakage() {
+    let env = demo_environment("two-harness");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let repo = &env.repo;
+    let config_path = &env.config_path;
+
+    // Both lanes start on the same project against the same daemon.
+    let mut daemon = Daemon::spawn(state_dir, config_path);
+    let mut workflow = symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, repo)
+        .expect("connect");
+    let native_dispatch = workflow.start_demo().expect("native start half");
+    let external_dispatch = workflow.start_demo_external().expect("external start half");
+    assert_ne!(native_dispatch, external_dispatch);
+    // Mixed staffing survives a crash: both started dispatches are
+    // journaled canonical state; the restarted daemon resumes both lanes.
+    let state_dir_after_kill = daemon.kill9();
+    let _daemon = Daemon::spawn(&state_dir_after_kill, config_path);
+
+    // Run each lane through its own dispatch: the runtime comes from each
+    // dispatch's contract (the driver refuses a crossed lane).
+    let native = workflow.finish_demo(&native_dispatch).expect("native run");
+    let external = workflow
+        .finish_demo_external(&external_dispatch)
+        .expect("external run");
+    assert_eq!(native.task_state, "completion_requested");
+    assert_eq!(external.task_state, "completion_requested");
+    // Work isolation: each lane's report is its own worker's text.
+    assert_eq!(
+        native.report.as_deref(),
+        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+    );
+    assert_eq!(
+        external.report.as_deref(),
+        Some("external harness implemented the bounded change")
+    );
+    assert_ne!(native.report, external.report);
+    // The native lane really produced its file inside its own worktree;
+    // the external lane's worktree is a DIFFERENT directory with no
+    // native output in it.
+    assert!(
+        native.worktree.contains("produced.txt"),
+        "native worktree evidence must list produced.txt: {:?}",
+        native.worktree
+    );
+    assert_ne!(
+        native.worktree.worktree, external.worktree.worktree,
+        "the lanes must not share a worktree"
+    );
+    assert!(
+        !external.worktree.contains("produced.txt"),
+        "the external lane must not observe native work: {:?}",
+        external.worktree
+    );
+
+    // Configuration/credential isolation, read back over the wire: the
+    // native binding grants UseCredential and its profile references the
+    // broker-registered fixture credential; the external binding grants
+    // NO UseCredential and its profile references the harness's own
+    // credential — the broker has no registration for it.
+    let mut driver = symbiote_workflow::Driver::connect(state_dir).expect("driver");
+    let project = symbiote_domain::ProjectId::new(symbiote_workflow::demo::PROJECT).unwrap();
+    let native_binding = driver
+        .call(
+            "two-harness-binding-native",
+            serde_json::json!({"kind":"get_binding","project_id":"staffing-demo",
+            "binding_id":"engineer-binding"}),
+            Some(&project),
+        )
+        .expect("native binding read");
+    let external_binding = driver
+        .call(
+            "two-harness-binding-external",
+            serde_json::json!({"kind":"get_binding","project_id":"staffing-demo",
+            "binding_id":"engineer-external-binding"}),
+            Some(&project),
+        )
+        .expect("external binding read");
+    let ResponseBody::Binding(native) = native_binding else {
+        panic!("native binding readback");
+    };
+    let ResponseBody::Binding(external) = external_binding else {
+        panic!("external binding readback");
+    };
+    assert!(
+        native
+            .binding
+            .access
+            .grants
+            .contains(&symbiote_domain::Permission::UseCredential),
+        "the native lane's binding grants UseCredential"
+    );
+    assert!(
+        !external
+            .binding
+            .access
+            .grants
+            .contains(&symbiote_domain::Permission::UseCredential),
+        "the external lane's binding must NOT grant UseCredential"
+    );
+    assert_eq!(
+        external.primary.profile.credential.as_str(),
+        "external-harness-ref"
+    );
+    assert_ne!(
+        native.primary.profile.credential, external.primary.profile.credential,
+        "the lanes must not share a credential reference"
+    );
+    assert_ne!(
+        native.primary.profile.runtime,
+        external.primary.profile.runtime
     );
 }
