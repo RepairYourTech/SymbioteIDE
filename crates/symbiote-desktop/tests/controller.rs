@@ -38,9 +38,9 @@ fn bin_dir() -> PathBuf {
     panic!("workspace binaries not built; run the workspace gauntlet");
 }
 
-#[test]
-fn desktop_controller_drives_the_first_release_flow_across_a_crash() {
-    let scratch = std::env::temp_dir().join(format!("symbiote-desktop-{}", std::process::id()));
+fn test_env(tag: &str) -> TestEnv {
+    let scratch =
+        std::env::temp_dir().join(format!("symbiote-desktop-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
     let state_dir = scratch.join("state");
@@ -63,13 +63,27 @@ fn desktop_controller_drives_the_first_release_flow_across_a_crash() {
             "base",
         ],
     );
+    TestEnv {
+        scratch,
+        state_dir,
+        reservation_base,
+        repo,
+    }
+}
+
+#[test]
+fn desktop_controller_drives_the_first_release_flow_across_a_crash() {
+    let env = test_env("main");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let repo = &env.repo;
 
     // The controller is what the UI calls; this is its whole flow.
     let mut controller = DesktopController::new(
         DesktopPaths::from_directory(&bin_dir()).unwrap(),
-        &state_dir,
-        &reservation_base,
-        &repo,
+        state_dir,
+        reservation_base,
+        repo,
     )
     .expect("controller environment");
     controller.begin_generation().expect("first generation");
@@ -112,5 +126,127 @@ fn desktop_controller_drives_the_first_release_flow_across_a_crash() {
 
     // Graceful shutdown leaves no daemon behind (the Drop also enforces).
     controller.stop();
-    let _ = std::fs::remove_dir_all(&scratch);
+    let _ = std::fs::remove_dir_all(&env.scratch);
+}
+
+/// The desktop test's private environment; removed on Drop.
+struct TestEnv {
+    scratch: PathBuf,
+    state_dir: PathBuf,
+    reservation_base: PathBuf,
+    repo: PathBuf,
+}
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+/// The daemon is gone when nothing accepts on its socket any more (the
+/// socket FILE may linger after an unclean exit; the connection is the
+/// truth). Fails the test if the daemon is still serving at the deadline.
+fn daemon_is_gone(state_dir: &std::path::Path) -> bool {
+    let socket = state_dir.join("host.sock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+            return true;
+        }
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The Drop guard (#513 review): a controller dropped WITHOUT stop() —
+/// a panicking or closed UI, not a graceful shutdown — must still leave
+/// no daemon behind.
+#[test]
+fn a_controller_dropped_without_stop_leaves_no_daemon_behind() {
+    let env = test_env("drop-guard");
+    {
+        let mut controller = symbiote_desktop_lib::controller::DesktopController::new(
+            bin_dir_paths(),
+            &env.state_dir,
+            &env.reservation_base,
+            &env.repo,
+        )
+        .expect("controller environment");
+        controller.begin_generation().expect("first generation");
+        // No stop(): the scope ends, Drop must do the bounded-stop work.
+    }
+    assert!(
+        daemon_is_gone(&env.state_dir),
+        "the daemon must not survive the controller's Drop"
+    );
+}
+
+/// A corrupt positions file is SURFACED, never silently ignored (#513
+/// review): silently resetting it would discard the resume point the
+/// whole restart story depends on. The failed generation also reaps its
+/// just-spawned daemon.
+#[test]
+fn a_corrupt_positions_file_is_surfaced_not_silently_ignored() {
+    let env = test_env("corrupt-positions");
+    let mut controller = symbiote_desktop_lib::controller::DesktopController::new(
+        bin_dir_paths(),
+        &env.state_dir,
+        &env.reservation_base,
+        &env.repo,
+    )
+    .expect("controller environment");
+    // The file exists but does not parse: the exact case a silent reset
+    // would hide.
+    std::fs::write(env.state_dir.join("desktop-positions.json"), b"{not json").unwrap();
+    let error = controller
+        .begin_generation()
+        .expect_err("a corrupt positions file must be an error");
+    assert!(
+        matches!(
+            error,
+            symbiote_desktop_lib::controller::DesktopError::CorruptPositions(_)
+        ),
+        "expected CorruptPositions, got {error:?}"
+    );
+    assert!(
+        daemon_is_gone(&env.state_dir),
+        "the failed generation must not leave its daemon behind"
+    );
+}
+
+/// The daemon's exit status is surfaced in the DaemonExited error (#513
+/// review) instead of being discarded: an operator can see the daemon
+/// exited with a failure, not just that it "exited".
+#[test]
+fn begin_generation_reports_the_daemon_status_when_it_exits() {
+    let env = test_env("daemon-exited");
+    let mut controller = symbiote_desktop_lib::controller::DesktopController::new(
+        bin_dir_paths(),
+        &env.state_dir,
+        &env.reservation_base,
+        &env.repo,
+    )
+    .expect("controller environment");
+    // An unparseable operator config makes the daemon exit at startup,
+    // before its socket exists.
+    std::fs::write(env.state_dir.join("operator-config.json"), b"not a config").unwrap();
+    let error = controller
+        .begin_generation()
+        .expect_err("the daemon must have exited");
+    match error {
+        symbiote_desktop_lib::controller::DesktopError::DaemonExited(status) => {
+            assert!(
+                !status.is_empty(),
+                "the exit status must be surfaced, got empty"
+            );
+        }
+        other => panic!("expected DaemonExited with a status, got {other:?}"),
+    }
+}
+
+/// The DesktopPaths from the workspace target directory (the gauntlet
+/// builds every binary).
+fn bin_dir_paths() -> symbiote_desktop_lib::controller::DesktopPaths {
+    symbiote_desktop_lib::controller::DesktopPaths::from_directory(&bin_dir()).expect("bin dir")
 }
