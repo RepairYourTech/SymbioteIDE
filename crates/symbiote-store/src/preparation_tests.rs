@@ -688,8 +688,9 @@ fn elevation_leases_are_attributable_bounded_and_sticky() {
         store.decide_elevation(id!(CommandId, "elevate-early"), lease("elevate-early")),
         Err(StoreError::ElevationCeiling)
     ));
-    // A permission with no enforcement consumer refuses outright (this
-    // slice's only consumer is the broker's UseCredential gate).
+    // A permission with no enforcement consumer refuses outright (the
+    // consumers so far: the broker's UseCredential gate and the native
+    // shell path's ExecuteProcess gate).
     let mut unconsumed = lease("elevate-beyond");
     unconsumed.permission = Permission::Network;
     assert!(matches!(

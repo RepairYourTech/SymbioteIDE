@@ -78,8 +78,10 @@ impl Store {
         // regardless of any lease — so a decision on an
         // EXTERNAL_HARNESS dispatch would journal an approval that
         // licenses nothing and could mislead an auditor, whichever
-        // permission it names.
-        if dispatch.contract().profile().runtime == symbiote_domain::RuntimeKind::ExternalHarness {
+        // permission it names. Expressed as a NATIVE allowlist (not an
+        // ExternalHarness rejection) so a future third runtime kind
+        // fails closed, exactly like the permission allowlist above.
+        if dispatch.contract().profile().runtime != symbiote_domain::RuntimeKind::NativeSymbiote {
             return Err(StoreError::InvalidElevation);
         }
         // Elevation, not re-grant: a permission the dispatch's binding
