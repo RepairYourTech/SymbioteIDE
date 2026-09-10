@@ -24,9 +24,10 @@
 //! exists and none may be added: the runtime kind decides the loop, and the
 //! runner refuses mismatches.
 use symbiote_domain::{
-    Actor, CommandId, Dispatch, RuntimeKind, TaskAction, TaskCommand, TaskId, TaskState, Timestamp,
+    Actor, CommandId, Dispatch, ElevationRequest, Permission, RuntimeKind, TaskAction, TaskCommand,
+    TaskId, TaskState, Timestamp,
 };
-use symbiote_external_agent::{ExternalSession, StopKind};
+use symbiote_external_agent::{ApprovalRefusal, ExternalSession, StopKind};
 use symbiote_native_agent::{LoopError, NativeSession};
 use symbiote_runtime_sdk::events::RuntimeEventKind;
 use symbiote_store::Store;
@@ -239,6 +240,35 @@ impl WorkerTransports {
             .map(Some)
             .map_err(|error| RunnerError::CredentialRefused(broker_error_name(error)))
     }
+
+    /// Resolves a native credential lease. A `use_credential_not_granted`
+    /// refusal journals an elevation *ask* first — evidence, never a grant —
+    /// then returns the same typed refusal so the run cannot proceed.
+    pub(crate) fn resolve_native_credential(
+        &self,
+        store: &mut Store,
+        task_id: &TaskId,
+        dispatch: &Dispatch,
+        reference: &symbiote_domain::CredentialReferenceId,
+        request: symbiote_context::BrokerRequest<'_>,
+        at: Timestamp,
+    ) -> Result<Option<symbiote_context::CredentialLease>, RunnerError> {
+        match self.resolve_leases(reference, request) {
+            Ok(lease) => Ok(lease),
+            Err(RunnerError::CredentialRefused("use_credential_not_granted")) => {
+                file_elevation_ask(
+                    store,
+                    task_id,
+                    dispatch,
+                    Permission::UseCredential,
+                    "native run referenced a credential without UseCredential on the binding",
+                    at,
+                )?;
+                Err(RunnerError::CredentialRefused("use_credential_not_granted"))
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 fn broker_error_name(error: symbiote_context::BrokerError) -> &'static str {
@@ -389,6 +419,118 @@ fn file_completion(
             // decides the retry.
             RunnerError::Store(error.to_string())
         })?;
+    Ok(())
+}
+
+fn permission_name(permission: &Permission) -> &'static str {
+    match permission {
+        Permission::ReadRoot => "read_root",
+        Permission::MutateStream => "mutate_stream",
+        Permission::ExecuteProcess => "execute_process",
+        Permission::Network => "network",
+        Permission::UseCredential => "use_credential",
+    }
+}
+
+/// FNV-1a: stable across processes and Rust versions, unlike
+/// `DefaultHasher`, so a Host retry mints the same ask id after an
+/// upgrade and replays honestly instead of duplicating evidence.
+fn dispatch_id_digest(dispatch_id: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in dispatch_id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The ask id carries a bounded digest of the dispatch id — a DispatchId
+/// itself may run to 128 chars, which would overflow CommandId's own bound
+/// — plus the permission and clock in the clear.
+fn elevation_ask_command_id(
+    dispatch_id: &str,
+    permission: &Permission,
+    at: Timestamp,
+) -> Result<CommandId, RunnerError> {
+    CommandId::new(format!(
+        "worker-elevation-{:016x}-{}-{}",
+        dispatch_id_digest(dispatch_id),
+        permission_name(permission),
+        at.0
+    ))
+    .map_err(|error| RunnerError::Store(error.to_string()))
+}
+
+/// Files a worker elevation ask as journaled evidence. NEVER licenses:
+/// `active_elevation` still reads only decided leases. The id is
+/// dispatch+permission+clock so a Host retry of the same observed ask
+/// replays honestly.
+pub(crate) fn file_elevation_ask(
+    store: &mut Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    permission: Permission,
+    reason: &str,
+    at: Timestamp,
+) -> Result<(), RunnerError> {
+    let task = store
+        .task(task_id)
+        .map_err(|error| RunnerError::Store(error.to_string()))?;
+    let id = elevation_ask_command_id(dispatch.id().as_str(), &permission, at)?;
+    let ask = ElevationRequest {
+        id: id.clone(),
+        project_id: task.project_id().clone(),
+        task_id: task_id.clone(),
+        dispatch_id: dispatch.id().clone(),
+        permission,
+        reason: reason.to_owned(),
+        requested_at: at,
+    };
+    store
+        .request_elevation(id, ask)
+        .map(|_| ())
+        .map_err(|error| RunnerError::Store(error.to_string()))
+}
+
+fn permission_for_harness_refusal(refusal: ApprovalRefusal) -> Option<Permission> {
+    match refusal {
+        ApprovalRefusal::ExecCommand
+        | ApprovalRefusal::CommandExecutionRequest
+        | ApprovalRefusal::PermissionsRequest => Some(Permission::ExecuteProcess),
+        ApprovalRefusal::ApplyPatch | ApprovalRefusal::FileChangeRequest => {
+            Some(Permission::MutateStream)
+        }
+        ApprovalRefusal::McpElicitation => Some(Permission::Network),
+        ApprovalRefusal::ToolCall | ApprovalRefusal::ToolUserInput | ApprovalRefusal::Unknown => {
+            None
+        }
+    }
+}
+
+fn file_harness_elevation_asks(
+    store: &mut Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    refusals: &[ApprovalRefusal],
+    at: Timestamp,
+) -> Result<(), RunnerError> {
+    let mut filed = std::collections::BTreeSet::new();
+    for refusal in refusals {
+        let Some(permission) = permission_for_harness_refusal(*refusal) else {
+            continue;
+        };
+        if !filed.insert(permission.clone()) {
+            continue;
+        }
+        file_elevation_ask(
+            store,
+            task_id,
+            dispatch,
+            permission,
+            "external harness requested a capability beyond the dispatch binding and was refused",
+            at,
+        )?;
+    }
     Ok(())
 }
 
@@ -648,9 +790,15 @@ pub fn run_external_boxed(
     session
         .begin_thread(worktree_cwd, transport)
         .map_err(external_error)?;
-    session
-        .turn(task_prompt, transport)
-        .map_err(external_error)?;
+    let turn_result = session.turn(task_prompt, transport).map_err(external_error);
+    // File harness escalation asks even when the turn later fails: the
+    // driver already refused, and the journaled ask never licenses. The
+    // turn error outranks a filing failure so the operator sees why the
+    // run actually failed.
+    let refusals = session.refused_approvals();
+    let filing = file_harness_elevation_asks(store, task_id, dispatch, &refusals, at);
+    turn_result?;
+    filing?;
     let stopped = session.run_summary().stopped;
     if stopped != Some(StopKind::Completed) {
         let name = match stopped {
@@ -1587,6 +1735,142 @@ mod tests {
             Err(RunnerError::CredentialRefused("revoked"))
         ));
         assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+    }
+
+    #[test]
+    fn elevation_ask_id_stays_within_the_command_id_bound() {
+        let dispatch_id = symbiote_domain::DispatchId::new("d".repeat(128)).unwrap();
+        let id = elevation_ask_command_id(
+            dispatch_id.as_str(),
+            &Permission::ExecuteProcess,
+            Timestamp(u64::MAX),
+        )
+        .unwrap();
+        assert!(id.as_str().len() <= 128);
+    }
+
+    #[test]
+    fn native_credential_refusal_files_an_ask_and_never_licenses() {
+        let (mut store, task, dispatch) =
+            store_with_running_task("native-ask", RuntimeKind::NativeSymbiote);
+        let credential = dispatch.contract().profile().credential.clone();
+        let scope = symbiote_context::LeaseScope {
+            dispatch_id: dispatch.id().clone(),
+            project_id: store.task(&task).unwrap().project_id().clone(),
+            role_id: dispatch.contract().binding().role_id.clone(),
+            profile_id: dispatch.contract().profile().id.clone(),
+            host_id: HostId::new("host-native-ask").unwrap(),
+        };
+        let broker = std::rc::Rc::new(std::cell::RefCell::new(
+            symbiote_context::CredentialBroker::new(),
+        ));
+        broker
+            .borrow_mut()
+            .register(
+                credential.clone(),
+                scope.project_id.clone(),
+                "OPENAI_API_KEY".into(),
+                b"sk-fixture-native-ask".to_vec(),
+            )
+            .unwrap();
+        let transports = WorkerTransports::default().with_credential_broker(broker);
+        let at = Timestamp(60);
+        assert!(matches!(
+            transports.resolve_native_credential(
+                &mut store,
+                &task,
+                &dispatch,
+                &credential,
+                symbiote_context::BrokerRequest {
+                    scope: &scope,
+                    profile_credential_refs: std::slice::from_ref(&credential),
+                    use_credential_granted: false,
+                    at,
+                },
+                at,
+            ),
+            Err(RunnerError::CredentialRefused("use_credential_not_granted"))
+        ));
+        assert!(
+            !store
+                .active_elevation(dispatch.id(), &Permission::UseCredential, Timestamp(61))
+                .unwrap()
+        );
+        let events = store
+            .events(store.task(&task).unwrap().project_id(), 0, 256)
+            .unwrap();
+        assert!(
+            events.events.iter().any(|event| matches!(
+                event.payload,
+                symbiote_store::EventPayload::ElevationRequested { ref ask }
+                    if ask.permission == Permission::UseCredential
+                        && ask.dispatch_id == *dispatch.id()
+            )),
+            "native credential refusal must journal an elevation ask"
+        );
+        assert_eq!(store.task(&task).unwrap().state(), &TaskState::Running);
+    }
+
+    #[test]
+    fn external_harness_refusal_files_an_ask_and_never_licenses() {
+        let (mut store, task, dispatch) =
+            store_with_running_task("external-ask", RuntimeKind::ExternalHarness);
+        let mut transport = fixture::ScriptedCodex::new(
+            vec![
+                Ok(serde_json::json!({"userAgent": format!(
+                    "symbiote/{} (Linux)",
+                    symbiote_runtime_discovery::codex::CODEX_VERSION
+                )})),
+                Ok(serde_json::json!({"thread": {"id": "thr-fixture"}})),
+                Ok(serde_json::json!({"turn": {"id": "turn-fixture"}})),
+            ],
+            vec![
+                serde_json::json!({
+                    "method": "item/completed",
+                    "params": {"threadId": "thr-fixture", "turnId": "turn-fixture",
+                        "item": {"type": "agentMessage", "id": "i1",
+                            "text": "implemented the change"}}
+                }),
+                fixture::codex_completed("completed"),
+            ],
+            vec![symbiote_external_agent::ServerRequest {
+                id: serde_json::json!(7),
+                method: "item/commandExecution/requestApproval".into(),
+                params: serde_json::json!({}),
+            }],
+        );
+        let outcome = run_external(
+            &mut store,
+            &task,
+            &dispatch,
+            "do the work",
+            "/workspace",
+            &mut transport,
+            Timestamp(60),
+        )
+        .unwrap();
+        assert!(outcome.completion_filed);
+        assert!(
+            !store
+                .active_elevation(dispatch.id(), &Permission::ExecuteProcess, Timestamp(61))
+                .unwrap()
+        );
+        let events = store
+            .events(store.task(&task).unwrap().project_id(), 0, 256)
+            .unwrap();
+        assert!(
+            events.events.iter().any(|event| matches!(
+                event.payload,
+                symbiote_store::EventPayload::ElevationRequested { ref ask }
+                    if ask.permission == Permission::ExecuteProcess
+                        && ask.dispatch_id == *dispatch.id()
+            )),
+            "external harness refusal must journal an elevation ask"
+        );
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
     }
 
     /// Test fixtures for the store wiring. Mirrors the store's own
