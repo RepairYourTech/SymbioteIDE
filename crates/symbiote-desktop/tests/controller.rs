@@ -245,6 +245,121 @@ fn begin_generation_reports_the_daemon_status_when_it_exits() {
     }
 }
 
+/// The run-diff boundary (#54): a worktree inside the session's
+/// reservation base is observed (real repo, real changes); a path
+/// outside it is refused structurally.
+#[test]
+fn run_diff_observes_inside_the_reservation_base_and_refuses_outside() {
+    use symbiote_desktop_lib::controller::{DesktopController, DesktopError};
+    let env = test_env("run-diff");
+    let controller = DesktopController::new(
+        bin_dir_paths(),
+        &env.state_dir,
+        &env.reservation_base,
+        &env.repo,
+    )
+    .expect("controller environment");
+
+    // A real git repository INSIDE the reservation base, with a tracked
+    // modification and an untracked file.
+    let inner = env.reservation_base.join("inner-repo");
+    std::fs::create_dir_all(&inner).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&inner)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(inner.join("tracked.txt"), "original\n").unwrap();
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "-m",
+        "base",
+    ]);
+    std::fs::write(inner.join("tracked.txt"), "changed\n").unwrap();
+    std::fs::write(inner.join("produced.txt"), "worker output\n").unwrap();
+
+    let diff = controller
+        .run_diff(&inner.display().to_string())
+        .expect("inside the reservation base must observe");
+    assert!(diff.tracked.contains("+changed"), "{:?}", diff.tracked);
+    let produced = diff
+        .untracked
+        .iter()
+        .find(|head| head.path == "produced.txt")
+        .expect("untracked head");
+    assert_eq!(produced.content, "worker output\n");
+
+    // A repository OUTSIDE the reservation base is refused structurally.
+    let outside =
+        std::env::temp_dir().join(format!("symbiote-run-diff-outside-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let error = controller
+        .run_diff(&outside.display().to_string())
+        .expect_err("outside must refuse");
+    assert!(
+        matches!(error, DesktopError::Setup(_)),
+        "expected a setup refusal, got {error:?}"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+
+    // Containment is component-wise, not a string prefix: a sibling whose
+    // name merely starts with the base's name is outside it.
+    let prefix_sibling = env.scratch.join("worktreesEVIL");
+    std::fs::create_dir_all(&prefix_sibling).unwrap();
+    let error = controller
+        .run_diff(&prefix_sibling.display().to_string())
+        .expect_err("a name-prefix sibling must refuse");
+    assert!(
+        matches!(error, DesktopError::Setup(_)),
+        "expected a setup refusal, got {error:?}"
+    );
+}
+
+/// The containment check resolves symlinks: a link that sits inside the
+/// reservation base but points outside it is refused, never followed.
+#[test]
+fn run_diff_refuses_a_symlink_that_escapes_the_reservation_base() {
+    use symbiote_desktop_lib::controller::{DesktopController, DesktopError};
+    let env = test_env("run-diff-symlink");
+    let controller = DesktopController::new(
+        bin_dir_paths(),
+        &env.state_dir,
+        &env.reservation_base,
+        &env.repo,
+    )
+    .expect("controller environment");
+    std::fs::create_dir_all(&env.reservation_base).unwrap();
+    let outside =
+        std::env::temp_dir().join(format!("symbiote-run-diff-escape-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let link = env.reservation_base.join("escape");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    let error = controller
+        .run_diff(&link.display().to_string())
+        .expect_err("a symlink out of the base must refuse");
+    assert!(
+        matches!(error, DesktopError::Setup(_)),
+        "expected a setup refusal, got {error:?}"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 /// The DesktopPaths from the workspace target directory (the gauntlet
 /// builds every binary).
 fn bin_dir_paths() -> symbiote_desktop_lib::controller::DesktopPaths {

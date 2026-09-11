@@ -42,6 +42,8 @@ fn preview_document(
     report: &str,
     worktree: &str,
     files: &[String],
+    diff: &symbiote_repo::RunDiff,
+    diff_note: &str,
 ) -> String {
     fn escape(value: &str) -> String {
         value
@@ -76,7 +78,51 @@ fn preview_document(
     document.push_str(&escape(report));
     document.push_str("</pre>\n<h2>Worktree</h2>\n<pre>");
     document.push_str(&escape(worktree));
-    document.push_str("</pre>\n<h2>Files produced (");
+    document.push_str("</pre>\n");
+    // The run's diff evidence — bounded upstream (symbiote-repo), escaped
+    // here like every other dynamic value. A gathering refusal is a note
+    // (owner-built text, escaped like everything else), so the report
+    // above still previews.
+    document.push_str("<h2>Tracked diff</h2>\n");
+    if !diff_note.is_empty() {
+        document.push_str("<p>");
+        document.push_str(&escape(diff_note));
+        document.push_str("</p>\n");
+    }
+    // The collector's own degradation note (not-UTF-8 tracked diff, a
+    // refusal): owner-built text naming why the hunks are absent.
+    if !diff.tracked_note.is_empty() {
+        document.push_str("<p>");
+        document.push_str(&escape(&diff.tracked_note));
+        document.push_str("</p>\n");
+    }
+    if diff.tracked_truncated {
+        document.push_str("<p>The full diff exceeded the bound; this is the --stat summary.</p>\n");
+    }
+    document.push_str("<pre>");
+    document.push_str(&escape(&diff.tracked));
+    document.push_str("</pre>\n<h2>Untracked content heads</h2>\n");
+    for head in &diff.untracked {
+        document.push_str("<p><code>");
+        document.push_str(&escape(&head.path));
+        document.push_str("</code>");
+        if head.truncated {
+            document.push_str(" (truncated)");
+        }
+        document.push_str("</p>\n<pre>");
+        document.push_str(&escape(&head.content));
+        document.push_str("</pre>\n");
+    }
+    // The content-head cap is stated, not silent: the count below is how
+    // many untracked paths the bound left head-less.
+    if diff.untracked_omitted > 0 {
+        document.push_str("<p>");
+        document.push_str(&diff.untracked_omitted.to_string());
+        document.push_str(" further untracked path(s): content heads omitted (bound ");
+        document.push_str(&symbiote_repo::MAX_UNTRACKED_FILES.to_string());
+        document.push_str(")</p>\n");
+    }
+    document.push_str("<h2>Files produced (");
     document.push_str(&files.len().to_string());
     document.push_str(")</h2>\n<ul>\n");
     document.push_str(&files_html);
@@ -154,7 +200,39 @@ fn open_preview(
             .map(|elapsed| elapsed.subsec_nanos())
             .unwrap_or_default()
     );
-    let document = preview_document(&dispatch_id, &probe_nonce, &report, &worktree, &files);
+    // The diff evidence is gathered owner-side through the controller:
+    // the worktree path must resolve inside this session's reservation
+    // base, and the observation is bounded. A refusal degrades to a
+    // note in the document — the preview still shows the report.
+    let state = app.state::<Session>();
+    let (diff, diff_note) = {
+        let guard = lock_session(&state);
+        match guard.as_ref() {
+            Some(controller) => match controller.run_diff(&worktree) {
+                Ok(diff) => (diff, String::new()),
+                Err(error) => (
+                    symbiote_repo::RunDiff::default(),
+                    format!("diff unavailable: {error}"),
+                ),
+            },
+            // With no session there is no reservation base to validate the
+            // worktree against, so no diff is gathered — but the report
+            // above still previews (only the diff section degrades).
+            None => (
+                symbiote_repo::RunDiff::default(),
+                "diff unavailable: no active session".to_owned(),
+            ),
+        }
+    };
+    let document = preview_document(
+        &dispatch_id,
+        &probe_nonce,
+        &report,
+        &worktree,
+        &files,
+        &diff,
+        &diff_note,
+    );
     let state = app.state::<PreviewDocument>();
     *preview_lock(&state) = document;
     if let Some(window) = app.get_webview_window("preview") {
@@ -370,6 +448,26 @@ mod preview_tests {
     /// document carries a deny-all CSP with no script.
     #[test]
     fn worker_content_renders_as_inert_text() {
+        let hostile_diff = symbiote_repo::RunDiff {
+            tracked: "<script>alert('diff')</script> broke <b>things</b>".into(),
+            tracked_truncated: true,
+            tracked_note: String::new(),
+            untracked: vec![
+                symbiote_repo::UntrackedContent {
+                    path: "produced.txt".into(),
+                    content: "worker output".into(),
+                    truncated: false,
+                },
+                // Both untracked fields are worker-controlled: they must
+                // be escaped just like the tracked diff.
+                symbiote_repo::UntrackedContent {
+                    path: "</code><script>alert('path')</script>".into(),
+                    content: "</pre><script>alert('head')</script>".into(),
+                    truncated: false,
+                },
+            ],
+            untracked_omitted: 0,
+        };
         let document = preview_document(
             "disp_staffing-task",
             "probe-test-1",
@@ -379,24 +477,97 @@ mod preview_tests {
                 "produced.txt".to_string(),
                 "<img src=x onerror=alert(2)>".to_string(),
             ],
+            &hostile_diff,
+            "",
         );
         assert!(!document.contains("<script>"), "{document}");
         assert!(!document.contains("<img"), "{document}");
         assert!(document.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(
+            document.contains("&lt;script&gt;alert(&#39;diff&#39;)&lt;/script&gt;"),
+            "the hostile diff must render as escaped text"
+        );
         assert!(document.contains("<li>&lt;img src=x onerror=alert(2)&gt;</li>"));
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("Run <code>disp_staffing-task</code>"));
+        assert!(document.contains("The full diff exceeded the bound"));
+        assert!(
+            document.contains("&lt;/code&gt;&lt;script&gt;alert(&#39;path&#39;)&lt;/script&gt;"),
+            "the hostile untracked path must render as escaped text"
+        );
+        assert!(
+            document.contains("&lt;/pre&gt;&lt;script&gt;alert(&#39;head&#39;)&lt;/script&gt;"),
+            "the hostile untracked content must render as escaped text"
+        );
         assert!(!document.to_lowercase().contains("<script"));
+    }
+
+    /// The collector's degradation note is rendered escaped, so a refusal
+    /// or a non-UTF-8 tracked diff is visible instead of silent.
+    #[test]
+    fn a_tracked_degradation_note_renders_escaped() {
+        let diff = symbiote_repo::RunDiff {
+            tracked: "<tracked diff is not UTF-8>".into(),
+            tracked_note: "the tracked diff is not UTF-8: <binary>".into(),
+            ..Default::default()
+        };
+        let document = preview_document("disp", "probe-1", "report", "/wt", &[], &diff, "");
+        assert!(!document.contains("<binary>"), "{document}");
+        assert!(
+            document.contains("the tracked diff is not UTF-8: &lt;binary&gt;"),
+            "{document}"
+        );
+        assert!(
+            document.contains("&lt;tracked diff is not UTF-8&gt;"),
+            "{document}"
+        );
     }
 
     /// The document's own structure must survive any input: the CSP and
     /// the isolation statement are present for the empty case too.
     #[test]
     fn an_empty_outcome_still_carries_the_isolation_statement() {
-        let document = preview_document("", "", "", "", &[]);
+        let document = preview_document("", "", "", "", &[], &Default::default(), "");
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("no application commands"));
         assert!(document.contains("Files produced (0)"));
+        assert!(!document.contains("diff unavailable"));
+    }
+
+    /// A degraded diff is an escaped owner note; the report above it
+    /// still renders, so a refusal never costs the preview its content.
+    #[test]
+    fn a_diff_note_renders_escaped_and_keeps_the_report() {
+        let document = preview_document(
+            "disp_staffing-task",
+            "probe-test-1",
+            "the worker's report",
+            "/wt",
+            &[],
+            &Default::default(),
+            "diff unavailable: <b>no active session</b>",
+        );
+        assert!(document.contains("the worker&#39;s report"), "{document}");
+        assert!(!document.contains("<b>no active session</b>"), "{document}");
+        assert!(
+            document.contains("diff unavailable: &lt;b&gt;no active session&lt;/b&gt;"),
+            "{document}"
+        );
+        assert!(!document.to_lowercase().contains("<script"));
+    }
+
+    /// The content-head cap is stated in the document, never silent.
+    #[test]
+    fn omitted_untracked_heads_are_counted_in_the_document() {
+        let diff = symbiote_repo::RunDiff {
+            untracked_omitted: 4,
+            ..Default::default()
+        };
+        let document = preview_document("disp", "probe-1", "", "/wt", &[], &diff, "");
+        assert!(
+            document.contains("4 further untracked path(s): content heads omitted"),
+            "{document}"
+        );
     }
 }
 
