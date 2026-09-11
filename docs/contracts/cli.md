@@ -24,23 +24,29 @@ contract it implements. `symbiote schema --write DIR` regenerates the
 committed fixture files instead of printing them, so the fixtures are
 **generated artifacts**: a contract change is made once in the binary and then
 regenerated, never edited into a fixture by hand. `symbiote schema --check
-DIR` is the non-mutating half: it compares each selected document to `DIR`
-and, on any difference, names the file and the line where it diverges (or that
-it is missing) and exits 1, writing nothing — the local counterpart of the CI
-drift step below. A selector narrows `--write` and `--check` to the document
-it names.
+DIR` is the non-mutating half, and it reaches the same verdict the CI drift
+step's directory diff reaches for the same tree: with no selector `DIR` must
+hold exactly the published documents, so a missing, edited, extra or renamed
+entry is named — with the line where a document diverges — and exits 1,
+reading and writing nothing. A selector narrows which documents' bytes are
+compared, so the other published documents may be present or absent, but any
+entry that is not a published document is reported whatever its name. A
+selector narrows `--write` the same way.
 
 Flags are declared per command, and a flag a command cannot honor is a usage
 error that names it, never a silent no-op. The daemon commands honor the five
 daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
 `--yes`), because each of them is answered by a request over the socket; the
 local `schema` command honors `--write` and `--check`, and the local `help`
-command honors none. `--help`/`-h` is the one universal flag: every command
-honors it, and it is answered from the command table alone — no daemon, no
-state directory — so `symbiote --help`, `symbiote -h` and `symbiote shutdown
---help` all exit 0. So `symbiote --write DIR health`, `symbiote --check DIR
-health`, `symbiote --json help`, `symbiote --state-dir DIR schema` and
-`symbiote schema --yes` each exit 1 printing nothing, while `symbiote
+command honors none. `--help`/`-h` is the one universal flag — every command
+honors it — but a help request honors no other flag, whatever command (if any)
+accompanied it: it renders the table, not a request, so `--json`, `--state-dir`
+and the rest mean nothing to it. `symbiote --help`, `symbiote -h`, `symbiote
+shutdown --help` and `symbiote schema --help` therefore exit 0 without a daemon
+or a state directory, while `--json --help` is refused exactly as `--json help`
+is. So `symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote
+--json help`, `symbiote --state-dir DIR schema`, `symbiote schema --yes` and
+`symbiote --json --help health` each exit 1 printing nothing, while `symbiote
 --state-dir DIR shutdown --yes` and `symbiote --json health` are unaffected.
 
 The contract itself lives in `symbiote_host::cli_schema` (`crates/symbiote-host/src/cli_schema.rs`):
@@ -214,9 +220,10 @@ validates its stdout through the bounded checker, including the boundary
 documents the schema and the CLI must classify identically. CI additionally
 regenerates the fixtures with `symbiote schema --write` into a temporary
 directory and fails on any `diff`, so a hand-edited fixture is rejected even
-before the tests run. The same comparison is available locally and without
-writing as `symbiote schema --check DIR`, which exits 1 naming every document
-that diverges. The default, non-`--json` output is the daemon's body
+before the tests run. The same comparison is available locally, without
+writing, as `symbiote schema --check DIR`, which exits 1 naming every
+difference — a document that is missing or changed, and every entry the
+binary does not publish. The default, non-`--json` output is the daemon's body
 alone and is deliberately not covered by an envelope schema.
 
 Published fixtures are not a compatibility policy: this page documents v1, and

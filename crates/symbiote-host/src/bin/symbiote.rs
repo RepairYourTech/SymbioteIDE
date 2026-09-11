@@ -561,17 +561,16 @@ fn print_help() {
     println!("  --command-id ID   idempotency key for a retried command");
     println!("  --policy FILE     pre-authorize dangerous operation kinds for noninteractive runs");
     println!("  --write DIR       with `schema`, regenerate the selection into DIR");
-    println!(
-        "  --check DIR       with `schema`, report how DIR differs from the emitted selection"
-    );
-    println!("  --help, -h        print this table and exit 0, connecting to nothing");
+    println!("  --check DIR       with `schema`, compare DIR against the published documents");
+    println!("  --help, -h        print this table; connects to nothing, honors no other flag");
     println!("  --json            one machine-readable envelope per invocation on stdout");
     println!("  --yes             explicit authorization for this one dangerous command");
     println!();
     println!("flags are per command: daemon commands honor --state-dir, --command-id,");
     println!("--policy, --json and --yes; `schema` honors --write and --check; `help` honors");
-    println!("none; `--help`/`-h` is universal. A flag a command cannot honor is a usage");
-    println!("error that names it, never silently dropped.");
+    println!("nothing. `--help`/`-h` is universal, and a help request honors no other flag:");
+    println!("`--json --help health` is refused exactly as `--json help` is. A flag a command");
+    println!("cannot honor is a usage error that names it, never silently dropped.");
     println!();
     println!("responses are the daemon's JSON (pretty-printed). Exit codes:");
     println!("0 success, 1 usage/connection failure, 2 daemon-refused command,");
@@ -880,7 +879,8 @@ fn run_schema(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
             eprintln!("symbiote: {} {}", entry.file_name, entry.detail);
         }
         eprintln!(
-            "symbiote: {} document(s) do not match this binary; run `symbiote schema --write DIR` to regenerate",
+            "symbiote: {} is not what this binary publishes ({} difference(s)); `symbiote schema --write DIR` regenerates the documents",
+            directory.display(),
             drift.len()
         );
         return Ok(EXIT_USAGE);
@@ -901,33 +901,51 @@ fn run_schema(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
 
 fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     let options = parse_options(&arguments)?;
-    let Some(name) = options.command.clone() else {
-        // A bare invocation is a usage error; `--help` alone is how the table
-        // is asked for, and that succeeds. Neither reads a state directory or
-        // opens a socket.
-        print_help();
-        return Ok(if options.help { EXIT_OK } else { EXIT_USAGE });
-    };
+    // A help request — the `help` command, or `--help`/`-h` with or without a
+    // command alongside — prints the table and connects to nothing. It cannot
+    // honor any other flag either: help renders the table, not a request, so
+    // `--json`, `--state-dir` and the rest mean nothing to it.
+    let requested_help = options.help || options.command.as_deref() == Some("help");
     // A flag a command cannot honor is a usage error that names it, never a
-    // silent no-op. This is the one place flag applicability is decided, for
-    // the local commands and the daemon commands alike, before any of them is
-    // answered or connects.
-    let unsuited = options.supplied().unsuited_for(honored_flags(&name));
+    // silent no-op. This is the one place flag applicability is decided — for
+    // the local commands, the daemon commands and a help request alike —
+    // before any of them is answered or connects. A help request is validated
+    // against the `help` row, so `--json --help health` is refused by the same
+    // rule as `--json --help help`.
+    let honored = if requested_help {
+        honored_flags("help")
+    } else {
+        match options.command.as_deref() {
+            Some(name) => honored_flags(name),
+            None => {
+                // A bare invocation is a usage error, and the table is shown
+                // either way.
+                print_help();
+                return Ok(EXIT_USAGE);
+            }
+        }
+    };
+    let unsuited = options.supplied().unsuited_for(honored);
     if !unsuited.is_empty() {
+        let named = if requested_help {
+            "help"
+        } else {
+            options.command.as_deref().unwrap_or("help")
+        };
         eprintln!(
-            "symbiote: `{name}` does not accept {}; try `symbiote help`",
+            "symbiote: `{named}` does not accept {}; try `symbiote help`",
             unsuited.join(", ")
         );
         return Ok(EXIT_USAGE);
     }
-    // `--help`/`-h` is universal: the table is printed and no daemon is
-    // consulted, whatever command accompanied it. It is answered AFTER the
-    // applicability check, so a contradictory flag is named rather than
-    // silently dropped by the help request itself.
-    if options.help || name == "help" {
+    if requested_help {
         print_help();
         return Ok(EXIT_OK);
     }
+    let name = options
+        .command
+        .clone()
+        .expect("a non-help invocation names a command");
     // `schema` is local: it emits and compares this binary's own contract and
     // needs no daemon, no state directory and no authorization, so it is
     // answered before any of that is consulted.
@@ -1464,11 +1482,24 @@ mod tests {
         }
         // With no command and no `--help`, the table is still a usage error.
         assert_eq!(run_with(Vec::new()).unwrap(), EXIT_USAGE);
-        // A contradictory flag is named rather than dropped by `--help`.
-        assert_eq!(
-            run_with(vec!["--help".into(), "--json".into(), "help".into()]).unwrap(),
-            EXIT_USAGE
-        );
+        // A help request is validated against the `help` row, so a flag it
+        // cannot honor is refused identically whether the command named honors
+        // that flag or not: `--json --help health` behaves like `--json help`
+        // rather than exiting 0 and dropping `--json`.
+        for arguments in [
+            vec!["--json", "help"],
+            vec!["--json", "--help"],
+            vec!["--json", "--help", "help"],
+            vec!["--json", "--help", "health"],
+            vec!["--help", "health", "--state-dir", "/d"],
+            vec!["--write", "/d", "schema", "--help"],
+        ] {
+            assert_eq!(
+                run_with(arguments.iter().map(|s| s.to_string()).collect()).unwrap(),
+                EXIT_USAGE,
+                "{arguments:?}"
+            );
+        }
     }
 
     #[test]

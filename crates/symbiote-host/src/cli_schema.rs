@@ -390,20 +390,26 @@ pub fn write_schemas(directory: &Path, schemas: &[&PublishedSchema]) -> Result<(
     Ok(())
 }
 
-/// One selected document that is not what the binary would write: absent from
-/// the directory, or present with different bytes.
+/// One way a directory fails to be exactly what the binary publishes: a
+/// selected document that is absent or different, or an entry that is not a
+/// published document at all.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Drift {
-    pub file_name: &'static str,
-    /// `is missing`, or `differs at line N`.
+    pub file_name: String,
+    /// `is missing`, `differs at line N`, or `is not a published document`.
     pub detail: String,
 }
 
 /// Compares each selected document's canonical bytes to `directory/<file
-/// name>` and returns every divergence, without writing anything. This is the
-/// local counterpart of the CI drift step — the same comparison, run on
-/// demand, so a contributor can ask "does this tree match the binary?"
-/// without mutating it.
+/// name>` **and** reports every entry in `directory` that is not a published
+/// document, without writing anything.
+///
+/// Both directions are needed for this to be the same verdict the CI drift
+/// step's `diff -ru` reaches for the same tree: with no selector `directory`
+/// must hold exactly the published documents, so a missing, edited, extra or
+/// renamed entry is drift. A selector narrows which documents' bytes are
+/// compared; the other published documents may be present or absent, but an
+/// entry that is not a published document is reported either way.
 pub fn schema_drift(
     directory: &Path,
     schemas: &[&PublishedSchema],
@@ -415,15 +421,51 @@ pub fn schema_drift(
         match std::fs::read_to_string(&path) {
             Ok(actual) if actual == expected => {}
             Ok(actual) => drift.push(Drift {
-                file_name: schema.file_name,
+                file_name: schema.file_name.to_owned(),
                 detail: first_difference(&actual, &expected),
             }),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => drift.push(Drift {
-                file_name: schema.file_name,
+                file_name: schema.file_name.to_owned(),
                 detail: "is missing".to_owned(),
             }),
             Err(source) => return Err(SchemaError::Read { path, source }),
         }
+    }
+    // The other direction: `diff -ru` reports a file the binary does not write
+    // as "Only in", so an added or renamed fixture is drift here too. A
+    // directory that does not exist is already reported per document above, so
+    // its `NotFound` is nothing further to say.
+    let mut unexpected = Vec::new();
+    match std::fs::read_dir(directory) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|source| SchemaError::Read {
+                    path: directory.to_path_buf(),
+                    source,
+                })?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !PUBLISHED_SCHEMAS
+                    .iter()
+                    .any(|known| known.file_name == name.as_str())
+                {
+                    unexpected.push(name);
+                }
+            }
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(SchemaError::Read {
+                path: directory.to_path_buf(),
+                source,
+            });
+        }
+    }
+    unexpected.sort();
+    for file_name in unexpected {
+        drift.push(Drift {
+            file_name,
+            detail: "is not a published document".to_owned(),
+        });
     }
     Ok(drift)
 }
@@ -551,6 +593,22 @@ mod tests {
         assert_eq!(drift.len(), 1);
         assert_eq!(drift[0].file_name, "symbiote.cli.v1.schema.json");
         assert!(drift[0].detail.starts_with("differs at line "), "{drift:?}");
+
+        // The other direction: an entry the binary does not publish is drift,
+        // however it is named. `diff -ru` reports the same tree as "Only in".
+        std::fs::write(&envelope, &text).unwrap();
+        let renamed = directory.join("symbiote.cli.v1.schema.json.bak");
+        std::fs::write(&renamed, "{}").unwrap();
+        let drift = schema_drift(&directory, &selected).unwrap();
+        assert_eq!(drift.len(), 1);
+        assert_eq!(drift[0].file_name, "symbiote.cli.v1.schema.json.bak");
+        assert_eq!(drift[0].detail, "is not a published document");
+        // A selector narrows the byte comparison but not the entry check, and
+        // the *other* published document is never "unexpected".
+        let policy_only = selected_schemas(Some("policy")).unwrap();
+        assert_eq!(schema_drift(&directory, &policy_only).unwrap().len(), 1);
+        std::fs::remove_file(&renamed).unwrap();
+        assert_eq!(schema_drift(&directory, &policy_only).unwrap(), Vec::new());
 
         // A missing document is reported as such, and checking does NOT
         // recreate it: the gate reads, it never writes.

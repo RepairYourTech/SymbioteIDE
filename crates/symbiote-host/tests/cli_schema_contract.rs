@@ -570,6 +570,34 @@ fn schema_check_is_a_non_mutating_gate_that_names_the_difference() {
         "stderr: {}",
         String::from_utf8_lossy(&policy_only.stderr)
     );
+    // Restore the document, then check the other direction: an entry the
+    // binary does not publish is drift too, so the verdict matches the CI
+    // step's directory diff. This fails against the one-directional gate,
+    // which exited 0 whenever the expected documents were correct.
+    std::fs::write(&envelope, &text).unwrap();
+    let extra = directory.join("symbiote.cli.v1.schema.json.bak");
+    std::fs::write(&extra, "{}\n").unwrap();
+    let with_extra = run_bare(&["schema", "--check", path]);
+    assert_eq!(
+        with_extra.status.code(),
+        Some(1),
+        "an entry the binary does not publish must be drift: {}",
+        String::from_utf8_lossy(&with_extra.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&with_extra.stderr);
+    assert!(
+        stderr.contains("symbiote.cli.v1.schema.json.bak")
+            && stderr.contains("is not a published document"),
+        "{stderr}"
+    );
+    // A selector narrows the byte comparison, not the entry check.
+    assert_eq!(
+        run_bare(&["schema", "policy", "--check", path])
+            .status
+            .code(),
+        Some(1)
+    );
+    std::fs::remove_file(&extra).unwrap();
     // A missing document is reported as missing, and checked-not-recreated.
     std::fs::remove_file(&envelope).unwrap();
     let missing = run_bare(&["schema", "--check", path]);
@@ -612,15 +640,20 @@ fn check_is_scoped_to_the_schema_command() {
 #[test]
 fn help_flag_succeeds_from_any_command_without_connecting() {
     // `--help`/`-h` are universal flags answered from the command table alone:
-    // alone, or with any command. This fails against the earlier parser, which
-    // rejected `--help` as an unknown option and treated `-h` as an unknown
-    // command.
+    // alone, or with any command, daemon ones included. Each of these runs
+    // with no daemon and no state directory, so a zero exit is the evidence
+    // that nothing was consulted. This fails against the earlier parser, which
+    // rejected `--help` as an unknown option and `-h` as an unknown command.
     for arguments in [
         vec!["--help"],
         vec!["-h"],
         vec!["help", "--help"],
         vec!["schema", "--help"],
         vec!["--help", "schema"],
+        vec!["--help", "shutdown"],
+        vec!["shutdown", "--help"],
+        vec!["health", "-h"],
+        vec!["raw", "--help"],
     ] {
         let output = run_bare(&arguments);
         assert_eq!(
@@ -634,17 +667,38 @@ fn help_flag_succeeds_from_any_command_without_connecting() {
             "{arguments:?} must print the table"
         );
     }
-    // With a state directory and a live fake daemon, `--help` still sends
-    // nothing: it is answered before transport.
-    let (output, frame) = run_cli(&["--help", "shutdown"]);
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(frame.is_none(), "`--help` must not reach the daemon");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("commands:"));
+    // A help request honors no other flag, whatever command accompanied it, so
+    // a flag it cannot honor is named by the same rule whether or not that
+    // command would have honored it. This fails against the earlier behavior,
+    // where `--json --help` and `--json --help health` exited 0 and dropped
+    // `--json`.
+    for (arguments, named) in [
+        (vec!["--json", "--help"], "--json"),
+        (vec!["--json", "--help", "help"], "--json"),
+        (vec!["--json", "--help", "health"], "--json"),
+        (
+            vec!["--state-dir", "/tmp", "shutdown", "--help"],
+            "--state-dir",
+        ),
+        (vec!["--write", "/tmp", "schema", "--help"], "--write"),
+    ] {
+        let output = run_bare(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{arguments:?} must print no table"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(named) && stderr.contains("`help`"),
+            "{arguments:?} must refuse {named} as `help`: {stderr}"
+        );
+    }
 }
 
 #[test]
