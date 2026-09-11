@@ -371,7 +371,7 @@ fn write_operator_config(
     let config = serde_json::json!({
         "reservation_base": reservation_base.display().to_string(),
         "native_fixture": {
-            "echo_text": "implemented the bounded change; produced.txt written by the sandboxed tool",
+            "echo_text": symbiote_workflow::demo::FIXTURE_REPORT,
             "tool": {"call_id": "call-produce",
                 "arguments": {"program": "sh",
                     "arguments": ["-c",

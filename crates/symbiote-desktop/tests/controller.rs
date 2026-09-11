@@ -113,7 +113,7 @@ fn desktop_controller_drives_the_first_release_flow_across_a_crash() {
     assert_eq!(outcome.task_state, "completion_requested");
     assert_eq!(
         outcome.report.as_deref(),
-        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+        Some(symbiote_workflow::demo::FIXTURE_REPORT)
     );
     assert!(
         outcome.worktree.contains("produced.txt"),

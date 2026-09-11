@@ -137,7 +137,7 @@ fn write_operator_config(
     let mut config = serde_json::json!({
         "reservation_base": reservation_base.display().to_string(),
         "native_fixture": {
-            "echo_text": "implemented the bounded change; produced.txt written by the sandboxed tool",
+            "echo_text": symbiote_workflow::demo::FIXTURE_REPORT,
             "tool": {"call_id": "call-produce",
                 "arguments": {"program": "sh",
                     "arguments": ["-c",
@@ -268,7 +268,7 @@ fn first_release_demo_workflow_drives_daemon_end_to_end_with_restart_resume() {
     // verified completion.
     assert_eq!(
         outcome.report.as_deref(),
-        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+        Some(symbiote_workflow::demo::FIXTURE_REPORT)
     );
     // The diff evidence: the run really produced the file inside the
     // reserved worktree through the sandboxed shell executor.
@@ -343,7 +343,7 @@ fn driver_restart_restores_serialized_journal_positions_and_resumes() {
     assert_eq!(outcome.task_state, "completion_requested");
     assert_eq!(
         outcome.report.as_deref(),
-        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+        Some(symbiote_workflow::demo::FIXTURE_REPORT)
     );
     assert!(
         outcome.worktree.contains("produced.txt"),
@@ -394,7 +394,7 @@ fn two_harness_demo_native_and_external_workers_on_one_project_without_leakage()
     // Work isolation: each lane's report is its own worker's text.
     assert_eq!(
         native.report.as_deref(),
-        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+        Some(symbiote_workflow::demo::FIXTURE_REPORT)
     );
     assert_eq!(
         external.report.as_deref(),
@@ -859,7 +859,7 @@ fn positions_track_two_projects_and_both_lanes_across_a_daemon_crash() {
     assert_eq!(a.task_state, "completion_requested");
     assert_eq!(
         a.report.as_deref(),
-        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+        Some(symbiote_workflow::demo::FIXTURE_REPORT)
     );
     let b = workflow
         .finish_demo_lane(&b_ok_lane(), &b_dispatch)
@@ -872,7 +872,7 @@ fn positions_track_two_projects_and_both_lanes_across_a_daemon_crash() {
     // in (asserted below, and in the Project-isolation test).
     assert_eq!(
         b.report.as_deref(),
-        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+        Some(symbiote_workflow::demo::FIXTURE_REPORT)
     );
     assert_ne!(a.worktree.worktree, b.worktree.worktree);
 }
