@@ -220,7 +220,7 @@ fn the_json_envelope_wraps_a_successful_result() {
 }
 
 #[test]
-fn a_daemon_refusal_is_distinct_from_a_missing_authorization() {
+fn an_unreachable_daemon_is_distinct_from_a_missing_authorization() {
     // Authorized, but no daemon is listening at this state directory: the
     // exit is a transport failure (1) — never confused with the refusal.
     let directory = unique_directory();
