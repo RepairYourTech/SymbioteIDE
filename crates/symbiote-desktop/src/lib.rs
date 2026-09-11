@@ -189,7 +189,7 @@ fn open_preview(
                     .and_then(|tail| tail.split("</code>").next())
                     .unwrap_or_default()
                     .to_owned();
-                let _ = window.eval(&isolation_probe(&nonce));
+                let _ = window.eval(isolation_probe(&nonce).as_str());
             }
         })
         .build()
