@@ -9,10 +9,12 @@
 //! lands in one obvious file.
 //!
 //! Data flows one way: nothing here imports the binary, and nothing here reads
-//! the filesystem except the explicit publication helpers, which take the
-//! directory they act on. `published_schemas` renders the object
-//! `symbiote schema` prints; `document_text` produces the canonical bytes that
-//! `write_schemas` writes and the tests compare against the committed fixtures.
+//! the filesystem except the explicit schema helpers, which take the directory
+//! they act on. `published_schemas` renders the object the bare
+//! `symbiote schema` prints; `selected_schemas` narrows that set to the one
+//! document a selector names; `document_text` produces the canonical bytes
+//! that `write_schemas` writes, `schema_drift` compares and the tests pin to
+//! the committed fixtures.
 use std::path::{Path, PathBuf};
 
 /// The machine-readable envelope's schema identity. Automation keys on this
@@ -125,24 +127,30 @@ pub fn dangerous_kinds() -> Vec<&'static str> {
         .collect()
 }
 
-/// A published schema document: its identity, the committed fixture file it is
-/// published as, and the builder that produces it.
+/// A published schema document: the short name `symbiote schema <selector>`
+/// addresses it by, its identity, the committed fixture file it is published
+/// as, and the builder that produces it.
+#[derive(Debug)]
 pub struct PublishedSchema {
+    pub selector: &'static str,
     pub identity: &'static str,
     pub file_name: &'static str,
     build: fn() -> serde_json::Value,
 }
 
 /// The published documents. One table, so the object `symbiote schema` prints,
-/// the files `symbiote schema --write DIR` writes, and the committed fixtures
-/// cannot drift apart.
+/// the single document `symbiote schema <selector>` prints, the files
+/// `symbiote schema --write DIR` writes, and the committed fixtures cannot
+/// drift apart.
 pub const PUBLISHED_SCHEMAS: &[PublishedSchema] = &[
     PublishedSchema {
+        selector: "envelope",
         identity: CLI_SCHEMA,
         file_name: "symbiote.cli.v1.schema.json",
         build: envelope_schema,
     },
     PublishedSchema {
+        selector: "policy",
         identity: POLICY_SCHEMA,
         file_name: "symbiote.cli-policy.v1.schema.json",
         build: policy_schema,
@@ -157,10 +165,16 @@ pub enum SchemaError {
         identity: &'static str,
         source: serde_json::Error,
     },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     Write {
         path: PathBuf,
         source: std::io::Error,
     },
+    /// `symbiote schema <selector>` named a document that is not published.
+    UnknownSelector { selector: String },
 }
 
 impl std::fmt::Display for SchemaError {
@@ -169,9 +183,17 @@ impl std::fmt::Display for SchemaError {
             SchemaError::Serialize { identity, source } => {
                 write!(f, "cannot serialize the {identity} schema: {source}")
             }
+            SchemaError::Read { path, source } => {
+                write!(f, "cannot read {}: {source}", path.display())
+            }
             SchemaError::Write { path, source } => {
                 write!(f, "cannot write {}: {source}", path.display())
             }
+            SchemaError::UnknownSelector { selector } => write!(
+                f,
+                "unknown schema `{selector}`; expected {}",
+                selectors().join(" or ")
+            ),
         }
     }
 }
@@ -305,6 +327,32 @@ fn policy_schema() -> serde_json::Value {
     })
 }
 
+/// The short names `symbiote schema <selector>` accepts, in table order.
+pub fn selectors() -> Vec<&'static str> {
+    PUBLISHED_SCHEMAS
+        .iter()
+        .map(|schema| schema.selector)
+        .collect()
+}
+
+/// The documents an optional selector names: `None` is all of them, so the
+/// bare `schema` command, `schema --write DIR` and `schema --check DIR` cover
+/// both, while `schema envelope` narrows every action to one document.
+pub fn selected_schemas(
+    selector: Option<&str>,
+) -> Result<Vec<&'static PublishedSchema>, SchemaError> {
+    match selector {
+        None => Ok(PUBLISHED_SCHEMAS.iter().collect()),
+        Some(name) => PUBLISHED_SCHEMAS
+            .iter()
+            .find(|schema| schema.selector == name)
+            .map(|schema| vec![schema])
+            .ok_or_else(|| SchemaError::UnknownSelector {
+                selector: name.to_owned(),
+            }),
+    }
+}
+
 /// Both published documents, keyed by the schema identity each declares. This
 /// is exactly what `symbiote schema` prints.
 pub fn published_schemas() -> serde_json::Value {
@@ -329,17 +377,71 @@ pub fn document_text(schema: &PublishedSchema) -> Result<String, SchemaError> {
     Ok(text)
 }
 
-/// Writes each published document to `directory/<fixture file name>` in the
+/// Writes each selected document to `directory/<fixture file name>` in the
 /// canonical form regeneration produces. Committing exactly what this writes
 /// is what keeps the fixtures generated artifacts: running it again on a clean
 /// tree leaves the files unchanged.
-pub fn write_schemas(directory: &Path) -> Result<(), SchemaError> {
-    for schema in PUBLISHED_SCHEMAS {
+pub fn write_schemas(directory: &Path, schemas: &[&PublishedSchema]) -> Result<(), SchemaError> {
+    for schema in schemas {
         let path = directory.join(schema.file_name);
         std::fs::write(&path, document_text(schema)?)
             .map_err(|source| SchemaError::Write { path, source })?;
     }
     Ok(())
+}
+
+/// One selected document that is not what the binary would write: absent from
+/// the directory, or present with different bytes.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Drift {
+    pub file_name: &'static str,
+    /// `is missing`, or `differs at line N`.
+    pub detail: String,
+}
+
+/// Compares each selected document's canonical bytes to `directory/<file
+/// name>` and returns every divergence, without writing anything. This is the
+/// local counterpart of the CI drift step — the same comparison, run on
+/// demand, so a contributor can ask "does this tree match the binary?"
+/// without mutating it.
+pub fn schema_drift(
+    directory: &Path,
+    schemas: &[&PublishedSchema],
+) -> Result<Vec<Drift>, SchemaError> {
+    let mut drift = Vec::new();
+    for schema in schemas {
+        let path = directory.join(schema.file_name);
+        let expected = document_text(schema)?;
+        match std::fs::read_to_string(&path) {
+            Ok(actual) if actual == expected => {}
+            Ok(actual) => drift.push(Drift {
+                file_name: schema.file_name,
+                detail: first_difference(&actual, &expected),
+            }),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => drift.push(Drift {
+                file_name: schema.file_name,
+                detail: "is missing".to_owned(),
+            }),
+            Err(source) => return Err(SchemaError::Read { path, source }),
+        }
+    }
+    Ok(drift)
+}
+
+/// Where the first line differs, so a drift gate says *where* a regeneration
+/// would change the file and not merely that it would. A difference past the
+/// shorter document's last line (an extra or missing line) is reported at the
+/// first line the two do not share.
+fn first_difference(actual: &str, expected: &str) -> String {
+    for (index, (left, right)) in actual.lines().zip(expected.lines()).enumerate() {
+        if left != right {
+            return format!("differs at line {}", index + 1);
+        }
+    }
+    format!(
+        "differs at line {}",
+        actual.lines().count().min(expected.lines().count()) + 1
+    )
 }
 
 /// The committed fixtures' directory, resolved from this crate's manifest so
@@ -397,5 +499,73 @@ mod tests {
         // The printed object is the same documents the writer produces.
         let printed = published_schemas();
         assert_eq!(printed.as_object().map(serde_json::Map::len), Some(2));
+    }
+
+    /// The selector is the whole naming rule, so a published document is
+    /// addressable exactly when the table says so and no other way.
+    #[test]
+    fn selecting_narrows_the_published_set_and_rejects_an_unknown_name() {
+        assert_eq!(selectors(), vec!["envelope", "policy"]);
+        // No selector is every document; a selector is exactly one.
+        assert_eq!(
+            selected_schemas(None).unwrap().len(),
+            PUBLISHED_SCHEMAS.len()
+        );
+        for name in selectors() {
+            let selected = selected_schemas(Some(name)).unwrap();
+            assert_eq!(selected.len(), 1, "{name}");
+            assert_eq!(selected[0].selector, name);
+        }
+        // An identity is NOT a selector: the table exposes one naming scheme.
+        let error = selected_schemas(Some(CLI_SCHEMA)).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(CLI_SCHEMA), "{message}");
+        assert!(
+            message.contains("envelope") && message.contains("policy"),
+            "{message}"
+        );
+    }
+
+    /// `schema_drift` is the local counterpart of the CI step, so it must name
+    /// the document that diverges and must read without writing.
+    #[test]
+    fn drift_is_named_per_document_and_reads_without_writing() {
+        let directory =
+            std::env::temp_dir().join(format!("symbiote-cli-schema-drift-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let selected = selected_schemas(None).unwrap();
+        write_schemas(&directory, &selected).unwrap();
+        assert_eq!(schema_drift(&directory, &selected).unwrap(), Vec::new());
+
+        // A constraint change — the exact drift the CI step catches — is
+        // reported by file name and line.
+        let envelope = directory.join("symbiote.cli.v1.schema.json");
+        let text = std::fs::read_to_string(&envelope).unwrap();
+        std::fs::write(
+            &envelope,
+            text.replacen("\"minLength\": 1", "\"minLength\": 2", 1),
+        )
+        .unwrap();
+        let drift = schema_drift(&directory, &selected).unwrap();
+        assert_eq!(drift.len(), 1);
+        assert_eq!(drift[0].file_name, "symbiote.cli.v1.schema.json");
+        assert!(drift[0].detail.starts_with("differs at line "), "{drift:?}");
+
+        // A missing document is reported as such, and checking does NOT
+        // recreate it: the gate reads, it never writes.
+        std::fs::remove_file(directory.join("symbiote.cli-policy.v1.schema.json")).unwrap();
+        std::fs::remove_file(&envelope).unwrap();
+        let drift = schema_drift(&directory, &selected).unwrap();
+        assert_eq!(drift.len(), 2);
+        assert!(
+            drift.iter().all(|entry| entry.detail == "is missing"),
+            "{drift:?}"
+        );
+        assert!(
+            std::fs::read_dir(&directory).unwrap().next().is_none(),
+            "a drift check must not write"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

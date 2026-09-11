@@ -16,22 +16,32 @@ inside the document, never on the presence of individual fields, so a future
 revision is a new `$id` rather than a silent reinterpretation of this one.
 
 The binary emits both documents: `symbiote schema` prints a JSON object keyed
-by schema identity (`symbiote.cli/v1`, `symbiote.cli-policy/v1`). It is a local
-command — no daemon, no `--state-dir`, no authorization — so any installed
-binary can hand out the contract it implements. `symbiote schema --write DIR`
-regenerates the committed fixture files instead of printing them, so the
-fixtures are **generated artifacts**: a contract change is made once in the
-binary and then regenerated, never edited into a fixture by hand.
+by schema identity (`symbiote.cli/v1`, `symbiote.cli-policy/v1`), and
+`symbiote schema <selector>` prints just one of them — `envelope` or `policy`
+— byte-for-byte as its committed fixture. It is a local command — no daemon,
+no `--state-dir`, no authorization — so any installed binary can hand out the
+contract it implements. `symbiote schema --write DIR` regenerates the
+committed fixture files instead of printing them, so the fixtures are
+**generated artifacts**: a contract change is made once in the binary and then
+regenerated, never edited into a fixture by hand. `symbiote schema --check
+DIR` is the non-mutating half: it compares each selected document to `DIR`
+and, on any difference, names the file and the line where it diverges (or that
+it is missing) and exits 1, writing nothing — the local counterpart of the CI
+drift step below. A selector narrows `--write` and `--check` to the document
+it names.
 
 Flags are declared per command, and a flag a command cannot honor is a usage
 error that names it, never a silent no-op. The daemon commands honor the five
 daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
 `--yes`), because each of them is answered by a request over the socket; the
-local `schema` command honors only `--write`, and the local `help` command
-honors nothing. So `symbiote --write DIR health`, `symbiote --json help`,
-`symbiote --state-dir DIR schema` and `symbiote schema --yes` each exit 1
-printing nothing, while `symbiote --state-dir DIR shutdown --yes` and
-`symbiote --json health` are unaffected.
+local `schema` command honors `--write` and `--check`, and the local `help`
+command honors none. `--help`/`-h` is the one universal flag: every command
+honors it, and it is answered from the command table alone — no daemon, no
+state directory — so `symbiote --help`, `symbiote -h` and `symbiote shutdown
+--help` all exit 0. So `symbiote --write DIR health`, `symbiote --check DIR
+health`, `symbiote --json help`, `symbiote --state-dir DIR schema` and
+`symbiote schema --yes` each exit 1 printing nothing, while `symbiote
+--state-dir DIR shutdown --yes` and `symbiote --json health` are unaffected.
 
 The contract itself lives in `symbiote_host::cli_schema` (`crates/symbiote-host/src/cli_schema.rs`):
 the schema identities, the `OPERATION_RISKS` table that fixes the policy
@@ -204,7 +214,9 @@ validates its stdout through the bounded checker, including the boundary
 documents the schema and the CLI must classify identically. CI additionally
 regenerates the fixtures with `symbiote schema --write` into a temporary
 directory and fails on any `diff`, so a hand-edited fixture is rejected even
-before the tests run. The default, non-`--json` output is the daemon's body
+before the tests run. The same comparison is available locally and without
+writing as `symbiote schema --check DIR`, which exits 1 naming every document
+that diverges. The default, non-`--json` output is the daemon's body
 alone and is deliberately not covered by an envelope schema.
 
 Published fixtures are not a compatibility policy: this page documents v1, and
