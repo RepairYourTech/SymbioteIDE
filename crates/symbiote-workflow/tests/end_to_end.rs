@@ -565,21 +565,7 @@ fn two_projects_on_one_daemon_without_work_configuration_or_credential_leakage()
     // Lane B, leak attempt: the binding references the credential
     // PROJECT A registered. The gate (UseCredential) is satisfied — the
     // broker's owning-project check is what must refuse.
-    let b_leak = symbiote_workflow::demo::DemoLane {
-        project: "project-isolation-b",
-        root: "isolation-b-root",
-        objective: "b-leak-objective",
-        task: "b-leak-task",
-        stream: "b-leak-stream",
-        chat: "chat-b-leak",
-        lead_role: "lead-b",
-        role: "engineer-b",
-        binding_id: "b-leak-binding",
-        provider: "b-openai",
-        model: "b-coding-model",
-        credential: "native-vault-ref",
-        with_external_lane: false,
-    };
+    let b_leak = b_leak_lane();
     let leak_dispatch = workflow
         .start_demo_lane(&b_leak)
         .expect("lane B (leak) start");
@@ -610,21 +596,7 @@ fn two_projects_on_one_daemon_without_work_configuration_or_credential_leakage()
     // Lane B, correct configuration: the project's OWN credential. This
     // lane's worktree cannot exist yet — project A's run never created
     // anything under project B's derived namespace.
-    let b_ok = symbiote_workflow::demo::DemoLane {
-        project: "project-isolation-b",
-        root: "isolation-b-root",
-        objective: "b-objective",
-        task: "b-task",
-        stream: "b-stream",
-        chat: "chat-b",
-        lead_role: "lead-b",
-        role: "engineer-b",
-        binding_id: "b-leak-binding",
-        provider: "b-openai",
-        model: "b-coding-model",
-        credential: "b-vault-ref",
-        with_external_lane: false,
-    };
+    let b_ok = b_ok_lane();
     let b_worktree_before = symbiote_workflow::observe_worktree_evidence(
         reservation_base,
         &symbiote_domain::ProjectId::new(b_ok.project).unwrap(),
@@ -757,10 +729,150 @@ fn driver_reads_task(state_dir: &std::path::Path, task: &str, project: &str) -> 
         .expect("task state")
 }
 
+/// Project B's leak-attempt lane: the binding references PROJECT A's
+/// registered credential (the broker must refuse it).
+fn b_leak_lane() -> symbiote_workflow::demo::DemoLane {
+    symbiote_workflow::demo::DemoLane {
+        project: "project-isolation-b",
+        root: "isolation-b-root",
+        objective: "b-leak-objective",
+        task: "b-leak-task",
+        stream: "b-leak-stream",
+        chat: "chat-b-leak",
+        lead_role: "lead-b",
+        role: "engineer-b",
+        binding_id: "b-leak-binding",
+        provider: "b-openai",
+        model: "b-coding-model",
+        credential: "native-vault-ref",
+        with_external_lane: false,
+    }
+}
+
+/// Project B's corrected lane: the project's OWN registered credential,
+/// on the SAME (replaced) binding.
+fn b_ok_lane() -> symbiote_workflow::demo::DemoLane {
+    symbiote_workflow::demo::DemoLane {
+        project: "project-isolation-b",
+        root: "isolation-b-root",
+        objective: "b-objective",
+        task: "b-task",
+        stream: "b-stream",
+        chat: "chat-b",
+        lead_role: "lead-b",
+        role: "engineer-b",
+        binding_id: "b-leak-binding",
+        provider: "b-openai",
+        model: "b-coding-model",
+        credential: "b-vault-ref",
+        with_external_lane: false,
+    }
+}
+
 /// The typed wire code a driver refusal carries.
 fn refused_code(error: symbiote_workflow::WorkflowError) -> symbiote_protocol::ErrorCode {
     match error {
         symbiote_workflow::WorkflowError::Refused(protocol_error) => protocol_error.code,
         other => panic!("expected a daemon refusal, got {other:?}"),
     }
+}
+
+/// The positions-restart headroom both review records named (#518/#519),
+/// in its full form: a driver tracking TWO projects — with two lanes on
+/// the second — across a daemon SIGKILL. Positions are serialized to disk
+/// exactly as a desktop shell would; a FRESH driver is restored from that
+/// file; BOTH projects' cursors are restored exactly; and both lanes
+/// finish on the restarted daemon with their reports still lane-scoped.
+#[test]
+fn positions_track_two_projects_and_both_lanes_across_a_daemon_crash() {
+    let env = demo_environment("positions-two-projects");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let config_path = &env.config_path;
+    let positions_path = env.scratch.join("driver-positions.json");
+
+    // Generation 1: compose both projects, start both lanes, read both
+    // journals, persist the positions, and SIGKILL the daemon.
+    let mut daemon = Daemon::spawn(state_dir, config_path);
+    let mut workflow =
+        symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, &env.repo)
+            .expect("connect")
+            .with_repository("project-isolation-b", &env.repo_b);
+    let a_dispatch = workflow.start_demo().expect("lane A start");
+    let b_leak_dispatch = workflow
+        .start_demo_lane(&b_leak_lane())
+        .expect("lane B (leak) start");
+    let _refused = workflow
+        .finish_demo_lane(&b_leak_lane(), &b_leak_dispatch)
+        .expect_err("the leak must refuse in generation 1");
+    workflow
+        .replace_lane_binding(&b_ok_lane(), "b-vault-ref")
+        .expect("binding replacement");
+    let b_dispatch = workflow
+        .start_followon_lane(&b_ok_lane(), false)
+        .expect("lane B (ok) start");
+    let a_cursor = workflow.read_journal().expect("journal A read");
+    let b_cursor = workflow
+        // Both lanes share project B; the lane choice only names the project.
+        .read_journal_lane(&b_ok_lane())
+        .expect("journal B read");
+    assert!(a_cursor > 0, "project A's evidence trail advanced");
+    assert!(b_cursor > 0, "project B's evidence trail advanced");
+    std::fs::write(
+        &positions_path,
+        serde_json::to_vec(&workflow.positions()).expect("serialize positions"),
+    )
+    .unwrap();
+    let state_dir_after_kill = daemon.kill9();
+
+    // Generation 2: a fresh daemon and a FRESH driver reconstructed from
+    // the serialized positions — no memory shared with the dead one.
+    let _daemon = Daemon::spawn(&state_dir_after_kill, config_path);
+    let restored: Vec<symbiote_client_sdk::JournalPosition> =
+        serde_json::from_slice(&std::fs::read(&positions_path).unwrap())
+            .expect("restore serialized positions");
+    // Both projects are tracked: a restore that lost either key would
+    // default that project's cursor to 0 and fail the exact-equality
+    // asserts below — this pins the file's SHAPE too.
+    assert_eq!(restored.len(), 2, "one position per tracked project");
+    let mut workflow =
+        symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, &env.repo)
+            .expect("connect")
+            .with_repository("project-isolation-b", &env.repo_b)
+            .with_positions(restored);
+    let project_a = symbiote_domain::ProjectId::new("staffing-demo").unwrap();
+    let project_b = symbiote_domain::ProjectId::new("project-isolation-b").unwrap();
+    assert_eq!(
+        workflow.journal_position(&project_a).0,
+        a_cursor,
+        "project A's cursor must be restored exactly"
+    );
+    assert_eq!(
+        workflow.journal_position(&project_b).0,
+        b_cursor,
+        "project B's cursor must be restored exactly"
+    );
+    // Both lanes finish on the restarted daemon, reports still scoped.
+    let a = workflow
+        .finish_demo(&a_dispatch)
+        .expect("lane A after restart");
+    assert_eq!(a.task_state, "completion_requested");
+    assert_eq!(
+        a.report.as_deref(),
+        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+    );
+    let b = workflow
+        .finish_demo_lane(&b_ok_lane(), &b_dispatch)
+        .expect("lane B after restart");
+    assert_eq!(b.task_state, "completion_requested");
+    // Both native lanes read the ONE global fixture factory, so the
+    // report TEXTS are equal by fixture design — that is not leakage.
+    // What proves the projects' work does not cross is the per-task
+    // journal filter above and the distinct worktrees the runs produced
+    // in (asserted below, and in the Project-isolation test).
+    assert_eq!(
+        b.report.as_deref(),
+        Some("implemented the bounded change; produced.txt written by the sandboxed tool")
+    );
+    assert_ne!(a.worktree.worktree, b.worktree.worktree);
 }
