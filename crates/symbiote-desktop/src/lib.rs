@@ -3,13 +3,110 @@
 //! they expose is the controller's, which is proven against a real
 //! daemon in headless tests. The UI never sees secrets, daemon state
 //! internals, or anything but the sequencer's results.
+//!
+//! The Preview window is the untrusted surface: it renders worker
+//! output as inert text and carries NO Tauri IPC (it is named in no
+//! capability file), so worker content can never invoke the owner's
+//! commands or reach the local-owner policy.
 pub mod controller;
 
 use controller::{DesktopController, DesktopError, DesktopPaths};
 use std::{path::PathBuf, sync::Mutex};
+use tauri::Manager;
 
 /// The managed controller. `None` until the operator begins a session.
 struct Session(Mutex<Option<DesktopController>>);
+
+/// The Preview window's document, built by [`preview_document`] and
+/// served through the `preview://` custom protocol. Worker output is
+/// UNTRUSTED: the document is fully HTML-escaped, script-free, and
+/// bound to `default-src 'none'`, and the window has no Tauri IPC.
+struct PreviewDocument(Mutex<String>);
+
+/// Poison-proof Preview lock: the document is a self-contained string
+/// rebuilt wholesale on every open, so recovering from a poison cannot
+/// surface a half-written value.
+fn preview_lock(document: &PreviewDocument) -> std::sync::MutexGuard<'_, String> {
+    document
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Builds the Preview document for a finished run. Every dynamic value
+/// is HTML-escaped and there is no script: worker content can only ever
+/// render as text, whatever it contains.
+fn preview_document(report: &str, worktree: &str, files: &[String]) -> String {
+    fn escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+    let mut files_html = String::new();
+    for file in files {
+        files_html.push_str("<li>");
+        files_html.push_str(&escape(file));
+        files_html.push_str("</li>");
+    }
+    let mut document = String::new();
+    document.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+    document.push_str("<meta charset=\"utf-8\">\n");
+    document
+        .push_str("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'\">\n");
+    document.push_str("<title>Symbiote — Preview (untrusted worker output)</title>\n");
+    document.push_str("<style>body{font-family:sans-serif;margin:1rem;background:#14151a;color:#e8e8e8}h1{font-size:1.1rem}pre{white-space:pre-wrap;border:1px solid #333;padding:.5rem}</style>\n");
+    document.push_str("</head>\n<body>\n");
+    document.push_str("<h1>Preview — untrusted worker output</h1>\n");
+    document.push_str("<p>This surface renders worker output as inert text. It has no application commands: worker content can never invoke the owner's operations, and no script or network fetch is permitted here.</p>\n");
+    document.push_str("<h2>Report</h2>\n<pre>");
+    document.push_str(&escape(report));
+    document.push_str("</pre>\n<h2>Worktree</h2>\n<pre>");
+    document.push_str(&escape(worktree));
+    document.push_str("</pre>\n<h2>Files produced (");
+    document.push_str(&files.len().to_string());
+    document.push_str(")</h2>\n<ul>\n");
+    document.push_str(&files_html);
+    document.push_str("</ul>\n</body>\n</html>\n");
+    document
+}
+
+/// Opens (or refreshes) the Preview window for the LAST finished run.
+/// The main window is the owner surface; this command hands the
+/// Preview nothing but worker output, and the output is escaped into
+/// an inert document by [`preview_document`].
+#[tauri::command]
+fn open_preview(
+    app: tauri::AppHandle,
+    report: String,
+    worktree: String,
+    files: Vec<String>,
+) -> Result<String, String> {
+    let document = preview_document(&report, &worktree, &files);
+    let state = app.state::<PreviewDocument>();
+    *preview_lock(&state) = document;
+    if let Some(window) = app.get_webview_window("preview") {
+        // The document is served from managed state: a reload picks the
+        // new content up. The reload navigation is owner-initiated; the
+        // document's CSP bound still applies to whatever loads.
+        window
+            .eval("location.reload()")
+            .map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok("preview updated".into());
+    }
+    let url = tauri::WebviewUrl::CustomProtocol(
+        tauri::Url::parse("preview://localhost/document").map_err(|error| error.to_string())?,
+    );
+    tauri::webview::WebviewWindowBuilder::new(&app, "preview", url)
+        .title("Symbiote — Preview (untrusted worker output)")
+        .inner_size(720.0, 520.0)
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok("preview opened".into())
+}
 
 /// Poison-proof session lock: a panicking command must not brick the
 /// whole session. Recovering the inner value after a poison is sound
@@ -125,14 +222,64 @@ fn stop_session(state: tauri::State<Session>) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(Session(Mutex::new(None)))
+        .manage(PreviewDocument(Mutex::new(String::new())))
+        // The Preview protocol serves the inert document built by
+        // [`preview_document`] and nothing else: no app assets, no
+        // filesystem paths, one header-bound CSP.
+        .register_uri_scheme_protocol("preview", |ctx, _request| {
+            let state = ctx.app_handle().state::<PreviewDocument>();
+            let body = preview_lock(&state).clone().into_bytes();
+            tauri::http::Response::builder()
+                .header("Content-Type", "text/html; charset=utf-8")
+                .header("Content-Security-Policy", "default-src 'none'")
+                .body(body)
+                .expect("the static preview response always builds")
+        })
         .invoke_handler(tauri::generate_handler![
             begin_session,
             start_demo,
             read_journal,
             finish_demo,
             journal_position,
-            stop_session
+            stop_session,
+            open_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Symbiote desktop shell");
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::preview_document;
+
+    /// Worker output is UNTRUSTED: a report containing markup must
+    /// render as text, never execute. Everything is escaped and the
+    /// document carries a deny-all CSP with no script.
+    #[test]
+    fn worker_content_renders_as_inert_text() {
+        let document = preview_document(
+            "<script>alert(1)</script> & <b>bold</b>",
+            "/tmp/worktree",
+            &[
+                "produced.txt".to_string(),
+                "<img src=x onerror=alert(2)>".to_string(),
+            ],
+        );
+        assert!(!document.contains("<script>"), "{document}");
+        assert!(!document.contains("<img"), "{document}");
+        assert!(document.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(document.contains("<li>&lt;img src=x onerror=alert(2)&gt;</li>"));
+        assert!(document.contains("default-src 'none'"));
+        assert!(!document.to_lowercase().contains("<script"));
+    }
+
+    /// The document's own structure must survive any input: the CSP and
+    /// the isolation statement are present for the empty case too.
+    #[test]
+    fn an_empty_outcome_still_carries_the_isolation_statement() {
+        let document = preview_document("", "", &[]);
+        assert!(document.contains("default-src 'none'"));
+        assert!(document.contains("no application commands"));
+        assert!(document.contains("Files produced (0)"));
+    }
 }
