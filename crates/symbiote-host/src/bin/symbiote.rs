@@ -288,17 +288,31 @@ impl std::error::Error for PolicyError {}
 /// refused rather than interpreted. A policy that cannot be honored is never
 /// silently downgraded to "no policy".
 fn load_policy(path: &Path) -> Result<Policy, PolicyError> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    // `symlink_metadata` so a symlink is refused rather than followed: the
-    // file that grants authority must be the file the operator inspected.
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| PolicyError::Unreadable)?;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    // `O_NOFOLLOW` and classify from the *opened handle*, the way the Host's
+    // own transport opens its lock file: the file that is validated is then
+    // the file that is read, so a path swapped for a symlink between a check
+    // and a read cannot slip a different document past this gate.
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(path)
+    {
+        Ok(file) => file,
+        // `ELOOP` means the final component is a symlink: a discipline
+        // failure, not a missing file.
+        Err(error) if error.raw_os_error() == Some(nix::libc::ELOOP) => {
+            return Err(PolicyError::Insecure);
+        }
+        Err(_) => return Err(PolicyError::Unreadable),
+    };
+    let metadata = file.metadata().map_err(|_| PolicyError::Unreadable)?;
     if !metadata.file_type().is_file()
         || metadata.uid() != nix::unistd::geteuid().as_raw()
         || metadata.permissions().mode() & 0o077 != 0
     {
         return Err(PolicyError::Insecure);
     }
-    let file = std::fs::File::open(path).map_err(|_| PolicyError::Unreadable)?;
     let mut bytes = Vec::new();
     (&file)
         .take(POLICY_LIMIT + 1)
