@@ -38,8 +38,31 @@ plausible shape.
   structure) — into uncommitted and untracked path lists. Rename/copy
   records carry their origin as the next NUL field; the destination is
   recorded and a missing origin is a truncated frame, not a skip. Paths
-  only, never content: content belongs to the diff commands, which remain
-  pending.
+  only, never content: reading content is `observe_run_diff`'s business
+  below, and it reads bounded PREVIEW material only.
+- `observe_run_diff` collects bounded diff evidence for a worktree whose
+  changed-path set is already known: the tracked unified diff, plus up to
+  32 untracked file content heads of at most 16 KiB each. It is TOTAL —
+  it never fails the caller. An oversized tracked diff degrades to the
+  `--stat` summary with `tracked_truncated`; every other tracked failure
+  (a non-UTF-8 patch, a `--stat` summary past the bound, a git refusal)
+  becomes a bracketed placeholder plus a `tracked_note` naming the
+  reason. An unborn HEAD is an empty tracked diff; a HEAD with nothing
+  reachable while other refs exist is a named refusal, not "nothing
+  changed". Untracked heads carry their own `truncated` flag and
+  `untracked_omitted` counts the paths the head cap left without one. A
+  byte bound cutting through a multi-byte character keeps the complete
+  character prefix instead of discarding the head as non-UTF-8, while a
+  genuinely invalid byte still yields `<non-utf8 content>`.
+- The status path list is an advertisement, not authority, so every read
+  re-checks it: non-relative paths (joining an absolute path REPLACES the
+  base), `..` components and the C-quoted porcelain form are refused; the
+  parent directory is canonicalized and must land inside the worktree, so
+  an intermediate symlinked directory cannot walk the read out of it; and
+  the final component is OPENED with `O_NOFOLLOW | O_NONBLOCK` and
+  classified from the opened handle's own metadata — there is no
+  check-then-open window, a symlinked final component is refused by the
+  kernel, and a FIFO is neither waited on nor read.
 
 All observations are advertisements — observed provenance, never
 authorization or proof of remote identity.
@@ -87,19 +110,26 @@ bytes, the seed bound is 64).
 
 ## Tests
 
-Seven tests cover the real binary against temporary repositories (branch,
-detached, unborn, changed/untracked separation, clean tree, real
-materialization with content verification, non-empty and missing-branch
-refusals) and scripted executors (exact invocation rooting and ordering,
-malformed output rejection per parser, refusal surfacing, output-bound
-constant contract).
+Tests run the real `git` binary against temporary repositories — HEAD
+classification (branch, detached, unborn), uncommitted/untracked
+separation including a clean tree, real worktree materialization, and the
+executor's 256 KiB output bound observed end to end. The run-diff tests
+cover tracked and untracked evidence, every size and omission degradation
+(`--stat` fallback, per-head `truncated`, `untracked_omitted`, a non-UTF-8
+placeholder, the complete-character prefix kept at a byte cut) and every
+path refusal (absolute, `..`, quoted porcelain form, symlinked final
+component, symlinked parent directory, FIFO). Scripted executors pin exact
+invocation rooting and ordering and malformed-output rejection per parser;
+`provision`'s tests cover materialization at the recorded base plus its
+moved-base and tampered-identity refusals.
 
 ## Honest non-claims
 
 Remotes, fetch/push, credential delegation, submodules/sparse checkout,
-status/diff/history normalization with exact provenance, safe multi-step
-transactions with recovery, and base-commit validation before dispatch
-all remain pending on #190. Network claim, scoped honestly: the crate
+full status/diff/history normalization with exact provenance (bounded
+preview diff evidence is implemented, normalization is not), safe
+multi-step transactions with recovery, and base-commit validation before
+dispatch all remain pending on #190. Network claim, scoped honestly: the crate
 sends no fetch/push/pull/clone command, but `checkout` executes
 repo-configured post-checkout hooks and smudge filters — a repo with
 git-lfs configured could reach its remote through the filter — so callers
