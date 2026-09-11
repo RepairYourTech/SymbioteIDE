@@ -75,6 +75,40 @@ fn preview_document(dispatch_id: &str, report: &str, worktree: &str, files: &[St
     document
 }
 
+/// The isolation self-attestation: an owner-owned constant, evaluated in
+/// the Preview window's own context after every page load. It attempts
+/// the read-only owner command `journal_position` FROM THE PREVIEW and
+/// reports the platform's verdict in the window title and the page body:
+/// the app ACL must REJECT it (the preview window is named in no
+/// capability). If the IPC plumbing is absent entirely, that is reported
+/// too. Worker content never reaches this eval — it is a constant of
+/// this binary — and the worker's own hostile markup is inert by
+/// construction (preview_document).
+const ISOLATION_PROBE: &str = r#"(function () {
+    var report = function (verdict) {
+        document.title = "Preview " + verdict;
+        var line = document.createElement("p");
+        line.textContent = "Isolation self-check: " + verdict;
+        document.body.appendChild(line);
+    };
+    try {
+        if (typeof window.__TAURI_INTERNALS__ === "undefined") {
+            report("OK: no IPC plumbing is present at all");
+            return;
+        }
+        window.__TAURI_INTERNALS__
+            .invoke("journal_position", {})
+            .then(function () {
+                report("FAILED: an app command was allowed from the preview window");
+            })
+            .catch(function (error) {
+                report("OK: app command rejected by the app ACL (" + (error && error.message ? error.message : error) + ")");
+            });
+    } catch (error) {
+        report("OK: no IPC plumbing is reachable (" + error + ")");
+    }
+})();"#;
+
 /// Opens (or refreshes) the Preview window for the LAST finished run.
 /// The main window is the owner surface; this command hands the
 /// Preview nothing but worker output, and the output is escaped into
@@ -108,6 +142,11 @@ fn open_preview(
     if tauri::webview::WebviewWindowBuilder::new(&app, "preview", url)
         .title("Symbiote — Preview (untrusted worker output)")
         .inner_size(720.0, 520.0)
+        .on_page_load(|window, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let _ = window.eval(ISOLATION_PROBE);
+            }
+        })
         .build()
         .is_err()
     {

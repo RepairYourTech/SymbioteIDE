@@ -1,0 +1,14 @@
+== FRAME 'Symbiote — Preview (untrusted worker output)' ==
+        [ATSPI_LABEL] Symbiote — Preview (untrusted worker output)
+            [ATSPI_HEADING] Preview — untrusted worker output
+            [ATSPI_PARAGRAPH] Run disp_staffing-task
+              [ATSPI_SECTION] disp_staffing-task
+            [ATSPI_PARAGRAPH] This surface renders worker output as inert text. It has no application commands: worker content can never invoke the owner's operations, and no script or network fetch is permitted here.
+            [ATSPI_HEADING] Report
+            [ATSPI_SECTION] implemented the bounded change; produced.txt written by the sandboxed tool <script>document.body.appendChild(document.createTextNode("WORKER_SCRIPT_EXECUTED"))</script><img src=x onerror="document.title='WORKER_IMG_ONERROR'"><b>bold markup</b>
+            [ATSPI_HEADING] Worktree
+            [ATSPI_SECTION] /tmp/symbiote-desktop-demo/worktrees/staffing-demo/st-c3664a298fb65755
+            [ATSPI_HEADING] Files produced (1)
+              [ATSPI_LIST_ITEM] ￼produced.txt
+                [ATSPI_TEXT] • 
+            [ATSPI_PARAGRAPH] Isolation self-check: OK: app command rejected by the app ACL (journal_position not allowed on window "preview", webview "preview", URL: local allowed on: [windows: "main", URL: local] referenced by: capability: default, permission: allow-journal-position)

@@ -34,6 +34,14 @@ pub const EXTERNAL_STREAM: &str = "external-stream";
 pub const EXTERNAL_ROLE: &str = "engineer-external";
 pub const EXTERNAL_OBJECTIVE: &str = "external-objective";
 
+/// The labeled fixture transport's report: deliberately HOSTILE markup
+/// (a script that would append an observable marker, an onerror image,
+/// bold tags) so every rendering surface — the desktop UI log, the
+/// Preview window, journal evidence — permanently proves that worker
+/// content renders as inert text. If the script ever EXECUTES anywhere,
+/// it appends the observable marker WORKER_SCRIPT_EXECUTED.
+pub const FIXTURE_REPORT: &str = "implemented the bounded change; produced.txt written by the sandboxed tool <script>document.body.appendChild(document.createTextNode(\"WORKER_SCRIPT_EXECUTED\"))</script><img src=x onerror=\"document.title='WORKER_IMG_ONERROR'\"><b>bold markup</b>";
+
 /// One project's full canonical identity for the demo flow. Every id is
 /// project-scoped at the daemon, so two lanes may reuse the same role,
 /// provider, and model NAMES while remaining entirely separate
