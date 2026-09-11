@@ -143,6 +143,16 @@ regular expression engine. Any conforming draft 2020-12 validator can consume
 them too; the subset is a property of this repository's test, not of the
 schemas.
 
+Two boundaries are named rather than hidden. JSON Schema's `integer` is defined
+on the mathematical value, so a conforming validator accepts
+`"expires_at": 1.0`; the loader reads a `u64` and refuses a non-integer lexical
+form, so the CLI is *stricter* there than the schema — a strictness no schema
+can express. And the in-repo checker compares `minimum`/`maximum` exactly for
+representable integers but falls back to `f64` above that, so it cannot
+distinguish a value just past `u64::MAX` from `u64::MAX` itself — the fixture's
+`maximum` is still correct, and an arbitrary-precision validator enforces it.
+The agreement test covers the boundaries both sides can represent.
+
 ## Verification and remaining acceptance
 
 `cargo test -p symbiote-host` runs both halves. The unit tests read the fixture

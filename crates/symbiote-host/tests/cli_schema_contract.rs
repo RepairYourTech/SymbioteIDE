@@ -528,6 +528,42 @@ fn a_real_unreachable_envelope_conforms() {
 }
 
 #[test]
+fn an_empty_command_id_cannot_produce_an_envelope_the_fixture_rejects() {
+    // The fixture requires `command_id` to be non-empty. The negative controls
+    // only show that the fixture *rejects* such an envelope; nothing else pins
+    // that the binary refuses to emit one, which is how a schema claim could
+    // exceed the implementation unnoticed.
+    let schema = fixture(ENVELOPE_SCHEMA);
+    let checker = bounded::Checker::new(&schema);
+    assert_eq!(schema["properties"]["command_id"]["minLength"], 1);
+
+    let (output, frame) = run_cli(&["--command-id", "", "shutdown", "--json"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an empty idempotency key is a usage failure, not an authorization refusal"
+    );
+    assert!(frame.is_none(), "nothing may be sent");
+    assert!(
+        output.stdout.is_empty(),
+        "a usage failure prints no envelope: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("command-id"));
+
+    // The envelope this invocation used to print is exactly the one the fixture
+    // rejects, so the refusal is what keeps the two in agreement.
+    let forbidden = serde_json::json!({
+        "schema": "symbiote.cli/v1",
+        "command": "shutdown",
+        "command_id": "",
+        "ok": false,
+        "error": { "code": "authorization_required", "message": "x" },
+    });
+    assert!(checker.validate(&forbidden).is_err());
+}
+
+#[test]
 fn the_policy_fixture_and_the_cli_classify_documents_identically() {
     let schema = fixture(POLICY_SCHEMA);
     let checker = bounded::Checker::new(&schema);

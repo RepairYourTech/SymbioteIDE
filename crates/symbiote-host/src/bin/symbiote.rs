@@ -746,7 +746,20 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
                     .ok_or_else(|| Usage(format!("{token} needs a value")))?;
                 match token.as_str() {
                     "--state-dir" => options.state_dir = Some(PathBuf::from(value)),
-                    "--command-id" => options.command_id_override = Some(value),
+                    "--command-id" => {
+                        // An empty idempotency key is refused rather than
+                        // carried: every empty-id invocation would collide with
+                        // every other as a replay, and the published envelope
+                        // schema requires `command_id` to be non-empty, so
+                        // accepting it would let the CLI print an envelope its
+                        // own contract rejects.
+                        if value.is_empty() {
+                            return Err(Usage(
+                                "--command-id must be a non-empty idempotency key".into(),
+                            ));
+                        }
+                        options.command_id_override = Some(value);
+                    }
                     _ => options.policy = Some(PathBuf::from(value)),
                 }
             }
@@ -1349,6 +1362,9 @@ mod tests {
             envelope["required"],
             serde_json::json!(["schema", "command", "command_id", "ok"])
         );
+        // The non-empty `command_id` the fixture requires is enforced by the
+        // parser, not merely documented here: see the empty-override test below.
+        assert_eq!(envelope["properties"]["command_id"]["minLength"], 1);
         assert_eq!(envelope["oneOf"].as_array().unwrap().len(), 2);
         assert_eq!(
             envelope["$defs"]["error"]["required"],
@@ -1410,6 +1426,24 @@ mod tests {
         assert_ne!(first, second);
         options.command_id_override = Some("retry-1".into());
         assert_eq!(minted_command_id(&options, "health"), "retry-1");
+    }
+
+    #[test]
+    fn an_empty_command_id_override_is_refused() {
+        // The published envelope schema requires a non-empty `command_id`, so
+        // the parser must not carry an empty override through to an envelope:
+        // that would make the CLI violate its own contract, and an empty
+        // idempotency key makes every such invocation a replay of the last.
+        let empty = parse_options(&[
+            "--command-id".to_string(),
+            String::new(),
+            "health".to_string(),
+        ]);
+        assert!(matches!(empty, Err(Usage(ref message)) if message.contains("command-id")));
+        // A non-empty override is still honored, and the flag still works after
+        // the command, so the refusal is only about the empty value.
+        let after = options(&["health", "--command-id", "retry-1"]);
+        assert_eq!(after.command_id_override.as_deref(), Some("retry-1"));
     }
 
     const SHUTDOWN_ONLY: &str = r#"{"schema":"symbiote.cli-policy/v1","authorize":["shutdown"]}"#;
