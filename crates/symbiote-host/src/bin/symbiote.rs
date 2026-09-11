@@ -37,8 +37,8 @@ use std::process::exit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use symbiote_host::cli_schema::{
-    CLI_SCHEMA, POLICY_SCHEMA, Risk, dangerous_kinds, known_risk_of_kind, published_schemas,
-    risk_of_kind, write_schemas,
+    CLI_SCHEMA, POLICY_SCHEMA, Risk, dangerous_kinds, document_text, known_risk_of_kind,
+    published_schemas, risk_of_kind, schema_drift, selected_schemas, selectors, write_schemas,
 };
 
 /// Exit codes, stable for scripts.
@@ -553,21 +553,25 @@ fn print_help() {
         "usage: symbiote [--state-dir DIR] [--command-id ID] [--policy FILE] [--json] [--yes] <command> [args...]"
     );
     println!(
-        "       symbiote help   (--command-id overrides the minted id; same id + same\n                        intent replays a lost response instead of re-executing)"
+        "       symbiote schema [envelope|policy] [--write DIR | --check DIR]\n       symbiote help   (--command-id overrides the minted id; same id + same\n                        intent replays a lost response instead of re-executing)"
     );
     println!();
     println!("options:");
     println!("  --state-dir DIR   the private directory symbioted runs with");
     println!("  --command-id ID   idempotency key for a retried command");
     println!("  --policy FILE     pre-authorize dangerous operation kinds for noninteractive runs");
-    println!("  --write DIR       with `schema`, regenerate the fixture files in DIR");
+    println!("  --write DIR       with `schema`, regenerate the selection into DIR");
+    println!(
+        "  --check DIR       with `schema`, report how DIR differs from the emitted selection"
+    );
+    println!("  --help, -h        print this table and exit 0, connecting to nothing");
     println!("  --json            one machine-readable envelope per invocation on stdout");
     println!("  --yes             explicit authorization for this one dangerous command");
     println!();
     println!("flags are per command: daemon commands honor --state-dir, --command-id,");
-    println!("--policy, --json and --yes; `schema` honors only --write; `help` honors none. A");
-    println!("flag a command cannot honor is a usage error that names it, never silently");
-    println!("dropped.");
+    println!("--policy, --json and --yes; `schema` honors --write and --check; `help` honors");
+    println!("none; `--help`/`-h` is universal. A flag a command cannot honor is a usage");
+    println!("error that names it, never silently dropped.");
     println!();
     println!("responses are the daemon's JSON (pretty-printed). Exit codes:");
     println!("0 success, 1 usage/connection failure, 2 daemon-refused command,");
@@ -616,6 +620,12 @@ struct Options {
     /// With `schema`, the directory to regenerate the fixture files into
     /// instead of printing them.
     write: Option<PathBuf>,
+    /// With `schema`, the directory to compare against the emitted documents;
+    /// reads only, so it is the non-mutating half of `--write`.
+    check: Option<PathBuf>,
+    /// `--help`/`-h`: print the command table and answer no daemon, whatever
+    /// command accompanied it.
+    help: bool,
     json: bool,
     yes: bool,
     command: Option<String>,
@@ -633,6 +643,8 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
         command_id_override: None,
         policy: None,
         write: None,
+        check: None,
+        help: false,
         json: false,
         yes: false,
         command: None,
@@ -650,9 +662,10 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
         }
         match token.as_str() {
             "--" => only_positional = true,
+            "-h" | "--help" => options.help = true,
             "--json" => options.json = true,
             "--yes" => options.yes = true,
-            "--state-dir" | "--command-id" | "--policy" | "--write" => {
+            "--state-dir" | "--command-id" | "--policy" | "--write" | "--check" => {
                 index += 1;
                 let value = arguments
                     .get(index)
@@ -661,6 +674,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
                 match token.as_str() {
                     "--state-dir" => options.state_dir = Some(PathBuf::from(value)),
                     "--write" => options.write = Some(PathBuf::from(value)),
+                    "--check" => options.check = Some(PathBuf::from(value)),
                     "--command-id" => {
                         // An empty idempotency key is refused rather than
                         // carried: every empty-id invocation would collide with
@@ -698,6 +712,8 @@ struct Flags {
     command_id: bool,
     policy: bool,
     write: bool,
+    check: bool,
+    help: bool,
     json: bool,
     yes: bool,
 }
@@ -711,8 +727,13 @@ impl Flags {
             (self.command_id && !honored.command_id, "--command-id"),
             (self.policy && !honored.policy, "--policy"),
             (self.write && !honored.write, "--write"),
+            (self.check && !honored.check, "--check"),
             (self.json && !honored.json, "--json"),
             (self.yes && !honored.yes, "--yes"),
+            // Every command grants `--help`, so this never fires; it is
+            // listed so a future arm that forgot the grant is caught here
+            // rather than by a silently dropped `--help`.
+            (self.help && !honored.help, "--help"),
         ]
         .into_iter()
         .filter(|(supplied, _)| *supplied)
@@ -728,6 +749,8 @@ impl Options {
             command_id: self.command_id_override.is_some(),
             policy: self.policy.is_some(),
             write: self.write.is_some(),
+            check: self.check.is_some(),
+            help: self.help,
             json: self.json,
             yes: self.yes,
         }
@@ -739,19 +762,27 @@ impl Options {
 /// over the socket, so all five daemon-facing flags apply to each of them
 /// (`--policy` is consulted only for a dangerous operation and `--yes` only
 /// authorizes one, but both are valid flags on any daemon command). The local
-/// commands honor only what they use: `schema` publishes documents, so
-/// `--write`; `help` renders the command table, so nothing.
+/// commands honor only what they use: `schema` publishes and compares
+/// documents, so `--write` and `--check`; `help` renders the command table, so
+/// nothing. `--help`/`-h` is the one universal flag, honored by every command
+/// (and by no command), because it is answered from the table alone.
 fn honored_flags(command: &str) -> Flags {
     match command {
         "schema" => Flags {
             write: true,
+            check: true,
+            help: true,
             ..Flags::default()
         },
-        "help" | "--help" => Flags::default(),
+        "help" => Flags {
+            help: true,
+            ..Flags::default()
+        },
         _ => Flags {
             state_dir: true,
             command_id: true,
             policy: true,
+            help: true,
             json: true,
             yes: true,
             ..Flags::default()
@@ -806,11 +837,76 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
     run_with(std::env::args().skip(1).collect())
 }
 
+/// The local `schema` command. An optional selector names one published
+/// document (`envelope`, `policy`) or, absent, both. `--write DIR` regenerates
+/// the selected files; `--check DIR` reports how the selected files diverge
+/// from what this binary emits and writes nothing, so it is the local half of
+/// the CI drift step. Neither touches the daemon.
+fn run_schema(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
+    let selector = match options.args.as_slice() {
+        [] => None,
+        [only] => Some(only.as_str()),
+        _ => {
+            eprintln!(
+                "symbiote: `schema` takes at most one of {}; try `symbiote help`",
+                selectors().join(" or ")
+            );
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if options.write.is_some() && options.check.is_some() {
+        eprintln!("symbiote: `schema` accepts either --write DIR or --check DIR, not both");
+        return Ok(EXIT_USAGE);
+    }
+    let selected = match selected_schemas(selector) {
+        Ok(selected) => selected,
+        Err(error) => {
+            eprintln!("symbiote: {error}; try `symbiote help`");
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if let Some(directory) = &options.check {
+        let drift = match schema_drift(directory, &selected) {
+            Ok(drift) => drift,
+            Err(error) => {
+                eprintln!("symbiote: {error}");
+                return Ok(EXIT_USAGE);
+            }
+        };
+        if drift.is_empty() {
+            return Ok(EXIT_OK);
+        }
+        for entry in &drift {
+            eprintln!("symbiote: {} {}", entry.file_name, entry.detail);
+        }
+        eprintln!(
+            "symbiote: {} document(s) do not match this binary; run `symbiote schema --write DIR` to regenerate",
+            drift.len()
+        );
+        return Ok(EXIT_USAGE);
+    }
+    if let Some(directory) = &options.write {
+        write_schemas(directory, &selected)?;
+        return Ok(EXIT_OK);
+    }
+    match selector {
+        // The bare command prints one object keyed by schema identity.
+        None => println!("{}", serde_json::to_string_pretty(&published_schemas())?),
+        // A selector prints that document's canonical bytes: exactly what
+        // `schema --write` would put in its file.
+        Some(_) => print!("{}", document_text(selected[0])?),
+    }
+    Ok(EXIT_OK)
+}
+
 fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     let options = parse_options(&arguments)?;
     let Some(name) = options.command.clone() else {
+        // A bare invocation is a usage error; `--help` alone is how the table
+        // is asked for, and that succeeds. Neither reads a state directory or
+        // opens a socket.
         print_help();
-        return Ok(EXIT_USAGE);
+        return Ok(if options.help { EXIT_OK } else { EXIT_USAGE });
     };
     // A flag a command cannot honor is a usage error that names it, never a
     // silent no-op. This is the one place flag applicability is decided, for
@@ -824,23 +920,19 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
         );
         return Ok(EXIT_USAGE);
     }
-    if name == "help" || name == "--help" {
+    // `--help`/`-h` is universal: the table is printed and no daemon is
+    // consulted, whatever command accompanied it. It is answered AFTER the
+    // applicability check, so a contradictory flag is named rather than
+    // silently dropped by the help request itself.
+    if options.help || name == "help" {
         print_help();
         return Ok(EXIT_OK);
     }
-    // `schema` is local: it emits this binary's own contract and needs no
-    // daemon, no state directory and no authorization, so it is answered
-    // before any of that is consulted.
+    // `schema` is local: it emits and compares this binary's own contract and
+    // needs no daemon, no state directory and no authorization, so it is
+    // answered before any of that is consulted.
     if name == "schema" {
-        if !options.args.is_empty() {
-            eprintln!("symbiote: schema takes no arguments; try `symbiote help`");
-            return Ok(EXIT_USAGE);
-        }
-        match &options.write {
-            Some(directory) => write_schemas(directory)?,
-            None => println!("{}", serde_json::to_string_pretty(&published_schemas())?),
-        }
-        return Ok(EXIT_OK);
+        return run_schema(&options);
     }
     let Some(command) = commands().into_iter().find(|c| c.name == name) else {
         eprintln!("symbiote: unknown command {name}; try `symbiote help`");
@@ -1305,19 +1397,25 @@ mod tests {
     fn flag_applicability_is_declared_per_command() {
         // One table decides which flags each command can honor, so adding a
         // local command means naming its flags there rather than sprinkling
-        // `if` checks through the handler. `schema` honors `--write` alone,
-        // `help` honors nothing, and daemon commands honor the daemon flags.
-        let schema = options(&["--write", "/tmp/s", "schema"]);
-        assert!(
-            schema
-                .supplied()
-                .unsuited_for(honored_flags("schema"))
-                .is_empty()
-        );
+        // `if` checks through the handler. `schema` honors `--write` and
+        // `--check`, `help` honors nothing, and daemon commands honor the
+        // daemon flags. `--help`/`-h` is honored everywhere.
+        for arguments in [
+            vec!["--write", "/tmp/s", "schema"],
+            vec!["--check", "/tmp/s", "schema"],
+            vec!["--write", "/tmp/s", "--check", "/tmp/s", "schema"],
+        ] {
+            let supplied = options(&arguments).supplied();
+            assert!(
+                supplied.unsuited_for(honored_flags("schema")).is_empty(),
+                "{arguments:?}"
+            );
+        }
         for (arguments, named) in [
             (vec!["--json", "schema"], "--json"),
             (vec!["--yes", "help"], "--yes"),
             (vec!["--write", "/tmp/s", "health"], "--write"),
+            (vec!["--check", "/tmp/s", "health"], "--check"),
         ] {
             let supplied = options(&arguments).supplied();
             let command = arguments.last().unwrap();
@@ -1333,6 +1431,43 @@ mod tests {
                 .supplied()
                 .unsuited_for(honored_flags("shutdown"))
                 .is_empty()
+        );
+        // `--help` is universal: no command reports it unsuited.
+        for command in ["schema", "help", "shutdown", "bogus"] {
+            assert!(
+                options(&["--help", command])
+                    .supplied()
+                    .unsuited_for(honored_flags(command))
+                    .is_empty(),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_is_a_universal_flag_that_connects_to_nothing() {
+        // `--help`/`-h` are flags, not commands, and are answered from the
+        // table alone: alone, or with any command, they print the table and
+        // exit 0 without a state directory or a socket. This fails against
+        // the earlier parser, which rejected `--help` as an unknown option and
+        // treated `-h` as an unknown command.
+        for arguments in [
+            vec!["--help"],
+            vec!["-h"],
+            vec!["--help", "shutdown"],
+            vec!["shutdown", "--help"],
+            vec!["schema", "--help"],
+            vec!["health", "-h"],
+        ] {
+            let code = run_with(arguments.iter().map(|s| s.to_string()).collect()).unwrap();
+            assert_eq!(code, EXIT_OK, "{arguments:?}");
+        }
+        // With no command and no `--help`, the table is still a usage error.
+        assert_eq!(run_with(Vec::new()).unwrap(), EXIT_USAGE);
+        // A contradictory flag is named rather than dropped by `--help`.
+        assert_eq!(
+            run_with(vec!["--help".into(), "--json".into(), "help".into()]).unwrap(),
+            EXIT_USAGE
         );
     }
 

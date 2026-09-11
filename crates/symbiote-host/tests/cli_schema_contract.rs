@@ -63,6 +63,18 @@ fn run_without_daemon(arguments: &[&str]) -> Output {
     output
 }
 
+/// Runs the CLI with no daemon and no `--state-dir`. The local commands
+/// (`schema`, `help`, `--help`) must answer before any transport is consulted,
+/// so a successful exit here proves they needed neither.
+fn run_bare(arguments: &[&str]) -> Output {
+    Process::new(CLI)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .env_remove("SYMBIOTE_CLI_POLICY")
+        .output()
+        .expect("the CLI binary runs")
+}
+
 /// A deliberately small, **closed** JSON Schema checker.
 ///
 /// Closed is the point: a keyword this does not implement is an error rather
@@ -465,6 +477,174 @@ fn schema_write_regenerates_the_committed_fixtures_byte_for_byte() {
         );
     }
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn schema_selects_one_published_document_byte_for_byte() {
+    // `schema <selector>` prints exactly the committed fixture for that one
+    // document, so a caller fetches a single schema without parsing the object
+    // the bare command prints. This fails against the earlier behavior, where
+    // every argument to `schema` was a usage error.
+    for (selector, name) in [("envelope", ENVELOPE_SCHEMA), ("policy", POLICY_SCHEMA)] {
+        let output = run_bare(&["schema", selector]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}: {}",
+            selector,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let committed = std::fs::read_to_string(fixture_path(name)).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            committed,
+            "`schema {selector}` must print {name} verbatim"
+        );
+    }
+    // An unknown selector names the ones that exist; two selectors are refused.
+    let unknown = run_bare(&["schema", "bogus"]);
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(
+        unknown.stdout.is_empty(),
+        "a usage failure prints no document"
+    );
+    let stderr = String::from_utf8_lossy(&unknown.stderr);
+    assert!(
+        stderr.contains("bogus") && stderr.contains("envelope") && stderr.contains("policy"),
+        "{stderr}"
+    );
+    let two = run_bare(&["schema", "envelope", "policy"]);
+    assert_eq!(two.status.code(), Some(1));
+    assert!(two.stdout.is_empty());
+}
+
+#[test]
+fn schema_check_is_a_non_mutating_gate_that_names_the_difference() {
+    // The committed fixtures are exactly what this binary emits, so checking
+    // them is clean and silent.
+    let committed = symbiote_host::cli_schema::fixture_directory();
+    let clean = run_bare(&["schema", "--check", committed.to_str().unwrap()]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert!(clean.stdout.is_empty(), "a clean check prints nothing");
+
+    let directory = unique_directory();
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.to_str().unwrap();
+    assert_eq!(
+        run_bare(&["schema", "--write", path]).status.code(),
+        Some(0)
+    );
+    // A hand-edited document is named, with the line where it diverges.
+    let envelope = directory.join(ENVELOPE_SCHEMA);
+    let text = std::fs::read_to_string(&envelope).unwrap();
+    std::fs::write(
+        &envelope,
+        text.replacen("\"minLength\": 1", "\"minLength\": 2", 1),
+    )
+    .unwrap();
+    let drifted = run_bare(&["schema", "--check", path]);
+    assert_eq!(drifted.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&drifted.stderr);
+    assert!(
+        stderr.contains(ENVELOPE_SCHEMA) && stderr.contains("differs at line"),
+        "{stderr}"
+    );
+    // The gate must not write: the edited bytes are still there.
+    assert!(
+        std::fs::read_to_string(&envelope)
+            .unwrap()
+            .contains("\"minLength\": 2"),
+        "a check must not rewrite the file"
+    );
+    // A selector narrows the check: only the envelope drifted, so the policy
+    // alone is clean.
+    let policy_only = run_bare(&["schema", "policy", "--check", path]);
+    assert_eq!(
+        policy_only.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&policy_only.stderr)
+    );
+    // A missing document is reported as missing, and checked-not-recreated.
+    std::fs::remove_file(&envelope).unwrap();
+    let missing = run_bare(&["schema", "--check", path]);
+    assert_eq!(missing.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        stderr.contains(ENVELOPE_SCHEMA) && stderr.contains("is missing"),
+        "{stderr}"
+    );
+    assert!(!envelope.exists(), "a check must not recreate a document");
+    // `--write` and `--check` are alternatives, not a combined action.
+    let both = run_bare(&["schema", "--write", path, "--check", path]);
+    assert_eq!(both.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&both.stderr).contains("--check"));
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn check_is_scoped_to_the_schema_command() {
+    // `--check` compares published documents; on any other command it is a
+    // usage error that names it, and the daemon sees no frame.
+    let (output, frame) = run_cli(&["--check", "/tmp", "health"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        frame.is_none(),
+        "a misused --check must not reach the daemon"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not accept") && stderr.contains("--check"),
+        "the refusal must be the applicability rule, not a generic parse error: {stderr}"
+    );
+}
+
+#[test]
+fn help_flag_succeeds_from_any_command_without_connecting() {
+    // `--help`/`-h` are universal flags answered from the command table alone:
+    // alone, or with any command. This fails against the earlier parser, which
+    // rejected `--help` as an unknown option and treated `-h` as an unknown
+    // command.
+    for arguments in [
+        vec!["--help"],
+        vec!["-h"],
+        vec!["help", "--help"],
+        vec!["schema", "--help"],
+        vec!["--help", "schema"],
+    ] {
+        let output = run_bare(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("commands:"),
+            "{arguments:?} must print the table"
+        );
+    }
+    // With a state directory and a live fake daemon, `--help` still sends
+    // nothing: it is answered before transport.
+    let (output, frame) = run_cli(&["--help", "shutdown"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(frame.is_none(), "`--help` must not reach the daemon");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("commands:"));
 }
 
 #[test]

@@ -33,14 +33,18 @@ refusal vs transport failure vs a missing authorization.
 `help` lists the command table, marking dangerous commands and naming the
 dangerous kinds a policy may pre-authorize. `help` is answered locally and
 honors no flags; `schema` is the other local command: it prints the binary's
-published envelope and policy JSON Schemas (see [cli.md](cli.md)) — or
-regenerates the committed fixtures with `--write DIR` — and needs no daemon,
-no state directory and no authorization. `--write` is valid only on `schema`,
-and `--json` is not valid on `schema` or `help` (schema's output is
+published envelope and policy JSON Schemas (see [cli.md](cli.md)) — one of
+them alone with a selector, `envelope` or `policy` — or regenerates the
+committed fixtures with `--write DIR`, or reports how a directory diverges
+from them without writing with `--check DIR`. It needs no daemon, no state
+directory and no authorization. `--write` and `--check` are valid only on
+`schema`, and `--json` is not valid on `schema` or `help` (schema's output is
 machine-readable JSON, but not the envelope). Every flag is declared per
 command: the daemon commands honor the daemon-facing flags, `schema` honors
-`--write` alone, and `help` honors nothing — a flag a command cannot honor is
-a usage error that names it, never silently dropped. Identity
+`--write` and `--check`, and `help` honors nothing; `--help`/`-h` is universal
+and is answered from the command table alone, connecting to nothing. A flag a
+command cannot honor is a usage error that names it, never silently dropped.
+Identity
 arguments are passed as plain strings and typed on the wire; no caller-supplied
 actor identities exist. The interactive/headless coding-agent experience is
 #467's surface and shares this client plumbing; this binary carries no model
@@ -112,7 +116,8 @@ Flags are recognized before or after the command (`symbiote shutdown
 stays expressible, and an unknown flag is a usage error rather than a
 silently-dropped token. `--json` prints one machine-readable envelope per
 invocation on stdout instead of pretty output (the local `schema` and `help`
-commands do not accept it; see [cli.md](cli.md)): `schema` is the versioned
+commands do not accept it, and `--help`/`-h` is answered from the table; see
+[cli.md](cli.md)): `schema` is the versioned
 `symbiote.cli/v1`, alongside `command`, `command_id`, `ok`, and either
 `result` (the daemon's own body, unmodified) or `error.code` — the daemon's
 error code, or the CLI's own `authorization_required` (nothing was sent),
