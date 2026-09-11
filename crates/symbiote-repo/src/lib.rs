@@ -305,15 +305,27 @@ pub const MAX_UNTRACKED_FILES: usize = 32;
 /// `--stat` summary with an explicit flag, an oversized untracked file is
 /// truncated with an explicit flag, and symlinked or non-regular paths
 /// are never read (a bracketed placeholder names them instead).
+///
+/// Collection never fails the caller: a tracked diff that cannot be
+/// observed degrades to a bracketed placeholder plus a
+/// [`RunDiff::tracked_note`], and the untracked heads are collected
+/// regardless. Losing every untracked head because one tracked byte was
+/// not UTF-8 would make the preview less honest, not safer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RunDiff {
-    /// The tracked unified diff (`git diff HEAD`), or the degraded
-    /// `--stat` summary when the full diff exceeded the output bound.
+    /// The tracked unified diff (`git diff HEAD`), the degraded `--stat`
+    /// summary when the full diff exceeded the output bound, or a
+    /// bracketed placeholder when the diff could not be observed at all
+    /// (see [`RunDiff::tracked_note`]).
     pub tracked: String,
     /// True when `tracked` is the degraded `--stat` summary, not the
     /// full diff.
     pub tracked_truncated: bool,
+    /// Why `tracked` is degraded — empty when it is the full diff. The
+    /// `--stat` degradation is described by [`RunDiff::tracked_truncated`]
+    /// instead, so the two never disagree.
+    pub tracked_note: String,
     /// Untracked paths (at most [`MAX_UNTRACKED_FILES`], in status
     /// order) with bounded content heads.
     pub untracked: Vec<UntrackedContent>,
@@ -338,80 +350,194 @@ pub struct UntrackedContent {
 }
 
 /// Observes the bounded diff evidence for a worktree whose changed-path
-/// set is already known (from [`observe_status`]).
+/// set is already known (from [`observe_status`]). Total by design: every
+/// degradation is recorded in the returned [`RunDiff`] rather than
+/// returned as an error, so one unobservable tracked diff cannot cost the
+/// caller its untracked evidence.
 pub fn observe_run_diff(
     git: &mut impl GitExecutor,
     worktree: &Path,
     status: &WorktreeStatus,
-) -> Result<RunDiff, GitError> {
+) -> RunDiff {
     let mut diff = RunDiff::default();
-    match git.run(worktree, &["diff", "HEAD", "--"]) {
-        Ok(bytes) => {
-            diff.tracked = std::str::from_utf8(&bytes)
-                .map_err(|_| GitError::MalformedOutput)?
-                .to_owned();
-        }
-        Err(GitError::OutputTooLarge) => {
-            // Degrade honestly: the summary names what changed, the flag
-            // says the full diff did not fit the bound.
-            diff.tracked_truncated = true;
-            let summary = git.run(worktree, &["diff", "HEAD", "--stat"])?;
-            diff.tracked = std::str::from_utf8(&summary)
-                .map_err(|_| GitError::MalformedOutput)?
-                .to_owned();
-        }
-        // An unborn HEAD has nothing to diff against: that is not a
-        // refusal for preview evidence — the tracked diff is empty. A
-        // real git refusal still surfaces.
-        Err(GitError::GitRefused) => {
-            if !head_is_unborn(git, worktree)? {
-                return Err(GitError::GitRefused);
-            }
-        }
-        Err(error) => return Err(error),
-    }
+    // Untracked heads are filesystem reads only, so they are collected
+    // first and survive any tracked-side failure.
     for path in status.untracked.iter().take(MAX_UNTRACKED_FILES) {
         diff.untracked.push(untracked_content(worktree, path));
     }
     diff.untracked_omitted = status.untracked.len().saturating_sub(MAX_UNTRACKED_FILES);
-    Ok(diff)
+    observe_tracked_diff(git, worktree, &mut diff);
+    diff
 }
 
-/// `rev-parse --verify -q HEAD` fails exactly on an unborn branch.
+/// Fills `diff.tracked`, or records why it could not be filled. Git's
+/// `diff` output is only non-UTF-8 when the changed content is (a binary
+/// blob, a latin-1 source file): that is a fact about the run, so it is
+/// named rather than dropped.
+fn observe_tracked_diff(git: &mut impl GitExecutor, worktree: &Path, diff: &mut RunDiff) {
+    match git.run(worktree, &["diff", "HEAD", "--"]) {
+        Ok(bytes) => match std::str::from_utf8(&bytes) {
+            Ok(text) => diff.tracked = text.to_owned(),
+            Err(_) => degrade_tracked(
+                diff,
+                "<tracked diff is not UTF-8>",
+                "the tracked diff is not UTF-8",
+            ),
+        },
+        Err(GitError::OutputTooLarge) => {
+            // Degrade honestly: the summary names what changed, the flag
+            // says the full diff did not fit the bound.
+            match git.run(worktree, &["diff", "HEAD", "--stat"]) {
+                Ok(summary) => match std::str::from_utf8(&summary) {
+                    Ok(text) => {
+                        diff.tracked = text.to_owned();
+                        diff.tracked_truncated = true;
+                    }
+                    Err(_) => degrade_tracked(
+                        diff,
+                        "<the --stat summary is not UTF-8>",
+                        "the --stat summary is not UTF-8",
+                    ),
+                },
+                Err(error) => degrade_tracked(
+                    diff,
+                    "<the --stat summary also failed>",
+                    &format!(
+                        "the --stat summary also failed after the full diff exceeded the bound: {error}"
+                    ),
+                ),
+            }
+        }
+        // An unborn HEAD has nothing to diff against: that is not a
+        // refusal for preview evidence — the tracked diff is empty. Every
+        // other refusal is named.
+        Err(GitError::GitRefused) => match head_is_unborn(git, worktree) {
+            Ok(true) => {}
+            Ok(false) => degrade_tracked(
+                diff,
+                "<git refused the tracked diff>",
+                "git refused the tracked diff",
+            ),
+            Err(error) => degrade_tracked(
+                diff,
+                "<git refused the tracked diff>",
+                &format!("git refused the tracked diff: {error}"),
+            ),
+        },
+        Err(error) => degrade_tracked(
+            diff,
+            "<the tracked diff could not be observed>",
+            &format!("the tracked diff could not be observed: {error}"),
+        ),
+    }
+}
+
+/// Records a degraded tracked diff: the placeholder is what renders, the
+/// note says why. Never sets `tracked_truncated` — that flag means the
+/// `--stat` summary specifically.
+fn degrade_tracked(diff: &mut RunDiff, placeholder: &str, note: &str) {
+    diff.tracked = placeholder.to_owned();
+    diff.tracked_note = note.to_owned();
+}
+
+/// Distinguishes an unborn HEAD from a refusal, mirroring [`observe_head`]:
+/// an unborn branch is one whose `symbolic-ref` resolves while
+/// `rev-parse HEAD` refuses. A HEAD that resolves to nothing while other
+/// refs exist is a broken HEAD, not an unborn branch, and `Ok(false)`
+/// says so.
 fn head_is_unborn(git: &mut impl GitExecutor, worktree: &Path) -> Result<bool, GitError> {
-    match git.run(worktree, &["rev-parse", "--verify", "-q", "HEAD"]) {
-        Ok(_) => Ok(false),
-        Err(GitError::GitRefused) => Ok(true),
+    match git.run(worktree, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        // Detached HEAD, or not a repository at all: rev-parse decides.
+        Err(GitError::GitRefused) => {
+            match git.run(worktree, &["rev-parse", "--verify", "-q", "HEAD"]) {
+                Ok(_) => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
         Err(error) => Err(error),
+        Ok(_) => match git.run(worktree, &["rev-parse", "--verify", "-q", "HEAD"]) {
+            Ok(_) => Ok(false),
+            Err(GitError::GitRefused) => {
+                // Nothing is reachable from HEAD. That is an unborn branch
+                // only when the repository holds no refs at all.
+                match git.run(worktree, &["show-ref", "--quiet"]) {
+                    Err(GitError::GitRefused) => Ok(true),
+                    Ok(_) => Ok(false),
+                    Err(_) => Ok(false),
+                }
+            }
+            Err(error) => Err(error),
+        },
     }
 }
 
 /// Reads one untracked path's bounded content head. Never fails the
 /// collection: an unreadable path yields an explicit placeholder (the
-/// status list still names it). Quoted (git-escaped) paths and `..`
-/// components are never touched on disk.
+/// status list still names it).
+///
+/// The path list is an advertisement, not authority, so every component
+/// is checked here instead of trusted: non-relative paths (joining an
+/// absolute path REPLACES the base), `..` components and the C-quoted
+/// porcelain form this crate's `-z` reads never produce are refused, and
+/// the parent directory is resolved and must land inside the worktree, so
+/// an intermediate symlinked directory cannot walk the read out of it.
+///
+/// The final component is then OPENED with `O_NOFOLLOW | O_NONBLOCK` and
+/// classified by the opened handle's own metadata — never by a check on
+/// the path that a rename could invalidate between the two calls. A
+/// symlinked final component is refused by the kernel (ELOOP), and a FIFO
+/// or device is neither waited on nor read.
 fn untracked_content(worktree: &Path, path: &str) -> UntrackedContent {
     use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
     let placeholder = |content: &str| UntrackedContent {
         path: path.to_owned(),
         content: content.to_owned(),
         truncated: false,
     };
-    if path.contains('"') || path.split('/').any(|component| component == "..") {
+    let relative = Path::new(path);
+    if relative.is_absolute()
+        || path.starts_with('"')
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
         return placeholder("<path not readable>");
     }
-    let full = worktree.join(path);
-    let metadata = match std::fs::symlink_metadata(&full) {
-        Ok(metadata) => metadata,
+    let full = worktree.join(relative);
+    let root = match std::fs::canonicalize(worktree) {
+        Ok(root) => root,
         Err(_) => return placeholder("<unreadable>"),
     };
-    if !metadata.is_file() {
-        return placeholder("<directory or non-regular file>");
+    let parent = match full
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok())
+    {
+        Some(parent) => parent,
+        None => return placeholder("<unreadable>"),
+    };
+    if !parent.starts_with(&root) {
+        return placeholder("<path outside the worktree>");
     }
-    let file = match std::fs::File::open(&full) {
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            nix::fcntl::OFlag::O_NOFOLLOW.bits()
+                | nix::fcntl::OFlag::O_NONBLOCK.bits()
+                | nix::fcntl::OFlag::O_CLOEXEC.bits(),
+        )
+        .open(&full)
+    {
         Ok(file) => file,
-        Err(_) => return placeholder("<unreadable>"),
+        Err(_) => return placeholder("<unreadable or non-regular file>"),
     };
+    // Classify what was actually opened: a directory open succeeds on
+    // Linux, and a FIFO opened without O_NONBLOCK would never return.
+    match file.metadata() {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return placeholder("<directory or non-regular file>"),
+        Err(_) => return placeholder("<unreadable>"),
+    }
     let mut head = Vec::new();
     let mut limited = file.take((MAX_UNTRACKED_FILE_BYTES + 1) as u64);
     if limited.read_to_end(&mut head).is_err() {
@@ -829,7 +955,7 @@ mod tests {
         )
         .unwrap();
         let status = observe_status(&mut git, &repo.dir).unwrap();
-        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
         assert!(
             diff.tracked.contains("+modified line"),
             "{:?}",
@@ -858,7 +984,7 @@ mod tests {
         let text = format!("a{}", "é".repeat(MAX_UNTRACKED_FILE_BYTES));
         std::fs::write(repo.dir.join("accents.txt"), text.as_bytes()).unwrap();
         let status = observe_status(&mut git, &repo.dir).unwrap();
-        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
         let head = &diff.untracked[0];
         assert!(head.truncated);
         assert!(!head.content.contains("non-utf8"), "{:?}", head.content);
@@ -881,7 +1007,7 @@ mod tests {
         let mut git = SystemGit::new();
         std::fs::write(repo.dir.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
         let status = observe_status(&mut git, &repo.dir).unwrap();
-        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
         assert_eq!(diff.untracked[0].content, "<non-utf8 content>");
         assert!(!diff.untracked[0].truncated);
     }
@@ -896,7 +1022,7 @@ mod tests {
             std::fs::write(repo.dir.join(format!("file-{index:02}.txt")), "x\n").unwrap();
         }
         let status = observe_status(&mut git, &repo.dir).unwrap();
-        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
         assert_eq!(diff.untracked.len(), MAX_UNTRACKED_FILES);
         assert_eq!(diff.untracked_omitted, 3);
     }
@@ -910,7 +1036,7 @@ mod tests {
         let big = "x".repeat(MAX_UNTRACKED_FILE_BYTES * 3);
         std::fs::write(repo.dir.join("big.txt"), &big).unwrap();
         let status = observe_status(&mut git, &repo.dir).unwrap();
-        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
         let head = &diff.untracked[0];
         assert_eq!(head.path, "big.txt");
         assert!(head.truncated);
@@ -928,23 +1054,58 @@ mod tests {
         let big = format!("{}\n", "y".repeat(64)).repeat(300 * 1024 / 65 + 8);
         std::fs::write(repo.dir.join("README.md"), &big).unwrap();
         let status = observe_status(&mut git, &repo.dir).unwrap();
-        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
         assert!(diff.tracked_truncated, "{:?}", diff.tracked);
         assert!(diff.tracked.contains("README.md"), "{:?}", diff.tracked);
+        // The degradation is the summary, not a partial patch, and the
+        // flag is the whole story: no note competes with it.
+        assert!(!diff.tracked.contains("@@"), "{:?}", diff.tracked);
+        assert!(diff.tracked_note.is_empty(), "{}", diff.tracked_note);
     }
 
-    /// A symlinked untracked path is never read: the placeholder names
-    /// it instead.
+    /// A symlinked untracked path is never read: `O_NOFOLLOW` refuses it
+    /// in the kernel and the placeholder names it instead.
     #[test]
     fn symlinked_untracked_paths_are_never_read() {
         let repo = TempRepo::new("run-diff-symlink");
         let mut git = SystemGit::new();
+        let host_secret = std::fs::read_to_string("/etc/hostname").unwrap();
         std::os::unix::fs::symlink("/etc/hostname", repo.dir.join("sneaky.txt")).unwrap();
         let status = observe_status(&mut git, &repo.dir).unwrap();
-        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
         let head = &diff.untracked[0];
         assert_eq!(head.path, "sneaky.txt");
-        assert_eq!(head.content, "<directory or non-regular file>");
+        assert_eq!(head.content, "<unreadable or non-regular file>");
+        assert_ne!(head.content, host_secret);
+    }
+
+    /// A FIFO named by the status list cannot hang the preview: the open
+    /// is non-blocking and the classification is of the opened handle.
+    #[test]
+    fn a_fifo_untracked_path_is_named_and_never_waited_on() {
+        use std::sync::mpsc;
+        let repo = TempRepo::new("run-diff-fifo");
+        nix::unistd::mkfifo(
+            &repo.dir.join("pipe"),
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        let dir = repo.dir.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut git = SystemGit::new();
+            let status = WorktreeStatus {
+                uncommitted: Vec::new(),
+                untracked: vec!["pipe".to_string()],
+            };
+            let _ = sender.send(observe_run_diff(&mut git, &dir, &status));
+        });
+        // Without O_NONBLOCK this open waits for a writer forever; the
+        // bounded receive turns that regression into a failure.
+        let diff = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("reading a FIFO must not wait for a writer");
+        assert_eq!(diff.untracked[0].content, "<directory or non-regular file>");
     }
 
     /// An unborn HEAD (no commits) is not a refusal: the tracked diff
@@ -971,10 +1132,133 @@ mod tests {
         std::fs::write(dir.join("new.txt"), "content\n").unwrap();
         let mut git = SystemGit::new();
         let status = observe_status(&mut git, &dir).unwrap();
-        let diff = observe_run_diff(&mut git, &dir, &status).unwrap();
+        let diff = observe_run_diff(&mut git, &dir, &status);
         assert!(diff.tracked.is_empty());
         assert!(!diff.tracked_truncated);
+        assert!(diff.tracked_note.is_empty(), "{}", diff.tracked_note);
         assert_eq!(diff.untracked[0].path, "new.txt");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tracked diff that is not UTF-8 (a binary blob, a latin-1 source
+    /// file) is NAMED, and the untracked heads are still collected: one
+    /// bad tracked byte must not cost the whole preview.
+    #[test]
+    fn a_non_utf8_tracked_diff_is_named_and_untracked_heads_survive() {
+        let repo = TempRepo::new("run-diff-tracked-non-utf8");
+        let mut git = SystemGit::new();
+        // 0xff with no NUL: git treats the file as text and emits the raw
+        // byte in the patch, so the diff output is not UTF-8.
+        std::fs::write(repo.dir.join("README.md"), b"line\n\xff\n").unwrap();
+        std::fs::write(repo.dir.join("produced.txt"), "worker output\n").unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
+        assert_eq!(diff.tracked, "<tracked diff is not UTF-8>");
+        assert!(
+            diff.tracked_note.contains("not UTF-8"),
+            "{}",
+            diff.tracked_note
+        );
+        assert!(!diff.tracked_truncated);
+        assert_eq!(diff.untracked.len(), 1);
+        assert_eq!(diff.untracked[0].content, "worker output\n");
+    }
+
+    /// A HEAD that resolves to nothing while the repository holds other
+    /// refs is BROKEN, not unborn: it is named instead of previewing as
+    /// "nothing changed".
+    #[test]
+    fn a_broken_head_is_named_rather_than_reported_as_empty() {
+        let repo = TempRepo::new("run-diff-broken-head");
+        let mut git = SystemGit::new();
+        std::fs::write(repo.dir.join("README.md"), "changed\n").unwrap();
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo.dir)
+            .args(["symbolic-ref", "HEAD", "refs/heads/no-such-branch"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
+        assert_eq!(diff.tracked, "<git refused the tracked diff>");
+        assert!(!diff.tracked_note.is_empty(), "the refusal must be named");
+        assert!(!diff.tracked_truncated);
+    }
+
+    /// The path list is an advertisement, not authority: an absolute path
+    /// (which REPLACES the base when joined) is refused and never read.
+    #[test]
+    fn an_absolute_untracked_path_is_never_read() {
+        let repo = TempRepo::new("run-diff-absolute");
+        let mut git = SystemGit::new();
+        let host_secret = std::fs::read_to_string("/etc/hostname").unwrap();
+        let status = WorktreeStatus {
+            uncommitted: Vec::new(),
+            untracked: vec!["/etc/hostname".to_string()],
+        };
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
+        assert_eq!(diff.untracked[0].content, "<path not readable>");
+        assert_ne!(diff.untracked[0].content, host_secret);
+    }
+
+    /// An intermediate symlinked directory cannot walk the read out of the
+    /// worktree, even when the status list names a path beneath it.
+    #[test]
+    fn a_symlinked_parent_directory_is_never_followed() {
+        let repo = TempRepo::new("run-diff-parent-link");
+        let mut git = SystemGit::new();
+        let outside =
+            std::env::temp_dir().join(format!("symbiote-repo-outside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "OUTSIDE-SECRET\n").unwrap();
+        std::os::unix::fs::symlink(&outside, repo.dir.join("link")).unwrap();
+        let status = WorktreeStatus {
+            uncommitted: Vec::new(),
+            untracked: vec!["link/secret.txt".to_string()],
+        };
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
+        assert_eq!(diff.untracked[0].content, "<path outside the worktree>");
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A three-byte character cut by the bound keeps its complete prefix
+    /// too (the two-byte case has its own test).
+    #[test]
+    fn a_three_byte_character_cut_keeps_the_complete_prefix() {
+        let repo = TempRepo::new("run-diff-utf8-bound-3");
+        let mut git = SystemGit::new();
+        // Two leading ASCII bytes: 16384 - 2 = 16382 = 3 x 5460 + 2, so the
+        // bound lands two bytes into a three-byte character.
+        let text = format!("ab{}", "€".repeat(MAX_UNTRACKED_FILE_BYTES));
+        std::fs::write(repo.dir.join("euros.txt"), text.as_bytes()).unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
+        let head = &diff.untracked[0];
+        assert!(head.truncated);
+        assert_eq!(head.content.len(), MAX_UNTRACKED_FILE_BYTES - 2);
+        assert!(!head.content.contains("non-utf8"), "{:?}", head.content);
+        assert!(head.content.starts_with("ab"));
+    }
+
+    /// A filename that merely CONTAINS a quote is read — porcelain `-z`
+    /// never quotes — while the C-quoted form (always a leading quote) is
+    /// refused.
+    #[test]
+    fn an_interior_quote_is_read_but_a_quoted_porcelain_path_is_refused() {
+        let repo = TempRepo::new("run-diff-quote");
+        let mut git = SystemGit::new();
+        std::fs::write(repo.dir.join("od\"d.txt"), "quoted name\n").unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status);
+        assert_eq!(diff.untracked[0].path, "od\"d.txt");
+        assert_eq!(diff.untracked[0].content, "quoted name\n");
+        let quoted = WorktreeStatus {
+            uncommitted: Vec::new(),
+            untracked: vec!["\"od\\303\\251.txt\"".to_string()],
+        };
+        let diff = observe_run_diff(&mut git, &repo.dir, &quoted);
+        assert_eq!(diff.untracked[0].content, "<path not readable>");
     }
 }

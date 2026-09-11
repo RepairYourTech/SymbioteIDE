@@ -316,6 +316,18 @@ fn run_diff_observes_inside_the_reservation_base_and_refuses_outside() {
         "expected a setup refusal, got {error:?}"
     );
     let _ = std::fs::remove_dir_all(&outside);
+
+    // Containment is component-wise, not a string prefix: a sibling whose
+    // name merely starts with the base's name is outside it.
+    let prefix_sibling = env.scratch.join("worktreesEVIL");
+    std::fs::create_dir_all(&prefix_sibling).unwrap();
+    let error = controller
+        .run_diff(&prefix_sibling.display().to_string())
+        .expect_err("a name-prefix sibling must refuse");
+    assert!(
+        matches!(error, DesktopError::Setup(_)),
+        "expected a setup refusal, got {error:?}"
+    );
 }
 
 /// The containment check resolves symlinks: a link that sits inside the

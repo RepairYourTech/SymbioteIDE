@@ -322,8 +322,12 @@ impl DesktopController {
         let mut git = symbiote_repo::SystemGit::new();
         let status = symbiote_repo::observe_status(&mut git, &requested)
             .map_err(|error| DesktopError::Setup(error.to_string()))?;
-        symbiote_repo::observe_run_diff(&mut git, &requested, &status)
-            .map_err(|error| DesktopError::Setup(error.to_string()))
+        // Collecting the diff itself is total: every degradation is inside
+        // the returned RunDiff (flags and notes), so a partly unreadable
+        // worktree still previews what it can.
+        Ok(symbiote_repo::observe_run_diff(
+            &mut git, &requested, &status,
+        ))
     }
 
     fn workflow(&mut self) -> Result<&mut DemoWorkflow, DesktopError> {

@@ -89,6 +89,13 @@ fn preview_document(
         document.push_str(&escape(diff_note));
         document.push_str("</p>\n");
     }
+    // The collector's own degradation note (not-UTF-8 tracked diff, a
+    // refusal): owner-built text naming why the hunks are absent.
+    if !diff.tracked_note.is_empty() {
+        document.push_str("<p>");
+        document.push_str(&escape(&diff.tracked_note));
+        document.push_str("</p>\n");
+    }
     if diff.tracked_truncated {
         document.push_str("<p>The full diff exceeded the bound; this is the --stat summary.</p>\n");
     }
@@ -444,11 +451,21 @@ mod preview_tests {
         let hostile_diff = symbiote_repo::RunDiff {
             tracked: "<script>alert('diff')</script> broke <b>things</b>".into(),
             tracked_truncated: true,
-            untracked: vec![symbiote_repo::UntrackedContent {
-                path: "produced.txt".into(),
-                content: "worker output".into(),
-                truncated: false,
-            }],
+            tracked_note: String::new(),
+            untracked: vec![
+                symbiote_repo::UntrackedContent {
+                    path: "produced.txt".into(),
+                    content: "worker output".into(),
+                    truncated: false,
+                },
+                // Both untracked fields are worker-controlled: they must
+                // be escaped just like the tracked diff.
+                symbiote_repo::UntrackedContent {
+                    path: "</code><script>alert('path')</script>".into(),
+                    content: "</pre><script>alert('head')</script>".into(),
+                    truncated: false,
+                },
+            ],
             untracked_omitted: 0,
         };
         let document = preview_document(
@@ -474,7 +491,36 @@ mod preview_tests {
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("Run <code>disp_staffing-task</code>"));
         assert!(document.contains("The full diff exceeded the bound"));
+        assert!(
+            document.contains("&lt;/code&gt;&lt;script&gt;alert(&#39;path&#39;)&lt;/script&gt;"),
+            "the hostile untracked path must render as escaped text"
+        );
+        assert!(
+            document.contains("&lt;/pre&gt;&lt;script&gt;alert(&#39;head&#39;)&lt;/script&gt;"),
+            "the hostile untracked content must render as escaped text"
+        );
         assert!(!document.to_lowercase().contains("<script"));
+    }
+
+    /// The collector's degradation note is rendered escaped, so a refusal
+    /// or a non-UTF-8 tracked diff is visible instead of silent.
+    #[test]
+    fn a_tracked_degradation_note_renders_escaped() {
+        let diff = symbiote_repo::RunDiff {
+            tracked: "<tracked diff is not UTF-8>".into(),
+            tracked_note: "the tracked diff is not UTF-8: <binary>".into(),
+            ..Default::default()
+        };
+        let document = preview_document("disp", "probe-1", "report", "/wt", &[], &diff, "");
+        assert!(!document.contains("<binary>"), "{document}");
+        assert!(
+            document.contains("the tracked diff is not UTF-8: &lt;binary&gt;"),
+            "{document}"
+        );
+        assert!(
+            document.contains("&lt;tracked diff is not UTF-8&gt;"),
+            "{document}"
+        );
     }
 
     /// The document's own structure must survive any input: the CSP and
