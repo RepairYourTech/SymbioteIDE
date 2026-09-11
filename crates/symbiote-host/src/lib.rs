@@ -9,6 +9,13 @@ compile_error!(
 /// Schema documents the binary emits. One owner for what the CLI promises
 /// automation, shared by the binary and its test suites.
 pub mod cli_schema;
+
+/// The `symbiote` CLI's authorization engine (#54): the policy document the
+/// CLI's `--policy` flag honors, and the pure decision that turns a risk
+/// classification plus the grants an operator configured into an answer. Kept
+/// beside the schema that publishes the very document it enforces.
+pub mod cli_authorization;
+
 /// Context/credential resolution wiring (#217): the store-backed
 /// `ContextSource` and the dispatch-facet resolution the activation path
 /// uses. Credential VALUES live only in the operator's broker.
