@@ -154,8 +154,7 @@ fn open_preview(
             .map(|elapsed| elapsed.subsec_nanos())
             .unwrap_or_default()
     );
-    let document =
-        preview_document(&dispatch_id, &probe_nonce, &report, &worktree, &files);
+    let document = preview_document(&dispatch_id, &probe_nonce, &report, &worktree, &files);
     let state = app.state::<PreviewDocument>();
     *preview_lock(&state) = document;
     if let Some(window) = app.get_webview_window("preview") {
