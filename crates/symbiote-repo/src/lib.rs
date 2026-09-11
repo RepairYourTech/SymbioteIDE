@@ -15,8 +15,13 @@
 //! compose this crate inside the Host sandbox (no network). Repository
 //! identity stays with the canonical Root records; this crate never
 //! second-guesses them. Credential delegation, remotes,
-//! submodules/LFS/sparse-checkout, status/diff/history normalization and
-//! safe multi-step transactions remain pending on #190.
+//! submodules/LFS/sparse-checkout, history normalization and safe
+//! multi-step transactions remain pending on #190. Diff evidence is
+//! bounded preview material only: `observe_run_diff` collects the tracked
+//! diff and 16 KiB heads of the untracked files for rendering inert
+//! downstream, size-capped at every layer with an explicit flag or note
+//! for every degradation; it authorizes nothing, and full diff/history
+//! normalization remains pending.
 //!
 //! Everything is offline-testable: `GitExecutor` is injected, and tests use
 //! the real `git` binary against temporary repositories plus scripted
