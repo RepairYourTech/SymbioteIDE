@@ -81,5 +81,3 @@ elif command == "log":
     for role, text in read_log():
         print(f"--- {role} ---")
         print(text)
-elif command == "tree":
-    pass
