@@ -41,9 +41,8 @@ def click_button(name):
     button = find_node(app, "BUTTON", name)
     if button is None:
         raise SystemExit(f"button {name!r} not found")
-    description = button.get_action_description(0)
     button.do_action(0)
-    print(f"clicked {name!r} ({description})")
+    print(f"clicked {name!r}")
 
 def read_log():
     app = find_app()
@@ -81,5 +80,19 @@ elif command == "log":
     for role, text in read_log():
         print(f"--- {role} ---")
         print(text)
-elif command == "tree":
-    pass
+elif command == "marker":
+    # The execution discriminator (#54): the hostile script appends its
+    # marker as a SECOND, standalone DOM node when it runs — the inert
+    # page shows it exactly once, inside the escaped literal. Also
+    # asserts the isolation self-check verdict is present.
+    texts = [text for _, text in read_log()]
+    blob = "\n".join(texts)
+    occurrences = blob.count("WORKER_SCRIPT_EXECUTED")
+    assert occurrences == 1, (
+        f"the hostile script's marker must appear exactly once "
+        f"(escaped literal), got {occurrences}"
+    )
+    assert "Isolation self-check: OK: app command rejected by the app ACL" in blob, (
+        "the isolation self-check verdict must be present"
+    )
+    print("INERTNESS_OK: marker once (inside the literal), probe verdict present")

@@ -36,7 +36,13 @@ fn preview_lock(document: &PreviewDocument) -> std::sync::MutexGuard<'_, String>
 /// Builds the Preview document for a finished run. Every dynamic value
 /// is HTML-escaped and there is no script: worker content can only ever
 /// render as text, whatever it contains.
-fn preview_document(dispatch_id: &str, report: &str, worktree: &str, files: &[String]) -> String {
+fn preview_document(
+    dispatch_id: &str,
+    probe_nonce: &str,
+    report: &str,
+    worktree: &str,
+    files: &[String],
+) -> String {
     fn escape(value: &str) -> String {
         value
             .replace('&', "&amp;")
@@ -62,6 +68,9 @@ fn preview_document(dispatch_id: &str, report: &str, worktree: &str, files: &[St
     document.push_str("<p>Run <code>");
     document.push_str(&escape(dispatch_id));
     document.push_str("</code></p>\n");
+    document.push_str("<p>Probe nonce: <code>");
+    document.push_str(&escape(probe_nonce));
+    document.push_str("</code> — the genuine isolation self-check line carries this value.</p>\n");
     document.push_str("<p>This surface renders worker output as inert text. It has no application commands: worker content can never invoke the owner's operations, and no script or network fetch is permitted here.</p>\n");
     document.push_str("<h2>Report</h2>\n<pre>");
     document.push_str(&escape(report));
@@ -84,30 +93,43 @@ fn preview_document(dispatch_id: &str, report: &str, worktree: &str, files: &[St
 /// too. Worker content never reaches this eval — it is a constant of
 /// this binary — and the worker's own hostile markup is inert by
 /// construction (preview_document).
-const ISOLATION_PROBE: &str = r#"(function () {
-    var report = function (verdict) {
+fn isolation_probe(probe_nonce: &str) -> String {
+    // The nonce is generated owner-side per open and rendered in the
+    // document heading: a report-embedded fake verdict line cannot know
+    // it, so the real self-check line is recognizable as genuine.
+    format!(
+        r#"(function () {{
+    var report = function (verdict) {{
         document.title = "Preview " + verdict;
         var line = document.createElement("p");
-        line.textContent = "Isolation self-check: " + verdict;
+        line.textContent = "Isolation self-check [probe {nonce}]: " + verdict;
         document.body.appendChild(line);
-    };
-    try {
-        if (typeof window.__TAURI_INTERNALS__ === "undefined") {
+    }};
+    try {{
+        if (typeof window.__TAURI_INTERNALS__ === "undefined") {{
             report("OK: no IPC plumbing is present at all");
             return;
-        }
+        }}
         window.__TAURI_INTERNALS__
-            .invoke("journal_position", {})
-            .then(function () {
+            .invoke("journal_position", {{}})
+            .then(function () {{
                 report("FAILED: an app command was allowed from the preview window");
-            })
-            .catch(function (error) {
-                report("OK: app command rejected by the app ACL (" + (error && error.message ? error.message : error) + ")");
-            });
-    } catch (error) {
+            }})
+            .catch(function (error) {{
+                var detail = error && error.message ? error.message : String(error);
+                if (detail.indexOf("not allowed") !== -1) {{
+                    report("OK: app command rejected by the app ACL (" + detail + ")");
+                }} else {{
+                    report("UNVERIFIED: invoke rejected but not by the ACL (" + detail + ")");
+                }}
+            }});
+    }} catch (error) {{
         report("OK: no IPC plumbing is reachable (" + error + ")");
-    }
-})();"#;
+    }}
+}})();"#,
+        nonce = probe_nonce
+    )
+}
 
 /// Opens (or refreshes) the Preview window for the LAST finished run.
 /// The main window is the owner surface; this command hands the
@@ -121,7 +143,19 @@ fn open_preview(
     worktree: String,
     files: Vec<String>,
 ) -> Result<String, String> {
-    let document = preview_document(&dispatch_id, &report, &worktree, &files);
+    // Owner-generated and unpredictable to worker content: the probe's
+    // verdict line carries it, so a report-embedded fake verdict line
+    // cannot impersonate the self-check.
+    let probe_nonce = format!(
+        "probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.subsec_nanos())
+            .unwrap_or_default()
+    );
+    let document =
+        preview_document(&dispatch_id, &probe_nonce, &report, &worktree, &files);
     let state = app.state::<PreviewDocument>();
     *preview_lock(&state) = document;
     if let Some(window) = app.get_webview_window("preview") {
@@ -139,12 +173,24 @@ fn open_preview(
     );
     // Two rapid opens can race past the refresh check; the loser falls
     // back to the refresh path instead of failing the click.
+    // The probe closure outlives this call: it runs on every page load
+    // of the Preview window, so it carries its own handle.
+    let app_for_probe = app.clone();
     if tauri::webview::WebviewWindowBuilder::new(&app, "preview", url)
         .title("Symbiote — Preview (untrusted worker output)")
         .inner_size(720.0, 520.0)
-        .on_page_load(|window, payload| {
+        .on_page_load(move |window, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                let _ = window.eval(ISOLATION_PROBE);
+                // The probe's nonce is read back from the served
+                // document so the probe always matches what the page
+                // displays.
+                let nonce = preview_lock(&app_for_probe.state::<PreviewDocument>())
+                    .rsplit("Probe nonce: <code>")
+                    .next()
+                    .and_then(|tail| tail.split("</code>").next())
+                    .unwrap_or_default()
+                    .to_owned();
+                let _ = window.eval(&isolation_probe(&nonce));
             }
         })
         .build()
@@ -327,6 +373,7 @@ mod preview_tests {
     fn worker_content_renders_as_inert_text() {
         let document = preview_document(
             "disp_staffing-task",
+            "probe-test-1",
             "<script>alert(1)</script> & <b>bold</b>",
             "/tmp/worktree",
             &[
@@ -347,7 +394,7 @@ mod preview_tests {
     /// the isolation statement are present for the empty case too.
     #[test]
     fn an_empty_outcome_still_carries_the_isolation_statement() {
-        let document = preview_document("", "", "", &[]);
+        let document = preview_document("", "", "", "", &[]);
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("no application commands"));
         assert!(document.contains("Files produced (0)"));

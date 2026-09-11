@@ -19,10 +19,9 @@ Repository￼
               [ATSPI_PANEL] ￼￼￼￼￼￼
                 [ATSPI_LABEL] Demonstration
                 [ATSPI_SECTION] ￼￼￼￼￼
-              [ATSPI_SECTION] 10:58:06 PM  preview: preview updated
-10:48:37 PM  preview: preview opened
-10:48:29 PM  finish-demo: state=completion_requested report="implemented the bounded change; produced.txt written by the sandboxed tool <script>document.body.appendChild(document.createTextNode(\"WORKER_SCRIPT_EXECUTED\"))</script><img src=x onerror=\"document.title='WORKER_IMG_ONERROR'\"><b>bold markup</b>" produced=/tmp/symbiote-desktop-demo/worktrees/staffing-demo/st-c3664a298fb65755
-10:48:27 PM  read-journal: 12
-10:48:19 PM  start-demo: dispatch disp_staffing-task
-10:48:15 PM  begin: started
+              [ATSPI_SECTION] 11:32:54 PM  preview: preview opened
+11:32:46 PM  finish-demo: state=completion_requested report="implemented the bounded change; produced.txt written by the sandboxed tool <script>document.body.appendChild(document.createTextNode(\"WORKER_SCRIPT_EXECUTED\"))</script><img src=x onerror=\"document.title='WORKER_IMG_ONERROR'\"><b>bold markup</b>" produced=/tmp/symbiote-desktop-demo/worktrees/staffing-demo/st-c3664a298fb65755
+11:32:44 PM  read-journal: 12
+11:32:36 PM  start-demo: dispatch disp_staffing-task
+11:32:32 PM  begin: started
 
