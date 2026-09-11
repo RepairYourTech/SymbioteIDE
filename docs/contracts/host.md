@@ -34,7 +34,10 @@ refusal vs transport failure vs a missing authorization.
 dangerous kinds a policy may pre-authorize. `schema` is the one local
 command: it prints the binary's published envelope and policy JSON Schemas
 (see [cli.md](cli.md)) — or regenerates the committed fixtures with `--write
-DIR` — and needs no daemon, no state directory and no authorization. Identity
+DIR` — and needs no daemon, no state directory and no authorization. It is the
+only command for which `--write` is valid, and the one command that refuses
+`--json` (its output is machine-readable JSON, but not the envelope); both are
+usage errors anywhere else, never silently dropped. Identity
 arguments are passed as plain strings and typed on the wire; no caller-supplied
 actor identities exist. The interactive/headless coding-agent experience is
 #467's surface and shares this client plumbing; this binary carries no model
@@ -105,7 +108,8 @@ Flags are recognized before or after the command (`symbiote shutdown
 --yes` works), `--` ends flag parsing so an argument beginning with dashes
 stays expressible, and an unknown flag is a usage error rather than a
 silently-dropped token. `--json` prints one machine-readable envelope per
-invocation on stdout instead of pretty output: `schema` is the versioned
+invocation on stdout instead of pretty output (the local `schema` command
+refuses it; see [cli.md](cli.md)): `schema` is the versioned
 `symbiote.cli/v1`, alongside `command`, `command_id`, `ok`, and either
 `result` (the daemon's own body, unmodified) or `error.code` — the daemon's
 error code, or the CLI's own `authorization_required` (nothing was sent),

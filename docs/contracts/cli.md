@@ -21,7 +21,16 @@ command — no daemon, no `--state-dir`, no authorization — so any installed
 binary can hand out the contract it implements. `symbiote schema --write DIR`
 regenerates the committed fixture files instead of printing them, so the
 fixtures are **generated artifacts**: a contract change is made once in the
-binary and then regenerated, never edited into a fixture by hand.
+binary and then regenerated, never edited into a fixture by hand. `--write`
+is valid only here: with any other command it is a usage error, because a flag
+that means nothing is never silently dropped.
+
+The contract itself lives in `symbiote_host::cli_schema` (`crates/symbiote-host/src/cli_schema.rs`):
+the schema identities, the `OPERATION_RISKS` table that fixes the policy
+schema's `enum`, the document builders, the published-document table, and the
+fixture directory. The `symbiote` binary is the interface — it renders that
+contract, classifies operations with it, and decides authorization — so no
+second owner can hold a copy that drifts.
 
 ## Exit codes
 
@@ -42,6 +51,13 @@ parsing prose.
 daemon's pretty-printed body. The default output is unchanged, so existing
 scripts that read pretty JSON keep working. The envelope is a flat object: four
 keys always present, plus exactly one of `result` and `error`.
+
+The local `schema` command is the one command that does not accept `--json`,
+and it refuses it rather than reinterpreting it: `symbiote schema` already
+prints machine-readable JSON, and that JSON is not this envelope — the
+documents have no `result.kind`, so wrapping them would either violate the
+published envelope schema or invent a protocol result body. `symbiote schema
+--json` is a usage error (exit 1) that prints nothing.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -128,11 +144,13 @@ drifted is worse than none:
   differently in code — fails the build. A second test runs `symbiote schema
   --write` into a temporary directory and requires the files it writes to be
   byte-for-byte the committed ones, so regenerating a clean tree is a no-op.
-- **Against the code** (`src/bin/symbiote.rs` unit tests): the envelope
-  fixture's `const` must equal `CLI_SCHEMA`, the policy fixture's `const` must
-  equal `POLICY_SCHEMA`, and the policy fixture's `enum` must be exactly the
-  kinds the operation-risk table marks dangerous. A new dangerous kind that is
-  not published fails the build.
+- **Against the code** (`src/cli_schema.rs` unit tests, in the contract
+  module): the builders' canonical bytes must equal the committed fixtures,
+  the envelope fixture's `const` must equal `CLI_SCHEMA`, the policy fixture's
+  `const` must equal `POLICY_SCHEMA`, and the policy fixture's `enum` must be
+  exactly the kinds the operation-risk table marks dangerous. This pins the
+  builders in-process, so drift fails `cargo test --lib` without a binary or a
+  daemon; a new dangerous kind that is not published fails the build.
 - **Against real output** (`tests/cli_schema_contract.rs`): the real
   `symbiote` binary is run against a fake daemon socket and its actual stdout
   envelopes are validated against the envelope fixture — success, daemon
@@ -169,9 +187,10 @@ The agreement test covers the boundaries both sides can represent.
 
 ## Verification and remaining acceptance
 
-`cargo test -p symbiote-host` runs both halves. The unit tests read the fixture
-files from `docs/contracts/schemas/` and pin them to the binary's own
-constants and risk table. The integration test runs the actual binary and
+`cargo test -p symbiote-host` runs both halves. The contract module's unit
+tests compare the builders' canonical bytes to the fixture files under
+`docs/contracts/schemas/` and pin them to its own constants and risk table. The
+integration test runs the actual binary and
 validates its stdout through the bounded checker, including the boundary
 documents the schema and the CLI must classify identically. CI additionally
 regenerates the fixtures with `symbiote schema --write` into a temporary
