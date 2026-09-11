@@ -110,12 +110,18 @@ bytes, the seed bound is 64).
 
 ## Tests
 
-Seven tests cover the real binary against temporary repositories (branch,
-detached, unborn, changed/untracked separation, clean tree, real
-materialization with content verification, non-empty and missing-branch
-refusals) and scripted executors (exact invocation rooting and ordering,
-malformed output rejection per parser, refusal surfacing, output-bound
-constant contract).
+Tests run the real `git` binary against temporary repositories — HEAD
+classification (branch, detached, unborn), uncommitted/untracked
+separation including a clean tree, real worktree materialization, and the
+executor's 256 KiB output bound observed end to end. The run-diff tests
+cover tracked and untracked evidence, every size and omission degradation
+(`--stat` fallback, per-head `truncated`, `untracked_omitted`, a non-UTF-8
+placeholder, the complete-character prefix kept at a byte cut) and every
+path refusal (absolute, `..`, quoted porcelain form, symlinked final
+component, symlinked parent directory, FIFO). Scripted executors pin exact
+invocation rooting and ordering and malformed-output rejection per parser;
+`provision`'s tests cover materialization at the recorded base plus its
+moved-base and tampered-identity refusals.
 
 ## Honest non-claims
 
