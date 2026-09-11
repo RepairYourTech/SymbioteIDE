@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://symbiote.dev/schemas/symbiote.cli.v1.schema.json",
+  "title": "symbiote CLI JSON envelope (symbiote.cli/v1)",
+  "description": "One envelope printed to stdout by `symbiote --json`, one per invocation. A success carries `result` (the daemon's own response body, unmodified); a failure carries `error` (the daemon's typed error, or one of the CLI's own codes). Exactly one of the two is present, and `ok` agrees with which one it is. The default (non-`--json`) output is the daemon's body alone and is not described here.",
+  "type": "object",
+  "required": ["schema", "command", "command_id", "ok"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "description": "Schema identity. Automation keys on this string rather than on the presence of individual fields.",
+      "const": "symbiote.cli/v1"
+    },
+    "command": {
+      "description": "The command name as invoked, e.g. `health`, or `raw`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "command_id": {
+      "description": "The idempotency key this invocation used: the minted id, or a caller-supplied `--command-id`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "ok": {
+      "description": "True exactly when the command succeeded (exit 0) and `result` is present.",
+      "type": "boolean"
+    },
+    "result": {
+      "description": "The daemon's own response body, unmodified. An internally tagged object whose `kind` names the answer.",
+      "$ref": "#/$defs/result"
+    },
+    "error": {
+      "description": "A failure, whether the daemon refused the command or the CLI could not send it.",
+      "$ref": "#/$defs/error"
+    }
+  },
+  "oneOf": [
+    {
+      "description": "Success: a result and no error, with ok true.",
+      "required": ["result"],
+      "not": { "required": ["error"] },
+      "properties": { "ok": { "const": true } }
+    },
+    {
+      "description": "Failure: an error and no result, with ok false.",
+      "required": ["error"],
+      "not": { "required": ["result"] },
+      "properties": { "ok": { "const": false } }
+    }
+  ],
+  "$defs": {
+    "result": {
+      "description": "symbiote_protocol::ResponseBody, which is internally tagged on `kind`.",
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "description": "The response body variant, snake_case, e.g. `health`, `shutdown`.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "error": {
+      "description": "The daemon's own ProtocolError, or the CLI's own code when nothing was sent.",
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "The daemon's error code, or one of the CLI's own: `authorization_required` (nothing was sent), `policy_invalid` (the configured policy could not be honored; nothing was sent), `unreachable`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "description": "Human-readable detail. Not stable for automation; branch on `code`.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

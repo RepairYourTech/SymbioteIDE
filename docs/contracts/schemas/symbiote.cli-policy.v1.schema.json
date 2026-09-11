@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://symbiote.dev/schemas/symbiote.cli-policy.v1.schema.json",
+  "title": "symbiote CLI authorization policy (symbiote.cli-policy/v1)",
+  "description": "A document named by `--policy FILE`, or by $SYMBIOTE_CLI_POLICY when the flag is absent, that pre-authorizes dangerous operation kinds for noninteractive runs. It may name only the operation kinds this CLI classifies as dangerous: a read or a mutation is already ungated, so listing one would be a no-op an operator could mistake for coverage; an unknown kind cannot be classified; and a wildcard is deliberately not a syntax. A policy is a pre-authorization, never a widening — it cannot grant a permission the daemon would refuse.",
+  "type": "object",
+  "required": ["schema", "authorize"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "description": "Schema identity. A different version is refused rather than reinterpreted.",
+      "const": "symbiote.cli-policy/v1"
+    },
+    "authorize": {
+      "description": "The dangerous operation kinds this policy pre-authorizes. At least one. These are kinds, not command names: `shutdown` covers both the typed command and `raw` naming that operation. Repeating a kind is accepted and collapses: the grants are a set.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "description": "A kind this CLI classifies as dangerous.",
+        "enum": [
+          "decide_elevation",
+          "record_resource_consent",
+          "run_started_dispatch",
+          "shutdown",
+          "start_prepared_task"
+        ]
+      }
+    },
+    "expires_at": {
+      "description": "Optional unix-millisecond bound. The expiry instant itself is still authorized; a lapsed policy grants nothing and the refusal names the file and the lapse.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    }
+  }
+}

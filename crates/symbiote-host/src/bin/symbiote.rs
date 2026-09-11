@@ -746,7 +746,20 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
                     .ok_or_else(|| Usage(format!("{token} needs a value")))?;
                 match token.as_str() {
                     "--state-dir" => options.state_dir = Some(PathBuf::from(value)),
-                    "--command-id" => options.command_id_override = Some(value),
+                    "--command-id" => {
+                        // An empty idempotency key is refused rather than
+                        // carried: every empty-id invocation would collide with
+                        // every other as a replay, and the published envelope
+                        // schema requires `command_id` to be non-empty, so
+                        // accepting it would let the CLI print an envelope its
+                        // own contract rejects.
+                        if value.is_empty() {
+                            return Err(Usage(
+                                "--command-id must be a non-empty idempotency key".into(),
+                            ));
+                        }
+                        options.command_id_override = Some(value);
+                    }
                     _ => options.policy = Some(PathBuf::from(value)),
                 }
             }
@@ -1316,6 +1329,94 @@ mod tests {
         assert!(failure.get("result").is_none());
     }
 
+    /// The published fixtures under `docs/contracts/schemas/` are the external
+    /// contract. These assertions bind them to this binary, so a change here
+    /// cannot leave the published documents describing something else.
+    fn load_fixture(name: &str) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/contracts/schemas")
+            .join(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("{} is not JSON: {error}", path.display()))
+    }
+
+    #[test]
+    fn the_published_schemas_track_the_cli_contract() {
+        let envelope = load_fixture("symbiote.cli.v1.schema.json");
+        assert_eq!(envelope["properties"]["schema"]["const"], CLI_SCHEMA);
+        // The declared keys are the whole shape: with `additionalProperties:
+        // false` in the fixture, an envelope may carry these and no others.
+        let declared: BTreeSet<&str> = envelope["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            declared,
+            BTreeSet::from(["command", "command_id", "error", "ok", "result", "schema"])
+        );
+        assert_eq!(
+            envelope["required"],
+            serde_json::json!(["schema", "command", "command_id", "ok"])
+        );
+        // The non-empty `command_id` the fixture requires is enforced by the
+        // parser, not merely documented here: see the empty-override test below.
+        assert_eq!(envelope["properties"]["command_id"]["minLength"], 1);
+        assert_eq!(envelope["oneOf"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            envelope["$defs"]["error"]["required"],
+            serde_json::json!(["code", "message"])
+        );
+        // Both constructors write a subset of the declared keys, and exactly
+        // one of result/error — the exclusivity the fixture encodes as oneOf
+        // and a plain struct cannot.
+        let success = success_envelope("health", "cli-1", &serde_json::json!({"kind": "hello"}));
+        let failure = error_envelope("health", "cli-1", "unreachable", "down");
+        for written in [&success, &failure] {
+            let keys: BTreeSet<&str> = written
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert!(
+                keys.is_subset(&declared),
+                "{keys:?} must stay within {declared:?}"
+            );
+        }
+        assert!(success.get("result").is_some() && success.get("error").is_none());
+        assert!(failure.get("error").is_some() && failure.get("result").is_none());
+
+        let policy = load_fixture("symbiote.cli-policy.v1.schema.json");
+        assert_eq!(policy["properties"]["schema"]["const"], POLICY_SCHEMA);
+        assert_eq!(
+            policy["required"],
+            serde_json::json!(["schema", "authorize"])
+        );
+        assert_eq!(policy["properties"]["authorize"]["minItems"], 1);
+        // The policy schema may name exactly the kinds this CLI classifies as
+        // dangerous: no more (it would publish a grant the CLI refuses) and no
+        // fewer (a new dangerous kind would be un-nameable by any policy).
+        let mut published: Vec<&str> = policy["properties"]["authorize"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|kind| kind.as_str().unwrap())
+            .collect();
+        published.sort_unstable();
+        let mut dangerous: Vec<&str> = OPERATION_RISKS
+            .iter()
+            .filter(|(_, risk)| *risk == Risk::Dangerous)
+            .map(|(kind, _)| *kind)
+            .collect();
+        dangerous.sort_unstable();
+        assert_eq!(published, dangerous);
+        assert!(published.contains(&POLICY_EXAMPLE_KIND));
+    }
+
     #[test]
     fn a_minted_command_id_is_per_invocation_and_override_is_honored() {
         let mut options = parse_options(&["health".to_string()]).unwrap();
@@ -1325,6 +1426,24 @@ mod tests {
         assert_ne!(first, second);
         options.command_id_override = Some("retry-1".into());
         assert_eq!(minted_command_id(&options, "health"), "retry-1");
+    }
+
+    #[test]
+    fn an_empty_command_id_override_is_refused() {
+        // The published envelope schema requires a non-empty `command_id`, so
+        // the parser must not carry an empty override through to an envelope:
+        // that would make the CLI violate its own contract, and an empty
+        // idempotency key makes every such invocation a replay of the last.
+        let empty = parse_options(&[
+            "--command-id".to_string(),
+            String::new(),
+            "health".to_string(),
+        ]);
+        assert!(matches!(empty, Err(Usage(ref message)) if message.contains("command-id")));
+        // A non-empty override is still honored, and the flag still works after
+        // the command, so the refusal is only about the empty value.
+        let after = options(&["health", "--command-id", "retry-1"]);
+        assert_eq!(after.command_id_override.as_deref(), Some("retry-1"));
     }
 
     const SHUTDOWN_ONLY: &str = r#"{"schema":"symbiote.cli-policy/v1","authorize":["shutdown"]}"#;
