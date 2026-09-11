@@ -21,9 +21,17 @@ command — no daemon, no `--state-dir`, no authorization — so any installed
 binary can hand out the contract it implements. `symbiote schema --write DIR`
 regenerates the committed fixture files instead of printing them, so the
 fixtures are **generated artifacts**: a contract change is made once in the
-binary and then regenerated, never edited into a fixture by hand. `--write`
-is valid only here: with any other command it is a usage error, because a flag
-that means nothing is never silently dropped.
+binary and then regenerated, never edited into a fixture by hand.
+
+Flags are declared per command, and a flag a command cannot honor is a usage
+error that names it, never a silent no-op. The daemon commands honor the five
+daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
+`--yes`), because each of them is answered by a request over the socket; the
+local `schema` command honors only `--write`, and the local `help` command
+honors nothing. So `symbiote --write DIR health`, `symbiote --json help`,
+`symbiote --state-dir DIR schema` and `symbiote schema --yes` each exit 1
+printing nothing, while `symbiote --state-dir DIR shutdown --yes` and
+`symbiote --json health` are unaffected.
 
 The contract itself lives in `symbiote_host::cli_schema` (`crates/symbiote-host/src/cli_schema.rs`):
 the schema identities, the `OPERATION_RISKS` table that fixes the policy
@@ -52,12 +60,13 @@ daemon's pretty-printed body. The default output is unchanged, so existing
 scripts that read pretty JSON keep working. The envelope is a flat object: four
 keys always present, plus exactly one of `result` and `error`.
 
-The local `schema` command is the one command that does not accept `--json`,
-and it refuses it rather than reinterpreting it: `symbiote schema` already
-prints machine-readable JSON, and that JSON is not this envelope — the
-documents have no `result.kind`, so wrapping them would either violate the
-published envelope schema or invent a protocol result body. `symbiote schema
---json` is a usage error (exit 1) that prints nothing.
+The local `schema` and `help` commands do not accept `--json`; `schema`
+refuses it rather than reinterpreting it: `symbiote schema` already prints
+machine-readable JSON, and that JSON is not this envelope — the documents have
+no `result.kind`, so wrapping them would either violate the published envelope
+schema or invent a protocol result body. `symbiote schema --json` and
+`symbiote --json help` are usage errors (exit 1) that print nothing, per the
+flag rule above.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
