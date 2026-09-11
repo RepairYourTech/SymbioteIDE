@@ -564,6 +564,11 @@ fn print_help() {
     println!("  --json            one machine-readable envelope per invocation on stdout");
     println!("  --yes             explicit authorization for this one dangerous command");
     println!();
+    println!("flags are per command: daemon commands honor --state-dir, --command-id,");
+    println!("--policy, --json and --yes; `schema` honors only --write; `help` honors none. A");
+    println!("flag a command cannot honor is a usage error that names it, never silently");
+    println!("dropped.");
+    println!();
     println!("responses are the daemon's JSON (pretty-printed). Exit codes:");
     println!("0 success, 1 usage/connection failure, 2 daemon-refused command,");
     println!("3 authorization required (no request was sent).");
@@ -685,6 +690,75 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
     Ok(options)
 }
 
+/// Which flags an invocation actually supplied. Checked as a whole so flag
+/// applicability is one decision instead of an `if` per flag.
+#[derive(Clone, Copy, Default)]
+struct Flags {
+    state_dir: bool,
+    command_id: bool,
+    policy: bool,
+    write: bool,
+    json: bool,
+    yes: bool,
+}
+
+impl Flags {
+    /// The supplied flags `honored` does not include, named as they are typed,
+    /// in documentation order.
+    fn unsuited_for(self, honored: Flags) -> Vec<&'static str> {
+        [
+            (self.state_dir && !honored.state_dir, "--state-dir"),
+            (self.command_id && !honored.command_id, "--command-id"),
+            (self.policy && !honored.policy, "--policy"),
+            (self.write && !honored.write, "--write"),
+            (self.json && !honored.json, "--json"),
+            (self.yes && !honored.yes, "--yes"),
+        ]
+        .into_iter()
+        .filter(|(supplied, _)| *supplied)
+        .map(|(_, name)| name)
+        .collect()
+    }
+}
+
+impl Options {
+    fn supplied(&self) -> Flags {
+        Flags {
+            state_dir: self.state_dir.is_some(),
+            command_id: self.command_id_override.is_some(),
+            policy: self.policy.is_some(),
+            write: self.write.is_some(),
+            json: self.json,
+            yes: self.yes,
+        }
+    }
+}
+
+/// The flags each command can honor. A flag outside this set is a usage error
+/// that names it, never a silent no-op. Every daemon command maps a request
+/// over the socket, so all five daemon-facing flags apply to each of them
+/// (`--policy` is consulted only for a dangerous operation and `--yes` only
+/// authorizes one, but both are valid flags on any daemon command). The local
+/// commands honor only what they use: `schema` publishes documents, so
+/// `--write`; `help` renders the command table, so nothing.
+fn honored_flags(command: &str) -> Flags {
+    match command {
+        "schema" => Flags {
+            write: true,
+            ..Flags::default()
+        },
+        "help" | "--help" => Flags::default(),
+        _ => Flags {
+            state_dir: true,
+            command_id: true,
+            policy: true,
+            json: true,
+            yes: true,
+            ..Flags::default()
+        },
+    }
+}
+
 /// The versioned success envelope: the daemon's own body, unmodified.
 fn success_envelope(
     command: &str,
@@ -738,12 +812,16 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
         print_help();
         return Ok(EXIT_USAGE);
     };
-    // `--write` publishes the schemas; it means nothing for any other command,
-    // and a flag that means nothing is a usage error rather than a silent
-    // no-op. Checked before the help and unknown-command paths so it can never
-    // be dropped on the floor.
-    if options.write.is_some() && name != "schema" {
-        eprintln!("symbiote: --write is only valid with `schema`");
+    // A flag a command cannot honor is a usage error that names it, never a
+    // silent no-op. This is the one place flag applicability is decided, for
+    // the local commands and the daemon commands alike, before any of them is
+    // answered or connects.
+    let unsuited = options.supplied().unsuited_for(honored_flags(&name));
+    if !unsuited.is_empty() {
+        eprintln!(
+            "symbiote: `{name}` does not accept {}; try `symbiote help`",
+            unsuited.join(", ")
+        );
         return Ok(EXIT_USAGE);
     }
     if name == "help" || name == "--help" {
@@ -756,18 +834,6 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     if name == "schema" {
         if !options.args.is_empty() {
             eprintln!("symbiote: schema takes no arguments; try `symbiote help`");
-            return Ok(EXIT_USAGE);
-        }
-        // `schema` prints machine-readable JSON, but it is not the versioned
-        // `--json` envelope: that envelope's `result` must carry a `kind` the
-        // documents do not have, so wrapping them would either break the
-        // published envelope schema or invent a protocol result body. A flag
-        // that cannot be honored is a usage error, never a silent
-        // reinterpretation.
-        if options.json {
-            eprintln!(
-                "symbiote: `schema` already prints machine-readable JSON and does not emit the --json envelope"
-            );
             return Ok(EXIT_USAGE);
         }
         match &options.write {
@@ -1233,6 +1299,41 @@ mod tests {
         assert_eq!(literal.command_id_override.as_deref(), Some("--yes"));
         assert_eq!(literal.command.as_deref(), Some("health"));
         assert!(!literal.yes);
+    }
+
+    #[test]
+    fn flag_applicability_is_declared_per_command() {
+        // One table decides which flags each command can honor, so adding a
+        // local command means naming its flags there rather than sprinkling
+        // `if` checks through the handler. `schema` honors `--write` alone,
+        // `help` honors nothing, and daemon commands honor the daemon flags.
+        let schema = options(&["--write", "/tmp/s", "schema"]);
+        assert!(
+            schema
+                .supplied()
+                .unsuited_for(honored_flags("schema"))
+                .is_empty()
+        );
+        for (arguments, named) in [
+            (vec!["--json", "schema"], "--json"),
+            (vec!["--yes", "help"], "--yes"),
+            (vec!["--write", "/tmp/s", "health"], "--write"),
+        ] {
+            let supplied = options(&arguments).supplied();
+            let command = arguments.last().unwrap();
+            assert_eq!(
+                supplied.unsuited_for(honored_flags(command)),
+                vec![named],
+                "{arguments:?}"
+            );
+        }
+        let daemon = options(&["--state-dir", "/s", "--json", "--yes", "shutdown"]);
+        assert!(
+            daemon
+                .supplied()
+                .unsuited_for(honored_flags("shutdown"))
+                .is_empty()
+        );
     }
 
     #[test]

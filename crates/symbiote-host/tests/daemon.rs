@@ -1375,8 +1375,17 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
         .unwrap();
     assert_eq!(dead.status.code(), Some(1));
 
-    // Help exits 0 with the command table.
-    let help = run(&["help"]);
+    // Help exits 0 with the command table. It is answered locally and honors
+    // no flags, so it is invoked without the `--state-dir` the `run` closure
+    // prepends: a flag a command cannot honor is a usage error, never a silent
+    // no-op (see `flags_a_command_cannot_honor_are_usage_errors` in
+    // `cli_schema_contract`).
+    let help = Command::new(env!("CARGO_BIN_EXE_symbiote"))
+        .arg("help")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("run-started-dispatch"));
 }

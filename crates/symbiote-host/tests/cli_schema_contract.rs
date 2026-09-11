@@ -531,6 +531,69 @@ fn json_is_rejected_by_schema_rather_than_reinterpreted() {
 }
 
 #[test]
+fn flags_a_command_cannot_honor_are_usage_errors() {
+    // One rule, applied uniformly: each command declares the flags it can
+    // honor, and a supplied flag outside that set is a usage error that names
+    // it, never a silent no-op. Daemon commands honor the daemon-facing flags;
+    // the local `schema` honors `--write` alone; the local `help` honors
+    // nothing. This fails against the earlier behavior, where `--json help`
+    // exited 0 with plain help text and `--state-dir`/`--command-id`/
+    // `--policy`/`--yes` were accepted and discarded by the local commands.
+    let run_bare = |arguments: &[&str]| {
+        Process::new(CLI)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .env_remove("SYMBIOTE_CLI_POLICY")
+            .output()
+            .expect("the CLI binary runs")
+    };
+    for (arguments, named) in [
+        (vec!["--json", "help"], "--json"),
+        (vec!["--state-dir", "/tmp", "help"], "--state-dir"),
+        (vec!["--yes", "help"], "--yes"),
+        (vec!["--yes", "schema"], "--yes"),
+        (vec!["--command-id", "c1", "schema"], "--command-id"),
+        (vec!["--policy", "/tmp/p.json", "schema"], "--policy"),
+    ] {
+        let output = run_bare(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{arguments:?} must be a usage error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{arguments:?} must print no result: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(named),
+            "{arguments:?} must name {named}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // A daemon flag on a local command is refused before any connection, so
+    // the support helper's fake daemon sees no frame.
+    let (help, frame) = run_cli(&["help"]);
+    assert_eq!(help.status.code(), Some(1));
+    assert!(frame.is_none(), "a refused flag must not reach the daemon");
+    // And the flags a command does honor keep working: `--json` on a daemon
+    // command still produces the envelope and reaches the daemon.
+    let (health, frame) = run_cli(&["health", "--json"]);
+    assert_eq!(
+        health.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&health.stderr)
+    );
+    assert!(
+        frame.is_some(),
+        "`--json health` must still reach the daemon"
+    );
+}
+
+#[test]
 fn the_fixtures_stay_within_the_checkers_subset() {
     // If a fixture used a keyword the checker did not implement, "the output
     // validates" would become a claim this test silently ignored. Fail first.
