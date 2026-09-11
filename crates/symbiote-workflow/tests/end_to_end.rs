@@ -813,7 +813,8 @@ fn positions_track_two_projects_and_both_lanes_across_a_daemon_crash() {
         .expect("lane B (ok) start");
     let a_cursor = workflow.read_journal().expect("journal A read");
     let b_cursor = workflow
-        .read_journal_lane(&b_leak_lane())
+        // Both lanes share project B; the lane choice only names the project.
+        .read_journal_lane(&b_ok_lane())
         .expect("journal B read");
     assert!(a_cursor > 0, "project A's evidence trail advanced");
     assert!(b_cursor > 0, "project B's evidence trail advanced");
@@ -830,6 +831,10 @@ fn positions_track_two_projects_and_both_lanes_across_a_daemon_crash() {
     let restored: Vec<symbiote_client_sdk::JournalPosition> =
         serde_json::from_slice(&std::fs::read(&positions_path).unwrap())
             .expect("restore serialized positions");
+    // Both projects are tracked: a restore that lost either key would
+    // default that project's cursor to 0 and fail the exact-equality
+    // asserts below — this pins the file's SHAPE too.
+    assert_eq!(restored.len(), 2, "one position per tracked project");
     let mut workflow =
         symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, &env.repo)
             .expect("connect")
@@ -864,7 +869,7 @@ fn positions_track_two_projects_and_both_lanes_across_a_daemon_crash() {
     // report TEXTS are equal by fixture design — that is not leakage.
     // What proves the projects' work does not cross is the per-task
     // journal filter above and the distinct worktrees the runs produced
-    // in (asserted in the Project-isolation test).
+    // in (asserted below, and in the Project-isolation test).
     assert_eq!(
         b.report.as_deref(),
         Some("implemented the bounded change; produced.txt written by the sandboxed tool")
