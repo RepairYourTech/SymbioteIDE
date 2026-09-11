@@ -177,6 +177,90 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the begin_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-begin-session",
+          "markdownDescription": "Enables the begin_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the finish_demo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-finish-demo",
+          "markdownDescription": "Enables the finish_demo command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the journal_position command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-journal-position",
+          "markdownDescription": "Enables the journal_position command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-preview",
+          "markdownDescription": "Enables the open_preview command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_journal command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-journal",
+          "markdownDescription": "Enables the read_journal command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_demo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-demo",
+          "markdownDescription": "Enables the start_demo command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-session",
+          "markdownDescription": "Enables the stop_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the begin_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-begin-session",
+          "markdownDescription": "Denies the begin_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the finish_demo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-finish-demo",
+          "markdownDescription": "Denies the finish_demo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the journal_position command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-journal-position",
+          "markdownDescription": "Denies the journal_position command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-preview",
+          "markdownDescription": "Denies the open_preview command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_journal command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-journal",
+          "markdownDescription": "Denies the read_journal command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_demo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-demo",
+          "markdownDescription": "Denies the start_demo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-session",
+          "markdownDescription": "Denies the stop_session command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

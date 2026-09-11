@@ -4,6 +4,7 @@ import {
   beginSession,
   finishDemo,
   journalPosition,
+  openPreview,
   readJournal,
   startDemo,
   stopSession,
@@ -66,6 +67,7 @@ export function App(): ReactElement {
   const [reservationBase, setReservationBase] = useState(DEFAULT_RESERVATION_BASE);
   const [repository, setRepository] = useState(DEFAULT_REPOSITORY);
   const [dispatchId, setDispatchId] = useState("");
+  const [outcome, setOutcome] = useState<DemoOutcome | null>(null);
   const [log, setLog] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -154,13 +156,36 @@ export function App(): ReactElement {
           disabled={busy}
           onClick={() => {
             void runAction(busy, setBusy, setLog, "finish-demo", async () => {
-              const outcome = await finishDemo(dispatchId);
-              setDispatchId(outcome.dispatch_id);
-              return formatOutcome(outcome);
+              const finished = await finishDemo(dispatchId);
+              setDispatchId(finished.dispatch_id);
+              setOutcome(finished);
+              return formatOutcome(finished);
             });
           }}
         >
           Run &amp; read evidence
+        </button>
+        <button
+          type="button"
+          disabled={busy || outcome === null}
+          onClick={() => {
+            if (outcome === null) {
+              return;
+            }
+            void runAction(busy, setBusy, setLog, "preview", () =>
+              openPreview(
+                outcome.dispatch_id,
+                outcome.report ?? "",
+                outcome.worktree.worktree,
+                [
+                  ...outcome.worktree.untracked,
+                  ...outcome.worktree.uncommitted,
+                ],
+              ),
+            );
+          }}
+        >
+          Preview run output
         </button>
         <button
           type="button"

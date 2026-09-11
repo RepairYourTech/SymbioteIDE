@@ -2,6 +2,17 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "The desktop shell's IPC surface: core events only; every capability flows through the typed commands.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-begin-session",
+    "allow-start-demo",
+    "allow-read-journal",
+    "allow-finish-demo",
+    "allow-journal-position",
+    "allow-stop-session",
+    "allow-open-preview"
+  ]
 }
