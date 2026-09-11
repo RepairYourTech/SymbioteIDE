@@ -14,13 +14,25 @@
 //!
 //! The CLI holds no daemon authority of its own: it cannot widen what the
 //! protocol permits. What it does own is the decision to *send* a dangerous
-//! request at all, and that decision never happens silently. A dangerous
-//! command requires `--yes`, or an interactive `yes` at the prompt when
-//! stdin is a terminal; otherwise the CLI refuses **before connecting**, so
-//! an unattended script cannot stop a Host, start work, or smuggle either
+//! request at all, and that decision never happens silently. An invocation
+//! authorizes a dangerous command one of three ways — `--yes`, an `yes` typed
+//! at the prompt when stdin is a terminal, or a configured **authorization
+//! policy** (`--policy FILE`, else `SYMBIOTE_CLI_POLICY`) that pre-authorizes
+//! the named operation kinds. Otherwise the CLI refuses **before connecting**,
+//! so an unattended script cannot stop a Host, start work, or smuggle either
 //! through `raw` by omitting a flag.
-use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+//!
+//! A policy is a pre-authorization, never a widening: it is only consulted
+//! for an operation that is already dangerous, it is read with the same
+//! private-file discipline the Host applies to its own operator config
+//! (regular file, owned by this user, no group/other bits, bounded), and a
+//! policy that is missing, malformed, insecure or naming an unknown or
+//! non-dangerous kind is a usage failure (exit 1) that sends nothing. It
+//! cannot grant a permission the daemon would refuse, and it does not raise
+//! the CLI's own authority by one bit.
+use std::collections::BTreeSet;
+use std::io::{IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -33,6 +45,24 @@ const EXIT_AUTHORIZATION_REQUIRED: i32 = 3;
 /// The machine-readable envelope's schema identity. Automation keys on this
 /// string, not on the presence of individual fields.
 pub const CLI_SCHEMA: &str = "symbiote.cli/v1";
+
+/// The authorization policy file's schema identity, versioned independently
+/// of the envelope so either can evolve without silently reinterpreting the
+/// other.
+pub const POLICY_SCHEMA: &str = "symbiote.cli-policy/v1";
+
+/// The environment variable consulted when `--policy` is absent. An empty
+/// value means "no policy", like an unset one.
+pub const POLICY_ENV: &str = "SYMBIOTE_CLI_POLICY";
+
+/// A policy grants authority, so it is held to the same bound the Host holds
+/// its own operator config to rather than being read whole.
+const POLICY_LIMIT: u64 = 64 * 1024;
+
+/// The kind the help text's policy example names. A test pins that it is still
+/// a dangerous kind, so the example can never drift into one a policy would
+/// have to reject.
+const POLICY_EXAMPLE_KIND: &str = "shutdown";
 
 fn main() {
     match run() {
@@ -74,21 +104,108 @@ impl Risk {
     }
 }
 
-/// The client-side authorization decision: pure, so every branch is unit
-/// tested without a daemon or a terminal.
+/// The ONE table of operation kinds this CLI knows and what sending each can
+/// do. Lookups, the dangerous list the help prints, and policy validation all
+/// read this array, so they cannot drift apart. A kind absent from the table
+/// cannot be proven safe and is treated as dangerous.
+const OPERATION_RISKS: &[(&str, Risk)] = &[
+    // Reads: no daemon state changes.
+    ("hello", Risk::ReadOnly),
+    ("health", Risk::ReadOnly),
+    ("get_host_pulse", Risk::ReadOnly),
+    ("get_project", Risk::ReadOnly),
+    ("get_task", Risk::ReadOnly),
+    ("read_journal", Risk::ReadOnly),
+    ("get_dispatch_preparation", Risk::ReadOnly),
+    ("get_scheduling_projection", Risk::ReadOnly),
+    ("get_team", Risk::ReadOnly),
+    ("get_task_origin", Risk::ReadOnly),
+    ("get_binding", Risk::ReadOnly),
+    ("get_binding_readiness", Risk::ReadOnly),
+    ("get_task_dependencies", Risk::ReadOnly),
+    ("get_route", Risk::ReadOnly),
+    ("resolve_route", Risk::ReadOnly),
+    ("get_work", Risk::ReadOnly),
+    ("get_provider_connection", Risk::ReadOnly),
+    ("get_billing_entitlement", Risk::ReadOnly),
+    ("get_model_descriptor", Risk::ReadOnly),
+    ("get_resource_consent", Risk::ReadOnly),
+    // Mutations: they change state, but they neither start or end execution
+    // nor widen authority.
+    ("create_task", Risk::Mutation),
+    ("prepare_dispatch", Risk::Mutation),
+    ("request_task_completion", Risk::Mutation),
+    ("request_elevation", Risk::Mutation),
+    ("replace_binding", Risk::Mutation),
+    ("record_route", Risk::Mutation),
+    ("set_task_dependencies", Risk::Mutation),
+    ("acquire_task_lease", Risk::Mutation),
+    ("release_task_lease", Risk::Mutation),
+    ("expire_stale_leases", Risk::Mutation),
+    ("replace_provider_connection", Risk::Mutation),
+    ("replace_billing_entitlement", Risk::Mutation),
+    ("replace_model_descriptor", Risk::Mutation),
+    ("replace_team", Risk::Mutation),
+    ("create_work", Risk::Mutation),
+    ("change_work", Risk::Mutation),
+    ("assign_task_origin", Risk::Mutation),
+    ("register_project", Risk::Mutation),
+    ("observe_root_placement", Risk::Mutation),
+    ("revoke_elevation", Risk::Mutation),
+    ("revoke_resource_consent", Risk::Mutation),
+    // Starting or ending execution, or granting capability.
+    ("start_prepared_task", Risk::Dangerous),
+    ("run_started_dispatch", Risk::Dangerous),
+    ("shutdown", Risk::Dangerous),
+    ("decide_elevation", Risk::Dangerous),
+    ("record_resource_consent", Risk::Dangerous),
+];
+
+/// `None` for a kind this build does not know: the caller must fail closed
+/// rather than assume safety.
+fn known_risk_of_kind(kind: &str) -> Option<Risk> {
+    OPERATION_RISKS
+        .iter()
+        .find(|(known, _)| *known == kind)
+        .map(|(_, risk)| *risk)
+}
+
+/// An unknown kind cannot be proven safe, so it is Dangerous rather than
+/// silently allowed — and, for the same reason, it is not *nameable* by a
+/// policy (`known_risk_of_kind` returns `None` for it).
+fn risk_of_kind(kind: &str) -> Risk {
+    known_risk_of_kind(kind).unwrap_or(Risk::Dangerous)
+}
+
+/// How a request came to be authorized. Kept as a value so the decision is
+/// pure and every branch is unit tested without a daemon or a terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Authorization {
-    /// Send the request as-is.
-    Allowed,
+    /// The operation is not dangerous: nothing needed authorizing.
+    NotRequired,
+    /// `--yes` authorized this invocation.
+    Flag,
+    /// A configured policy pre-authorizes this operation kind.
+    Policy,
     /// Ask on the terminal; only an explicit `yes` proceeds.
     Prompt,
     /// Refuse before connecting.
     Refused,
 }
 
-fn decide(risk: Risk, authorized: bool, interactive: bool) -> Authorization {
-    if !risk.requires_authorization() || authorized {
-        return Authorization::Allowed;
+/// `--yes` outranks a policy (it is the narrower, per-invocation grant) and
+/// both outrank the prompt. A policy is only ever consulted for an operation
+/// that is already dangerous, so it can never make a read or a mutation
+/// "allowed" — those never needed authorization to begin with.
+fn authorize(risk: Risk, flag: bool, policy_grant: bool, interactive: bool) -> Authorization {
+    if !risk.requires_authorization() {
+        return Authorization::NotRequired;
+    }
+    if flag {
+        return Authorization::Flag;
+    }
+    if policy_grant {
+        return Authorization::Policy;
     }
     if interactive {
         Authorization::Prompt
@@ -103,65 +220,126 @@ fn confirmation_accepted(line: &str) -> bool {
     line.trim().eq_ignore_ascii_case("yes")
 }
 
-/// Risk per protocol operation kind. This ONE table classifies both a typed
-/// command and the same operation supplied through `raw`, so the two paths
-/// cannot drift apart — and the decision follows what the operation can do,
-/// not which command name was typed. A kind this table does not know cannot
-/// be proven safe, so it is Dangerous rather than silently allowed.
-fn risk_of_kind(kind: &str) -> Risk {
-    match kind {
-        // Reads: no daemon state changes.
-        "hello"
-        | "health"
-        | "get_host_pulse"
-        | "get_project"
-        | "get_task"
-        | "read_journal"
-        | "get_dispatch_preparation"
-        | "get_scheduling_projection"
-        | "get_team"
-        | "get_task_origin"
-        | "get_binding"
-        | "get_binding_readiness"
-        | "get_task_dependencies"
-        | "get_route"
-        | "resolve_route"
-        | "get_work"
-        | "get_provider_connection"
-        | "get_billing_entitlement"
-        | "get_model_descriptor"
-        | "get_resource_consent" => Risk::ReadOnly,
-        // Mutations: they change state, but they neither start or end
-        // execution nor widen authority.
-        "create_task"
-        | "prepare_dispatch"
-        | "request_task_completion"
-        | "request_elevation"
-        | "replace_binding"
-        | "record_route"
-        | "set_task_dependencies"
-        | "acquire_task_lease"
-        | "release_task_lease"
-        | "expire_stale_leases"
-        | "replace_provider_connection"
-        | "replace_billing_entitlement"
-        | "replace_model_descriptor"
-        | "replace_team"
-        | "create_work"
-        | "change_work"
-        | "assign_task_origin"
-        | "register_project"
-        | "observe_root_placement"
-        | "revoke_elevation"
-        | "revoke_resource_consent" => Risk::Mutation,
-        // Starting or ending execution, or granting capability.
-        "start_prepared_task"
-        | "run_started_dispatch"
-        | "shutdown"
-        | "decide_elevation"
-        | "record_resource_consent" => Risk::Dangerous,
-        _ => Risk::Dangerous,
+/// The parsed authorization policy: the operation kinds an operator has
+/// pre-authorized for noninteractive runs, and the point after which that
+/// pre-authorization lapses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Policy {
+    authorize: BTreeSet<String>,
+    expires_at: Option<u64>,
+}
+
+impl Policy {
+    /// A policy grants exactly the dangerous kinds it lists, and only until
+    /// it expires. An expired policy is not an error: it simply grants
+    /// nothing, so the ordinary refusal path reports it.
+    fn authorizes(&self, kind: &str, now_ms: u64) -> bool {
+        if self.expires_at.is_some_and(|expiry| now_ms > expiry) {
+            return false;
+        }
+        self.authorize.contains(kind)
     }
+
+    fn expired_at(&self, now_ms: u64) -> Option<u64> {
+        self.expires_at.filter(|expiry| now_ms > *expiry)
+    }
+}
+
+/// The policy file as written by an operator. `deny_unknown_fields` matters:
+/// a misspelled key (`authorise`, `expires`) would otherwise be ignored and
+/// the operator would believe they had configured something they had not.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyFile {
+    schema: String,
+    authorize: Vec<String>,
+    #[serde(default)]
+    expires_at: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolicyError {
+    /// Missing, unreadable, a directory, or larger than the bound.
+    Unreadable,
+    /// Not a regular file, or readable/writable by group or other.
+    Insecure,
+    /// Not the policy schema, or an unknown/empty/non-dangerous `authorize`.
+    Invalid,
+}
+
+impl std::fmt::Display for PolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PolicyError::Unreadable => "cannot read the policy as a regular file",
+            PolicyError::Insecure => {
+                "the policy must be a regular file, owned by this user, with no group/other \
+                 permission bits (chmod 600)"
+            }
+            PolicyError::Invalid => "the policy is not a valid symbiote.cli-policy/v1 document",
+        })
+    }
+}
+
+impl std::error::Error for PolicyError {}
+
+/// Loads and validates a policy with the discipline the Host applies to its
+/// own private files: a symlink, a shared file, a foreign owner, an oversized
+/// file or a schema that does not name only *known dangerous* kinds is
+/// refused rather than interpreted. A policy that cannot be honored is never
+/// silently downgraded to "no policy".
+fn load_policy(path: &Path) -> Result<Policy, PolicyError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // `symlink_metadata` so a symlink is refused rather than followed: the
+    // file that grants authority must be the file the operator inspected.
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| PolicyError::Unreadable)?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(PolicyError::Insecure);
+    }
+    let file = std::fs::File::open(path).map_err(|_| PolicyError::Unreadable)?;
+    let mut bytes = Vec::new();
+    (&file)
+        .take(POLICY_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| PolicyError::Unreadable)?;
+    if bytes.len() as u64 > POLICY_LIMIT {
+        return Err(PolicyError::Unreadable);
+    }
+    let parsed: PolicyFile = serde_json::from_slice(&bytes).map_err(|_| PolicyError::Invalid)?;
+    if parsed.schema != POLICY_SCHEMA {
+        return Err(PolicyError::Invalid);
+    }
+    if parsed.authorize.is_empty() {
+        return Err(PolicyError::Invalid);
+    }
+    let mut authorize = BTreeSet::new();
+    for kind in parsed.authorize {
+        // Only a kind that is *known and dangerous* can be named. A read or a
+        // mutation is already ungated, so listing it would be a no-op the
+        // operator could mistake for coverage; an unknown kind is one the
+        // daemon may not even define, and this CLI refuses to pre-authorize
+        // what it cannot classify. A wildcard is deliberately not a syntax.
+        if known_risk_of_kind(&kind) != Some(Risk::Dangerous) {
+            return Err(PolicyError::Invalid);
+        }
+        authorize.insert(kind);
+    }
+    Ok(Policy {
+        authorize,
+        expires_at: parsed.expires_at,
+    })
+}
+
+/// The policy path for this invocation: an explicit `--policy` wins, else
+/// `SYMBIOTE_CLI_POLICY`. An empty variable means "no policy", like unset.
+fn resolved_policy_path(options: &Options) -> Option<PathBuf> {
+    options.policy.clone().or_else(|| {
+        std::env::var_os(POLICY_ENV)
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+    })
 }
 
 /// One command: the operation JSON builder plus the kind it emits. `raw`
@@ -453,7 +631,7 @@ fn print_help() {
     println!("symbiote — administrative client for a running symbioted Host");
     println!();
     println!(
-        "usage: symbiote [--state-dir DIR] [--command-id ID] [--json] [--yes] <command> [args...]"
+        "usage: symbiote [--state-dir DIR] [--command-id ID] [--policy FILE] [--json] [--yes] <command> [args...]"
     );
     println!(
         "       symbiote help   (--command-id overrides the minted id; same id + same\n                        intent replays a lost response instead of re-executing)"
@@ -462,18 +640,36 @@ fn print_help() {
     println!("options:");
     println!("  --state-dir DIR   the private directory symbioted runs with");
     println!("  --command-id ID   idempotency key for a retried command");
+    println!("  --policy FILE     pre-authorize dangerous operation kinds for noninteractive runs");
     println!("  --json            one machine-readable envelope per invocation on stdout");
-    println!("  --yes             explicit authorization for a dangerous command");
+    println!("  --yes             explicit authorization for this one dangerous command");
     println!();
     println!("responses are the daemon's JSON (pretty-printed). Exit codes:");
     println!("0 success, 1 usage/connection failure, 2 daemon-refused command,");
     println!("3 authorization required (no request was sent).");
     println!();
     println!("commands marked * can send a dangerous operation — one that starts or ends");
-    println!("execution, or grants capability. Those require --yes, or an interactive \"yes\"");
-    println!("prompt when stdin is a terminal; otherwise they refuse with exit 3 and send");
-    println!("nothing. `raw` is marked because the operation it names decides: it is gated");
-    println!("exactly like the equivalent typed command, reads included.");
+    println!("execution, or grants capability:");
+    let dangerous: Vec<&str> = OPERATION_RISKS
+        .iter()
+        .filter(|(_, risk)| risk.requires_authorization())
+        .map(|(kind, _)| *kind)
+        .collect();
+    println!("  {}", dangerous.join(", "));
+    println!("Those are authorized by --yes, or by an interactive \"yes\" prompt when stdin is");
+    println!("a terminal, or by a policy file that names the operation kind. Otherwise they");
+    println!("refuse with exit 3 and send nothing. `raw` is marked because the operation it");
+    println!("names decides: it is authorized exactly like the equivalent typed command, reads");
+    println!("included.");
+    println!();
+    println!("a policy ({POLICY_SCHEMA}) names the kinds it pre-authorizes:");
+    println!(
+        r#"  {{"schema":"{POLICY_SCHEMA}","authorize":["{POLICY_EXAMPLE_KIND}"],"expires_at":4102444800000}}"#
+    );
+    println!("`--policy FILE`, else ${POLICY_ENV}, selects it. It must be a regular file,");
+    println!("owned by you, with no group/other permission bits (chmod 600). It grants only");
+    println!("the kinds it names and only until expires_at (optional, unix milliseconds); an");
+    println!("unreadable, insecure or invalid policy is a usage failure that sends nothing.");
     println!();
     println!("commands:");
     for command in commands() {
@@ -492,6 +688,7 @@ fn print_help() {
 struct Options {
     state_dir: Option<PathBuf>,
     command_id_override: Option<String>,
+    policy: Option<PathBuf>,
     json: bool,
     yes: bool,
     command: Option<String>,
@@ -507,6 +704,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
     let mut options = Options {
         state_dir: None,
         command_id_override: None,
+        policy: None,
         json: false,
         yes: false,
         command: None,
@@ -526,16 +724,16 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
             "--" => only_positional = true,
             "--json" => options.json = true,
             "--yes" => options.yes = true,
-            "--state-dir" | "--command-id" => {
+            "--state-dir" | "--command-id" | "--policy" => {
                 index += 1;
                 let value = arguments
                     .get(index)
                     .cloned()
                     .ok_or_else(|| Usage(format!("{token} needs a value")))?;
-                if token == "--state-dir" {
-                    options.state_dir = Some(PathBuf::from(value));
-                } else {
-                    options.command_id_override = Some(value);
+                match token.as_str() {
+                    "--state-dir" => options.state_dir = Some(PathBuf::from(value)),
+                    "--command-id" => options.command_id_override = Some(value),
+                    _ => options.policy = Some(PathBuf::from(value)),
                 }
             }
             flag if flag.starts_with("--") => {
@@ -626,16 +824,60 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let decision = decide(
-        risk_of_kind(&kind),
+    let risk = risk_of_kind(&kind);
+    let now_ms = current_time_ms();
+    // A policy is consulted ONLY for an operation that is already dangerous
+    // and that `--yes` did not already authorize. Two consequences are
+    // deliberate: a read never touches the policy file, so a broken policy
+    // cannot brick `health`; and `--yes` is a complete authorization on its
+    // own, so a policy cannot block an explicitly authorized run.
+    let mut policy_error: Option<(PathBuf, PolicyError)> = None;
+    let mut policy_expired: Option<(PathBuf, u64)> = None;
+    let mut policy_grant = false;
+    if risk.requires_authorization() && !options.yes {
+        if let Some(path) = resolved_policy_path(&options) {
+            match load_policy(&path) {
+                Ok(policy) => match policy.expired_at(now_ms) {
+                    Some(expiry) => policy_expired = Some((path, expiry)),
+                    None => policy_grant = policy.authorizes(&kind, now_ms),
+                },
+                Err(error) => policy_error = Some((path, error)),
+            }
+        }
+    }
+    // A policy that cannot be honored is an operator error, not a missing
+    // authorization: it is reported as such and nothing is sent. Silently
+    // treating it as "no policy" would let a typo quietly downgrade a
+    // pre-authorization the operator believes is in force.
+    if let Some((path, error)) = policy_error {
+        let message = format!("cannot use the policy {}: {error}", path.display());
+        if options.json {
+            println!(
+                "{}",
+                error_envelope(
+                    &name,
+                    &minted_command_id(&options, &name),
+                    "policy_invalid",
+                    &message
+                )
+            );
+            return Ok(EXIT_USAGE);
+        }
+        eprintln!("symbiote: {message}");
+        eprintln!("         no request was sent (exit 1)");
+        return Ok(EXIT_USAGE);
+    }
+    let decision = authorize(
+        risk,
         options.yes,
+        policy_grant,
         std::io::stdin().is_terminal(),
     );
     // Decided BEFORE anything touches the daemon: an unauthorized invocation
     // must not even connect (pinned by the integration test's never-accepted
     // socket).
     match decision {
-        Authorization::Allowed => {}
+        Authorization::NotRequired | Authorization::Flag | Authorization::Policy => {}
         Authorization::Prompt => {
             if !confirm(&command, &kind) {
                 if options.json {
@@ -657,6 +899,16 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
             }
         }
         Authorization::Refused => {
+            // The refusal names every remedy, and names the policy explicitly
+            // when one was configured but had lapsed — otherwise an operator
+            // whose policy expired sees only "--yes" and never learns why.
+            let message = match &policy_expired {
+                Some((path, expiry)) => format!(
+                    "the policy {} pre-authorized {kind} but expired at {expiry}",
+                    path.display()
+                ),
+                None => format!("noninteractive runs require --yes or a policy naming \"{kind}\""),
+            };
             if options.json {
                 println!(
                     "{}",
@@ -664,14 +916,14 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
                         &name,
                         &minted_command_id(&options, &name),
                         "authorization_required",
-                        "dangerous operation requires --yes when stdin is not a terminal"
+                        &message
                     )
                 );
             } else {
-                eprintln!(
-                    "symbiote: {name} sends the dangerous operation {kind}; noninteractive runs require --yes"
-                );
-                eprintln!("         (an interactive run prompts instead; no request was sent)");
+                eprintln!("symbiote: {name} sends the dangerous operation {kind}; {message}");
+                if policy_expired.is_none() {
+                    eprintln!("         (an interactive run prompts instead; no request was sent)");
+                }
             }
             return Ok(EXIT_AUTHORIZATION_REQUIRED);
         }
@@ -756,6 +1008,16 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     }
 }
 
+/// Unix milliseconds, the unit a policy's `expires_at` is written in. A clock
+/// before the epoch reads as 0, which only makes an expiry more likely to have
+/// lapsed — the fail-closed direction.
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 /// Distinguishes repeated minting inside one process. Its absence is a real
 /// hazard rather than a theoretical one: two invocations in the same
 /// millisecond would otherwise share an idempotency key, and the daemon would
@@ -821,6 +1083,7 @@ mod tests {
         }
         assert_eq!(risk_of_kind("register_project"), Risk::Mutation);
         assert_eq!(risk_of_kind("create_task"), Risk::Mutation);
+        assert_eq!(risk_of_kind("get_host_pulse"), Risk::ReadOnly);
         // Grants are dangerous; the matching revocations narrow authority
         // and are not.
         assert!(risk_of_kind("decide_elevation").requires_authorization());
@@ -869,24 +1132,81 @@ mod tests {
     #[test]
     fn read_only_and_mutating_commands_never_prompt() {
         for risk in [Risk::ReadOnly, Risk::Mutation] {
-            assert_eq!(decide(risk, false, false), Authorization::Allowed);
-            assert_eq!(decide(risk, false, true), Authorization::Allowed);
-            assert_eq!(decide(risk, true, false), Authorization::Allowed);
+            assert_eq!(
+                authorize(risk, false, false, false),
+                Authorization::NotRequired
+            );
+            assert_eq!(
+                authorize(risk, false, false, true),
+                Authorization::NotRequired
+            );
+            assert_eq!(
+                authorize(risk, true, false, false),
+                Authorization::NotRequired
+            );
         }
     }
 
     #[test]
     fn dangerous_commands_refuse_without_authorization_or_a_terminal() {
-        // No flag and no terminal: refuse — never a silent default.
+        // No flag, no policy, no terminal: refuse — never a silent default.
         assert_eq!(
-            decide(Risk::Dangerous, false, false),
+            authorize(Risk::Dangerous, false, false, false),
             Authorization::Refused
         );
         // An interactive terminal prompts instead of refusing.
-        assert_eq!(decide(Risk::Dangerous, false, true), Authorization::Prompt);
-        // An explicit authorization is honored in both modes.
-        assert_eq!(decide(Risk::Dangerous, true, false), Authorization::Allowed);
-        assert_eq!(decide(Risk::Dangerous, true, true), Authorization::Allowed);
+        assert_eq!(
+            authorize(Risk::Dangerous, false, false, true),
+            Authorization::Prompt
+        );
+        // `--yes` is honored in both modes and is reported as the flag's grant.
+        assert_eq!(
+            authorize(Risk::Dangerous, true, false, false),
+            Authorization::Flag
+        );
+        assert_eq!(
+            authorize(Risk::Dangerous, true, false, true),
+            Authorization::Flag
+        );
+    }
+
+    #[test]
+    fn a_policy_grant_is_authorization_without_a_flag_or_a_terminal() {
+        assert_eq!(
+            authorize(Risk::Dangerous, false, true, false),
+            Authorization::Policy
+        );
+        assert_eq!(
+            authorize(Risk::Dangerous, false, true, true),
+            Authorization::Policy
+        );
+        // The per-invocation flag is the narrower grant, so it is the one
+        // reported when both apply.
+        assert_eq!(
+            authorize(Risk::Dangerous, true, true, false),
+            Authorization::Flag
+        );
+    }
+
+    /// The table is the single source of truth, so these pin the properties
+    /// the rest of the CLI (and the help text) read out of it.
+    #[test]
+    fn the_operation_table_is_consistent_and_fails_closed() {
+        let mut kinds: Vec<&str> = OPERATION_RISKS.iter().map(|(kind, _)| *kind).collect();
+        let mut sorted = kinds.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(kinds.len(), sorted.len(), "the table has duplicate kinds");
+        kinds.sort_unstable();
+        // Every kind is found by lookup, and the declared entry is the risk.
+        for (kind, risk) in OPERATION_RISKS {
+            assert_eq!(known_risk_of_kind(kind), Some(*risk), "{kind}");
+            assert_eq!(risk_of_kind(kind), *risk, "{kind}");
+        }
+        // A kind this build does not know is Dangerous (fail closed) but is
+        // NOT nameable by a policy, because only `Some(Dangerous)` is.
+        assert_eq!(known_risk_of_kind("delete_everything"), None);
+        assert_eq!(risk_of_kind("delete_everything"), Risk::Dangerous);
     }
 
     #[test]
@@ -984,5 +1304,189 @@ mod tests {
         assert_ne!(first, second);
         options.command_id_override = Some("retry-1".into());
         assert_eq!(minted_command_id(&options, "health"), "retry-1");
+    }
+
+    const SHUTDOWN_ONLY: &str = r#"{"schema":"symbiote.cli-policy/v1","authorize":["shutdown"]}"#;
+
+    static NEXT_POLICY_FILE: AtomicU64 = AtomicU64::new(0);
+
+    /// Writes a policy file with an explicit mode and returns its path; the
+    /// test removes it. Uniqueness is per (process, call) so parallel tests
+    /// cannot see each other's file.
+    fn write_policy(contents: &str, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!(
+            "symbiote-cli-policy-unit-{}-{}",
+            std::process::id(),
+            NEXT_POLICY_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, contents).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    fn remove(path: &Path) {
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_private_policy_authorizes_exactly_the_dangerous_kinds_it_names() {
+        let path = write_policy(SHUTDOWN_ONLY, 0o600);
+        let policy = load_policy(&path).expect("a 0600 policy is honored");
+        assert_eq!(policy.expires_at, None);
+        assert!(policy.authorizes("shutdown", 0));
+        // Not a wildcard: a kind the policy does not name stays unauthorized,
+        // and a kind that was never gated stays ungated rather than "granted".
+        for kind in ["start_prepared_task", "decide_elevation", "health"] {
+            assert!(!policy.authorizes(kind, 0), "{kind}");
+        }
+        remove(&path);
+    }
+
+    #[test]
+    fn a_policy_lapses_after_its_expiry_rather_than_erroring() {
+        let path = write_policy(
+            r#"{"schema":"symbiote.cli-policy/v1","authorize":["shutdown"],"expires_at":1000}"#,
+            0o600,
+        );
+        let policy = load_policy(&path).unwrap();
+        // The expiry instant itself is still authorized; the next millisecond
+        // is not. An expired policy grants nothing but is not a load failure —
+        // the ordinary refusal path reports it.
+        assert!(policy.authorizes("shutdown", 1000));
+        assert!(!policy.authorizes("shutdown", 1001));
+        assert_eq!(policy.expired_at(1000), None);
+        assert_eq!(policy.expired_at(1001), Some(1000));
+        remove(&path);
+    }
+
+    #[test]
+    fn every_dangerous_kind_in_the_table_can_be_named_by_a_policy() {
+        let dangerous: Vec<&str> = OPERATION_RISKS
+            .iter()
+            .filter(|(_, risk)| risk.requires_authorization())
+            .map(|(kind, _)| *kind)
+            .collect();
+        // Pins the set the help text and the policy schema describe.
+        assert_eq!(
+            dangerous,
+            vec![
+                "start_prepared_task",
+                "run_started_dispatch",
+                "shutdown",
+                "decide_elevation",
+                "record_resource_consent",
+            ]
+        );
+        let contents = format!(
+            r#"{{"schema":"symbiote.cli-policy/v1","authorize":[{}]}}"#,
+            dangerous
+                .iter()
+                .map(|kind| format!("\"{kind}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let path = write_policy(&contents, 0o600);
+        // The help text's example must stay a kind a policy accepts.
+        assert!(dangerous.contains(&POLICY_EXAMPLE_KIND));
+        let policy = load_policy(&path).expect("every dangerous kind is nameable");
+        for kind in dangerous {
+            assert!(policy.authorizes(kind, 0), "{kind}");
+        }
+        remove(&path);
+    }
+
+    #[test]
+    fn a_policy_that_cannot_be_honored_is_refused_not_ignored() {
+        // A policy grants authority, so it is read strictly: an unknown schema
+        // version, a missing or empty list, a wildcard, a typo'd or unknown
+        // key, and — deliberately — a kind that is known but NOT dangerous
+        // (listing it would be a no-op the operator could mistake for
+        // coverage), plus a kind this build cannot classify at all.
+        for contents in [
+            r#"{"schema":"symbiote.cli-policy/v2","authorize":["shutdown"]}"#,
+            r#"{"authorize":["shutdown"]}"#,
+            r#"{"schema":"symbiote.cli-policy/v1"}"#,
+            r#"{"schema":"symbiote.cli-policy/v1","authorize":[]}"#,
+            r#"{"schema":"symbiote.cli-policy/v1","authorize":["*"]}"#,
+            r#"{"schema":"symbiote.cli-policy/v1","authorize":["shutdown","health"]}"#,
+            r#"{"schema":"symbiote.cli-policy/v1","authorize":["create_task"]}"#,
+            r#"{"schema":"symbiote.cli-policy/v1","authorize":["delete_everything"]}"#,
+            r#"{"schema":"symbiote.cli-policy/v1","authorise":["shutdown"]}"#,
+            r#"{"schema":"symbiote.cli-policy/v1","authorize":["shutdown"],"expires":"soon"}"#,
+            "not json",
+        ] {
+            let path = write_policy(contents, 0o600);
+            assert_eq!(load_policy(&path), Err(PolicyError::Invalid), "{contents}");
+            remove(&path);
+        }
+        // A policy that cannot be read at all is Unreadable, not Invalid.
+        assert_eq!(
+            load_policy(Path::new("/nonexistent/symbiote-policy.json")),
+            Err(PolicyError::Unreadable)
+        );
+    }
+
+    #[test]
+    fn a_shared_symlinked_oversized_or_non_file_policy_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        // Any group/other bit is authority a neighbor could rewrite.
+        for mode in [0o640, 0o604, 0o606, 0o660, 0o666, 0o777] {
+            let path = write_policy(SHUTDOWN_ONLY, mode);
+            assert_eq!(load_policy(&path), Err(PolicyError::Insecure), "{mode:o}");
+            remove(&path);
+        }
+        // Owner-only 0400 and 0600 are both honored: the bound is *sharing*,
+        // not writability.
+        for mode in [0o400, 0o600] {
+            let path = write_policy(SHUTDOWN_ONLY, mode);
+            assert!(load_policy(&path).is_ok(), "{mode:o}");
+            remove(&path);
+        }
+        // A symlink is refused rather than followed: the file that grants
+        // authority must be the file the operator inspected.
+        let target = write_policy(SHUTDOWN_ONLY, 0o600);
+        let link = target.with_extension("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(load_policy(&link), Err(PolicyError::Insecure));
+        std::fs::remove_file(&link).unwrap();
+        remove(&target);
+        // A directory is not a policy.
+        let directory = std::env::temp_dir().join(format!(
+            "symbiote-cli-policy-dir-{}-{}",
+            std::process::id(),
+            NEXT_POLICY_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(load_policy(&directory), Err(PolicyError::Insecure));
+        std::fs::remove_dir_all(&directory).unwrap();
+        // Bounded: a policy past 64 KiB is refused, and the bound is checked
+        // before the document is interpreted (the padding key would otherwise
+        // be an unknown field).
+        let oversized = format!(
+            r#"{{"schema":"symbiote.cli-policy/v1","authorize":["shutdown"],"padding":"{}"}}"#,
+            "x".repeat(64 * 1024)
+        );
+        let path = write_policy(&oversized, 0o600);
+        assert_eq!(load_policy(&path), Err(PolicyError::Unreadable));
+        remove(&path);
+    }
+
+    #[test]
+    fn the_policy_flag_selects_the_file_before_or_after_the_command() {
+        for arguments in [
+            vec!["--policy", "/p.json", "shutdown"],
+            vec!["shutdown", "--policy", "/p.json"],
+        ] {
+            let parsed = options(&arguments);
+            assert_eq!(parsed.policy, Some(PathBuf::from("/p.json")));
+            assert_eq!(parsed.command.as_deref(), Some("shutdown"));
+            assert_eq!(
+                resolved_policy_path(&parsed),
+                Some(PathBuf::from("/p.json"))
+            );
+        }
+        assert_eq!(options(&["health"]).policy, None);
     }
 }
