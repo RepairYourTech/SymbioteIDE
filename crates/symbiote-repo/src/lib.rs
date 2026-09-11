@@ -317,6 +317,10 @@ pub struct RunDiff {
     /// Untracked paths (at most [`MAX_UNTRACKED_FILES`], in status
     /// order) with bounded content heads.
     pub untracked: Vec<UntrackedContent>,
+    /// How many further untracked paths the [`MAX_UNTRACKED_FILES`]
+    /// bound left without a content head. Non-zero means this evidence
+    /// is partial in a way its consumers must say out loud.
+    pub untracked_omitted: usize,
 }
 
 /// One untracked path's bounded content head.
@@ -369,6 +373,7 @@ pub fn observe_run_diff(
     for path in status.untracked.iter().take(MAX_UNTRACKED_FILES) {
         diff.untracked.push(untracked_content(worktree, path));
     }
+    diff.untracked_omitted = status.untracked.len().saturating_sub(MAX_UNTRACKED_FILES);
     Ok(diff)
 }
 
@@ -414,12 +419,24 @@ fn untracked_content(worktree: &Path, path: &str) -> UntrackedContent {
     }
     let truncated = head.len() > MAX_UNTRACKED_FILE_BYTES;
     head.truncate(MAX_UNTRACKED_FILE_BYTES);
-    match String::from_utf8(head) {
+    match std::str::from_utf8(&head) {
         Ok(text) => UntrackedContent {
             path: path.to_owned(),
-            content: text,
+            content: text.to_owned(),
             truncated,
         },
+        // The byte bound cut through a multi-byte character: keep the
+        // complete character prefix. `error_len() == None` is exactly
+        // "the input ends mid-character", so a genuinely invalid byte
+        // still falls through to the placeholder below.
+        Err(error) if truncated && error.error_len().is_none() && error.valid_up_to() > 0 => {
+            UntrackedContent {
+                path: path.to_owned(),
+                content: String::from_utf8(head[..error.valid_up_to()].to_vec())
+                    .expect("a valid-UTF-8 prefix is valid UTF-8"),
+                truncated,
+            }
+        }
         Err(_) => placeholder("<non-utf8 content>"),
     }
 }
@@ -826,6 +843,62 @@ mod tests {
             .expect("untracked content head");
         assert_eq!(produced.content, "worker output\nsecond line\n");
         assert!(!produced.truncated);
+        assert_eq!(diff.untracked_omitted, 0);
+    }
+
+    /// The byte bound cutting through a multi-byte character keeps the
+    /// complete character prefix — a truncated head, never a bogus
+    /// `<non-utf8 content>` placeholder for a UTF-8 file.
+    #[test]
+    fn a_boundary_cut_keeps_the_complete_character_prefix() {
+        let repo = TempRepo::new("run-diff-utf8-bound");
+        let mut git = SystemGit::new();
+        // The leading ASCII byte makes the 16 KiB bound land inside one
+        // of the two-byte characters.
+        let text = format!("a{}", "é".repeat(MAX_UNTRACKED_FILE_BYTES));
+        std::fs::write(repo.dir.join("accents.txt"), text.as_bytes()).unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let head = &diff.untracked[0];
+        assert!(head.truncated);
+        assert!(!head.content.contains("non-utf8"), "{:?}", head.content);
+        assert_eq!(head.content.len(), MAX_UNTRACKED_FILE_BYTES - 1);
+        assert!(head.content.starts_with('a'));
+        assert!(
+            head.content
+                .chars()
+                .all(|character| character == 'a' || character == 'é'),
+            "{:?}",
+            head.content
+        );
+    }
+
+    /// A genuinely invalid byte is named as non-UTF-8 content, never
+    /// rendered as mojibake or as a silent truncation.
+    #[test]
+    fn non_utf8_untracked_content_is_a_placeholder() {
+        let repo = TempRepo::new("run-diff-non-utf8");
+        let mut git = SystemGit::new();
+        std::fs::write(repo.dir.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        assert_eq!(diff.untracked[0].content, "<non-utf8 content>");
+        assert!(!diff.untracked[0].truncated);
+    }
+
+    /// The content-head cap is explicit: the paths it left out are
+    /// counted, never silently dropped.
+    #[test]
+    fn untracked_heads_are_capped_with_an_omitted_count() {
+        let repo = TempRepo::new("run-diff-cap");
+        let mut git = SystemGit::new();
+        for index in 0..(MAX_UNTRACKED_FILES + 3) {
+            std::fs::write(repo.dir.join(format!("file-{index:02}.txt")), "x\n").unwrap();
+        }
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        assert_eq!(diff.untracked.len(), MAX_UNTRACKED_FILES);
+        assert_eq!(diff.untracked_omitted, 3);
     }
 
     /// An oversized untracked file is truncated with an explicit flag,

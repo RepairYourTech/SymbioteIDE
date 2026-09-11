@@ -43,6 +43,7 @@ fn preview_document(
     worktree: &str,
     files: &[String],
     diff: &symbiote_repo::RunDiff,
+    diff_note: &str,
 ) -> String {
     fn escape(value: &str) -> String {
         value
@@ -79,8 +80,15 @@ fn preview_document(
     document.push_str(&escape(worktree));
     document.push_str("</pre>\n");
     // The run's diff evidence — bounded upstream (symbiote-repo), escaped
-    // here like every other dynamic value.
+    // here like every other dynamic value. A gathering refusal is a note
+    // (owner-built text, escaped like everything else), so the report
+    // above still previews.
     document.push_str("<h2>Tracked diff</h2>\n");
+    if !diff_note.is_empty() {
+        document.push_str("<p>");
+        document.push_str(&escape(diff_note));
+        document.push_str("</p>\n");
+    }
     if diff.tracked_truncated {
         document.push_str("<p>The full diff exceeded the bound; this is the --stat summary.</p>\n");
     }
@@ -97,6 +105,15 @@ fn preview_document(
         document.push_str("</p>\n<pre>");
         document.push_str(&escape(&head.content));
         document.push_str("</pre>\n");
+    }
+    // The content-head cap is stated, not silent: the count below is how
+    // many untracked paths the bound left head-less.
+    if diff.untracked_omitted > 0 {
+        document.push_str("<p>");
+        document.push_str(&diff.untracked_omitted.to_string());
+        document.push_str(" further untracked path(s): content heads omitted (bound ");
+        document.push_str(&symbiote_repo::MAX_UNTRACKED_FILES.to_string());
+        document.push_str(")</p>\n");
     }
     document.push_str("<h2>Files produced (");
     document.push_str(&files.len().to_string());
@@ -183,12 +200,20 @@ fn open_preview(
     let state = app.state::<Session>();
     let (diff, diff_note) = {
         let guard = lock_session(&state);
-        let controller = guard.as_ref().ok_or("no session")?;
-        match controller.run_diff(&worktree) {
-            Ok(diff) => (diff, String::new()),
-            Err(error) => (
+        match guard.as_ref() {
+            Some(controller) => match controller.run_diff(&worktree) {
+                Ok(diff) => (diff, String::new()),
+                Err(error) => (
+                    symbiote_repo::RunDiff::default(),
+                    format!("diff unavailable: {error}"),
+                ),
+            },
+            // With no session there is no reservation base to validate the
+            // worktree against, so no diff is gathered — but the report
+            // above still previews (only the diff section degrades).
+            None => (
                 symbiote_repo::RunDiff::default(),
-                format!("diff unavailable: {error}"),
+                "diff unavailable: no active session".to_owned(),
             ),
         }
     };
@@ -199,21 +224,8 @@ fn open_preview(
         &worktree,
         &files,
         &diff,
+        &diff_note,
     );
-    let document = if diff_note.is_empty() {
-        document
-    } else {
-        // The note is owner-built text (controller error identities);
-        // escape it the same way preview_document escapes everything.
-        let escaped = diff_note
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;");
-        document.replace(
-            "<h2>Tracked diff</h2>",
-            &format!("<p>{escaped}</p>\n<h2>Tracked diff</h2>"),
-        )
-    };
     let state = app.state::<PreviewDocument>();
     *preview_lock(&state) = document;
     if let Some(window) = app.get_webview_window("preview") {
@@ -437,6 +449,7 @@ mod preview_tests {
                 content: "worker output".into(),
                 truncated: false,
             }],
+            untracked_omitted: 0,
         };
         let document = preview_document(
             "disp_staffing-task",
@@ -448,6 +461,7 @@ mod preview_tests {
                 "<img src=x onerror=alert(2)>".to_string(),
             ],
             &hostile_diff,
+            "",
         );
         assert!(!document.contains("<script>"), "{document}");
         assert!(!document.contains("<img"), "{document}");
@@ -467,10 +481,47 @@ mod preview_tests {
     /// the isolation statement are present for the empty case too.
     #[test]
     fn an_empty_outcome_still_carries_the_isolation_statement() {
-        let document = preview_document("", "", "", "", &[], &Default::default());
+        let document = preview_document("", "", "", "", &[], &Default::default(), "");
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("no application commands"));
         assert!(document.contains("Files produced (0)"));
+        assert!(!document.contains("diff unavailable"));
+    }
+
+    /// A degraded diff is an escaped owner note; the report above it
+    /// still renders, so a refusal never costs the preview its content.
+    #[test]
+    fn a_diff_note_renders_escaped_and_keeps_the_report() {
+        let document = preview_document(
+            "disp_staffing-task",
+            "probe-test-1",
+            "the worker's report",
+            "/wt",
+            &[],
+            &Default::default(),
+            "diff unavailable: <b>no active session</b>",
+        );
+        assert!(document.contains("the worker&#39;s report"), "{document}");
+        assert!(!document.contains("<b>no active session</b>"), "{document}");
+        assert!(
+            document.contains("diff unavailable: &lt;b&gt;no active session&lt;/b&gt;"),
+            "{document}"
+        );
+        assert!(!document.to_lowercase().contains("<script"));
+    }
+
+    /// The content-head cap is stated in the document, never silent.
+    #[test]
+    fn omitted_untracked_heads_are_counted_in_the_document() {
+        let diff = symbiote_repo::RunDiff {
+            untracked_omitted: 4,
+            ..Default::default()
+        };
+        let document = preview_document("disp", "probe-1", "", "/wt", &[], &diff, "");
+        assert!(
+            document.contains("4 further untracked path(s): content heads omitted"),
+            "{document}"
+        );
     }
 }
 

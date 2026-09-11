@@ -318,6 +318,36 @@ fn run_diff_observes_inside_the_reservation_base_and_refuses_outside() {
     let _ = std::fs::remove_dir_all(&outside);
 }
 
+/// The containment check resolves symlinks: a link that sits inside the
+/// reservation base but points outside it is refused, never followed.
+#[test]
+fn run_diff_refuses_a_symlink_that_escapes_the_reservation_base() {
+    use symbiote_desktop_lib::controller::{DesktopController, DesktopError};
+    let env = test_env("run-diff-symlink");
+    let controller = DesktopController::new(
+        bin_dir_paths(),
+        &env.state_dir,
+        &env.reservation_base,
+        &env.repo,
+    )
+    .expect("controller environment");
+    std::fs::create_dir_all(&env.reservation_base).unwrap();
+    let outside =
+        std::env::temp_dir().join(format!("symbiote-run-diff-escape-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let link = env.reservation_base.join("escape");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    let error = controller
+        .run_diff(&link.display().to_string())
+        .expect_err("a symlink out of the base must refuse");
+    assert!(
+        matches!(error, DesktopError::Setup(_)),
+        "expected a setup refusal, got {error:?}"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 /// The DesktopPaths from the workspace target directory (the gauntlet
 /// builds every binary).
 fn bin_dir_paths() -> symbiote_desktop_lib::controller::DesktopPaths {
