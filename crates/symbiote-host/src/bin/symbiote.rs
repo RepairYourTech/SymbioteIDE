@@ -837,10 +837,17 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     if risk.requires_authorization() && !options.yes {
         if let Some(path) = resolved_policy_path(&options) {
             match load_policy(&path) {
-                Ok(policy) => match policy.expired_at(now_ms) {
-                    Some(expiry) => policy_expired = Some((path, expiry)),
-                    None => policy_grant = policy.authorizes(&kind, now_ms),
-                },
+                Ok(policy) => {
+                    policy_grant = policy.authorizes(&kind, now_ms);
+                    // Report a lapse only when the policy actually named this
+                    // kind. An expired policy that never mentioned `kind` must
+                    // not be described as a lapsed grant *for* it, or the
+                    // refusal asserts something about the file that is not
+                    // true.
+                    if !policy_grant && policy.authorize.contains(&kind) {
+                        policy_expired = policy.expired_at(now_ms).map(|expiry| (path, expiry));
+                    }
+                }
                 Err(error) => policy_error = Some((path, error)),
             }
         }

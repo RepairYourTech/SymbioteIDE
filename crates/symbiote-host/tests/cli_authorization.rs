@@ -389,6 +389,22 @@ fn an_expired_policy_grants_nothing_and_says_why() {
         stderr.contains(policy),
         "the lapse names the file: {stderr}"
     );
+
+    // A lapsed policy that never named this kind must NOT be described as a
+    // lapsed grant *for* it: saying so would assert something about the file
+    // that is not true, and would send the operator looking for a grant they
+    // never wrote.
+    let other = write_policy(
+        r#"{"schema":"symbiote.cli-policy/v1","authorize":["start_prepared_task"],"expires_at":1}"#,
+    );
+    let (output, frame) = run_cli(&["--policy", other.to_str().unwrap(), "shutdown"]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(frame.is_none());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("pre-authorized"),
+        "a lapse is not reported for a kind the policy never named: {stderr}"
+    );
 }
 
 #[test]
