@@ -35,4 +35,4 @@ path = "src/bin/symbioted.rs"
 
 [[bin]]
 name = "symbiote"
-path = "src/bin/symbiote.rs"
+path = "src/bin/symbiote/main.rs"
