@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-journal"
+description = "Enables the read_journal command without any pre-configured scope."
+commands.allow = ["read_journal"]
+
+[[permission]]
+identifier = "deny-read-journal"
+description = "Denies the read_journal command without any pre-configured scope."
+commands.deny = ["read_journal"]

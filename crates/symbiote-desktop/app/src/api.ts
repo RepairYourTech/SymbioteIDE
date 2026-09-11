@@ -41,9 +41,15 @@ export function stopSession(): Promise<string> {
 /** Opens the untrusted Preview window for a finished run's output. The
  * window carries no Tauri IPC: worker content can never invoke commands. */
 export function openPreview(
+  dispatchId: string,
   report: string,
   worktree: string,
   files: string[],
 ): Promise<string> {
-  return invoke<string>("open_preview", { report, worktree, files });
+  return invoke<string>("open_preview", {
+    dispatchId,
+    files,
+    report,
+    worktree,
+  });
 }

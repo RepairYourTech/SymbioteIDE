@@ -36,7 +36,7 @@ fn preview_lock(document: &PreviewDocument) -> std::sync::MutexGuard<'_, String>
 /// Builds the Preview document for a finished run. Every dynamic value
 /// is HTML-escaped and there is no script: worker content can only ever
 /// render as text, whatever it contains.
-fn preview_document(report: &str, worktree: &str, files: &[String]) -> String {
+fn preview_document(dispatch_id: &str, report: &str, worktree: &str, files: &[String]) -> String {
     fn escape(value: &str) -> String {
         value
             .replace('&', "&amp;")
@@ -54,12 +54,14 @@ fn preview_document(report: &str, worktree: &str, files: &[String]) -> String {
     let mut document = String::new();
     document.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     document.push_str("<meta charset=\"utf-8\">\n");
-    document
-        .push_str("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'\">\n");
+    document.push_str("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; form-action 'none'; base-uri 'none'\">\n");
     document.push_str("<title>Symbiote — Preview (untrusted worker output)</title>\n");
     document.push_str("<style>body{font-family:sans-serif;margin:1rem;background:#14151a;color:#e8e8e8}h1{font-size:1.1rem}pre{white-space:pre-wrap;border:1px solid #333;padding:.5rem}</style>\n");
     document.push_str("</head>\n<body>\n");
     document.push_str("<h1>Preview — untrusted worker output</h1>\n");
+    document.push_str("<p>Run <code>");
+    document.push_str(&escape(dispatch_id));
+    document.push_str("</code></p>\n");
     document.push_str("<p>This surface renders worker output as inert text. It has no application commands: worker content can never invoke the owner's operations, and no script or network fetch is permitted here.</p>\n");
     document.push_str("<h2>Report</h2>\n<pre>");
     document.push_str(&escape(report));
@@ -80,11 +82,12 @@ fn preview_document(report: &str, worktree: &str, files: &[String]) -> String {
 #[tauri::command]
 fn open_preview(
     app: tauri::AppHandle,
+    dispatch_id: String,
     report: String,
     worktree: String,
     files: Vec<String>,
 ) -> Result<String, String> {
-    let document = preview_document(&report, &worktree, &files);
+    let document = preview_document(&dispatch_id, &report, &worktree, &files);
     let state = app.state::<PreviewDocument>();
     *preview_lock(&state) = document;
     if let Some(window) = app.get_webview_window("preview") {
@@ -100,11 +103,23 @@ fn open_preview(
     let url = tauri::WebviewUrl::CustomProtocol(
         tauri::Url::parse("preview://localhost/document").map_err(|error| error.to_string())?,
     );
-    tauri::webview::WebviewWindowBuilder::new(&app, "preview", url)
+    // Two rapid opens can race past the refresh check; the loser falls
+    // back to the refresh path instead of failing the click.
+    if tauri::webview::WebviewWindowBuilder::new(&app, "preview", url)
         .title("Symbiote — Preview (untrusted worker output)")
         .inner_size(720.0, 520.0)
         .build()
-        .map_err(|error| error.to_string())?;
+        .is_err()
+    {
+        if let Some(window) = app.get_webview_window("preview") {
+            window
+                .eval("location.reload()")
+                .map_err(|error| error.to_string())?;
+            window.set_focus().map_err(|error| error.to_string())?;
+            return Ok("preview updated".into());
+        }
+        return Err("preview window could not be opened".into());
+    }
     Ok("preview opened".into())
 }
 
@@ -226,14 +241,28 @@ pub fn run() {
         // The Preview protocol serves the inert document built by
         // [`preview_document`] and nothing else: no app assets, no
         // filesystem paths, one header-bound CSP.
+        // The scheme is app-global on Linux (shared web context): any
+        // window may NAVIGATE to it, but the document is inert and the
+        // Preview window is the only one pointed here.
         .register_uri_scheme_protocol("preview", |ctx, _request| {
             let state = ctx.app_handle().state::<PreviewDocument>();
             let body = preview_lock(&state).clone().into_bytes();
             tauri::http::Response::builder()
                 .header("Content-Type", "text/html; charset=utf-8")
-                .header("Content-Security-Policy", "default-src 'none'")
+                .header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+                )
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Cache-Control", "no-store")
                 .body(body)
-                .expect("the static preview response always builds")
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::builder()
+                        .status(500)
+                        .header("Content-Type", "text/plain; charset=utf-8")
+                        .body(b"preview unavailable".to_vec())
+                        .expect("the static error response always builds")
+                })
         })
         .invoke_handler(tauri::generate_handler![
             begin_session,
@@ -258,6 +287,7 @@ mod preview_tests {
     #[test]
     fn worker_content_renders_as_inert_text() {
         let document = preview_document(
+            "disp_staffing-task",
             "<script>alert(1)</script> & <b>bold</b>",
             "/tmp/worktree",
             &[
@@ -270,6 +300,7 @@ mod preview_tests {
         assert!(document.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(document.contains("<li>&lt;img src=x onerror=alert(2)&gt;</li>"));
         assert!(document.contains("default-src 'none'"));
+        assert!(document.contains("Run <code>disp_staffing-task</code>"));
         assert!(!document.to_lowercase().contains("<script"));
     }
 
@@ -277,9 +308,72 @@ mod preview_tests {
     /// the isolation statement are present for the empty case too.
     #[test]
     fn an_empty_outcome_still_carries_the_isolation_statement() {
-        let document = preview_document("", "", &[]);
+        let document = preview_document("", "", "", &[]);
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("no application commands"));
         assert!(document.contains("Files produced (0)"));
+    }
+}
+
+/// The ACL pin (#54 review P1): the app defines an ACL manifest for its
+/// commands (build.rs `app_manifest`), so Tauri's dispatch-level
+/// capability gate APPLIES to app commands. The generated artifacts pin
+/// both halves of the property: the manifest exists (the gate is
+/// active), and the resolved capabilities grant the commands to the
+/// owner window only — the Preview window is named in none.
+#[cfg(test)]
+mod preview_ipc_tests {
+    #[test]
+    fn the_app_acl_manifest_exists_and_grants_only_the_owner_window() {
+        let manifests: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(env!("SYMBIOTE_ACL_MANIFESTS"))
+                .expect("the generated ACL manifests must exist"),
+        )
+        .expect("the ACL manifests must parse");
+        let app_acl = manifests
+            .get("__app-acl__")
+            .expect("the app ACL manifest must exist: without it Tauri's command gate never applies to app commands and any window could invoke them");
+        for command in [
+            "open_preview",
+            "begin_session",
+            "start_demo",
+            "read_journal",
+            "finish_demo",
+            "journal_position",
+            "stop_session",
+        ] {
+            // tauri-build normalizes generated permission identifiers
+            // to hyphenated form (capability identifiers cannot carry
+            // underscores).
+            let allow = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                app_acl["permissions"].get(&allow).is_some(),
+                "the generated permission {allow} must exist"
+            );
+        }
+        let capabilities: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(env!("SYMBIOTE_RESOLVED_CAPABILITIES"))
+                .expect("the resolved capabilities must exist"),
+        )
+        .expect("the resolved capabilities must parse");
+        let capabilities = capabilities
+            .as_object()
+            .expect("resolved capabilities object");
+        for (identifier, capability) in capabilities {
+            let windows = capability
+                .get("windows")
+                .and_then(|windows| windows.as_array())
+                .expect("every resolved capability names its windows");
+            assert!(
+                windows.iter().any(|window| window.as_str() == Some("main")),
+                "the owner window must be granted its commands ({identifier})"
+            );
+            assert!(
+                !windows
+                    .iter()
+                    .any(|window| window.as_str() == Some("preview")),
+                "capability {identifier} must not grant the preview window"
+            );
+        }
     }
 }

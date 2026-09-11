@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-journal-position"
+description = "Enables the journal_position command without any pre-configured scope."
+commands.allow = ["journal_position"]
+
+[[permission]]
+identifier = "deny-journal-position"
+description = "Denies the journal_position command without any pre-configured scope."
+commands.deny = ["journal_position"]

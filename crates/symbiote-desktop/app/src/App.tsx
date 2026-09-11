@@ -174,6 +174,7 @@ export function App(): ReactElement {
             }
             void runAction(busy, setBusy, setLog, "preview", () =>
               openPreview(
+                outcome.dispatch_id,
                 outcome.report ?? "",
                 outcome.worktree.worktree,
                 [
