@@ -35,16 +35,18 @@ dangerous kinds a policy may pre-authorize. `help` is answered locally and
 honors no flags; `schema` is the other local command: it prints the binary's
 published envelope and policy JSON Schemas (see [cli.md](cli.md)) — one of
 them alone with a selector, `envelope` or `policy` — or regenerates the
-committed fixtures with `--write DIR`, or reports how a directory diverges
-from them without writing with `--check DIR`. It needs no daemon, no state
-directory and no authorization. `--write` and `--check` are valid only on
-`schema`, and `--json` is not valid on `schema` or `help` (schema's output is
-machine-readable JSON, but not the envelope). Every flag is declared per
-command: the daemon commands honor the daemon-facing flags, `schema` honors
-`--write` and `--check`, and `help` honors nothing; `--help`/`-h` is universal
-and is answered from the command table alone, connecting to nothing. A flag a
-command cannot honor is a usage error that names it, never silently dropped.
-Identity
+committed fixtures with `--write DIR`, or checks a directory against them with
+`--check DIR`: with no selector that directory must hold exactly the published
+documents, so a missing, edited, extra or renamed entry is named and exits 1,
+reading and writing nothing. It needs no daemon, no state directory and no
+authorization. `--write` and `--check` are valid only on `schema`, and `--json`
+is not valid on `schema` or `help` (schema's output is machine-readable JSON,
+but not the envelope). Every flag is declared per command: the daemon commands
+honor the daemon-facing flags, `schema` honors `--write` and `--check`, and
+`help` honors nothing; `--help`/`-h` is universal, and a help request honors no
+other flag, so `--json --help health` is refused exactly as `--json help` is. A
+flag a command cannot honor is a usage error that names it, never silently
+dropped. Identity
 arguments are passed as plain strings and typed on the wire; no caller-supplied
 actor identities exist. The interactive/headless coding-agent experience is
 #467's surface and shares this client plumbing; this binary carries no model
