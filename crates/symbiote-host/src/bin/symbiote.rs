@@ -655,6 +655,7 @@ fn print_help() {
     println!("  --state-dir DIR   the private directory symbioted runs with");
     println!("  --command-id ID   idempotency key for a retried command");
     println!("  --policy FILE     pre-authorize dangerous operation kinds for noninteractive runs");
+    println!("  --write DIR       with `schema`, regenerate the fixture files in DIR");
     println!("  --json            one machine-readable envelope per invocation on stdout");
     println!("  --yes             explicit authorization for this one dangerous command");
     println!();
@@ -686,6 +687,9 @@ fn print_help() {
     println!("unreadable, insecure or invalid policy is a usage failure that sends nothing.");
     println!();
     println!("commands:");
+    let schema_name = "schema";
+    let schema_summary = "print the published symbiote.cli and cli-policy JSON Schemas";
+    println!("   {schema_name:<62} {schema_summary}");
     for command in commands() {
         let gated = match command.kind {
             Some(kind) => risk_of_kind(kind).requires_authorization(),
@@ -703,6 +707,9 @@ struct Options {
     state_dir: Option<PathBuf>,
     command_id_override: Option<String>,
     policy: Option<PathBuf>,
+    /// With `schema`, the directory to regenerate the fixture files into
+    /// instead of printing them.
+    write: Option<PathBuf>,
     json: bool,
     yes: bool,
     command: Option<String>,
@@ -719,6 +726,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
         state_dir: None,
         command_id_override: None,
         policy: None,
+        write: None,
         json: false,
         yes: false,
         command: None,
@@ -738,7 +746,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
             "--" => only_positional = true,
             "--json" => options.json = true,
             "--yes" => options.yes = true,
-            "--state-dir" | "--command-id" | "--policy" => {
+            "--state-dir" | "--command-id" | "--policy" | "--write" => {
                 index += 1;
                 let value = arguments
                     .get(index)
@@ -746,6 +754,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
                     .ok_or_else(|| Usage(format!("{token} needs a value")))?;
                 match token.as_str() {
                     "--state-dir" => options.state_dir = Some(PathBuf::from(value)),
+                    "--write" => options.write = Some(PathBuf::from(value)),
                     "--command-id" => {
                         // An empty idempotency key is refused rather than
                         // carried: every empty-id invocation would collide with
@@ -803,6 +812,192 @@ fn error_envelope(command: &str, command_id: &str, code: &str, message: &str) ->
     })
 }
 
+/// The published envelope schema, built here so this binary is its source of
+/// truth: `symbiote schema` prints it, and the committed fixture under
+/// `docs/contracts/schemas/` is proved equal to it by
+/// `tests/cli_schema_contract.rs`. The `const` reads the same `CLI_SCHEMA` the
+/// envelope constructors write, so the two cannot drift.
+fn envelope_schema() -> serde_json::Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://symbiote.dev/schemas/symbiote.cli.v1.schema.json",
+        "title": "symbiote CLI JSON envelope (symbiote.cli/v1)",
+        "description": "One envelope printed to stdout by `symbiote --json`, one per invocation. A success carries `result` (the daemon's own response body, unmodified); a failure carries `error` (the daemon's typed error, or one of the CLI's own codes). Exactly one of the two is present, and `ok` agrees with which one it is. The default (non-`--json`) output is the daemon's body alone and is not described here.",
+        "type": "object",
+        "required": ["schema", "command", "command_id", "ok"],
+        "additionalProperties": false,
+        "properties": {
+            "schema": {
+                "description": "Schema identity. Automation keys on this string rather than on the presence of individual fields.",
+                "const": CLI_SCHEMA
+            },
+            "command": {
+                "description": "The command name as invoked, e.g. `health`, or `raw`.",
+                "type": "string",
+                "minLength": 1
+            },
+            "command_id": {
+                "description": "The idempotency key this invocation used: the minted id, or a caller-supplied `--command-id`.",
+                "type": "string",
+                "minLength": 1
+            },
+            "ok": {
+                "description": "True exactly when the command succeeded (exit 0) and `result` is present.",
+                "type": "boolean"
+            },
+            "result": {
+                "description": "The daemon's own response body, unmodified. An internally tagged object whose `kind` names the answer.",
+                "$ref": "#/$defs/result"
+            },
+            "error": {
+                "description": "A failure, whether the daemon refused the command or the CLI could not send it.",
+                "$ref": "#/$defs/error"
+            }
+        },
+        "oneOf": [
+            {
+                "description": "Success: a result and no error, with ok true.",
+                "required": ["result"],
+                "not": { "required": ["error"] },
+                "properties": { "ok": { "const": true } }
+            },
+            {
+                "description": "Failure: an error and no result, with ok false.",
+                "required": ["error"],
+                "not": { "required": ["result"] },
+                "properties": { "ok": { "const": false } }
+            }
+        ],
+        "$defs": {
+            "result": {
+                "description": "symbiote_protocol::ResponseBody, which is internally tagged on `kind`.",
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": {
+                        "description": "The response body variant, snake_case, e.g. `health`, `shutdown`.",
+                        "type": "string",
+                        "minLength": 1
+                    }
+                }
+            },
+            "error": {
+                "description": "The daemon's own ProtocolError, or the CLI's own code when nothing was sent.",
+                "type": "object",
+                "required": ["code", "message"],
+                "additionalProperties": false,
+                "properties": {
+                    "code": {
+                        "description": "The daemon's error code, or one of the CLI's own: `authorization_required` (nothing was sent), `policy_invalid` (the configured policy could not be honored; nothing was sent), `unreachable`.",
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "message": {
+                        "description": "Human-readable detail. Not stable for automation; branch on `code`.",
+                        "type": "string"
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// The published policy schema. The `authorize` enum is computed from the
+/// operation-risk table rather than transcribed, so promoting a kind to
+/// dangerous — or adding one — makes it nameable by a policy and published in
+/// the same change.
+fn policy_schema() -> serde_json::Value {
+    let mut dangerous: Vec<&str> = OPERATION_RISKS
+        .iter()
+        .filter(|(_, risk)| *risk == Risk::Dangerous)
+        .map(|(kind, _)| *kind)
+        .collect();
+    dangerous.sort_unstable();
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://symbiote.dev/schemas/symbiote.cli-policy.v1.schema.json",
+        "title": "symbiote CLI authorization policy (symbiote.cli-policy/v1)",
+        "description": "A document named by `--policy FILE`, or by $SYMBIOTE_CLI_POLICY when the flag is absent, that pre-authorizes dangerous operation kinds for noninteractive runs. It may name only the operation kinds this CLI classifies as dangerous: a read or a mutation is already ungated, so listing one would be a no-op an operator could mistake for coverage; an unknown kind cannot be classified; and a wildcard is deliberately not a syntax. A policy is a pre-authorization, never a widening — it cannot grant a permission the daemon would refuse.",
+        "type": "object",
+        "required": ["schema", "authorize"],
+        "additionalProperties": false,
+        "properties": {
+            "schema": {
+                "description": "Schema identity. A different version is refused rather than reinterpreted.",
+                "const": POLICY_SCHEMA
+            },
+            "authorize": {
+                "description": "The dangerous operation kinds this policy pre-authorizes. At least one. These are kinds, not command names: `shutdown` covers both the typed command and `raw` naming that operation. Repeating a kind is accepted and collapses: the grants are a set.",
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "description": "A kind this CLI classifies as dangerous.",
+                    "enum": dangerous
+                }
+            },
+            "expires_at": {
+                "description": "Optional unix-millisecond bound. The expiry instant itself is still authorized; a lapsed policy grants nothing and the refusal names the file and the lapse.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": u64::MAX
+            }
+        }
+    })
+}
+
+/// A published schema document: its identity, the committed fixture file it is
+/// published as, and the builder that produces it.
+struct PublishedSchema {
+    identity: &'static str,
+    file_name: &'static str,
+    build: fn() -> serde_json::Value,
+}
+
+/// The published documents. One table, so the object `symbiote schema` prints,
+/// the files `symbiote schema --write DIR` writes, and the committed fixtures
+/// cannot drift apart.
+const PUBLISHED_SCHEMAS: &[PublishedSchema] = &[
+    PublishedSchema {
+        identity: CLI_SCHEMA,
+        file_name: "symbiote.cli.v1.schema.json",
+        build: envelope_schema,
+    },
+    PublishedSchema {
+        identity: POLICY_SCHEMA,
+        file_name: "symbiote.cli-policy.v1.schema.json",
+        build: policy_schema,
+    },
+];
+
+/// Both published documents, keyed by the schema identity each declares. This
+/// is exactly what `symbiote schema` prints.
+fn published_schemas() -> serde_json::Value {
+    let mut documents = serde_json::Map::new();
+    for schema in PUBLISHED_SCHEMAS {
+        documents.insert(schema.identity.to_owned(), (schema.build)());
+    }
+    serde_json::Value::Object(documents)
+}
+
+/// Writes each published document to `directory/<fixture file name>` in the
+/// canonical form regeneration produces. Committing exactly what this writes
+/// is what keeps the fixtures generated artifacts: running it again on a clean
+/// tree leaves the files unchanged.
+fn write_schemas(directory: &Path) -> Result<(), Usage> {
+    for schema in PUBLISHED_SCHEMAS {
+        let document = serde_json::to_string_pretty(&(schema.build)()).map_err(|error| {
+            Usage(format!(
+                "cannot serialize the {} schema: {error}",
+                schema.identity
+            ))
+        })?;
+        let path = directory.join(schema.file_name);
+        std::fs::write(&path, format!("{document}\n"))
+            .map_err(|error| Usage(format!("cannot write {}: {error}", path.display())))?;
+    }
+    Ok(())
+}
+
 /// Names BOTH the typed command and the operation that makes it dangerous:
 /// for `raw`, the operation is the whole story and the operator must see it.
 fn confirm(command: &Command, kind: &str) -> bool {
@@ -830,6 +1025,20 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     };
     if name == "help" || name == "--help" {
         print_help();
+        return Ok(EXIT_OK);
+    }
+    // `schema` is local: it emits this binary's own contract and needs no
+    // daemon, no state directory and no authorization, so it is answered
+    // before any of that is consulted.
+    if name == "schema" {
+        if !options.args.is_empty() {
+            eprintln!("symbiote: schema takes no arguments; try `symbiote help`");
+            return Ok(EXIT_USAGE);
+        }
+        match &options.write {
+            Some(directory) => write_schemas(directory)?,
+            None => println!("{}", serde_json::to_string_pretty(&published_schemas())?),
+        }
         return Ok(EXIT_OK);
     }
     let Some(command) = commands().into_iter().find(|c| c.name == name) else {

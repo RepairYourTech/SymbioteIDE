@@ -15,6 +15,14 @@ Both are JSON Schema **draft 2020-12**. Automation keys on the `schema` string
 inside the document, never on the presence of individual fields, so a future
 revision is a new `$id` rather than a silent reinterpretation of this one.
 
+The binary emits both documents: `symbiote schema` prints a JSON object keyed
+by schema identity (`symbiote.cli/v1`, `symbiote.cli-policy/v1`). It is a local
+command — no daemon, no `--state-dir`, no authorization — so any installed
+binary can hand out the contract it implements. `symbiote schema --write DIR`
+regenerates the committed fixture files instead of printing them, so the
+fixtures are **generated artifacts**: a contract change is made once in the
+binary and then regenerated, never edited into a fixture by hand.
+
 ## Exit codes
 
 Every invocation ends in one of four codes. They are distinct so a script can
@@ -111,9 +119,15 @@ sufficient for a policy to be honored.
 ## How these fixtures are kept honest
 
 The fixtures are the published contract and the repository keeps them from
-drifting from the binary in two places, because a schema that has quietly
+drifting from the binary in three places, because a schema that has quietly
 drifted is worse than none:
 
+- **Against the binary's own output** (`tests/cli_schema_contract.rs`):
+  `symbiote schema` is run and each emitted document must equal its committed
+  fixture **exactly**, so a fixture edited on its own — or a schema built
+  differently in code — fails the build. A second test runs `symbiote schema
+  --write` into a temporary directory and requires the files it writes to be
+  byte-for-byte the committed ones, so regenerating a clean tree is a no-op.
 - **Against the code** (`src/bin/symbiote.rs` unit tests): the envelope
   fixture's `const` must equal `CLI_SCHEMA`, the policy fixture's `const` must
   equal `POLICY_SCHEMA`, and the policy fixture's `enum` must be exactly the
@@ -159,9 +173,11 @@ The agreement test covers the boundaries both sides can represent.
 files from `docs/contracts/schemas/` and pin them to the binary's own
 constants and risk table. The integration test runs the actual binary and
 validates its stdout through the bounded checker, including the boundary
-documents the schema and the CLI must classify identically. The default,
-non-`--json` output is the daemon's body alone and is deliberately not covered
-by an envelope schema.
+documents the schema and the CLI must classify identically. CI additionally
+regenerates the fixtures with `symbiote schema --write` into a temporary
+directory and fails on any `diff`, so a hand-edited fixture is rejected even
+before the tests run. The default, non-`--json` output is the daemon's body
+alone and is deliberately not covered by an envelope schema.
 
 Published fixtures are not a compatibility policy: this page documents v1, and
 a v2 requires its own `$id`, a compatibility note and migration tests before

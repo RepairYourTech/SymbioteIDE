@@ -65,6 +65,12 @@ jobs:
       - if: matrix.toolchain == 'stable'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - name: Committed CLI schemas match what the binary emits
+        if: matrix.toolchain == 'stable'
+        run: |
+          schemas=$(mktemp -d)
+          cargo run --locked -p symbiote-host --bin symbiote -- schema --write "$schemas"
+          diff -ru docs/contracts/schemas "$schemas"
       - name: Prove pinned Codex discovery without credentials or network
         if: matrix.toolchain == 'stable'
         run: |

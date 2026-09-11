@@ -17,11 +17,16 @@ use support::*;
 const ENVELOPE_SCHEMA: &str = "symbiote.cli.v1.schema.json";
 const POLICY_SCHEMA: &str = "symbiote.cli-policy.v1.schema.json";
 
+/// The path of a published fixture under `docs/contracts/schemas/`.
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/contracts/schemas")
+        .join(name)
+}
+
 /// Loads a published fixture from `docs/contracts/schemas/`.
 fn fixture(name: &str) -> serde_json::Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/contracts/schemas")
-        .join(name);
+    let path = fixture_path(name);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     serde_json::from_str(&text)
@@ -384,6 +389,83 @@ mod bounded {
         }
         instance.as_f64()?.partial_cmp(&limit.as_f64()?)
     }
+}
+
+#[test]
+fn the_binary_emits_the_published_schemas_and_they_match_the_committed_fixtures() {
+    // `schema` is local: it must work with no `--state-dir` and no daemon.
+    let output = Process::new(CLI)
+        .arg("schema")
+        .stdin(Stdio::null())
+        .env_remove("SYMBIOTE_CLI_POLICY")
+        .output()
+        .expect("the CLI binary runs");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let emitted: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("`schema` prints one JSON document");
+    let emitted = emitted
+        .as_object()
+        .expect("`schema` prints an object keyed by schema identity");
+    assert_eq!(
+        emitted.len(),
+        2,
+        "the command publishes exactly the envelope and the policy"
+    );
+    // The published fixture IS the contract; the binary must emit it verbatim,
+    // not merely something the fixture happens to accept. A rename, a dropped
+    // description or a relaxed constraint is a drift this catches.
+    for (identity, fixture_name) in [
+        ("symbiote.cli/v1", ENVELOPE_SCHEMA),
+        ("symbiote.cli-policy/v1", POLICY_SCHEMA),
+    ] {
+        let published = emitted
+            .get(identity)
+            .unwrap_or_else(|| panic!("the binary must emit the {identity} schema"));
+        assert_eq!(
+            published,
+            &fixture(fixture_name),
+            "the {identity} schema emitted by the binary has drifted from {fixture_name}"
+        );
+    }
+}
+
+#[test]
+fn schema_write_regenerates_the_committed_fixtures_byte_for_byte() {
+    // The fixtures are generated artifacts: this is the command a maintainer
+    // runs to regenerate them, and it must reproduce the committed bytes
+    // exactly. If it did not, "regenerate" would leave a diff that no one could
+    // tell apart from a real contract change.
+    let directory = unique_directory();
+    std::fs::create_dir_all(&directory).unwrap();
+    let output = Process::new(CLI)
+        .args(["schema", "--write"])
+        .arg(&directory)
+        .stdin(Stdio::null())
+        .env_remove("SYMBIOTE_CLI_POLICY")
+        .output()
+        .expect("the CLI binary runs");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for name in [ENVELOPE_SCHEMA, POLICY_SCHEMA] {
+        let written = std::fs::read_to_string(directory.join(name))
+            .unwrap_or_else(|error| panic!("{} was not written: {error}", name));
+        let committed = std::fs::read_to_string(fixture_path(name))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(
+            written, committed,
+            "{name} is not what `symbiote schema --write` regenerates"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
