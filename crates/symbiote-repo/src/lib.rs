@@ -293,6 +293,137 @@ pub fn observe_status(
     Ok(status)
 }
 
+/// Per-file bounds for the untracked content heads.
+pub const MAX_UNTRACKED_FILE_BYTES: usize = 16 * 1024;
+/// The maximum number of untracked files that get content heads.
+pub const MAX_UNTRACKED_FILES: usize = 32;
+
+/// The bounded diff evidence of a run in a worktree: the tracked unified
+/// diff plus bounded content heads of the untracked paths. This is
+/// PREVIEW evidence — rendered inert (escaped) downstream — and it is
+/// size-capped at every layer: an oversized tracked diff degrades to the
+/// `--stat` summary with an explicit flag, an oversized untracked file is
+/// truncated with an explicit flag, and symlinked or non-regular paths
+/// are never read (a bracketed placeholder names them instead).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RunDiff {
+    /// The tracked unified diff (`git diff HEAD`), or the degraded
+    /// `--stat` summary when the full diff exceeded the output bound.
+    pub tracked: String,
+    /// True when `tracked` is the degraded `--stat` summary, not the
+    /// full diff.
+    pub tracked_truncated: bool,
+    /// Untracked paths (at most [`MAX_UNTRACKED_FILES`], in status
+    /// order) with bounded content heads.
+    pub untracked: Vec<UntrackedContent>,
+}
+
+/// One untracked path's bounded content head.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UntrackedContent {
+    pub path: String,
+    /// The file's content head (at most
+    /// [`MAX_UNTRACKED_FILE_BYTES`]), or a bracketed placeholder when
+    /// the content was not read (symlink, directory, non-UTF-8,
+    /// unreadable).
+    pub content: String,
+    /// True when `content` is a truncated head.
+    pub truncated: bool,
+}
+
+/// Observes the bounded diff evidence for a worktree whose changed-path
+/// set is already known (from [`observe_status`]).
+pub fn observe_run_diff(
+    git: &mut impl GitExecutor,
+    worktree: &Path,
+    status: &WorktreeStatus,
+) -> Result<RunDiff, GitError> {
+    let mut diff = RunDiff::default();
+    match git.run(worktree, &["diff", "HEAD", "--"]) {
+        Ok(bytes) => {
+            diff.tracked = std::str::from_utf8(&bytes)
+                .map_err(|_| GitError::MalformedOutput)?
+                .to_owned();
+        }
+        Err(GitError::OutputTooLarge) => {
+            // Degrade honestly: the summary names what changed, the flag
+            // says the full diff did not fit the bound.
+            diff.tracked_truncated = true;
+            let summary = git.run(worktree, &["diff", "HEAD", "--stat"])?;
+            diff.tracked = std::str::from_utf8(&summary)
+                .map_err(|_| GitError::MalformedOutput)?
+                .to_owned();
+        }
+        // An unborn HEAD has nothing to diff against: that is not a
+        // refusal for preview evidence — the tracked diff is empty. A
+        // real git refusal still surfaces.
+        Err(GitError::GitRefused) => {
+            if !head_is_unborn(git, worktree)? {
+                return Err(GitError::GitRefused);
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    for path in status.untracked.iter().take(MAX_UNTRACKED_FILES) {
+        diff.untracked.push(untracked_content(worktree, path));
+    }
+    Ok(diff)
+}
+
+/// `rev-parse --verify -q HEAD` fails exactly on an unborn branch.
+fn head_is_unborn(git: &mut impl GitExecutor, worktree: &Path) -> Result<bool, GitError> {
+    match git.run(worktree, &["rev-parse", "--verify", "-q", "HEAD"]) {
+        Ok(_) => Ok(false),
+        Err(GitError::GitRefused) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+/// Reads one untracked path's bounded content head. Never fails the
+/// collection: an unreadable path yields an explicit placeholder (the
+/// status list still names it). Quoted (git-escaped) paths and `..`
+/// components are never touched on disk.
+fn untracked_content(worktree: &Path, path: &str) -> UntrackedContent {
+    use std::io::Read;
+    let placeholder = |content: &str| UntrackedContent {
+        path: path.to_owned(),
+        content: content.to_owned(),
+        truncated: false,
+    };
+    if path.contains('"') || path.split('/').any(|component| component == "..") {
+        return placeholder("<path not readable>");
+    }
+    let full = worktree.join(path);
+    let metadata = match std::fs::symlink_metadata(&full) {
+        Ok(metadata) => metadata,
+        Err(_) => return placeholder("<unreadable>"),
+    };
+    if !metadata.is_file() {
+        return placeholder("<directory or non-regular file>");
+    }
+    let file = match std::fs::File::open(&full) {
+        Ok(file) => file,
+        Err(_) => return placeholder("<unreadable>"),
+    };
+    let mut head = Vec::new();
+    let mut limited = file.take((MAX_UNTRACKED_FILE_BYTES + 1) as u64);
+    if limited.read_to_end(&mut head).is_err() {
+        return placeholder("<unreadable>");
+    }
+    let truncated = head.len() > MAX_UNTRACKED_FILE_BYTES;
+    head.truncate(MAX_UNTRACKED_FILE_BYTES);
+    match String::from_utf8(head) {
+        Ok(text) => UntrackedContent {
+            path: path.to_owned(),
+            content: text,
+            truncated,
+        },
+        Err(_) => placeholder("<non-utf8 content>"),
+    }
+}
+
 fn trimmed_hex(bytes: &[u8]) -> Result<String, GitError> {
     let text = std::str::from_utf8(bytes).map_err(|_| GitError::MalformedOutput)?;
     let trimmed = text.trim();
@@ -666,5 +797,111 @@ mod tests {
             observe_status(&mut git, &repo.dir),
             Err(GitError::OutputTooLarge)
         );
+    }
+
+    /// Observes the bounded diff evidence: tracked hunks plus untracked
+    /// content heads, from a REAL repository.
+    #[test]
+    fn run_diff_covers_tracked_and_untracked_changes() {
+        let repo = TempRepo::new("run-diff");
+        let mut git = SystemGit::new();
+        std::fs::write(repo.dir.join("README.md"), "modified line\n").unwrap();
+        std::fs::write(
+            repo.dir.join("produced.txt"),
+            "worker output\nsecond line\n",
+        )
+        .unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        assert!(
+            diff.tracked.contains("+modified line"),
+            "{:?}",
+            diff.tracked
+        );
+        assert!(!diff.tracked_truncated);
+        let produced = diff
+            .untracked
+            .iter()
+            .find(|head| head.path == "produced.txt")
+            .expect("untracked content head");
+        assert_eq!(produced.content, "worker output\nsecond line\n");
+        assert!(!produced.truncated);
+    }
+
+    /// An oversized untracked file is truncated with an explicit flag,
+    /// never silently and never unbounded.
+    #[test]
+    fn oversized_untracked_files_are_truncated_with_a_flag() {
+        let repo = TempRepo::new("run-diff-truncate");
+        let mut git = SystemGit::new();
+        let big = "x".repeat(MAX_UNTRACKED_FILE_BYTES * 3);
+        std::fs::write(repo.dir.join("big.txt"), &big).unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let head = &diff.untracked[0];
+        assert_eq!(head.path, "big.txt");
+        assert!(head.truncated);
+        assert_eq!(head.content.len(), MAX_UNTRACKED_FILE_BYTES);
+    }
+
+    /// An oversized tracked diff degrades to the `--stat` summary with
+    /// an explicit flag.
+    #[test]
+    fn oversized_tracked_diffs_degrade_to_the_stat_summary() {
+        let repo = TempRepo::new("run-diff-stat");
+        let mut git = SystemGit::new();
+        // Three hundred kilobytes of changed lines exceed the 256 KiB
+        // invocation bound for `git diff HEAD`.
+        let big = format!("{}\n", "y".repeat(64)).repeat(300 * 1024 / 65 + 8);
+        std::fs::write(repo.dir.join("README.md"), &big).unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        assert!(diff.tracked_truncated, "{:?}", diff.tracked);
+        assert!(diff.tracked.contains("README.md"), "{:?}", diff.tracked);
+    }
+
+    /// A symlinked untracked path is never read: the placeholder names
+    /// it instead.
+    #[test]
+    fn symlinked_untracked_paths_are_never_read() {
+        let repo = TempRepo::new("run-diff-symlink");
+        let mut git = SystemGit::new();
+        std::os::unix::fs::symlink("/etc/hostname", repo.dir.join("sneaky.txt")).unwrap();
+        let status = observe_status(&mut git, &repo.dir).unwrap();
+        let diff = observe_run_diff(&mut git, &repo.dir, &status).unwrap();
+        let head = &diff.untracked[0];
+        assert_eq!(head.path, "sneaky.txt");
+        assert_eq!(head.content, "<directory or non-regular file>");
+    }
+
+    /// An unborn HEAD (no commits) is not a refusal: the tracked diff
+    /// is empty and untracked heads still collect.
+    #[test]
+    fn an_unborn_head_is_empty_tracked_diff_not_a_refusal() {
+        let dir = std::env::temp_dir().join(format!("symbiote-repo-unborn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("new.txt"), "content\n").unwrap();
+        let mut git = SystemGit::new();
+        let status = observe_status(&mut git, &dir).unwrap();
+        let diff = observe_run_diff(&mut git, &dir, &status).unwrap();
+        assert!(diff.tracked.is_empty());
+        assert!(!diff.tracked_truncated);
+        assert_eq!(diff.untracked[0].path, "new.txt");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

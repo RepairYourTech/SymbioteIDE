@@ -42,6 +42,7 @@ fn preview_document(
     report: &str,
     worktree: &str,
     files: &[String],
+    diff: &symbiote_repo::RunDiff,
 ) -> String {
     fn escape(value: &str) -> String {
         value
@@ -76,7 +77,28 @@ fn preview_document(
     document.push_str(&escape(report));
     document.push_str("</pre>\n<h2>Worktree</h2>\n<pre>");
     document.push_str(&escape(worktree));
-    document.push_str("</pre>\n<h2>Files produced (");
+    document.push_str("</pre>\n");
+    // The run's diff evidence — bounded upstream (symbiote-repo), escaped
+    // here like every other dynamic value.
+    document.push_str("<h2>Tracked diff</h2>\n");
+    if diff.tracked_truncated {
+        document.push_str("<p>The full diff exceeded the bound; this is the --stat summary.</p>\n");
+    }
+    document.push_str("<pre>");
+    document.push_str(&escape(&diff.tracked));
+    document.push_str("</pre>\n<h2>Untracked content heads</h2>\n");
+    for head in &diff.untracked {
+        document.push_str("<p><code>");
+        document.push_str(&escape(&head.path));
+        document.push_str("</code>");
+        if head.truncated {
+            document.push_str(" (truncated)");
+        }
+        document.push_str("</p>\n<pre>");
+        document.push_str(&escape(&head.content));
+        document.push_str("</pre>\n");
+    }
+    document.push_str("<h2>Files produced (");
     document.push_str(&files.len().to_string());
     document.push_str(")</h2>\n<ul>\n");
     document.push_str(&files_html);
@@ -154,7 +176,44 @@ fn open_preview(
             .map(|elapsed| elapsed.subsec_nanos())
             .unwrap_or_default()
     );
-    let document = preview_document(&dispatch_id, &probe_nonce, &report, &worktree, &files);
+    // The diff evidence is gathered owner-side through the controller:
+    // the worktree path must resolve inside this session's reservation
+    // base, and the observation is bounded. A refusal degrades to a
+    // note in the document — the preview still shows the report.
+    let state = app.state::<Session>();
+    let (diff, diff_note) = {
+        let guard = lock_session(&state);
+        let controller = guard.as_ref().ok_or("no session")?;
+        match controller.run_diff(&worktree) {
+            Ok(diff) => (diff, String::new()),
+            Err(error) => (
+                symbiote_repo::RunDiff::default(),
+                format!("diff unavailable: {error}"),
+            ),
+        }
+    };
+    let document = preview_document(
+        &dispatch_id,
+        &probe_nonce,
+        &report,
+        &worktree,
+        &files,
+        &diff,
+    );
+    let document = if diff_note.is_empty() {
+        document
+    } else {
+        // The note is owner-built text (controller error identities);
+        // escape it the same way preview_document escapes everything.
+        let escaped = diff_note
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        document.replace(
+            "<h2>Tracked diff</h2>",
+            &format!("<p>{escaped}</p>\n<h2>Tracked diff</h2>"),
+        )
+    };
     let state = app.state::<PreviewDocument>();
     *preview_lock(&state) = document;
     if let Some(window) = app.get_webview_window("preview") {
@@ -370,6 +429,15 @@ mod preview_tests {
     /// document carries a deny-all CSP with no script.
     #[test]
     fn worker_content_renders_as_inert_text() {
+        let hostile_diff = symbiote_repo::RunDiff {
+            tracked: "<script>alert('diff')</script> broke <b>things</b>".into(),
+            tracked_truncated: true,
+            untracked: vec![symbiote_repo::UntrackedContent {
+                path: "produced.txt".into(),
+                content: "worker output".into(),
+                truncated: false,
+            }],
+        };
         let document = preview_document(
             "disp_staffing-task",
             "probe-test-1",
@@ -379,13 +447,19 @@ mod preview_tests {
                 "produced.txt".to_string(),
                 "<img src=x onerror=alert(2)>".to_string(),
             ],
+            &hostile_diff,
         );
         assert!(!document.contains("<script>"), "{document}");
         assert!(!document.contains("<img"), "{document}");
         assert!(document.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(
+            document.contains("&lt;script&gt;alert(&#39;diff&#39;)&lt;/script&gt;"),
+            "the hostile diff must render as escaped text"
+        );
         assert!(document.contains("<li>&lt;img src=x onerror=alert(2)&gt;</li>"));
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("Run <code>disp_staffing-task</code>"));
+        assert!(document.contains("The full diff exceeded the bound"));
         assert!(!document.to_lowercase().contains("<script"));
     }
 
@@ -393,7 +467,7 @@ mod preview_tests {
     /// the isolation statement are present for the empty case too.
     #[test]
     fn an_empty_outcome_still_carries_the_isolation_statement() {
-        let document = preview_document("", "", "", "", &[]);
+        let document = preview_document("", "", "", "", &[], &Default::default());
         assert!(document.contains("default-src 'none'"));
         assert!(document.contains("no application commands"));
         assert!(document.contains("Files produced (0)"));

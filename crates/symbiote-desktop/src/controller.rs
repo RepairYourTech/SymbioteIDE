@@ -305,6 +305,27 @@ impl DesktopController {
         self.workflow = None;
     }
 
+    /// Bounded diff evidence for a finished run's worktree. The
+    /// requested path must resolve inside THIS controller's reservation
+    /// base — the UI is the owner surface, but the boundary stays
+    /// structural rather than trusting the front end's path strings.
+    pub fn run_diff(&self, worktree: &str) -> Result<symbiote_repo::RunDiff, DesktopError> {
+        let requested = std::fs::canonicalize(worktree)
+            .map_err(|error| DesktopError::Setup(format!("worktree resolve: {error}")))?;
+        let base = std::fs::canonicalize(&self.reservation_base)
+            .map_err(|error| DesktopError::Setup(format!("reservation base: {error}")))?;
+        if !requested.starts_with(&base) {
+            return Err(DesktopError::Setup(
+                "worktree outside this session's reservation base".into(),
+            ));
+        }
+        let mut git = symbiote_repo::SystemGit::new();
+        let status = symbiote_repo::observe_status(&mut git, &requested)
+            .map_err(|error| DesktopError::Setup(error.to_string()))?;
+        symbiote_repo::observe_run_diff(&mut git, &requested, &status)
+            .map_err(|error| DesktopError::Setup(error.to_string()))
+    }
+
     fn workflow(&mut self) -> Result<&mut DemoWorkflow, DesktopError> {
         self.workflow.as_mut().ok_or(DesktopError::Setup(
             "no connected generation; begin one".into(),
