@@ -34,10 +34,11 @@ refusal vs transport failure vs a missing authorization.
 dangerous kinds a policy may pre-authorize. `schema` is the one local
 command: it prints the binary's published envelope and policy JSON Schemas
 (see [cli.md](cli.md)) — or regenerates the committed fixtures with `--write
-DIR` — and needs no daemon, no state directory and no authorization. Identity arguments are passed as
-plain strings and typed on the wire; no caller-supplied actor identities
-exist. The interactive/headless coding-agent experience is #467's surface and
-shares this client plumbing; this binary carries no model loop.
+DIR` — and needs no daemon, no state directory and no authorization. Identity
+arguments are passed as plain strings and typed on the wire; no caller-supplied
+actor identities exist. The interactive/headless coding-agent experience is
+#467's surface and shares this client plumbing; this binary carries no model
+loop.
 
 ### Dangerous operations require explicit authorization
 
