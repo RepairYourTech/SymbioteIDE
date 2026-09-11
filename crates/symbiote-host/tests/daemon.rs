@@ -1326,10 +1326,12 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
     // precondition code; request-task-completion against an unstarted task
     // maps the domain's illegal transition to invalid_request. All are exit
     // 2 with typed errors — the commands are on the wire and authorized,
-    // the state machine refuses the transition.
+    // the state machine refuses the transition. The dangerous operations
+    // carry their explicit `--yes` so what is observed here is the daemon's
+    // refusal, not the CLI's own authorization gate (exit 3).
     for (arguments, code) in [
         (
-            vec!["run-started-dispatch", "cli-task", "disp_ghost"],
+            vec!["run-started-dispatch", "cli-task", "disp_ghost", "--yes"],
             "failed_precondition",
         ),
         (
@@ -1352,7 +1354,7 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
             "not_found",
         ),
         (
-            vec!["start-prepared-task", "cli-task", "ghost-host"],
+            vec!["start-prepared-task", "cli-task", "ghost-host", "--yes"],
             "permission_denied",
         ),
     ] {
