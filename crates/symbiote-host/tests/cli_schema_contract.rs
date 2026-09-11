@@ -9,7 +9,6 @@
 mod support;
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::process::{Command as Process, Output, Stdio};
 
 use support::*;
@@ -17,11 +16,11 @@ use support::*;
 const ENVELOPE_SCHEMA: &str = "symbiote.cli.v1.schema.json";
 const POLICY_SCHEMA: &str = "symbiote.cli-policy.v1.schema.json";
 
-/// The path of a published fixture under `docs/contracts/schemas/`.
+/// The path of a published fixture; the contract module owns the directory, so
+/// the binary, its unit tests and this suite cannot disagree about where the
+/// fixtures live.
 fn fixture_path(name: &str) -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/contracts/schemas")
-        .join(name)
+    symbiote_host::cli_schema::fixture_directory().join(name)
 }
 
 /// Loads a published fixture from `docs/contracts/schemas/`.
@@ -466,6 +465,69 @@ fn schema_write_regenerates_the_committed_fixtures_byte_for_byte() {
         );
     }
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn write_is_scoped_to_the_schema_command() {
+    // `--write` publishes schemas and means nothing for any other command. A
+    // flag that cannot be honored is a usage error, never a silent no-op: a
+    // regression would let `health` reach the daemon and exit 0, so the fake
+    // daemon seeing no frame is part of the assertion.
+    let directory = unique_directory();
+    std::fs::create_dir_all(&directory).unwrap();
+    for command in ["health", "help"] {
+        let (output, frame) = run_cli(&["--write", directory.to_str().unwrap(), command]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "--write with `{command}` must be a usage error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            frame.is_none(),
+            "--write with `{command}` must not reach the daemon"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--write"),
+            "the refusal names the flag: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(
+        !directory.join(ENVELOPE_SCHEMA).exists(),
+        "a misused --write must not write anything"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn json_is_rejected_by_schema_rather_than_reinterpreted() {
+    // `--json` promises the versioned envelope on every invocation; `schema`
+    // prints machine-readable JSON that is not that envelope. The envelope
+    // schema requires a `result.kind` the documents do not carry, so the flag
+    // is a usage error instead of a silent reinterpretation.
+    let output = Process::new(CLI)
+        .args(["schema", "--json"])
+        .stdin(Stdio::null())
+        .env_remove("SYMBIOTE_CLI_POLICY")
+        .output()
+        .expect("the CLI binary runs");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a usage failure prints nothing: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--json"),
+        "the refusal names the flag: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

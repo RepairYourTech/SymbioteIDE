@@ -4,6 +4,11 @@ compile_error!(
     "symbiote-host currently requires Linux SO_PEERCRED; other transports remain unimplemented"
 );
 
+/// The `symbiote` CLI's published contract (#54): the schema identities, the
+/// operation-risk classification those identities describe, and the JSON
+/// Schema documents the binary emits. One owner for what the CLI promises
+/// automation, shared by the binary and its test suites.
+pub mod cli_schema;
 /// Context/credential resolution wiring (#217): the store-backed
 /// `ContextSource` and the dispatch-facet resolution the activation path
 /// uses. Credential VALUES live only in the operator's broker.
