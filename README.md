@@ -40,9 +40,9 @@ cargo run -p symbiote-protocol --example protocol_schema
 cargo run -p symbiote-runtime-sdk --example runtime_schema
 ```
 
-Schema examples emit JSON to stdout. The generated structural schemas do not replace runtime cross-field checks. Rust 1.85 is the declared minimum; Cargo.lock pins dependencies. CI tests the minimum and current stable toolchain. Workspace code forbids unsafe Rust.
+Schema examples emit JSON to stdout. The generated structural schemas do not replace runtime cross-field checks. The `symbiote` CLI's `--json` envelope and its authorization policy are published as committed JSON Schema fixtures in [docs/contracts/schemas](docs/contracts/schemas) and validated against the real binary's output. Rust 1.85 is the declared minimum; Cargo.lock pins dependencies. CI tests the minimum and current stable toolchain. Workspace code forbids unsafe Rust.
 
-Contract documentation: [domain](docs/contracts/domain.md), [configuration](docs/contracts/configuration.md), [architecture governance](docs/contracts/architecture.md), [storage](docs/contracts/storage.md), [protocol](docs/contracts/protocol.md), [Host](docs/contracts/host.md). Each records implemented behavior and pending integration acceptance. [Engineering handoff](docs/engineering-handoff.md) tracks the current Change Stream and next gates.
+Contract documentation: [domain](docs/contracts/domain.md), [configuration](docs/contracts/configuration.md), [architecture governance](docs/contracts/architecture.md), [storage](docs/contracts/storage.md), [protocol](docs/contracts/protocol.md), [Host](docs/contracts/host.md), [CLI](docs/contracts/cli.md). Each records implemented behavior and pending integration acceptance. [Engineering handoff](docs/engineering-handoff.md) tracks the current Change Stream and next gates.
 
 ## Architecture
 
