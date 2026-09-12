@@ -586,6 +586,70 @@ fn preparation_refuses_a_native_profile_under_harness_subscription_billing() {
     );
 }
 
+/// A refused preparation reports its own reason when a start consumes it: the
+/// same name the recorded step carries, never a bare outcome or a generic
+/// precondition. One vocabulary, so preparation and start answer the same
+/// question with the same word.
+#[test]
+fn start_of_a_refused_preparation_reports_the_recorded_reason() {
+    let cases: [ProviderDrift; 3] = [
+        (
+            "startnoconn",
+            |profile| profile.provider = id!(ProviderConnectionId, "provider-ghost"),
+            ProviderRefusal::MissingConnection,
+        ),
+        (
+            "startnoent",
+            |profile| profile.billing_entitlement = id!(BillingEntitlementId, "ent-ghost"),
+            ProviderRefusal::MissingEntitlement,
+        ),
+        (
+            "startnomodel",
+            |profile| profile.model = id!(ModelId, "model-ghost"),
+            ProviderRefusal::MissingModel,
+        ),
+    ];
+    for (tag, drift, expected) in cases {
+        let mut store = Store::memory().unwrap();
+        let (project, task) = full_fixture(&mut store, tag);
+        drift_profile(&mut store, &project, tag, 1, drift);
+        let preparation = routed_preparation(&mut store, &project, &task, tag);
+        assert_eq!(preparation.outcome, PreparationOutcome::Refused);
+        // The composition names the reason in the dispatch vocabulary...
+        assert_eq!(
+            preparation.refusal(),
+            Some(DispatchRefusal::Provider(expected))
+        );
+        let host = Host {
+            id: id!(HostId, &format!("host-{tag}")),
+            revision: Revision(0),
+            device: id!(DeviceId, &format!("device-{tag}")),
+            fabric: None,
+            supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+            controls: BTreeMap::new(),
+        };
+        // ... and the start that consumes it reports the same name, never the
+        // generic precondition the outcome alone would produce.
+        let refused = store.start_prepared_task(
+            id!(CommandId, &format!("start-refused-{tag}")),
+            task.clone(),
+            id!(DispatchId, &format!("dispatch-{tag}")),
+            id!(RuntimeContractId, &format!("contract-{tag}")),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(50),
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::DispatchRefused(DispatchRefusal::Provider(refusal)))
+                    if refusal == expected
+            ),
+            "start must name the preparation's own reason, got {refused:?}"
+        );
+    }
+}
+
 #[test]
 fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
     let temp = Temporary::new();
@@ -781,17 +845,14 @@ fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
         Timestamp(60),
     );
     // The second start must be refused. Because prepare-start-2 superseded
-    // the stored preparation with a Refused record, the start sees
-    // PreparationRefused; a stale-Ready path would yield StillHeld or
+    // the stored preparation with a Refused record, the start reports that
+    // record's own reason — the task is no longer Ready, so the vocabulary
+    // name is `not_schedulable`; a stale-Ready path would yield StillHeld or
     // IllegalTransition. All three are refusals, never a second Running.
     assert!(
         matches!(
             &second,
-            Err(StoreError::PreparationRefused)
-                | Err(StoreError::LeaseConflict(
-                    symbiote_domain::LeaseError::StillHeld
-                ))
-                | Err(StoreError::Domain(DomainError::IllegalTransition))
+            Err(StoreError::DispatchRefused(DispatchRefusal::NotSchedulable))
         ),
         "second start must be refused, got {second:?}"
     );

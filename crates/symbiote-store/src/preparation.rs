@@ -154,9 +154,13 @@ impl Store {
     /// record (the Host's own identity and current enforcement claims —
     /// never client-supplied), applies the domain `Start` transition, and
     /// verifies the resulting dispatch matches the preparation's lease and
-    /// routed Role. The command id carries the fencing token implicitly
-    /// through the preparation's compiled state; exact idempotency follows
-    /// the store convention.
+    /// routed Role. Every refusal carries its reason in the dispatch-refusal
+    /// vocabulary: a refused preparation reports its own recorded reason, a
+    /// stream that is no longer `Active` reports `stream_inactive`, and a
+    /// registration that lapsed since preparation reports the registry's
+    /// reason. The command id carries the fencing token implicitly through
+    /// the preparation's compiled state; exact idempotency follows the store
+    /// convention.
     #[allow(clippy::too_many_arguments)]
     pub fn start_prepared_task(
         &mut self,
@@ -224,7 +228,14 @@ impl Store {
         }
         let preparation = read(&transaction, &task_id)?.ok_or(StoreError::NotFound)?;
         if preparation.outcome != PreparationOutcome::Ready {
-            return Err(StoreError::PreparationRefused);
+            // A refused composition names its own reason: the same vocabulary
+            // the recorded steps carry, never a bare outcome. `validate`
+            // guarantees one is recorded, so a missing reason is a corrupt
+            // record rather than a refusal.
+            let refusal = preparation
+                .refusal()
+                .ok_or(StoreError::InvalidPreparation)?;
+            return Err(StoreError::DispatchRefused(refusal));
         }
         // The preparation's recorded decisions bind the start: the routed
         // Role must still hold. A live lease from a previous generation is
@@ -258,7 +269,7 @@ impl Store {
             )?;
             let stream: ChangeStream = serde_json::from_str(&stream_body)?;
             if stream.state() != &StreamState::Active {
-                return Err(StoreError::PreparationRefused);
+                return Err(StoreError::DispatchRefused(DispatchRefusal::StreamInactive));
             }
         }
         // The routed Role must still be the Team's member record.
@@ -293,7 +304,9 @@ impl Store {
         // been superseded. A dispatch is only compiled and started when the
         // profile it pins can actually be bound.
         if let Some(refusal) = provider::registration_for(&transaction, &profile, at)?.refusal {
-            return Err(StoreError::ProviderRegistrationRefused(refusal));
+            return Err(StoreError::DispatchRefused(DispatchRefusal::Provider(
+                refusal,
+            )));
         }
         let dispatch = Dispatch::compile(
             dispatch_id,
