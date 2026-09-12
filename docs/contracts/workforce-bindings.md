@@ -161,9 +161,21 @@ What is **not** enforced today, stated rather than implied:
   reservation; a run's tools execute one at a time, so a run never exceeds a
   declared bound, but nothing enforces the declaration.
 
-The external-harness lane's process is launched by the caller-supplied
-transport, so its ceiling is the caller's decision: `launch_sandboxed` takes it
-as a required argument, so a caller cannot launch the harness without one.
+The **external-harness lane** carries the same bound, and the Host — not the
+caller — decides it. Activation hands the lane's transport factory the
+declared bound and requires it to report what it did with the harness process:
+a transport that starts the harness as an OS process must run it under exactly
+the declared `max_memory_bytes`, and one that would run it under any other
+ceiling refuses the run (*the external harness transport would run the harness
+outside the dispatch's declared memory bound*). The operator-provisioned
+sandboxed harness — `external_harness` in the operator configuration — is that
+process-starting transport: it launches the configured harness program inside
+the sandbox, in the dispatch's reserved worktree, with the declared ceiling
+applied by the launcher, so a started external dispatch's own harness process
+reports the bound its contract recorded. The in-process scripted fixture starts
+no OS process at all, which the lane reports as such: there is no process that
+could run outside the declared ceiling. So no lane promises a memory bound it
+does not apply.
 
 ## Demonstration and remaining acceptance
 

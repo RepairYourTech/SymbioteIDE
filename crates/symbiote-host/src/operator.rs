@@ -34,6 +34,13 @@ pub struct OperatorConfig {
     /// `native_fixture`; a live Codex turn remains gated on explicit user
     /// authorization for credentials and billing.
     pub external_fixture: Option<ExternalFixture>,
+    /// The operator-provisioned sandboxed external harness: the program the
+    /// external lane launches inside the sandbox under the dispatch's
+    /// declared memory ceiling. When set it replaces the in-process fixture
+    /// transport, so the lane runs a real, bounded process. Values and paths
+    /// stay operator state. The ceiling is never here: the Host supplies the
+    /// dispatch's declared bound per run.
+    pub external_harness: Option<crate::external_harness::HarnessLaunchConfig>,
     /// Credential registrations for the #217 broker. Values live in this
     /// operator-owned 0600 file only — never in the store or journal.
     /// Real secret material via keychain remains pending #217; these

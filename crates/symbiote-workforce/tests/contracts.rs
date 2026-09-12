@@ -710,3 +710,27 @@ fn declared_limits_the_host_cannot_bind_are_not_usable() {
         demanding.process_bound().err()
     );
 }
+
+/// Both lanes answer the ceiling question the same way, because both now
+/// honour it: a bindable memory ceiling is `enforceable_limits: satisfied` on
+/// the external-harness lane exactly as on the native lane, so the report
+/// neither weakens for the lane nor promises a bound the lane's process does
+/// not carry (the sandboxed harness applies it; the in-process fixture starts
+/// no process to bind).
+#[test]
+fn a_bindable_ceiling_is_enforceable_on_both_lanes() {
+    use symbiote_domain::RuntimeKind;
+    let t = team();
+    for runtime in [RuntimeKind::NativeSymbiote, RuntimeKind::ExternalHarness] {
+        let mut b = binding();
+        b.primary.profile.runtime = runtime;
+        let report = assess_readiness(&b, &t, None, None, None, Timestamp(10));
+        let check = report
+            .checks
+            .iter()
+            .find(|c| c.prerequisite == Prerequisite::EnforceableLimits)
+            .expect("every report carries the enforceable-limits check");
+        assert_eq!(check.result, CheckResult::Satisfied, "{runtime:?}");
+        assert_eq!(check.limit_refusal, None, "{runtime:?}");
+    }
+}

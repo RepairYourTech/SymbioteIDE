@@ -144,6 +144,32 @@ json.dump({"soft": soft, "under": probe(64 << 20), "over": probe(400 << 20)}, op
 PY
 "#;
 
+/// A harness program that speaks the pinned App Server framing and reports
+/// its OWN address-space ceiling (the soft `RLIMIT_AS`) in its agent message:
+/// the Host reads what the harness process observed of the bound the
+/// dispatch declared. Launched by the Host inside the sandbox, so the bound
+/// is the operator's launcher's, not this script's.
+const HARNESS_RESPONDER: &str = r#"import json,sys,resource
+soft,_=resource.getrlimit(resource.RLIMIT_AS)
+def send(o):
+    sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try: msg=json.loads(line)
+    except Exception: continue
+    if "id" not in msg: continue
+    m=msg.get("method")
+    if m=="initialize":
+        send({"id":msg["id"],"result":{"userAgent":"symbiote/0.118.0 (Linux)"}})
+    elif m=="thread/start":
+        send({"id":msg["id"],"result":{"thread":{"id":"thr-bounded"}}})
+    elif m=="turn/start":
+        send({"id":msg["id"],"result":{"turn":{"id":"turn-bounded"}}})
+        send({"method":"item/completed","params":{"threadId":"thr-bounded","turnId":"turn-bounded","item":{"type":"agentMessage","id":"i1","text":"harness address-space ceiling %d"%soft}}})
+        send({"method":"turn/completed","params":{"threadId":"thr-bounded","turnId":"turn-bounded","turn":{"id":"turn-bounded","status":"completed","items":[]}}})
+"#;
+
 /// The operator configuration for the demo: reservation base, the
 /// explicitly labeled fixture model transport proposing one shell tool,
 /// the fixture credential registration, and the shell program allowlist.
@@ -154,6 +180,7 @@ fn write_operator_config(
     launcher: &std::path::Path,
     tool_command: &str,
     with_external_fixture: bool,
+    external_harness: Option<(&str, &[String])>,
 ) {
     let mut config = serde_json::json!({
         "reservation_base": reservation_base.display().to_string(),
@@ -178,6 +205,14 @@ fn write_operator_config(
     if with_external_fixture {
         config["external_fixture"] = serde_json::json!({"thread_id": "thr-demo-external",
             "agent_message": "external harness implemented the bounded change"});
+    }
+    if let Some((program, args)) = external_harness {
+        config["external_harness"] = serde_json::json!({
+            "launcher_path": launcher.display().to_string(),
+            "protected_paths": ["/etc", "/var", "/home"],
+            "program": program,
+            "args": args,
+        });
     }
     let mut file = std::fs::File::create(path).expect("config file");
     file.write_all(serde_json::to_string_pretty(&config).unwrap().as_bytes())
@@ -224,6 +259,7 @@ fn demo_environment(tag: &str) -> DemoEnv {
         &launcher_binary(),
         FIXTURE_TOOL_COMMAND,
         true,
+        None,
     );
     DemoEnv {
         scratch,
@@ -527,6 +563,7 @@ fn an_external_binding_refuses_to_start_without_operator_provisioned_harness_sup
         &launcher_binary(),
         FIXTURE_TOOL_COMMAND,
         false,
+        None,
     );
     // The daemon stays alive for the whole test; its Drop cleans up.
     let _daemon = Daemon::spawn(state_dir, config_path);
@@ -940,6 +977,7 @@ fn a_started_dispatch_runs_its_tools_under_the_declared_memory_bound() {
         &launcher_binary(),
         BOUND_PROBE_COMMAND,
         true,
+        None,
     );
 
     let _daemon = Daemon::spawn(state_dir, config_path);
@@ -970,5 +1008,60 @@ fn a_started_dispatch_runs_its_tools_under_the_declared_memory_bound() {
         observed["over"],
         serde_json::Value::Null,
         "an allocation past the declared ceiling fails, though the machine has far more memory: {observed}"
+    );
+}
+
+/// The external lane's own process carries the ceiling its dispatch declared:
+/// the operator-provisioned harness is launched by the Host inside the sandbox
+/// under the recorded `max_memory_bytes`, and the harness reports its own soft
+/// `RLIMIT_AS` in the completion report the Host reads back. The lane's
+/// readiness answer promises this bound, so it must hold for the process the
+/// lane actually starts — not only for the native lane's tools.
+#[test]
+fn a_started_external_harness_runs_under_the_declared_memory_bound() {
+    let env = demo_environment("external-bound");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let config_path = &env.config_path;
+    // The declared ceiling, straight from the fixture the demo staffs from.
+    let declared: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/configure.json"
+    ))
+    .expect("binding fixture");
+    let declared = declared["operation"]["configuration"]["primary"]["limits"]["max_memory_bytes"]
+        .as_u64()
+        .expect("the fixture candidate declares a memory limit");
+    // The external lane runs the operator's harness program (a scripted
+    // responder that reports its own bound) inside the sandbox; the native
+    // lane's composition is unchanged.
+    write_operator_config(
+        config_path,
+        reservation_base,
+        &launcher_binary(),
+        FIXTURE_TOOL_COMMAND,
+        false,
+        Some((
+            "/usr/bin/python3",
+            &["-c".to_owned(), HARNESS_RESPONDER.to_owned()],
+        )),
+    );
+
+    let _daemon = Daemon::spawn(state_dir, config_path);
+    let mut workflow =
+        symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, &env.repo)
+            .expect("connect");
+    // The shared project/team/root placement comes from the open half; the
+    // external lane is its own binding, task and worktree.
+    let _native = workflow.start_demo().expect("contract start half");
+    let dispatch_id = workflow.start_demo_external().expect("external start half");
+    let outcome = workflow
+        .finish_demo_external(&dispatch_id)
+        .expect("external run");
+
+    assert_eq!(outcome.task_state, "completion_requested");
+    assert_eq!(
+        outcome.report.as_deref(),
+        Some(format!("harness address-space ceiling {declared}").as_str()),
+        "the harness process reports the dispatch's declared memory ceiling"
     );
 }

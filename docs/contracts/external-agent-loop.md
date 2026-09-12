@@ -110,6 +110,16 @@ real handshake (`initialize` → pinned `symbiote/0.118.0` check →
 `initialized`) before any thread or turn interaction; a server that does
 not report the pinned version is refused.
 
+The Host drives this transport through the external lane's factory seam, and
+the Host — never the caller — decides the harness process ceiling: activation
+hands the factory the dispatch's declared bound and requires the built transport
+to report what it did with the harness process, refusing a transport that would
+start one under any other ceiling. The operator-provisioned sandboxed harness
+(`external_harness`) composes `symbiote_sandbox::launch` with the configured
+harness program and the declared `address_space_bytes`, so the external lane's
+readiness answer is backed by the process it actually starts; the in-process
+scripted fixture starts no OS process and reports that as such.
+
 The `codex_thread_smoke` example is the real-binary proof, mirroring the
 #483 discovery proof: sandboxed launch, the driver's own `begin_thread`
 against the production framing, then cancellation — no turn, no model
