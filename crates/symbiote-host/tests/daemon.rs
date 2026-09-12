@@ -1500,8 +1500,9 @@ fn expire_entitlement(host: &Host, command_id: &'static str) {
 
 /// Every registration the registry can be put into that cannot be bound is
 /// reported with its own reason through the daemon, and none of them can start
-/// a dispatch: the refused preparation is the only record of the attempt, and
-/// the task never leaves Ready.
+/// a dispatch: the refused preparation is the only record of the attempt, the
+/// start answers with that same reason by name, and the task never leaves
+/// Ready.
 #[test]
 fn unusable_provider_registrations_refuse_preparation_and_cannot_start() {
     for registration in [
@@ -1540,6 +1541,13 @@ fn unusable_provider_registrations_refuse_preparation_and_cannot_start() {
             start["result"]["Err"]["code"], "failed_precondition",
             "{refusal}"
         );
+        // The start reports the preparation's own reason, by the same name the
+        // recorded step carries: one vocabulary across the boundary.
+        assert_eq!(
+            start["result"]["Err"]["message"],
+            json!(format!("dispatch refused by recorded state ({refusal})")),
+            "{refusal}"
+        );
         let task = ok(&host.call(request(
             "refused-task-read",
             json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
@@ -1547,6 +1555,64 @@ fn unusable_provider_registrations_refuse_preparation_and_cannot_start() {
         .clone();
         assert_eq!(task["data"]["state"], "ready", "{refusal}");
     }
+}
+
+/// The operator's own question — "why can this dispatch not run?" — asked at
+/// the CLI: the refused preparation and the start that consumes it answer with
+/// the same reason name, and the start never falls back to a generic
+/// precondition message.
+#[test]
+fn cli_start_names_a_refused_preparation_reason() {
+    let host = Host::new();
+    let host_id = staffing_composition(&host, Registration::MissingConnection)
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .arg("--state-dir")
+            .arg(&host.directory)
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    // The composition records the registry's own name for the refusal...
+    let prepared = run(&["--json", "prepare-dispatch", "staffing-task"]);
+    assert!(
+        prepared.status.success(),
+        "prepare-dispatch must succeed: {}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    let body: Value = serde_json::from_slice(&prepared.stdout).unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["result"]["data"]["outcome"], "refused");
+    let provider_step = body["result"]["data"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "provider")
+        .expect("every composition records a provider step")
+        .clone();
+    assert_eq!(provider_step["refusal"], "missing_connection");
+    // ... and the start that consumes it reports that same name, not the
+    // generic `preparation composition refused by recorded state`.
+    let started = run(&[
+        "--yes",
+        "--json",
+        "start-prepared-task",
+        "staffing-task",
+        &host_id,
+    ]);
+    assert_eq!(started.status.code(), Some(2));
+    let body: Value = serde_json::from_slice(&started.stdout).unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["code"], "failed_precondition");
+    assert_eq!(
+        body["error"]["message"],
+        "dispatch refused by recorded state (missing_connection)"
+    );
 }
 
 /// A registration that lapses between preparation and start is refused at the
@@ -1570,7 +1636,7 @@ fn start_prepared_task_refuses_a_registration_that_lapsed_after_preparation() {
     assert_eq!(start["result"]["Err"]["code"], "failed_precondition");
     assert_eq!(
         start["result"]["Err"]["message"],
-        "the dispatch's provider registration is not usable (expired_entitlement)"
+        "dispatch refused by recorded state (expired_entitlement)"
     );
     let task = ok(&host.call(request(
         "lapse-task-read",
@@ -1607,7 +1673,7 @@ fn run_started_dispatch_refuses_a_registration_that_lapsed_after_start() {
     assert_eq!(run["result"]["Err"]["code"], "failed_precondition");
     assert_eq!(
         run["result"]["Err"]["message"],
-        "the dispatch's provider registration is not usable (expired_entitlement)"
+        "dispatch refused by recorded state (expired_entitlement)"
     );
     // The refusal executed nothing: the dispatch is still the one that was
     // started, and the task is still Running under it.
@@ -1652,6 +1718,6 @@ fn run_started_dispatch_refuses_a_pairing_that_lapsed_after_start() {
     assert_eq!(run["result"]["Err"]["code"], "failed_precondition");
     assert_eq!(
         run["result"]["Err"]["message"],
-        "the dispatch's provider registration is not usable (unsupported_authentication_billing)"
+        "dispatch refused by recorded state (unsupported_authentication_billing)"
     );
 }

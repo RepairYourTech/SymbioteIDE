@@ -7,10 +7,7 @@ use symbiote_protocol::*;
 use symbiote_store::{Store, StoreError};
 
 fn storage_error(error: StoreError) -> ProtocolError {
-    if let StoreError::ProviderRegistrationRefused(refusal) = &error {
-        return provider_registration_refused(*refusal);
-    }
-    let code = match error {
+    let code = match &error {
         StoreError::NotFound => ErrorCode::NotFound,
         StoreError::AlreadyExists => ErrorCode::Conflict,
         StoreError::IdempotencyConflict => ErrorCode::IdempotencyConflict,
@@ -22,9 +19,9 @@ fn storage_error(error: StoreError) -> ProtocolError {
         | StoreError::InvalidLease => ErrorCode::InvalidRequest,
         StoreError::DependenciesUnresolved => ErrorCode::Conflict,
         StoreError::InvalidProvider | StoreError::InvalidPreparation => ErrorCode::InvalidRequest,
-        StoreError::PreparationRefused
-        | StoreError::ProviderRegistrationRefused(_)
-        | StoreError::ElevationCeiling => ErrorCode::FailedPrecondition,
+        StoreError::DispatchRefused(_) | StoreError::ElevationCeiling => {
+            ErrorCode::FailedPrecondition
+        }
         StoreError::InvalidElevation => ErrorCode::InvalidRequest,
         StoreError::LeaseConflict(_) => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
@@ -44,7 +41,16 @@ fn storage_error(error: StoreError) -> ProtocolError {
         StoreError::Sqlite(_) => ErrorCode::Unavailable,
         _ => ErrorCode::Internal,
     };
-    ProtocolError::new(code)
+    let mut protocol_error = ProtocolError::new(code);
+    // The one place a dispatch refusal becomes a protocol error: the reason is
+    // a member of a closed vocabulary (never an input value or a path), so
+    // naming it is safe, and the same reason reads the same wherever a
+    // dispatch is refused — the code alone would collapse it into the generic
+    // precondition message and lose the answer the operator asked for.
+    if let StoreError::DispatchRefused(refusal) = &error {
+        protocol_error.message = format!("dispatch refused by recorded state ({})", refusal.name());
+    }
+    protocol_error
 }
 
 fn receipt(receipt: symbiote_store::Receipt) -> ResponseBody {
@@ -578,7 +584,12 @@ fn execute(
                 .provider_registration(current.contract().profile(), at)
                 .map_err(storage_error)?;
             if let Some(refusal) = registration.refusal {
-                return Err(provider_registration_refused(refusal));
+                // The same refusal a start would report, through the one
+                // mapping that turns a dispatch refusal into the protocol's
+                // answer.
+                return Err(storage_error(StoreError::DispatchRefused(
+                    symbiote_domain::DispatchRefusal::Provider(refusal),
+                )));
             }
             let runtime = current.contract().profile().runtime;
             // Worktree provisioning happens after the precondition checks
@@ -588,8 +599,11 @@ fn execute(
             // materializes the derived worktree. A moved base or tampered
             // location refuses before any transport factory runs.
             // The reservation base is Host configuration, not store state:
-            // its absence is the production refusal and must fire before any
-            // store read or git call.
+            // its absence is the production refusal, and it fires before the
+            // provisioning reads and git calls below — but after the dispatch
+            // preconditions above, which read recorded state (the task, its
+            // pinned profile's registration) and touch no worktree, git call
+            // or transport.
             let reservation_base = workers.reservation_base().map_err(worker_error)?;
             let this_host = inventory.host_id().clone();
             let provisioned = crate::runner::provision_worktree(
@@ -1413,18 +1427,6 @@ fn context_error(error: symbiote_context::ResolutionError) -> ProtocolError {
 fn dispatch_binding_refused() -> ProtocolError {
     let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
     protocol_error.message = "task is not running under the requested dispatch".into();
-    protocol_error
-}
-
-/// The execution boundary's refusal identity: the reason is a member of a
-/// closed vocabulary (never an input value or a path), so naming it is safe
-/// and keeps the operator's next step unambiguous.
-fn provider_registration_refused(refusal: symbiote_domain::ProviderRefusal) -> ProtocolError {
-    let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
-    protocol_error.message = format!(
-        "the dispatch's provider registration is not usable ({})",
-        refusal.name()
-    );
     protocol_error
 }
 

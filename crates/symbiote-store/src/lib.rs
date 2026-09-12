@@ -61,10 +61,10 @@ pub enum StoreError {
     LeaseConflict(symbiote_domain::LeaseError),
     InvalidProvider,
     InvalidPreparation,
-    PreparationRefused,
-    /// The profile a start pins names a registry registration that is absent
-    /// or inconsistent — the reason is preserved, never collapsed away.
-    ProviderRegistrationRefused(ProviderRefusal),
+    /// A start or activation the recorded composition refuses. The reason
+    /// travels in the one dispatch-refusal vocabulary, so it is never
+    /// collapsed into a generic precondition message.
+    DispatchRefused(DispatchRefusal),
     InvalidElevation,
     ElevationCeiling,
     ResourceExhausted,

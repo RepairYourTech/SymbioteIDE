@@ -91,6 +91,38 @@ impl ProviderRefusal {
     }
 }
 
+/// Why a dispatch cannot run: one vocabulary for every boundary that answers
+/// the question. The composition records it, the start consumes it, and
+/// activation re-derives it, so an operator reads the same reason name
+/// wherever they ask. Provider reasons keep the registry's own names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DispatchRefusal {
+    /// The task was not `Ready` when the composition ran.
+    NotSchedulable,
+    /// No route resolved for the task's origin, so no Role — and therefore no
+    /// runtime profile — was chosen.
+    Unrouted,
+    /// The Change Stream a start would compile against is not `Active`.
+    StreamInactive,
+    /// The provider registration the profile names was refused, by the
+    /// registry's own name.
+    Provider(ProviderRefusal),
+}
+
+impl DispatchRefusal {
+    /// The refusal's stable name. Provider reasons report
+    /// [`ProviderRefusal::name`], so one reason has one name at every
+    /// boundary.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NotSchedulable => "not_schedulable",
+            Self::Unrouted => "unrouted",
+            Self::StreamInactive => "stream_inactive",
+            Self::Provider(refusal) => refusal.name(),
+        }
+    }
+}
+
 /// The provider registration resolved for a task's dispatch profile, and
 /// whether the registry proved it usable. The identities are the profile's
 /// declared ones, so a refused preparation still names what it refused.
@@ -195,6 +227,25 @@ impl DispatchPreparation {
         }
     }
 
+    /// The refusal this composition recorded, `None` exactly when it is
+    /// `Ready`. Steps are read in composition order, so the reported reason is
+    /// the first one that refused — the same reason the recorded steps carry,
+    /// which is what lets every boundary name it instead of collapsing it to
+    /// the outcome.
+    pub fn refusal(&self) -> Option<DispatchRefusal> {
+        self.steps.iter().find_map(|step| match step {
+            CompositionStep::Scheduling { schedulable: false } => {
+                Some(DispatchRefusal::NotSchedulable)
+            }
+            CompositionStep::Routing { resolved: None } => Some(DispatchRefusal::Unrouted),
+            CompositionStep::Provider {
+                refusal: Some(refusal),
+                ..
+            } => Some(DispatchRefusal::Provider(*refusal)),
+            _ => None,
+        })
+    }
+
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.version != PREPARATION_VERSION || self.steps.is_empty() || self.steps.len() > 8 {
             return Err(DomainError::InvalidStream);
@@ -208,13 +259,20 @@ impl DispatchPreparation {
                 }
             }
         }
+        // The outcome and the recorded refusals cannot disagree: a refused
+        // composition always names a reason, and a ready one names none.
+        // Every boundary relies on this to report a reason rather than a bare
+        // outcome, so it is checked here, once, where records are composed.
+        if (self.outcome == PreparationOutcome::Ready) != self.refusal().is_none() {
+            return Err(DomainError::InvalidStream);
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderRefusal;
+    use super::{DispatchRefusal, ProviderRefusal};
 
     /// `name()` is the refusal's identity on the wire everywhere it cannot be
     /// a serialized field. Pin it to the serde rename so the two cannot drift.
@@ -238,5 +296,27 @@ mod tests {
                 "{refusal:?} name drifts from its serialized form"
             );
         }
+    }
+
+    /// A dispatch-level refusal reports the registry's own name for a provider
+    /// reason, so one reason has one name wherever an operator meets it.
+    #[test]
+    fn dispatch_refusal_delegates_provider_names() {
+        for provider in [
+            ProviderRefusal::UnresolvedProfile,
+            ProviderRefusal::MissingConnection,
+            ProviderRefusal::MissingEntitlement,
+            ProviderRefusal::MissingModel,
+            ProviderRefusal::UnsupportedVersion,
+            ProviderRefusal::InvalidDescriptor,
+            ProviderRefusal::BindingMismatch,
+            ProviderRefusal::ExpiredEntitlement,
+            ProviderRefusal::UnsupportedAuthenticationBilling,
+        ] {
+            assert_eq!(DispatchRefusal::Provider(provider).name(), provider.name());
+        }
+        assert_eq!(DispatchRefusal::NotSchedulable.name(), "not_schedulable");
+        assert_eq!(DispatchRefusal::Unrouted.name(), "unrouted");
+        assert_eq!(DispatchRefusal::StreamInactive.name(), "stream_inactive");
     }
 }
