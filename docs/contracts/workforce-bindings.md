@@ -45,10 +45,29 @@ new strict protocol version. Existing Projects are not automatically bound.
 ## Readiness is not activation
 
 The read-only assessment separates prerequisite checks from pending activation
-gates. It consumes existing Runtime SDK and Host Pulse contracts rather than
-inventing successful runtime observations. The current Host supplies its real
-pulse and no runtime descriptor, so missing runtime evidence remains visible.
-Physical RAM/CPU totals do not satisfy required effective-capacity checks.
+gates, and reports five: the current Team, Host capacity, the provider
+registration the candidate profile names, runtime capabilities and runtime
+resources. It consumes existing Runtime SDK and Host Pulse contracts rather
+than inventing successful observations, and a prerequisite the Host has not
+observed reports `missing_observation` — never a satisfied prerequisite.
+
+`provider_registration` is the registry's own resolution of the candidate
+profile's registration, through the same validation a start and a run apply
+([provider registry](provider-registry.md)), and it carries the registry's
+refusal name in `provider_refusal` whenever it refuses. The pre-dispatch report
+and the execution boundary therefore cannot disagree about whether a dispatch
+can run.
+
+Runtime capabilities and resources consume the Host's observation of the
+operator's declared runtime for that exact profile (see
+[runtime SDK](runtime-sdk.md)): the declaration states which runtime the
+operator provides and what it supports, and the Host stamps its own identity
+and a bounded evidence window onto the observation. With no matching
+declaration the Host observes no runtime, so both prerequisites remain
+`missing_observation` rather than passing on an assumption. Physical RAM/CPU
+totals do not satisfy required effective-capacity checks, so Host capacity still
+refuses where a profile requires effective memory until cgroup-aware
+observation lands.
 
 Environment resolution, effective access/resource consent, provider billing and
 model discovery, resource reservations, budget enforcement and Dispatch snapshots

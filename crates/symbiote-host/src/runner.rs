@@ -108,6 +108,11 @@ pub struct WorkerTransports {
     /// (the premise symbiote-worktrees verifies). Empty means worktree
     /// provisioning has no configured base and refuses.
     pub(crate) reservation_base: Option<std::path::PathBuf>,
+    /// The operator's declared runtime facts. These describe a runtime; they
+    /// authorize nothing. The readiness report observes one (stamped with
+    /// this Host's identity and a bounded evidence window) when the profile it
+    /// assesses matches, and reports missing runtime evidence when none does.
+    runtime_declarations: Vec<symbiote_runtime_sdk::DeclaredRuntime>,
 }
 
 impl WorkerTransports {
@@ -131,6 +136,31 @@ impl WorkerTransports {
     pub fn with_shell_executor(mut self, factory: Box<dyn ShellExecutorFactory>) -> Self {
         self.shell = Some(factory);
         self
+    }
+
+    pub fn with_runtime_declaration(
+        mut self,
+        declaration: symbiote_runtime_sdk::DeclaredRuntime,
+    ) -> Self {
+        self.runtime_declarations.push(declaration);
+        self
+    }
+
+    /// The declaration matching this exact runtime profile: pinned adapter,
+    /// installation, profile identity, revision and model. A declaration for
+    /// another profile is not an observation of this one.
+    pub fn declared_runtime_for(
+        &self,
+        profile: &symbiote_domain::RuntimeProfile,
+    ) -> Option<&symbiote_runtime_sdk::DeclaredRuntime> {
+        self.runtime_declarations.iter().find(|declared| {
+            declared.adapter_id == profile.adapter
+                && declared.installation == profile.installation
+                && declared.profile_id == profile.id
+                && declared.profile_revision == profile.revision
+                && declared.model_id == profile.model
+                && declared.runtime == profile.runtime
+        })
     }
 
     /// Attaches the operator's credential broker. The broker is shared
@@ -3026,6 +3056,93 @@ mod tests {
             }
         }
     }
+
+    /// The operator's declared runtime is an observation of the EXACT profile
+    /// the readiness report assesses — another model, revision or adapter is
+    /// not an observation of this one — and a declaration that cannot be a
+    /// coherent descriptor is refused at assembly rather than carried as a
+    /// fact. Both are what keep the report from claiming a runtime nobody
+    /// declared for this profile.
+    #[test]
+    fn a_declared_runtime_is_carried_only_for_the_exact_profile_it_names() {
+        use std::collections::BTreeMap;
+        use symbiote_domain::{
+            AgentRuntimeAdapterId, BillingEntitlementId, CredentialReferenceId, ModelId,
+            ProviderConnectionId, Revision, RuntimeProfile, RuntimeProfileId,
+        };
+        use symbiote_runtime_sdk::{DeclaredRuntime, IntegrationTier, RuntimeOwner, Transport};
+
+        let profile = RuntimeProfile {
+            id: RuntimeProfileId::new("native-worker").unwrap(),
+            revision: Revision(1),
+            runtime: RuntimeKind::NativeSymbiote,
+            adapter: AgentRuntimeAdapterId::new("native-agent").unwrap(),
+            installation: None,
+            provider: ProviderConnectionId::new("native-openai").unwrap(),
+            credential: CredentialReferenceId::new("native-vault-ref").unwrap(),
+            billing_entitlement: BillingEntitlementId::new("native-api-entitlement").unwrap(),
+            model: ModelId::new("coding-model").unwrap(),
+            eligible_hosts: [HostId::new("host-a").unwrap()].into(),
+        };
+        let declaration = DeclaredRuntime {
+            adapter_id: profile.adapter.clone(),
+            installation: None,
+            profile_id: profile.id.clone(),
+            profile_revision: profile.revision,
+            model_id: profile.model.clone(),
+            adapter_version: "0.1.0".into(),
+            upstream_version: "0.1.0".into(),
+            runtime: RuntimeKind::NativeSymbiote,
+            owner: RuntimeOwner::SymbioteNative {},
+            transport: Transport::NativeLoop,
+            tier: IntegrationTier::Detected,
+            platform: "linux".into(),
+            capabilities: BTreeSet::new(),
+            controls: BTreeMap::new(),
+            tools: BTreeSet::new(),
+            skills: BTreeSet::new(),
+            context_limits: Some(symbiote_runtime_sdk::RuntimeContextLimits {
+                context_window_tokens: 128_000,
+                max_output_tokens: 16_384,
+            }),
+        };
+        let config = crate::operator::OperatorConfig {
+            reservation_base: std::path::PathBuf::from("/tmp/symbiote-reserved"),
+            native_fixture: None,
+            external_fixture: None,
+            credential_broker: vec![],
+            shell_executor: None,
+            runtime_declarations: vec![declaration.clone()],
+        };
+        let transports = assemble_operator_transports(config).unwrap();
+        assert!(transports.declared_runtime_for(&profile).is_some());
+        let mut other_model = profile.clone();
+        other_model.model = ModelId::new("other-model").unwrap();
+        assert!(transports.declared_runtime_for(&other_model).is_none());
+        let mut other_revision = profile.clone();
+        other_revision.revision = Revision(2);
+        assert!(transports.declared_runtime_for(&other_revision).is_none());
+        // A declaration whose bounds cannot describe any runtime is refused
+        // when the transports are assembled, so a daemon never starts with a
+        // declaration it would later report as an observation.
+        let mut incoherent = declaration;
+        incoherent.context_limits = Some(symbiote_runtime_sdk::RuntimeContextLimits {
+            context_window_tokens: 10,
+            max_output_tokens: 100,
+        });
+        let config = crate::operator::OperatorConfig {
+            reservation_base: std::path::PathBuf::from("/tmp/symbiote-reserved"),
+            native_fixture: None,
+            external_fixture: None,
+            credential_broker: vec![],
+            shell_executor: None,
+            runtime_declarations: vec![incoherent],
+        };
+        assert_eq!(
+            assemble_operator_transports(config).err(),
+            Some("operator runtime declaration")
+        );
+    }
 }
 
 /// The operator-configured fixture model transport (#54): a SCRIPTED model
@@ -3303,6 +3420,12 @@ pub fn assemble_operator_transports(
             protected_paths: shell.protected_paths.clone(),
             allowed_programs: shell.allowed_programs.clone(),
         }));
+    }
+    for declaration in &config.runtime_declarations {
+        declaration
+            .validate()
+            .map_err(|_| "operator runtime declaration")?;
+        transports = transports.with_runtime_declaration(declaration.clone());
     }
     Ok(transports)
 }

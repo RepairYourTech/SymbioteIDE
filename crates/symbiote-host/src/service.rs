@@ -816,8 +816,32 @@ fn execute(
                     .try_into()
                     .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
             );
+            // The report observes what the execution boundary decides: the
+            // candidate's registration is resolved through the registry's own
+            // validation (a refusal is recorded, never an error), and the
+            // operator's declared runtime for that exact profile is observed
+            // with this Host's identity and a fresh window. Neither is invented
+            // here; an absent declaration stays a missing observation.
+            let registration = store
+                .provider_registration(&binding.primary.profile, now)
+                .map_err(storage_error)?;
+            let descriptor = match workers.declared_runtime_for(&binding.primary.profile) {
+                Some(declared) => Some(
+                    declared
+                        .observe(inventory.host_id(), now)
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+                ),
+                None => None,
+            };
             Ok(ResponseBody::BindingReadiness(Box::new(
-                symbiote_workforce::assess_readiness(&binding, &team, Some(&pulse), None, now),
+                symbiote_workforce::assess_readiness(
+                    &binding,
+                    &team,
+                    Some(&pulse),
+                    descriptor.as_ref(),
+                    Some(&registration),
+                    now,
+                ),
             )))
         }
         Operation::GetHostPulse {} => inventory

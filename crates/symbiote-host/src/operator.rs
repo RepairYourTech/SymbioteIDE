@@ -45,6 +45,13 @@ pub struct OperatorConfig {
     /// seam consults per tool invocation. An absent shell executor leaves
     /// declared shell tools propose-only.
     pub shell_executor: Option<ShellExecutorConfig>,
+    /// The runtime facts the operator asserts for this Host, one declaration
+    /// per runtime profile the Host may be asked to assess. The identity and
+    /// the observation window of the resulting descriptor are Host-owned and
+    /// never appear here; an absent declaration leaves the binding readiness
+    /// report's runtime prerequisites unobserved rather than assumed.
+    #[serde(default)]
+    pub runtime_declarations: Vec<symbiote_runtime_sdk::DeclaredRuntime>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

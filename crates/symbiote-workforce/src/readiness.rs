@@ -13,6 +13,9 @@ pub enum PrerequisiteStatus {
 pub enum Prerequisite {
     CurrentTeam,
     HostCapacity,
+    /// The provider registration the primary candidate's profile names, judged
+    /// by the same registry validation the execution boundary uses.
+    ProviderRegistration,
     RuntimeCapabilities,
     RuntimeResources,
 }
@@ -28,6 +31,20 @@ pub enum CheckResult {
 pub struct PrerequisiteCheck {
     pub prerequisite: Prerequisite,
     pub result: CheckResult,
+    /// Present exactly on the provider prerequisite, and only when the registry
+    /// refused: the refusal's own name, so the report says why a dispatch would
+    /// not run rather than merely that it would not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_refusal: Option<ProviderRefusal>,
+}
+impl PrerequisiteCheck {
+    fn new(prerequisite: Prerequisite, result: CheckResult) -> Self {
+        Self {
+            prerequisite,
+            result,
+            provider_refusal: None,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -49,25 +66,33 @@ pub struct ReadinessReport {
 }
 /// Assesses the primary candidate only. Fallback selection requires new explicit
 /// consent and a separately compiled candidate assessment; none is selected here.
+///
+/// `provider` is the registry resolution the Host already performed for the
+/// candidate's profile (`None` when the registry was not consulted). `descriptor`
+/// is the Host's observation of the declared runtime for that profile (`None`
+/// when the operator declared none). Both are inputs, never invented here: a
+/// check whose observation is absent reports `MissingObservation` rather than a
+/// satisfied prerequisite.
 pub fn assess_readiness(
     configuration: &BindingConfiguration,
     team: &TeamConfiguration,
     pulse: Option<&HostPulse>,
     descriptor: Option<&RuntimeDescriptor>,
+    provider: Option<&ProviderResolution>,
     now: Timestamp,
 ) -> ReadinessReport {
     let candidate = &configuration.primary;
-    let mut checks = vec![PrerequisiteCheck {
-        prerequisite: Prerequisite::CurrentTeam,
-        result: if configuration.validate_team(team).is_ok() {
+    let mut checks = vec![PrerequisiteCheck::new(
+        Prerequisite::CurrentTeam,
+        if configuration.validate_team(team).is_ok() {
             CheckResult::Satisfied
         } else {
             CheckResult::Rejected
         },
-    }];
-    checks.push(PrerequisiteCheck {
-        prerequisite: Prerequisite::HostCapacity,
-        result: match pulse {
+    )];
+    checks.push(PrerequisiteCheck::new(
+        Prerequisite::HostCapacity,
+        match pulse {
             None => CheckResult::MissingObservation,
             Some(pulse) => {
                 let requirements = PulseRequirements {
@@ -86,10 +111,19 @@ pub fn assess_readiness(
                 }
             }
         },
-    });
+    ));
     checks.push(PrerequisiteCheck {
-        prerequisite: Prerequisite::RuntimeCapabilities,
-        result: match descriptor {
+        prerequisite: Prerequisite::ProviderRegistration,
+        result: match provider {
+            None => CheckResult::MissingObservation,
+            Some(resolution) if resolution.refusal.is_none() => CheckResult::Satisfied,
+            Some(_) => CheckResult::Rejected,
+        },
+        provider_refusal: provider.and_then(|resolution| resolution.refusal),
+    });
+    checks.push(PrerequisiteCheck::new(
+        Prerequisite::RuntimeCapabilities,
+        match descriptor {
             None => CheckResult::MissingObservation,
             Some(d) => {
                 if pulse.is_some_and(|p| p.host_id == d.host_id)
@@ -108,10 +142,10 @@ pub fn assess_readiness(
                 }
             }
         },
-    });
-    checks.push(PrerequisiteCheck {
-        prerequisite: Prerequisite::RuntimeResources,
-        result: match descriptor {
+    ));
+    checks.push(PrerequisiteCheck::new(
+        Prerequisite::RuntimeResources,
+        match descriptor {
             None => CheckResult::MissingObservation,
             Some(d) => {
                 if candidate.tools.is_subset(&d.tools)
@@ -129,7 +163,7 @@ pub fn assess_readiness(
                 }
             }
         },
-    });
+    ));
     ReadinessReport {
         status: if checks.iter().all(|c| c.result == CheckResult::Satisfied) {
             PrerequisiteStatus::ReadyForPreflight
