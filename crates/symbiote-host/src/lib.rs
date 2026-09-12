@@ -20,6 +20,10 @@ pub mod cli_authorization;
 /// `ContextSource` and the dispatch-facet resolution the activation path
 /// uses. Credential VALUES live only in the operator's broker.
 pub(crate) mod context_resolution;
+/// The production external-harness transport (#218/#465): the operator's
+/// configured harness program launched inside the sandbox under the
+/// dispatch's declared memory ceiling.
+pub mod external_harness;
 mod identity;
 mod inventory;
 /// Declared resource limits and the bound the Host applies for them: the

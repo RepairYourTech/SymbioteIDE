@@ -28,6 +28,8 @@ const MAX_METHOD_BYTES: usize = 256;
 const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 /// How long `call` waits for its correlated response before failing.
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a cancel waits for the process to die before giving up.
+const CANCEL_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// The raw framed IO both transports provide: send one JSON value, receive
 /// one JSON value or `None` when nothing arrives within the timeout. `Err`
@@ -35,6 +37,10 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub trait FrameIo {
     fn send_frame(&mut self, frame: &Value, timeout: Duration) -> Result<(), DriverError>;
     fn recv_frame(&mut self, timeout: Duration) -> Result<Option<Value>, DriverError>;
+    /// Terminates the process this IO owns, if any, so a run that stops at its
+    /// deadline does not leave a harness behind. IO with nothing to stop is a
+    /// no-op.
+    fn cancel_frame_io(&mut self) {}
 }
 
 impl FrameIo for symbiote_sandbox::SandboxProcess {
@@ -51,6 +57,9 @@ impl FrameIo for symbiote_sandbox::SandboxProcess {
             Err(_) => Err(DriverError::TransportFailed),
         }
     }
+    fn cancel_frame_io(&mut self) {
+        let _ = self.cancel(CANCEL_TIMEOUT);
+    }
 }
 
 impl FrameIo for symbiote_runtime_transport::JsonlTransport {
@@ -64,6 +73,9 @@ impl FrameIo for symbiote_runtime_transport::JsonlTransport {
             Err(TransportError::DeadlineExceeded) => Ok(None),
             Err(_) => Err(DriverError::TransportFailed),
         }
+    }
+    fn cancel_frame_io(&mut self) {
+        let _ = self.cancel(CANCEL_TIMEOUT);
     }
 }
 
@@ -200,6 +212,10 @@ pub struct CodexServerProcess<T: FrameIo> {
     next_request_id: u64,
     frame_timeout: Duration,
     call_timeout: Duration,
+    /// The dispatch's declared wall time, once the driver hands it over: no
+    /// I/O wait may outlive it. `None` means only the transport's own timeouts
+    /// apply — the case for a transport the driver never bounded.
+    deadline: Option<std::time::Instant>,
 }
 
 impl<T: FrameIo> CodexServerProcess<T> {
@@ -211,11 +227,43 @@ impl<T: FrameIo> CodexServerProcess<T> {
             next_request_id: 1,
             frame_timeout: DEFAULT_FRAME_TIMEOUT,
             call_timeout: DEFAULT_CALL_TIMEOUT,
+            deadline: None,
         }
     }
 
     pub fn io(&mut self) -> &mut T {
         &mut self.io
+    }
+
+    /// Bounds every later I/O wait by the dispatch's declared wall time. The
+    /// driver owns the clock and hands over an absolute deadline; `None`
+    /// clears it.
+    pub fn bind_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        self.deadline = deadline;
+    }
+
+    /// The budget an I/O wait may use: its own, or the time left before the
+    /// declared wall time, whichever ends first. `None` means the deadline is
+    /// already spent, so nothing may be waited for.
+    fn io_budget(&self, budget: Duration) -> Option<Duration> {
+        match self.deadline {
+            Some(deadline) => deadline
+                .checked_duration_since(std::time::Instant::now())
+                .filter(|left| !left.is_zero())
+                .map(|left| left.min(budget)),
+            None => Some(budget),
+        }
+    }
+
+    /// Why a wait ended with no budget left: the declared wall time when that
+    /// is what expired, the transport's own timeout otherwise.
+    fn exhausted(&self) -> DriverError {
+        match self.deadline {
+            Some(deadline) if deadline <= std::time::Instant::now() => {
+                DriverError::WallTimeExceeded
+            }
+            _ => DriverError::TransportFailed,
+        }
     }
 
     /// Buffers one non-response inbound frame. A response outside an
@@ -244,8 +292,14 @@ impl<T: FrameIo> CodexServerProcess<T> {
         if let Some(notification) = self.notifications.pop_front() {
             return Ok(Some(notification));
         }
+        // A poll window never outlives the declared wall time: once it is
+        // spent, the next read waits for nothing and the driver's own deadline
+        // check stops the turn.
+        let Some(window) = self.io_budget(self.frame_timeout) else {
+            return Ok(None);
+        };
         let deadline = std::time::Instant::now()
-            .checked_add(self.frame_timeout)
+            .checked_add(window)
             .ok_or(DriverError::TransportFailed)?;
         loop {
             let Some(remaining) = deadline
@@ -280,24 +334,40 @@ impl<T: FrameIo> crate::CodexTransport for CodexServerProcess<T> {
         if method.is_empty() || method.len() > MAX_METHOD_BYTES {
             return Err(DriverError::InvalidInput);
         }
+        let send_budget = self
+            .io_budget(self.call_timeout)
+            .ok_or_else(|| self.exhausted())?;
         let id = self.next_request_id;
         if id == u64::MAX {
             return Err(DriverError::TransportFailed);
         }
         self.next_request_id += 1;
         self.io
-            .send_frame(&request_envelope(id, method, params), self.call_timeout)?;
-        let deadline = std::time::Instant::now()
+            .send_frame(&request_envelope(id, method, params), send_budget)?;
+        // The response wait ends at whichever comes first: the call's own
+        // timeout or the dispatch's declared wall time. Which one expired
+        // decides the typed error, so a harness that never answers is reported
+        // as out of wall time rather than as a broken transport.
+        let call_end = std::time::Instant::now()
             .checked_add(self.call_timeout)
             .ok_or(DriverError::TransportFailed)?;
+        let (end, capped_by_wall_time) = match self.deadline {
+            Some(deadline) if deadline <= call_end => (deadline, true),
+            _ => (call_end, false),
+        };
+        let expiry = if capped_by_wall_time {
+            DriverError::WallTimeExceeded
+        } else {
+            DriverError::TransportFailed
+        };
         loop {
-            let remaining = deadline
+            let remaining = end
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or(DriverError::TransportFailed)?;
-            let frame = self
-                .io
-                .recv_frame(remaining)?
-                .ok_or(DriverError::TransportFailed)?;
+                .filter(|left| !left.is_zero());
+            let Some(remaining) = remaining else {
+                return Err(expiry);
+            };
+            let frame = self.io.recv_frame(remaining)?.ok_or(expiry)?;
             match classify(frame)? {
                 Inbound::Response {
                     id: frame_id,
@@ -323,8 +393,19 @@ impl<T: FrameIo> crate::CodexTransport for CodexServerProcess<T> {
         if method.is_empty() || method.len() > MAX_METHOD_BYTES {
             return Err(DriverError::InvalidInput);
         }
+        let budget = self
+            .io_budget(self.call_timeout)
+            .ok_or_else(|| self.exhausted())?;
         self.io
-            .send_frame(&notification_envelope(method, params), self.call_timeout)
+            .send_frame(&notification_envelope(method, params), budget)
+    }
+
+    fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        self.bind_deadline(deadline);
+    }
+
+    fn cancel(&mut self) {
+        self.io.cancel_frame_io();
     }
 
     fn recv_notification(&mut self) -> Result<Option<Value>, DriverError> {
@@ -347,7 +428,10 @@ impl<T: FrameIo> crate::CodexTransport for CodexServerProcess<T> {
             return Err(DriverError::InvalidInput);
         }
         let envelope = refusal_envelope(request).ok_or(DriverError::InvalidInput)?;
-        self.io.send_frame(&envelope, self.call_timeout)
+        let budget = self
+            .io_budget(self.call_timeout)
+            .ok_or_else(|| self.exhausted())?;
+        self.io.send_frame(&envelope, budget)
     }
 }
 

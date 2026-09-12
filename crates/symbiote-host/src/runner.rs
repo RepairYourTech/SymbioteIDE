@@ -99,6 +99,11 @@ pub trait ShellExecutorFactory {
 pub struct WorkerTransports {
     native: Option<Box<dyn NativeTransportFactory>>,
     external: Option<Box<dyn ExternalTransportFactory>>,
+    /// The operator-provisioned sandboxed harness. When set, the Host
+    /// launches it itself under the dispatch's declared bound — so the
+    /// in-process `external` factory is not consulted, and one lane is either
+    /// the Host-bounded harness or a process-free fixture, never both.
+    harness: Option<crate::external_harness::HarnessLaunchConfig>,
     /// The operator's sandbox shell-executor composition. Absent means
     /// declared shell tools stay propose-only on native runs.
     shell: Option<Box<dyn ShellExecutorFactory>>,
@@ -134,6 +139,18 @@ impl WorkerTransports {
 
     pub fn with_external(mut self, factory: Box<dyn ExternalTransportFactory>) -> Self {
         self.external = Some(factory);
+        self
+    }
+
+    /// Configures the operator's sandboxed harness program. The Host launches
+    /// it in the sandbox under the dispatch's declared ceiling on every
+    /// external run, so the ceiling is never a transport's claim. Precedence:
+    /// a configured harness wins over the in-process external factory.
+    pub fn with_external_harness(
+        mut self,
+        config: crate::external_harness::HarnessLaunchConfig,
+    ) -> Self {
+        self.harness = Some(config);
         self
     }
 
@@ -207,12 +224,25 @@ impl WorkerTransports {
         }
     }
 
+    /// Builds the external lane's transport for one run. When the operator
+    /// provisioned the sandboxed harness, the Host launches it here itself,
+    /// under the dispatch's declared bound: the ceiling is the Host's own
+    /// decision, so no transport can report a bound it did not apply, and a
+    /// launch the sandbox cannot bound refuses rather than running unbound. A
+    /// configured in-process transport (the labeled fixture, or a test's
+    /// scripted one) starts no OS process at all and is handed the same
+    /// inputs.
     pub fn external_build(
         &mut self,
+        inputs: ExternalHarnessInputs<'_>,
     ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, crate::runner::RunnerError> {
+        if let Some(config) = &self.harness {
+            return crate::external_harness::launch(config, &inputs)
+                .map_err(crate::runner::RunnerError::TransportBuild);
+        }
         match self.external.as_mut() {
             Some(factory) => factory
-                .build()
+                .build(inputs)
                 .map_err(crate::runner::RunnerError::TransportBuild),
             None => Err(crate::runner::RunnerError::NoTransport),
         }
@@ -242,15 +272,14 @@ impl WorkerTransports {
         self.broker.is_some()
     }
 
-    /// Whether the operator provisioned the external execution path (the
-    /// explicitly labeled fixture harness; a live pinned-binary path stays
-    /// gated on explicit user authorization). The Host record advertises
-    /// `ExternalHarness` support only when this is set: without operator
-    /// provisioning the Host cannot execute external dispatches, so a
-    /// binding with an external profile is refused at start instead of
-    /// falling back to anything else.
+    /// Whether the operator provisioned the external execution path: the
+    /// sandboxed harness the Host launches itself, or the explicitly labeled
+    /// in-process fixture. The Host record advertises `ExternalHarness`
+    /// support only when one is set: without operator provisioning the Host
+    /// cannot execute external dispatches, so a binding with an external
+    /// profile is refused at start instead of falling back to anything else.
     pub fn has_external_transport(&self) -> bool {
-        self.external.is_some()
+        self.external.is_some() || self.harness.is_some()
     }
 
     /// Resolves one credential lease for a dispatch from the operator's
@@ -325,10 +354,49 @@ pub trait NativeTransportFactory {
     -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>;
 }
 
-/// Builds one external Codex transport per run: the factory owns the
-/// sandboxed launch of the pinned binary (or, in tests, a scripted fixture).
-pub trait ExternalTransportFactory {
-    fn build(&mut self) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str>;
+/// The run facts an external harness transport is built from: the dispatch's
+/// pinned identities, its provisioned worktree, the access the run operates
+/// under, the run's observed time, and the bound the dispatch's declared
+/// resource limits reduce to. Nothing here is client input, and a transport
+/// never decides the ceiling: when the operator provisions the sandboxed
+/// harness the Host launches it itself under `bound` (see
+/// [`crate::external_harness`]).
+pub struct ExternalHarnessInputs<'a> {
+    pub root_id: &'a symbiote_domain::RootId,
+    pub worktree: &'a std::path::Path,
+    pub host: &'a symbiote_domain::HostId,
+    pub project_id: &'a symbiote_domain::ProjectId,
+    pub role_id: &'a symbiote_domain::RoleId,
+    pub profile_id: &'a symbiote_domain::RuntimeProfileId,
+    pub access: &'a symbiote_domain::AccessSnapshot,
+    pub user_id: &'a symbiote_domain::UserId,
+    pub at: symbiote_domain::Timestamp,
+    /// The address-space ceiling the dispatch's declared limits reduce to
+    /// (`ResourceLimits::process_bound`). The Host applies it to the harness
+    /// process it launches itself; an in-process transport starts nothing to
+    /// bound, so it consults nothing here.
+    pub bound: symbiote_domain::ProcessBound,
+}
+
+/// Seals the external transport seam. The Host owns every process launch in
+/// the external lane (see [`crate::external_harness`]), so only this crate may
+/// install an external transport: the seam exists for the labeled in-process
+/// fixture and in-crate tests, never for an embedder to install a
+/// process-owning transport that would bypass the declared bound.
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Builds one external transport per run. An in-process transport starts no OS
+/// process: the Host owns every process launch in this lane (see
+/// [`crate::external_harness`]), so no transport can promise a memory bound it
+/// does not apply. It is handed the dispatch's declared `bound` for the
+/// transports that consult it. Sealed to this crate — see [`sealed`].
+pub trait ExternalTransportFactory: sealed::Sealed {
+    fn build(
+        &mut self,
+        inputs: ExternalHarnessInputs<'_>,
+    ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -904,6 +972,7 @@ fn external_error_name(error: symbiote_external_agent::DriverError) -> &'static 
         DriverError::UnsupportedVersion => "unsupported_version",
         DriverError::ContractMismatch => "contract_mismatch",
         DriverError::AlreadyComplete => "already_complete",
+        DriverError::WallTimeExceeded => "wall_time_exceeded",
     }
 }
 
@@ -1048,7 +1117,13 @@ mod tests {
             store_with_running_task("factory-external", RuntimeKind::ExternalHarness);
         let mut transports =
             WorkerTransports::default().with_external(Box::new(fixture::ScriptedFactory));
-        let mut boxed = transports.external_build().unwrap();
+        let mut boxed = transports
+            .external_build(harness_inputs(
+                &dispatch,
+                Path::new("/workspace"),
+                &fixture_user(),
+            ))
+            .unwrap();
         let outcome = run_external_boxed(
             &mut store,
             &task,
@@ -1071,9 +1146,94 @@ mod tests {
             Err(RunnerError::NoTransport)
         ));
         assert!(matches!(
-            empty.external_build(),
+            empty.external_build(harness_inputs(
+                &dispatch,
+                Path::new("/workspace"),
+                &fixture_user(),
+            )),
             Err(RunnerError::NoTransport)
         ));
+    }
+
+    /// An in-process external factory that only records whether the Host ever
+    /// consulted it, so precedence over a configured harness is observable.
+    pub struct ObservedExternalFactory {
+        pub built: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+    impl super::sealed::Sealed for ObservedExternalFactory {}
+    impl ExternalTransportFactory for ObservedExternalFactory {
+        fn build(
+            &mut self,
+            _inputs: ExternalHarnessInputs<'_>,
+        ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str> {
+            self.built.set(true);
+            Ok(Box::new(fixture::ScriptedCodex::new(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )))
+        }
+    }
+
+    #[test]
+    fn a_configured_harness_is_launched_by_the_host_not_the_in_process_factory() {
+        let (_store, _task, dispatch) =
+            store_with_running_task("external-host-launch", RuntimeKind::ExternalHarness);
+        // The configured launcher does not exist, so the Host's own sandbox
+        // launch refuses instead of falling back to the in-process factory
+        // installed alongside it. That refusal is the proof the Host — not a
+        // transport — owned the launch and therefore the ceiling.
+        let built = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut transports = WorkerTransports::default()
+            .with_external(Box::new(ObservedExternalFactory {
+                built: built.clone(),
+            }))
+            .with_external_harness(crate::external_harness::HarnessLaunchConfig {
+                launcher_path: std::path::PathBuf::from("/nonexistent/symbiote-sandbox-launch"),
+                protected_paths: vec![std::path::PathBuf::from("/etc")],
+                program: "/usr/bin/true".into(),
+                args: Vec::new(),
+            });
+        let result = transports.external_build(harness_inputs(
+            &dispatch,
+            Path::new("/workspace"),
+            &fixture_user(),
+        ));
+        assert!(matches!(result, Err(RunnerError::TransportBuild(_))));
+        assert!(
+            !built.get(),
+            "a configured harness takes precedence over the in-process factory"
+        );
+    }
+
+    /// The run facts an external transport is built from, for the runner
+    /// tests: the dispatch's own pinned identities and a declared bound the
+    /// caller names.
+    fn harness_inputs<'a>(
+        dispatch: &'a Dispatch,
+        worktree: &'a Path,
+        user: &'a symbiote_domain::UserId,
+    ) -> ExternalHarnessInputs<'a> {
+        let contract = dispatch.contract();
+        ExternalHarnessInputs {
+            root_id: contract.root_id(),
+            worktree,
+            host: contract.host_id(),
+            project_id: &contract.binding().project_id,
+            role_id: &contract.binding().role_id,
+            profile_id: &contract.profile().id,
+            access: contract.effective_access(),
+            user_id: user,
+            at: Timestamp(60),
+            // Exactly what the activation path hands the lane: the bound the
+            // dispatch's recorded limits reduce to.
+            bound: crate::limits::bounds_for(contract.limits())
+                .expect("the fixture dispatch declares a bindable ceiling"),
+        }
+    }
+
+    fn fixture_user() -> symbiote_domain::UserId {
+        symbiote_domain::UserId::new("fixture-user").unwrap()
     }
 
     fn store_with_placed_running_task(
@@ -2811,11 +2971,12 @@ mod tests {
                 }))
             }
         }
-
         pub struct ScriptedFactory;
+        impl super::sealed::Sealed for ScriptedFactory {}
         impl super::ExternalTransportFactory for ScriptedFactory {
             fn build(
                 &mut self,
+                _inputs: super::ExternalHarnessInputs<'_>,
             ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str>
             {
                 Ok(Box::new(ScriptedCodex::new(
@@ -3122,6 +3283,7 @@ mod tests {
             reservation_base: std::path::PathBuf::from("/tmp/symbiote-reserved"),
             native_fixture: None,
             external_fixture: None,
+            external_harness: None,
             credential_broker: vec![],
             shell_executor: None,
             runtime_declarations: vec![declaration.clone()],
@@ -3146,6 +3308,7 @@ mod tests {
             reservation_base: std::path::PathBuf::from("/tmp/symbiote-reserved"),
             native_fixture: None,
             external_fixture: None,
+            external_harness: None,
             credential_broker: vec![],
             shell_executor: None,
             runtime_declarations: vec![incoherent],
@@ -3340,8 +3503,15 @@ pub struct FixtureExternalFactory {
     pub thread_id: String,
     pub agent_message: String,
 }
+impl sealed::Sealed for FixtureExternalFactory {}
 impl ExternalTransportFactory for FixtureExternalFactory {
-    fn build(&mut self) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str> {
+    fn build(
+        &mut self,
+        _inputs: ExternalHarnessInputs<'_>,
+    ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str> {
+        // The scripted fixture answers in-process: it starts no OS process,
+        // so it has no process to bound. The Host launches the real harness
+        // itself (see `external_harness`), so this seam never owns a process.
         Ok(Box::new(ScriptedCodexTransport::new(
             &self.thread_id.clone(),
             &self.agent_message.clone(),
@@ -3402,7 +3572,12 @@ pub fn assemble_operator_transports(
             }),
         }));
     }
-    if let Some(fixture) = &config.external_fixture {
+    // The sandboxed harness takes precedence over the in-process fixture when
+    // the operator provisions both: a lane is either the Host-launched,
+    // bounded harness or the scripted fixture, never both.
+    if let Some(harness) = &config.external_harness {
+        transports = transports.with_external_harness(harness.clone());
+    } else if let Some(fixture) = &config.external_fixture {
         transports = transports.with_external(Box::new(FixtureExternalFactory {
             thread_id: fixture.thread_id.clone(),
             agent_message: fixture.agent_message.clone(),

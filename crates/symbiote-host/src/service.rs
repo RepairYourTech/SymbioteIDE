@@ -731,7 +731,26 @@ fn execute(
                     })))
                 }
                 symbiote_domain::RuntimeKind::ExternalHarness => {
-                    let mut transport = workers.external_build().map_err(worker_error)?;
+                    // The Host launches the sandboxed harness itself, under
+                    // the dispatch's declared ceiling: the bound is applied by
+                    // the launcher, not asserted by a transport, so the lane
+                    // cannot promise a bound it does not apply. The one
+                    // process this lane starts is the one the Host bounds.
+                    let harness_access = current.contract().effective_access().clone();
+                    let mut transport = workers
+                        .external_build(crate::runner::ExternalHarnessInputs {
+                            root_id: &provisioned.root_id,
+                            worktree: &provisioned.worktree,
+                            host: &this_host,
+                            project_id: task_record.project_id(),
+                            role_id: &current.contract().binding().role_id,
+                            profile_id: &current.contract().profile().id,
+                            access: &harness_access,
+                            user_id: principal.user_id(),
+                            at,
+                            bound,
+                        })
+                        .map_err(worker_error)?;
                     // The sandboxed launcher mounts the reserved worktree at
                     // /workspace; that is the only cwd the harness sees.
                     let outcome = crate::runner::run_external_boxed(

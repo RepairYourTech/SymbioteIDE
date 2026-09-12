@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":20},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 21},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1621,7 +1621,7 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
     let report = readiness_probe(&host);
     assert_eq!(report["profile_id"], "native-worker");
     let checks = report["checks"].as_array().unwrap();
-    assert_eq!(checks.len(), 6);
+    assert_eq!(checks.len(), 7);
     // The limits this candidate declares are bindable, so the check the
     // execution boundary shares is satisfied and names no refusal.
     assert_eq!(checks[5]["prerequisite"], "enforceable_limits");
@@ -1630,6 +1630,10 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
         checks[5].get("limit_refusal").is_none(),
         "only a refused limit is named"
     );
+    // The access the lane's own execution needs is present, so the report is
+    // ready rather than refused at the transport build.
+    assert_eq!(checks[6]["prerequisite"], "execution_access");
+    assert_eq!(checks[6]["result"], "satisfied");
     assert_eq!(checks[2]["prerequisite"], "provider_registration");
     assert_eq!(checks[2]["result"], "satisfied");
     assert!(

@@ -110,6 +110,28 @@ real handshake (`initialize` → pinned `symbiote/0.118.0` check →
 `initialized`) before any thread or turn interaction; a server that does
 not report the pinned version is refused.
 
+The Host owns the external lane's process launch, so the ceiling is a fact
+rather than a claim. When the operator provisions the sandboxed harness
+(`external_harness`), activation builds the sandbox `LaunchRequest` itself —
+the configured harness program, the dispatch's reserved worktree and its
+declared `address_space_bytes` — so no transport can start the harness under a
+bound the Host did not apply, and a launch the sandbox cannot bound refuses
+rather than running unbound. The same contract grant (`MutateStream`) selects
+the worktree profile (`Profile::WorktreeWrite`, otherwise `Profile::ReadOnly`)
+and the harness's own `thread/start` policy (`workspace-write`, otherwise
+`read-only`), so the outer sandbox and the harness cannot disagree about
+whether the worktree may be written. Transports are in-process only — the
+scripted fixture starts no OS process at all, and the seam that installs one
+is sealed to the Host.
+
+The dispatch's declared `max_wall_time_ms` bounds the harness itself, not just
+the driver's poll loop: the deadline is handed to the transport, so the
+handshake and every turn's requests and reads end at the wall time rather than
+at the transport's own 30-second call timeout. A harness that has not answered
+by then is cancelled (its process is terminated) and the run stops with
+typed `WallTimeExceeded` — never at a fixed multi-minute silence budget, and
+never leaving a harness alive behind a stopped run.
+
 The `codex_thread_smoke` example is the real-binary proof, mirroring the
 #483 discovery proof: sandboxed launch, the driver's own `begin_thread`
 against the production framing, then cancellation — no turn, no model

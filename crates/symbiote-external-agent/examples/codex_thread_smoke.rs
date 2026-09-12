@@ -27,7 +27,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("thread smoke requires an empty worktree".into());
     }
     let root = RootId::new("smoke-root")?;
-    let profile = Profile::ReadOnly;
+    // The driver sets the harness's own policy from the contract's write
+    // grant, so the outer profile must come from the same grant: the smoke's
+    // binding grants `MutateStream`, so the reserved worktree is writable
+    // here exactly as the production lane's is.
+    let profile = Profile::WorktreeWrite;
     let snapshot = ResourceSnapshot {
         project_id: ProjectId::new("smoke-project")?,
         role_id: RoleId::new("smoke-role")?,
@@ -38,7 +42,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         access: AccessSnapshot {
             project_id: ProjectId::new("smoke-project")?,
             roots: BTreeSet::from([root.clone()]),
-            grants: BTreeSet::from([Permission::ReadRoot, Permission::ExecuteProcess]),
+            grants: BTreeSet::from([
+                Permission::ReadRoot,
+                Permission::ExecuteProcess,
+                Permission::MutateStream,
+            ]),
             policy_revision: Revision(1),
         },
     };
