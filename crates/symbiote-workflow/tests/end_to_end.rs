@@ -22,7 +22,7 @@ struct Daemon {
 
 impl Daemon {
     fn spawn(state_dir: &std::path::Path, config_path: &std::path::Path) -> Self {
-        let mut child = Command::new(daemon_binary())
+        let mut child = Command::new(symbiote_workflow::binaries::daemon_binary())
             .arg("--state-dir")
             .arg(state_dir)
             .arg("--operator-config")
@@ -80,20 +80,6 @@ impl Drop for Daemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-/// The daemon binary from the workspace target directory (the workspace
-/// gauntlet builds every bin; a partial single-crate run must build the
-/// workspace first).
-fn daemon_binary() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for ancestor in manifest.ancestors().skip(1) {
-        let candidate = ancestor.join("target/debug/symbioted");
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-    panic!("symbioted not built; run the workspace gauntlet (cargo test --workspace)");
 }
 
 fn launcher_binary() -> PathBuf {
@@ -169,6 +155,11 @@ for line in sys.stdin:
     elif m=="turn/start":
         send({"id":msg["id"],"result":{"turn":{"id":"turn-bounded"}}})
         open("produced.txt","w").write("the external harness wrote its worktree\n")
+        try:
+            open("/dev/harness-probe","w"); dev=None
+        except OSError as error:
+            dev=error.errno
+        open("dev-probe.json","w").write(json.dumps({"dev":dev}))
         send({"method":"item/completed","params":{"threadId":"thr-bounded","turnId":"turn-bounded","item":{"type":"agentMessage","id":"i1","text":"harness address-space ceiling %d"%soft}}})
         send({"method":"turn/completed","params":{"threadId":"thr-bounded","turnId":"turn-bounded","turn":{"id":"turn-bounded","status":"completed","items":[]}}})
 "#;
@@ -1141,5 +1132,20 @@ fn a_started_external_harness_runs_under_the_declared_memory_bound() {
         outcome.worktree.contains("produced.txt"),
         "the external harness's produced file must be visible in its worktree: {:?}",
         outcome.worktree
+    );
+    // The daemon's own launch carries the hardened mount table: the harness it
+    // starts inside the sandbox finds `/dev` read-only. (The rest of the
+    // boundary — errno rows, the cross-process `/dev/shm` observation and the
+    // `/dev/pts` exception — is pinned once in the sandbox's errno table; this
+    // asserts the launch composition the daemon performs, not the table again.)
+    let probe: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.worktree.worktree.join("dev-probe.json"))
+            .expect("the harness's device probe file"),
+    )
+    .expect("device probe json");
+    assert_eq!(
+        probe,
+        serde_json::json!({"dev": 30}),
+        "the daemon's own launch must carry a read-only device tree: {probe}"
     );
 }

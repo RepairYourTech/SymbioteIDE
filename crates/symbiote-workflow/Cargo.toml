@@ -16,5 +16,16 @@ serde.workspace = true
 serde_json.workspace = true
 nix = { version = "=0.30.1", features = ["socket", "user", "signal"] }
 
+[features]
+# The daemon-freshness check the end-to-end proofs resolve `symbioted`
+# through. Test support only: a production build (the desktop shell) must not
+# carry it.
+test-support = []
+
+[dev-dependencies]
+# A package may depend on itself in `dev-dependencies` to turn `test-support`
+# on for its own integration tests; resolver 3 keeps it out of normal builds.
+symbiote-workflow = { path = ".", features = ["test-support"] }
+
 [lints]
 workspace = true

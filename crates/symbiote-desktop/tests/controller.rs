@@ -25,17 +25,18 @@ fn git(repo: &std::path::Path, args: &[&str]) {
 }
 
 fn bin_dir() -> PathBuf {
-    // Workspace target directory: the gauntlet builds every binary.
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for ancestor in manifest.ancestors().skip(1) {
-        let candidate = ancestor.join("target/debug");
-        if candidate.join("symbioted").is_file()
-            && candidate.join("symbiote-sandbox-launch").is_file()
-        {
-            return candidate;
-        }
-    }
-    panic!("workspace binaries not built; run the workspace gauntlet");
+    // The gauntlet builds every binary. Reuse the workflow proof's resolver so
+    // this proof cannot pass against a `symbioted` built from older sources
+    // while the daemon runs code that no longer reflects the repository.
+    let daemon = symbiote_workflow::binaries::daemon_binary();
+    let dir = daemon
+        .parent()
+        .expect("symbioted lives in the workspace target directory");
+    assert!(
+        dir.join("symbiote-sandbox-launch").is_file(),
+        "workspace binaries not built; run the workspace gauntlet"
+    );
+    dir.to_path_buf()
 }
 
 fn test_env(tag: &str) -> TestEnv {

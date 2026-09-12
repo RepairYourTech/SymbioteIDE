@@ -3175,6 +3175,7 @@ dependencies = [
  "symbiote-protocol",
  "symbiote-repo",
  "symbiote-trust",
+ "symbiote-workflow",
  "symbiote-worktrees",
 ]
 

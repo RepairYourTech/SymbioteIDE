@@ -565,48 +565,105 @@ fn setup_failure_stderr_is_bounded_explicit_and_debug_redacted() {
 /// reserved worktree, the one Host surface a run may change. Everything else
 /// the mount table leaves reachable inside is either absent (the sandbox root
 /// is a fresh tmpfs, so no Host directory, `/etc` or `/var` exists at all —
-/// errno 2) or read-only (`/usr` is a read-only bind and the root is remounted
-/// read-only — errno 30). The remaining writable paths — `/tmp`, `/home/agent`,
-/// and `/dev` with its `/dev/shm` — are the sandbox's own tmpfs mounts, not the
-/// Host's: the test asserts a run may write there and that the write never
-/// reaches the Host path of the same name. That Host-side assertion, not the
-/// writability itself, is what keeps them off the Host boundary; it is also what
-/// would fail if the inner `/dev` were ever replaced by a bind of the Host's.
-/// Under `ReadOnly` the same table holds minus the worktree, which joins the
-/// refusing side, so a dispatch with no mutation grant gets no Host write at
-/// all.
+/// errno 2) or read-only (`/usr` is a read-only bind, the root is remounted
+/// read-only, and the device tree is the sandbox's own tmpfs remounted
+/// read-only — errno 30). Read-only `/dev` closes the alias threat class the
+/// worktree preflight exists for: a file, directory, symlink, Unix socket and
+/// device node are each attempted inside it and must be refused with the errno
+/// the kernel returned. `/tmp` and `/home/agent` are the sandbox's own writable
+/// tmpfs mounts, not the Host's: the test asserts a run may write there and
+/// that the write never reaches the Host path of the same name. `/dev/shm` is
+/// the named exception to the read-only device tree — its own writable tmpfs,
+/// proven by a forked second process observing what this one wrote — and
+/// `/dev/pts` is the other, a separate writable devpts mount where
+/// pseudo-terminal allocation must still succeed. Under `ReadOnly` the same
+/// table holds minus the worktree, which joins the refusing side, so a dispatch
+/// with no mutation grant gets no Host write at all.
 #[test]
 fn the_mount_boundary_confines_host_writes_to_the_reserved_worktree() {
-    let script = r#"import json,os,sys
+    let script = r#"import json,os,socket,stat,sys
 host_worktree,host_protected,shadow=sys.argv[1],sys.argv[2],sys.argv[3]
 tmp_before=len(os.listdir('/tmp'))
-targets={
- 'reserved_worktree':'/workspace/probe.txt',
- 'worktree_traversal':'/workspace/../probe.txt',
- 'sandbox_root':'/symbiote-probe',
- 'sandbox_usr':'/usr/symbiote-probe',
- 'sandbox_etc':'/etc/symbiote-probe',
- 'sandbox_var':'/var/symbiote-probe',
- 'host_worktree':host_worktree+'/probe.txt',
- 'host_protected':host_protected+'/probe.txt',
- 'sandbox_tmp':'/tmp/'+shadow,
- 'sandbox_home':'/home/agent/'+shadow,
- 'sandbox_dev':'/dev/'+shadow,
- 'sandbox_dev_shm':'/dev/shm/'+shadow,
-}
-def attempt(path):
+def mutation(fn):
     try:
-        with open(path,'w') as handle:
-            handle.write('probe')
-        return 'writable'
+        fn()
+        return 'allowed'
     except OSError as error:
         return error.errno
-json.dump({'cwd':os.getcwd(),'tmp_before':tmp_before,'writes':{name:attempt(path) for name,path in targets.items()}},sys.stdout)
+def write_file(path):
+    def run():
+        with open(path,'w') as handle:
+            handle.write('probe')
+    return run
+def shm_second_process_observation():
+    path='/dev/shm/'+shadow
+    try:
+        with open(path,'w') as handle:
+            handle.write('shared-memory')
+    except OSError as error:
+        return 'errno %d'%error.errno
+    read,write=os.pipe()
+    pid=os.fork()
+    if pid==0:
+        os.close(read)
+        try:
+            with open(path) as handle:
+                seen=handle.read()
+        except OSError as error:
+            seen='errno %d'%error.errno
+        os.write(write,seen.encode())
+        os._exit(0)
+    os.close(write)
+    seen=b''
+    while True:
+        part=os.read(read,64)
+        if not part:
+            break
+        seen+=part
+    os.close(read)
+    os.waitpid(pid,0)
+    return seen.decode()
+probes={
+ 'reserved_worktree':write_file('/workspace/probe.txt'),
+ 'worktree_traversal':write_file('/workspace/../probe.txt'),
+ 'sandbox_root':write_file('/symbiote-probe'),
+ 'sandbox_usr':write_file('/usr/symbiote-probe'),
+ 'sandbox_etc':write_file('/etc/symbiote-probe'),
+ 'sandbox_var':write_file('/var/symbiote-probe'),
+ 'host_worktree':write_file(host_worktree+'/probe.txt'),
+ 'host_protected':write_file(host_protected+'/probe.txt'),
+ 'sandbox_tmp':write_file('/tmp/'+shadow),
+ 'sandbox_home':write_file('/home/agent/'+shadow),
+ 'sandbox_dev':write_file('/dev/'+shadow),
+ 'dev_mkdir':lambda:os.mkdir('/dev/'+shadow),
+ 'dev_symlink':lambda:os.symlink('/workspace','/dev/'+shadow),
+ 'dev_socket':lambda:socket.socket(socket.AF_UNIX).bind('/dev/'+shadow),
+ 'dev_node':lambda:os.mknod('/dev/'+shadow,0o600|stat.S_IFCHR),
+}
+def device_nodes():
+    try:
+        with open('/dev/null','w') as handle:
+            handle.write('probe')
+        with open('/dev/urandom','rb') as handle:
+            handle.read(4)
+        return 'usable'
+    except OSError as error:
+        return error.errno
+def pty_allocation():
+    try:
+        import pty
+        master,slave=pty.openpty()
+        os.close(master)
+        os.close(slave)
+        return 'allocated'
+    except OSError as error:
+        return error.errno if error.errno is not None else 'refused'
+json.dump({'cwd':os.getcwd(),'tmp_before':tmp_before,'shm_observed':shm_second_process_observation(),'device_nodes':device_nodes(),'pty':pty_allocation(),'probes':{name:mutation(fn) for name,fn in probes.items()}},sys.stdout)
 sys.stdout.write('\n')
 sys.stdout.flush()
 "#;
     for (profile, reserved_worktree) in [
-        (Profile::WorktreeWrite, serde_json::json!("writable")),
+        (Profile::WorktreeWrite, serde_json::json!("allowed")),
         (Profile::ReadOnly, serde_json::json!(30)),
     ] {
         let fixture = Fixture::new();
@@ -639,17 +696,33 @@ sys.stdout.flush()
             serde_json::json!(0),
             "the sandbox's /tmp is its own and empty at start: {observed}"
         );
-        let writes = &observed["writes"];
+        let probes = &observed["probes"];
         assert_eq!(
-            writes["reserved_worktree"], reserved_worktree,
+            probes["reserved_worktree"], reserved_worktree,
             "{profile:?}: the reserved worktree is writable exactly under the mutation grant: {observed}"
         );
-        // Read-only surfaces: the read-only `/usr` bind and the fresh root.
-        for target in ["worktree_traversal", "sandbox_root", "sandbox_usr"] {
+        // Read-only surfaces: the read-only `/usr` bind, the fresh root and the
+        // device tree (`/dev` is remounted read-only after `--dev`).
+        for target in [
+            "worktree_traversal",
+            "sandbox_root",
+            "sandbox_usr",
+            "sandbox_dev",
+        ] {
             assert_eq!(
-                writes[target],
+                probes[target],
                 serde_json::json!(30),
                 "{profile:?} {target} must be read-only: {observed}"
+            );
+        }
+        // The alias threat class read-only `/dev` exists to close: no
+        // directory, symlink, Unix socket or device node may be created in the
+        // device tree, each refused with the errno the kernel returned.
+        for target in ["dev_mkdir", "dev_symlink", "dev_socket", "dev_node"] {
+            assert_eq!(
+                probes[target],
+                serde_json::json!(30),
+                "{profile:?} {target} must be refused in the device tree: {observed}"
             );
         }
         // Absent surfaces: nothing of the Host tree, `/etc` or `/var` exists
@@ -661,31 +734,42 @@ sys.stdout.flush()
             "host_protected",
         ] {
             assert_eq!(
-                writes[target],
+                probes[target],
                 serde_json::json!(2),
                 "{profile:?} {target} must be invisible inside the sandbox: {observed}"
             );
         }
-        // The sandbox's own writable tmpfs mounts, not the Host's. `/dev` is
-        // writable on purpose (its device nodes must be usable, and `/dev/shm`
-        // backs shared memory), so this row is pinned rather than refused.
-        for target in [
-            "sandbox_tmp",
-            "sandbox_home",
-            "sandbox_dev",
-            "sandbox_dev_shm",
-        ] {
+        // The sandbox's own writable tmpfs mounts, not the Host's.
+        for target in ["sandbox_tmp", "sandbox_home"] {
             assert_eq!(
-                writes[target], "writable",
+                probes[target], "allowed",
                 "{profile:?} {target} is the sandbox's own mount: {observed}"
             );
         }
+        // A read-only `/dev` does not take the device nodes with it: they are
+        // separate mounts.
+        assert_eq!(
+            observed["device_nodes"], "usable",
+            "{profile:?}: device nodes under a read-only /dev: {observed}"
+        );
+        // `/dev/pts` is the named exception: a separate writable devpts mount
+        // where pseudo-terminal allocation must still succeed.
+        assert_eq!(
+            observed["pty"], "allocated",
+            "{profile:?}: /dev/pts pty allocation under a read-only /dev: {observed}"
+        );
+        // Shared memory is a real cross-process surface: a forked second
+        // process reads back what this one wrote through `/dev/shm`.
+        assert_eq!(
+            observed["shm_observed"], "shared-memory",
+            "{profile:?}: a second process must observe the /dev/shm write: {observed}"
+        );
         assert!(
             !std::path::Path::new("/tmp").join(&shadow).exists()
                 && !std::path::Path::new("/home/agent").join(&shadow).exists()
                 && !std::path::Path::new("/dev").join(&shadow).exists()
                 && !std::path::Path::new("/dev/shm").join(&shadow).exists(),
-            "{profile:?}: a write inside the sandbox's own /tmp, /home or /dev reached the Host"
+            "{profile:?}: a write inside the sandbox's own /tmp, /home, /dev or /dev/shm reached the Host"
         );
         // Under the writable profile the file the probe wrote through
         // `/workspace` is the Host's own file in the reserved worktree; under
