@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use symbiote_domain::{CommandId, HostId, Timestamp};
 use symbiote_host_inventory::{Fact, HostPulse, linux::*};
 
@@ -169,13 +170,100 @@ fn effective_capacity_is_observed_and_never_invented() {
             Some(ProbeError::Malformed)
         )
     );
-    // Without a quota the effective CPU is unknown without being called a
-    // failure: online CPU counts establish no reservation.
-    assert_eq!(derive_cpu(Ok(Some(1_500))), (Fact::Known(1_500), None));
-    assert_eq!(derive_cpu(Ok(None)), (Fact::Unknown, None));
+}
+
+#[test]
+fn effective_cpu_is_the_processs_own_bound_and_never_the_machines_total() {
+    let four = || BTreeSet::from([0, 1, 2, 3]);
+    // Without a quota the bound is the CPUs this process may run on.
     assert_eq!(
-        derive_cpu(Err(ProbeError::UnsupportedHierarchy)),
+        derive_cpu(Ok(None), Ok(four()), Ok(four())),
+        (Fact::Known(4_000), None)
+    );
+    // A quota below the allowed CPUs binds; one above them does not.
+    assert_eq!(
+        derive_cpu(Ok(Some(1_500)), Ok(four()), Ok(four())),
+        (Fact::Known(1_500), None)
+    );
+    assert_eq!(
+        derive_cpu(Ok(Some(64_000)), Ok(four()), Ok(four())),
+        (Fact::Known(4_000), None)
+    );
+    // Only the CPUs that are both allowed and online count, in either
+    // direction: the machine's total is never substituted for the bound.
+    assert_eq!(
+        derive_cpu(Ok(None), Ok(four()), Ok(BTreeSet::from([2, 3]))),
+        (Fact::Known(2_000), None)
+    );
+    assert_eq!(
+        derive_cpu(Ok(None), Ok(BTreeSet::from([0, 1])), Ok(four())),
+        (Fact::Known(2_000), None)
+    );
+    // Allowed to run on no online CPU is a fact about capacity, not a failure.
+    assert_eq!(
+        derive_cpu(
+            Ok(None),
+            Ok(BTreeSet::from([0, 1])),
+            Ok(BTreeSet::from([2, 3]))
+        ),
+        (Fact::Known(0), None)
+    );
+    // A quota that cannot be read may still bind, and a mask that cannot be
+    // read may be narrower than the machine: each leaves the fact unknown with
+    // its own static reason.
+    assert_eq!(
+        derive_cpu(
+            Err(ProbeError::UnsupportedHierarchy),
+            Ok(four()),
+            Ok(four())
+        ),
         (Fact::Unknown, Some(ProbeError::UnsupportedHierarchy))
+    );
+    assert_eq!(
+        derive_cpu(Ok(None), Err(ProbeError::Unreadable), Ok(four())),
+        (Fact::Unknown, Some(ProbeError::Unreadable))
+    );
+    assert_eq!(
+        derive_cpu(Ok(None), Ok(four()), Err(ProbeError::MissingField)),
+        (Fact::Unknown, Some(ProbeError::MissingField))
+    );
+}
+
+#[test]
+fn cpu_masks_and_online_rows_are_parsed_or_reasoned() {
+    assert_eq!(
+        parse_cpu_list("0-3,8,10-11"),
+        Ok(BTreeSet::from([0, 1, 2, 3, 8, 10, 11]))
+    );
+    assert_eq!(parse_cpu_list("5"), Ok(BTreeSet::from([5])));
+    for malformed in ["", "-1", "3-1", "0-", "a", "1 2"] {
+        assert_eq!(parse_cpu_list(malformed), Err(ProbeError::Malformed));
+    }
+    // A list that names a CPU twice — repeated or overlapping, and therefore
+    // not ascending — is refused as a duplicate rather than as syntax.
+    for duplicated in ["0,0", "2-3,1-2", "0-1,1-2"] {
+        assert_eq!(parse_cpu_list(duplicated), Err(ProbeError::DuplicateField));
+    }
+    assert_eq!(parse_cpu_list("4294967296"), Err(ProbeError::Overflow));
+    assert_eq!(
+        parse_cpu_list(&format!("0-{MAX_OBSERVED_CPUS}")),
+        Err(ProbeError::TooLarge)
+    );
+    assert_eq!(
+        parse_cpus_allowed("Name:\tsymbioted\nCpus_allowed_list:\t0-2\nThreads:\t3\n"),
+        Ok(BTreeSet::from([0, 1, 2]))
+    );
+    assert_eq!(
+        parse_cpus_allowed("Name:\tsymbioted\n"),
+        Err(ProbeError::MissingField)
+    );
+    assert_eq!(
+        parse_cpus_allowed("Cpus_allowed_list:\t0\nCpus_allowed_list:\t1\n"),
+        Err(ProbeError::DuplicateField)
+    );
+    assert_eq!(
+        parse_online_cpus("cpu 1 2 3 4\ncpu0 1 2 3 4\ncpu8 1 2 3 4 0 0 0 0 0 0\n"),
+        Ok(BTreeSet::from([0, 8]))
     );
 }
 

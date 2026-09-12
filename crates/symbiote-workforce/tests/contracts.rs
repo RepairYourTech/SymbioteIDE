@@ -39,6 +39,7 @@ fn candidate() -> StaffingCandidate {
             max_wall_time_ms: 1000,
             max_concurrency: 1,
             max_memory_bytes: 1000,
+            max_cpu_millicores: None,
         },
     }
 }
@@ -202,6 +203,17 @@ fn unknown_or_unbounded_requirements_cannot_be_stored() {
     let mut value = binding();
     value.primary.limits.max_total_tokens = 0;
     assert_eq!(value.validate(), Err(BindingError::ResourceLimit));
+    // A declared CPU demand is bounded like every other resource: zero demands
+    // nothing and is refused, and the contract's own ceiling is the maximum.
+    value = binding();
+    value.primary.limits.max_cpu_millicores = Some(0);
+    assert_eq!(value.validate(), Err(BindingError::ResourceLimit));
+    value = binding();
+    value.primary.limits.max_cpu_millicores = Some(64_001);
+    assert_eq!(value.validate(), Err(BindingError::ResourceLimit));
+    value = binding();
+    value.primary.limits.max_cpu_millicores = Some(64_000);
+    assert_eq!(value.validate(), Ok(()));
     value = binding();
     value.policies.minimum_enforcement.clear();
     assert_eq!(value.validate(), Err(BindingError::InvalidPolicy));
@@ -553,5 +565,68 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
     assert_eq!(
         report(&pulse, &narrow).checks[4].result,
         CheckResult::Rejected
+    );
+}
+
+/// A candidate that declares a CPU demand is judged against the effective CPU
+/// the Host observed — the CPUs this process may actually run on, capped by any
+/// enforced quota — through the same classification every other prerequisite
+/// uses: a measurement below the demand is a rejection, and a Host that
+/// observed no effective CPU at all is an absence rather than a judgement.
+#[test]
+fn a_declared_cpu_demand_is_judged_against_the_observed_effective_cpu() {
+    use symbiote_host_inventory::{
+        Fact, HostPulse, PulseProvenance, PulseSource, ResourceObservation, TelemetryMode,
+    };
+    let base = binding();
+    let t = team();
+    let resolved = ProviderResolution {
+        connection: base.primary.profile.provider.clone(),
+        model: base.primary.profile.model.clone(),
+        refusal: None,
+    };
+    let pulse = HostPulse::new(
+        HostId::new("host").unwrap(),
+        CommandId::new("pulse").unwrap(),
+        Timestamp(1),
+        Timestamp(100),
+        TelemetryMode::Enabled,
+        Fact::Known("linux".into()),
+        Fact::Known("x86_64".into()),
+        ResourceObservation {
+            effective_cpu_millicores: Fact::Known(4_000),
+            effective_memory_available_bytes: Fact::Known(10_000),
+            effective_memory_limit_bytes: Fact::Known(10_000),
+            ..Default::default()
+        },
+        PulseProvenance {
+            source: PulseSource::OperatingSystem,
+            probe_version: "test".into(),
+        },
+    )
+    .unwrap();
+    let capacity = |pulse: &HostPulse, millicores: Option<u64>| {
+        let mut b = binding();
+        b.primary.limits.max_cpu_millicores = millicores;
+        assess_readiness(&b, &t, Some(pulse), None, Some(&resolved), Timestamp(10)).checks[1]
+            .result
+            .clone()
+    };
+    // A candidate that declares no CPU demand asks the Host for none, so the
+    // prerequisite is decided by the memory requirement it does declare.
+    assert_eq!(capacity(&pulse, None), CheckResult::Satisfied);
+    // The measured bound is judged exactly: meeting it is not a rejection.
+    assert_eq!(capacity(&pulse, Some(4_000)), CheckResult::Satisfied);
+    assert_eq!(capacity(&pulse, Some(4_001)), CheckResult::Rejected);
+    // An unobserved effective CPU is an absence even for a candidate that
+    // demands one — the requirement never turns a missing measurement into a
+    // judgement against the Host.
+    let mut blind = pulse.clone();
+    blind.resources.effective_cpu_millicores = Fact::Unknown;
+    assert_eq!(capacity(&blind, Some(1)), CheckResult::MissingObservation);
+    assert_eq!(
+        capacity(&blind, None),
+        CheckResult::Satisfied,
+        "a candidate that declares no CPU demand is unaffected by an unobserved CPU"
     );
 }

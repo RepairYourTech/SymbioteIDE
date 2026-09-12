@@ -46,6 +46,11 @@ pub struct ResourceLimits {
     pub max_wall_time_ms: u64,
     pub max_concurrency: u16,
     pub max_memory_bytes: u64,
+    /// The CPU the candidate's dispatch needs, in millicores. Absent means the
+    /// candidate declares no CPU demand and the readiness report asks the Host
+    /// for none: concurrency is not a CPU reservation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cpu_millicores: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -184,6 +189,8 @@ impl StaffingCandidate {
             || l.max_concurrency > 64
             || l.max_memory_bytes == 0
             || l.max_memory_bytes > (1u64 << 50)
+            || l.max_cpu_millicores
+                .is_some_and(|millicores| millicores == 0 || millicores > 64_000)
         {
             return Err(BindingError::ResourceLimit);
         }
