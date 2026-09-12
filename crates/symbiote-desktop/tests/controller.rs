@@ -25,16 +25,19 @@ fn git(repo: &std::path::Path, args: &[&str]) {
 }
 
 fn bin_dir() -> PathBuf {
-    // The gauntlet builds every binary. Reuse the workflow proof's resolver so
-    // this proof cannot pass against a `symbioted` built from older sources
-    // while the daemon runs code that no longer reflects the repository.
+    // The gauntlet builds every binary. Both are resolved through the workflow
+    // proof's freshness check, so this proof cannot pass against a `symbioted`
+    // or a launcher built from older sources while the daemon runs code that no
+    // longer reflects the repository.
     let daemon = symbiote_workflow::binaries::daemon_binary();
+    let launcher = symbiote_workflow::binaries::launcher_binary();
     let dir = daemon
         .parent()
         .expect("symbioted lives in the workspace target directory");
-    assert!(
-        dir.join("symbiote-sandbox-launch").is_file(),
-        "workspace binaries not built; run the workspace gauntlet"
+    assert_eq!(
+        launcher.parent(),
+        Some(dir),
+        "the daemon and the launcher must come from one target directory"
     );
     dir.to_path_buf()
 }

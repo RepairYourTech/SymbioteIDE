@@ -1,11 +1,13 @@
-//! Test support: the daemon binary the end-to-end proofs drive.
+//! Test support: the workspace-built binaries the end-to-end proofs drive.
 //!
-//! Those proofs assert behavior the binary carries — for `symbioted`, the
-//! sandbox mount policy through `symbiote-host`/`symbiote-sandbox` — so a
-//! binary that does not contain the sources under test would let a proof stay
-//! green while running other code. [`daemon_binary`] refuses such a binary
-//! with the rebuild that fixes it, rather than running it. Gated behind the
-//! `test-support` feature, so a production build does not carry it.
+//! Those proofs assert behavior the binaries carry — for `symbioted`, the
+//! sandbox mount policy through `symbiote-host`/`symbiote-sandbox`; for
+//! `symbiote-sandbox-launch`, the descriptor boundary every sandboxed process
+//! is started through — so a binary that does not contain the sources under
+//! test would let a proof stay green while running other code. The resolvers
+//! here build a binary that is absent and refuse one that is stale, naming the
+//! rebuild that fixes it. Gated behind the `test-support` feature, so a
+//! production build does not carry them.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -17,39 +19,59 @@ use serde_json::Value;
 /// The workspace-built `symbioted`, or a refusal naming what outdates it.
 pub fn daemon_binary() -> PathBuf {
     static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
-    RESOLVED.get_or_init(resolve).clone()
+    RESOLVED
+        .get_or_init(|| binary("symbiote-host", "symbioted", "mount policy"))
+        .clone()
 }
 
-fn resolve() -> PathBuf {
-    let metadata = metadata();
-    let binary = path(&metadata["target_directory"]).join("debug/symbioted");
-    let stale = if binary.is_file() {
-        stale_source(
-            &daemon_sources(&metadata, &path(&metadata["workspace_root"])),
+/// The workspace-built `symbiote-sandbox-launch`, or a refusal naming what
+/// outdates it. The launcher is the boundary a sandboxed process is started
+/// through, so a stale copy would be the boundary under test rather than the
+/// one the sources describe.
+pub fn launcher_binary() -> PathBuf {
+    static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
+    RESOLVED
+        .get_or_init(|| {
+            binary(
+                "symbiote-sandbox",
+                "symbiote-sandbox-launch",
+                "descriptor boundary",
+            )
+        })
+        .clone()
+}
+
+/// `name` built from `package`, resolved once per test process: built when it
+/// is absent, refused when a source of `package` is newer than it.
+fn binary(package: &str, name: &str, subject: &str) -> PathBuf {
+    let metadata = metadata(package);
+    let binary = path(&metadata["target_directory"]).join("debug").join(name);
+    if binary.is_file() {
+        if let Some(source) = stale_source(
+            &sources(&metadata, &path(&metadata["workspace_root"]), package),
             &binary,
-        )
-        .map(|source| format!("{} changed after it was built", source.display()))
+        ) {
+            panic!(
+                "{name} at {} is not current for the sources under test: {} changed after it was \
+                 built. Rebuild it from sources — `cargo build --locked -p {package} --bin \
+                 {name}` (or run `cargo test --workspace --locked`) — so this proof exercises the \
+                 current {subject} instead of an old binary.",
+                binary.display(),
+                source.display()
+            );
+        }
     } else {
-        Some("it has not been built in this tree".to_owned())
-    };
-    if let Some(reason) = stale {
-        panic!(
-            "symbioted at {} is not current for the sources under test: {reason}. Rebuild it from \
-             sources — `cargo build --locked -p symbiote-host --bin symbioted` (or run \
-             `cargo test --workspace --locked`) — so this proof exercises the current mount \
-             policy instead of an old binary.",
-            binary.display()
-        );
+        build(package, name);
     }
     binary
 }
 
-/// Cargo's own resolved view of the workspace. The daemon's sources are then
-/// cargo's definition of them rather than this guard's guess: `cargo test`
-/// builds `target/debug/symbioted` **without** writing its dep-info
-/// (`target/debug/symbioted.d`), so a guard that reads that file refuses the
+/// Cargo's own resolved view of the workspace. The sources of `package` are
+/// then cargo's definition of them rather than this guard's guess: `cargo test`
+/// builds `target/debug/<bin>` **without** writing its dep-info
+/// (`target/debug/<bin>.d`), so a guard that reads that file refuses the
 /// healthy tree CI has.
-fn metadata() -> Value {
+fn metadata(package: &str) -> Value {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let output = std::process::Command::new(cargo)
         .args(["metadata", "--locked", "--format-version", "1"])
@@ -58,7 +80,7 @@ fn metadata() -> Value {
         .unwrap_or_else(|error| panic!("cannot run cargo metadata: {error}"));
     serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
         panic!(
-            "cannot resolve the sources `symbioted` is built from, so no proof can show the \
+            "cannot resolve the sources `{package}` is built from, so no proof can show the \
              binary reflects them — `cargo metadata --locked` exited with {} ({error}):\n{}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
@@ -66,13 +88,30 @@ fn metadata() -> Value {
     })
 }
 
-/// The workspace-local sources of every package `symbiote-host` reaches
-/// through its normal and build dependency edges — exactly what rebuilding the
-/// daemon would consume from this tree. Dev/test edges are excluded, and so are
+/// Builds one binary, so a partial `-p <crate>` build still runs the proofs
+/// instead of failing for want of a binary the workspace gauntlet would have
+/// produced.
+fn build(package: &str, name: &str) {
+    let status =
+        std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+            .args(["build", "--locked", "-p", package, "--bin", name])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .unwrap_or_else(|error| panic!("cannot build {name}: {error}"));
+    assert!(
+        status.success(),
+        "`cargo build --locked -p {package} --bin {name}` failed; the proof cannot run against \
+         the current sources"
+    );
+}
+
+/// The workspace-local sources of every package `package` reaches through its
+/// normal and build dependency edges — exactly what rebuilding the binary
+/// would consume from this tree. Dev/test edges are excluded, and so are
 /// registry sources: neither is compiled into the binary, so a change there
-/// must not refuse a daemon that is current — a refusal nothing but touching the
-/// binary could clear.
-fn daemon_sources(metadata: &Value, workspace: &Path) -> Vec<PathBuf> {
+/// must not refuse a binary that is current — a refusal nothing but touching
+/// the binary could clear.
+fn sources(metadata: &Value, workspace: &Path, package: &str) -> Vec<PathBuf> {
     let packages = array(&metadata["packages"]);
     let mut dependencies = std::collections::BTreeMap::new();
     for node in array(&metadata["resolve"]["nodes"]) {
@@ -88,12 +127,12 @@ fn daemon_sources(metadata: &Value, workspace: &Path) -> Vec<PathBuf> {
                 .collect::<Vec<_>>(),
         );
     }
-    let host = packages
+    let root = packages
         .iter()
-        .find(|package| text(&package["name"]) == "symbiote-host")
-        .expect("the workspace's symbiote-host package");
+        .find(|candidate| text(&candidate["name"]) == package)
+        .unwrap_or_else(|| panic!("the workspace's {package} package"));
     let (mut pending, mut reached, mut sources) = (
-        vec![text(&host["id"]).to_owned()],
+        vec![text(&root["id"]).to_owned()],
         BTreeSet::new(),
         Vec::new(),
     );
@@ -120,8 +159,8 @@ fn daemon_sources(metadata: &Value, workspace: &Path) -> Vec<PathBuf> {
 /// Every source file under one workspace crate that its library and binaries
 /// are built from: the `.rs` files cargo would compile and the manifests that
 /// shape them. Test, example and bench targets are skipped because
-/// `cargo build --locked -p symbiote-host --bin symbioted` does not compile
-/// them, so their timestamps say nothing about the daemon.
+/// `cargo build --locked -p <crate> --bin <bin>` does not compile them, so
+/// their timestamps say nothing about the binary.
 fn source_files(crate_directory: &Path) -> Vec<PathBuf> {
     let mut directories = vec![crate_directory.to_path_buf()];
     let mut sources = Vec::new();
@@ -157,7 +196,7 @@ fn source_files(crate_directory: &Path) -> Vec<PathBuf> {
 }
 
 /// The newest source newer than `binary`, if any: one the binary was not
-/// built from, and so a daemon that no longer reflects the tree under test.
+/// built from, and so a binary that no longer reflects the tree under test.
 fn stale_source(sources: &[PathBuf], binary: &Path) -> Option<PathBuf> {
     let built = binary.metadata().ok()?.modified().ok()?;
     sources

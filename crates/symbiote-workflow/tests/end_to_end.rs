@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use symbiote_protocol::ResponseBody;
+use symbiote_workflow::binaries::{daemon_binary, launcher_binary};
 
 struct Daemon {
     child: Child,
@@ -22,7 +23,7 @@ struct Daemon {
 
 impl Daemon {
     fn spawn(state_dir: &std::path::Path, config_path: &std::path::Path) -> Self {
-        let mut child = Command::new(symbiote_workflow::binaries::daemon_binary())
+        let mut child = Command::new(daemon_binary())
             .arg("--state-dir")
             .arg(state_dir)
             .arg("--operator-config")
@@ -80,19 +81,6 @@ impl Drop for Daemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-fn launcher_binary() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for ancestor in manifest.ancestors().skip(1) {
-        let candidate = ancestor.join("target/debug/symbiote-sandbox-launch");
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-    panic!(
-        "symbiote-sandbox-launch not built; run the workspace gauntlet (cargo test --workspace)"
-    );
 }
 
 fn git(repo: &std::path::Path, args: &[&str]) -> String {
