@@ -9,6 +9,25 @@ permissions:
   contents: read
 
 jobs:
+  closing-keywords:
+    # GitHub's issue parser does not read negation, so a description that says
+    # "This does not close #54." still closes #54 on merge: that is how #54 was
+    # closed one second after PR #530 merged, whose own first line says the
+    # slice does not complete it. Fail the pull request so the wording is
+    # fixed before the merge instead of after it.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: A pull-request description must not negate a closing keyword it states
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+        run: printf '%s' "$PR_BODY" | python3 planning/integrity/closing_keywords.py --base "$PR_BASE"
+
   offline-validation:
     runs-on: ubuntu-latest
     steps:
@@ -21,5 +40,5 @@ jobs:
           node-version: '22'
       - name: Verify historical importers refuse execution
         run: python -m unittest discover -s planning -p 'test_legacy_importers.py' -v
-      - name: Verify registry invariants
+      - name: Verify registry and closing-keyword invariants
         run: python -m unittest discover -s planning/integrity -p 'test_*.py' -v

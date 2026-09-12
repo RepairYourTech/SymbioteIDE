@@ -17,4 +17,8 @@ Checks include duplicate canonical keys, missing revisions, issue existence, can
 
 The committed reduced audit fixture reproduces the structural inputs from the after-audit capture; its `source_body_sha256` fields refer to original full bodies, not the deliberately reduced fixture bodies. Default tests compare its full graph, mapping, waves and counts to the generated original-snapshot registry. `--snapshot` additionally checks the full 466-issue audit capture and injects a duplicate-key regression. This optional check is pinned to that audit, not an arbitrary future inventory.
 
+## Pull-request closing keywords
+
+`closing_keywords.py` reads a pull-request description and reports the issues GitHub's parser will close, failing when a keyword it honours is negated by its own clause. GitHub does not read negation, so a description that denies a closure still performs it; PR #530 closed #54 one second after its merge, whose first line disclaimed exactly that. The roadmap-integrity workflow runs it on every pull request, and its tests pin the verbatim descriptions of PR #530 and PR #507. Keywords count only against the default branch, so a non-default base is reported as closing nothing rather than failing.
+
 This implements a bounded portion of #470. It does **not** certify conversation-to-issue coverage, acceptance completion, or exact-body mutation safety. `acceptance_items` is only a checkbox inventory. Safe importer regeneration, three-way merge, stale-revision refusal, concurrent-edit/ambiguous-create reconciliation, and post-mutation readback remain separate work. The original bootstrap importer must not be used to overwrite this registry's newer issue authority.
