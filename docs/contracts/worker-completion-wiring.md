@@ -76,3 +76,17 @@ host-crate tests; the daemon-level path remains scripted because a live
 model turn is still gated on user authorization for credentials and billing.
 Nothing schedules runs automatically. Durable session resume/reconnect and
 multi-turn tool-result round trips remain pending (#465/#464 stay open).
+
+## A lost activation response
+
+A disconnected client does not roll back a committed command, so the
+daemon's contract is that retrying its command ID recovers the durable
+receipt. For `run_started_dispatch` the durable evidence of the run is the
+task itself: a task at or past `CompletionRequested` under the requested
+dispatch had its run complete (a run that fails leaves the task `Running`
+and returns an error). So a replayed activation of that dispatch answers
+with the recorded outcome — the same `worker_run` body with
+`completed: true` — instead of re-executing the run or refusing it. A
+foreign dispatch id is still refused, and any other state still refuses:
+the replay path reads only a state this very dispatch's completed run could
+have produced.
