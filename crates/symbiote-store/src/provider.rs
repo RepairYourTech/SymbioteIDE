@@ -129,6 +129,63 @@ pub(super) fn read_model(connection: &Connection, id: &str) -> Result<Option<Mod
     Ok(Some(record))
 }
 
+/// Resolves and validates the registry registration a runtime profile names:
+/// the connection, billing entitlement and model descriptor it references,
+/// checked through the SDK's registration contract at `at`. Absent rows and
+/// inconsistent records are refusals, never errors — only a storage fault
+/// fails. Shared by dispatch preparation and by every execution-boundary
+/// re-check, so a registration is judged by one implementation.
+pub(super) fn registration_for(
+    connection: &Connection,
+    profile: &RuntimeProfile,
+    at: Timestamp,
+) -> Result<ProviderResolution> {
+    let resolution = |refusal| ProviderResolution {
+        connection: profile.provider.clone(),
+        model: profile.model.clone(),
+        refusal,
+    };
+    let Some(registered) = read(connection, profile.provider.as_str())? else {
+        return Ok(resolution(Some(ProviderRefusal::MissingConnection)));
+    };
+    let Some(entitlement) = read_entitlement(connection, profile.billing_entitlement.as_str())?
+    else {
+        return Ok(resolution(Some(ProviderRefusal::MissingEntitlement)));
+    };
+    let Some(model) = read_model(connection, profile.model.as_str())? else {
+        return Ok(resolution(Some(ProviderRefusal::MissingModel)));
+    };
+    let refusal = symbiote_runtime_sdk::provider::validate_registration(
+        profile,
+        &registered,
+        &entitlement,
+        &model,
+        at,
+    )
+    .err()
+    .map(provider_refusal);
+    Ok(resolution(refusal))
+}
+
+/// Maps the SDK's registration verdicts onto the domain's own refinement of
+/// them, so a refusal names why a stored registration was rejected without
+/// the domain crate depending on the provider contract.
+fn provider_refusal(error: symbiote_runtime_sdk::provider::ProviderError) -> ProviderRefusal {
+    use symbiote_runtime_sdk::provider::ProviderError;
+    match error {
+        ProviderError::UnsupportedVersion => ProviderRefusal::UnsupportedVersion,
+        ProviderError::InvalidDescriptor => ProviderRefusal::InvalidDescriptor,
+        ProviderError::ExpiredEntitlement => ProviderRefusal::ExpiredEntitlement,
+        ProviderError::UnsupportedAuthenticationBilling => {
+            ProviderRefusal::UnsupportedAuthenticationBilling
+        }
+        // The registration contract's remaining refusal is identity
+        // consistency; adding another is a contract change that adds a case
+        // here rather than reusing this one.
+        _ => ProviderRefusal::BindingMismatch,
+    }
+}
+
 impl Store {
     /// Registers or replaces a provider connection. Callers authenticate the
     /// actor and authorize the owner policy; a replacement is a new record
@@ -300,6 +357,19 @@ impl Store {
         read_model(&self.connection, id.as_str())?
             .filter(|m| &m.id == id)
             .ok_or(StoreError::NotFound)
+    }
+
+    /// Validates the registration `profile` names against the registry at
+    /// `at`. The execution boundary re-checks through this: registry records
+    /// move (entitlements expire, replacements supersede) after a dispatch was
+    /// prepared and started, and what executes is the contract's pinned
+    /// profile — never whatever the binding says now.
+    pub fn provider_registration(
+        &self,
+        profile: &RuntimeProfile,
+        at: Timestamp,
+    ) -> Result<ProviderResolution> {
+        registration_for(&self.connection, profile, at)
     }
 
     pub fn provider_command_timestamp(&self, id: &CommandId) -> Result<Option<Timestamp>> {

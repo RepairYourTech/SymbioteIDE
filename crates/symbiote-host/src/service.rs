@@ -7,6 +7,9 @@ use symbiote_protocol::*;
 use symbiote_store::{Store, StoreError};
 
 fn storage_error(error: StoreError) -> ProtocolError {
+    if let StoreError::ProviderRegistrationRefused(refusal) = &error {
+        return provider_registration_refused(*refusal);
+    }
     let code = match error {
         StoreError::NotFound => ErrorCode::NotFound,
         StoreError::AlreadyExists => ErrorCode::Conflict,
@@ -19,9 +22,9 @@ fn storage_error(error: StoreError) -> ProtocolError {
         | StoreError::InvalidLease => ErrorCode::InvalidRequest,
         StoreError::DependenciesUnresolved => ErrorCode::Conflict,
         StoreError::InvalidProvider | StoreError::InvalidPreparation => ErrorCode::InvalidRequest,
-        StoreError::PreparationRefused | StoreError::ElevationCeiling => {
-            ErrorCode::FailedPrecondition
-        }
+        StoreError::PreparationRefused
+        | StoreError::ProviderRegistrationRefused(_)
+        | StoreError::ElevationCeiling => ErrorCode::FailedPrecondition,
         StoreError::InvalidElevation => ErrorCode::InvalidRequest,
         StoreError::LeaseConflict(_) => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
@@ -563,6 +566,19 @@ fn execute(
                 || task_record.state() != &symbiote_domain::TaskState::Running
             {
                 return Err(dispatch_binding_refused());
+            }
+            // The third precondition, and the one that makes #447 real: what
+            // executes is the contract's PINNED profile, so its registration
+            // is re-validated here at execution time. A registration that was
+            // valid at preparation and start can lapse before the run
+            // (entitlement expiry, supersession), and an expired or unknown
+            // entitlement must not execute. Checked before run configuration
+            // and before any worktree side effect.
+            let registration = store
+                .provider_registration(current.contract().profile(), at)
+                .map_err(storage_error)?;
+            if let Some(refusal) = registration.refusal {
+                return Err(provider_registration_refused(refusal));
             }
             let runtime = current.contract().profile().runtime;
             // Worktree provisioning happens after the precondition checks
@@ -1397,6 +1413,18 @@ fn context_error(error: symbiote_context::ResolutionError) -> ProtocolError {
 fn dispatch_binding_refused() -> ProtocolError {
     let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
     protocol_error.message = "task is not running under the requested dispatch".into();
+    protocol_error
+}
+
+/// The execution boundary's refusal identity: the reason is a member of a
+/// closed vocabulary (never an input value or a path), so naming it is safe
+/// and keeps the operator's next step unambiguous.
+fn provider_registration_refused(refusal: symbiote_domain::ProviderRefusal) -> ProtocolError {
+    let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    protocol_error.message = format!(
+        "the dispatch's provider registration is not usable ({})",
+        refusal.name()
+    );
     protocol_error
 }
 

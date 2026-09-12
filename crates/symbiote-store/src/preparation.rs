@@ -287,6 +287,14 @@ impl Store {
         if !profile.eligible_hosts.contains(&host.id) {
             return Err(StoreError::RelationshipMismatch);
         }
+        // The registration is re-validated at the start boundary rather than
+        // inherited from preparation: the binding may have been replaced since
+        // (re-staffing), the entitlement may have expired, or a record may have
+        // been superseded. A dispatch is only compiled and started when the
+        // profile it pins can actually be bound.
+        if let Some(refusal) = provider::registration_for(&transaction, &profile, at)?.refusal {
+            return Err(StoreError::ProviderRegistrationRefused(refusal));
+        }
         let dispatch = Dispatch::compile(
             dispatch_id,
             contract_id,
@@ -442,12 +450,9 @@ impl Store {
 /// workforce binding bound to that Role. The task has no dispatch yet at
 /// preparation time; the binding's primary candidate carries the runtime
 /// profile — including provider connection, entitlement and model identities
-/// — directly. All three registry rows must exist and the SDK's registration
-/// contract ([`validate_registration`]) must accept them at `at`; otherwise
-/// the resolution names the profile's declared identities and records why
-/// they could not be bound.
-///
-/// [`validate_registration`]: symbiote_runtime_sdk::provider::validate_registration
+/// — directly. The registry owns the validation
+/// ([`provider::registration_for`]), so preparation and the execution
+/// boundary judge a registration identically.
 fn resolve_provider_binding(
     transaction: &Transaction<'_>,
     task: &Task,
@@ -470,52 +475,11 @@ fn resolve_provider_binding(
     )?;
     let binding: symbiote_workforce::BindingConfiguration =
         serde_json::from_str(&body).map_err(|_| StoreError::InvalidPreparation)?;
-    let profile = &binding.primary.profile;
-    let resolution = |refusal| ProviderResolution {
-        connection: profile.provider.clone(),
-        model: profile.model.clone(),
-        refusal,
-    };
-    let Some(connection) = provider::read(transaction, profile.provider.as_str())? else {
-        return Ok(Some(resolution(Some(ProviderRefusal::MissingConnection))));
-    };
-    let Some(entitlement) =
-        provider::read_entitlement(transaction, profile.billing_entitlement.as_str())?
-    else {
-        return Ok(Some(resolution(Some(ProviderRefusal::MissingEntitlement))));
-    };
-    let Some(model) = provider::read_model(transaction, profile.model.as_str())? else {
-        return Ok(Some(resolution(Some(ProviderRefusal::MissingModel))));
-    };
-    let refusal = symbiote_runtime_sdk::provider::validate_registration(
-        profile,
-        &connection,
-        &entitlement,
-        &model,
+    Ok(Some(provider::registration_for(
+        transaction,
+        &binding.primary.profile,
         at,
-    )
-    .err()
-    .map(provider_refusal);
-    Ok(Some(resolution(refusal)))
-}
-
-/// Maps the SDK's registration verdicts onto the domain's own refinement of
-/// them, so a preparation names why a stored registration was refused without
-/// the domain crate depending on the provider contract.
-fn provider_refusal(error: symbiote_runtime_sdk::provider::ProviderError) -> ProviderRefusal {
-    use symbiote_runtime_sdk::provider::ProviderError;
-    match error {
-        ProviderError::UnsupportedVersion => ProviderRefusal::UnsupportedVersion,
-        ProviderError::InvalidDescriptor => ProviderRefusal::InvalidDescriptor,
-        ProviderError::ExpiredEntitlement => ProviderRefusal::ExpiredEntitlement,
-        ProviderError::UnsupportedAuthenticationBilling => {
-            ProviderRefusal::UnsupportedAuthenticationBilling
-        }
-        // The registration contract's remaining refusal is identity
-        // consistency; adding another is a contract change that adds a case
-        // here rather than reusing this one.
-        _ => ProviderRefusal::BindingMismatch,
-    }
+    )?))
 }
 
 pub(super) fn audit_finish(

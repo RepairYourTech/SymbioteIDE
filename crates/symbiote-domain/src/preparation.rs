@@ -71,6 +71,26 @@ pub enum ProviderRefusal {
     UnsupportedAuthenticationBilling,
 }
 
+impl ProviderRefusal {
+    /// The refusal's stable wire name — byte-identical to the serialized form
+    /// a preparation record carries, for the boundaries that must name a
+    /// refusal outside a record (the execution-time refusal message).
+    /// A contract test pins it against serde so the two can never drift.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::UnresolvedProfile => "unresolved_profile",
+            Self::MissingConnection => "missing_connection",
+            Self::MissingEntitlement => "missing_entitlement",
+            Self::MissingModel => "missing_model",
+            Self::UnsupportedVersion => "unsupported_version",
+            Self::InvalidDescriptor => "invalid_descriptor",
+            Self::BindingMismatch => "binding_mismatch",
+            Self::ExpiredEntitlement => "expired_entitlement",
+            Self::UnsupportedAuthenticationBilling => "unsupported_authentication_billing",
+        }
+    }
+}
+
 /// The provider registration resolved for a task's dispatch profile, and
 /// whether the registry proved it usable. The identities are the profile's
 /// declared ones, so a refused preparation still names what it refused.
@@ -189,5 +209,34 @@ impl DispatchPreparation {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderRefusal;
+
+    /// `name()` is the refusal's identity on the wire everywhere it cannot be
+    /// a serialized field. Pin it to the serde rename so the two cannot drift.
+    #[test]
+    fn provider_refusal_names_match_their_serialized_form() {
+        for refusal in [
+            ProviderRefusal::UnresolvedProfile,
+            ProviderRefusal::MissingConnection,
+            ProviderRefusal::MissingEntitlement,
+            ProviderRefusal::MissingModel,
+            ProviderRefusal::UnsupportedVersion,
+            ProviderRefusal::InvalidDescriptor,
+            ProviderRefusal::BindingMismatch,
+            ProviderRefusal::ExpiredEntitlement,
+            ProviderRefusal::UnsupportedAuthenticationBilling,
+        ] {
+            let serialized = serde_json::to_value(refusal).unwrap();
+            assert_eq!(
+                refusal.name(),
+                serialized.as_str().unwrap(),
+                "{refusal:?} name drifts from its serialized form"
+            );
+        }
     }
 }
