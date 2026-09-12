@@ -630,3 +630,83 @@ fn a_declared_cpu_demand_is_judged_against_the_observed_effective_cpu() {
         "a candidate that declares no CPU demand is unaffected by an unobserved CPU"
     );
 }
+/// Whether the candidate's declared limits can be bound at all is a
+/// prerequisite of its own, decided by the same function the execution boundary
+/// uses (`ResourceLimits::process_bound`): a declared CPU rate has no kernel
+/// bound here, so the candidate is not usable — whatever capacity the Host
+/// measured — and the report names the reason the run will refuse on. A
+/// consumable limit is satisfied, so the report cannot promise a run the start
+/// would refuse.
+#[test]
+fn declared_limits_the_host_cannot_bind_are_not_usable() {
+    use symbiote_host_inventory::{
+        Fact, HostPulse, PulseProvenance, PulseSource, ResourceObservation, TelemetryMode,
+    };
+    let t = team();
+    let resolved = ProviderResolution {
+        connection: ProviderConnectionId::new("provider").unwrap(),
+        model: ModelId::new("model").unwrap(),
+        refusal: None,
+    };
+    let pulse = HostPulse::new(
+        HostId::new("host").unwrap(),
+        CommandId::new("pulse").unwrap(),
+        Timestamp(1),
+        Timestamp(100),
+        TelemetryMode::Enabled,
+        Fact::Known("linux".into()),
+        Fact::Known("x86_64".into()),
+        ResourceObservation {
+            effective_cpu_millicores: Fact::Known(4_000),
+            effective_memory_available_bytes: Fact::Known(10_000),
+            effective_memory_limit_bytes: Fact::Known(10_000),
+            ..Default::default()
+        },
+        PulseProvenance {
+            source: PulseSource::OperatingSystem,
+            probe_version: "test".into(),
+        },
+    )
+    .unwrap();
+    let report = |limits: ResourceLimits| {
+        let mut b = binding();
+        b.primary.limits = limits;
+        assess_readiness(&b, &t, Some(&pulse), None, Some(&resolved), Timestamp(10))
+    };
+    // The fixture's memory ceiling is a bound the Host applies, so the
+    // candidate is usable and the check names no refusal.
+    let consumable = binding().primary.limits.clone();
+    let usable = report(consumable.clone());
+    assert_eq!(
+        usable.checks[5].prerequisite,
+        Prerequisite::EnforceableLimits
+    );
+    assert_eq!(usable.checks[5].result, CheckResult::Satisfied);
+    assert_eq!(usable.checks[5].limit_refusal, None);
+    // A declared CPU rate is not: the same candidate is not usable, and the
+    // reason is the declared limit activation refuses on.
+    let mut demanding = consumable.clone();
+    demanding.max_cpu_millicores = Some(1_000);
+    let refused = report(demanding.clone());
+    assert_eq!(
+        refused.checks[5].prerequisite,
+        Prerequisite::EnforceableLimits
+    );
+    assert_eq!(refused.checks[5].result, CheckResult::Rejected);
+    assert_eq!(
+        refused.checks[5].limit_refusal,
+        Some(UnboundedLimit::CpuRate)
+    );
+    assert_eq!(refused.status, PrerequisiteStatus::NotReady);
+    // One decision, not two opinions: the report's refusal IS the domain's own
+    // answer for the same declared limits — the function activation calls.
+    assert_eq!(
+        demanding.process_bound(),
+        Err(UnboundedLimit::CpuRate),
+        "the report and the execution boundary read the same decision"
+    );
+    assert_eq!(
+        refused.checks[5].limit_refusal,
+        demanding.process_bound().err()
+    );
+}

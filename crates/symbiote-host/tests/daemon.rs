@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":19},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":20},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1621,7 +1621,15 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
     let report = readiness_probe(&host);
     assert_eq!(report["profile_id"], "native-worker");
     let checks = report["checks"].as_array().unwrap();
-    assert_eq!(checks.len(), 5);
+    assert_eq!(checks.len(), 6);
+    // The limits this candidate declares are bindable, so the check the
+    // execution boundary shares is satisfied and names no refusal.
+    assert_eq!(checks[5]["prerequisite"], "enforceable_limits");
+    assert_eq!(checks[5]["result"], "satisfied");
+    assert!(
+        checks[5].get("limit_refusal").is_none(),
+        "only a refused limit is named"
+    );
     assert_eq!(checks[2]["prerequisite"], "provider_registration");
     assert_eq!(checks[2]["result"], "satisfied");
     assert!(
@@ -1839,6 +1847,100 @@ fn a_limit_the_host_cannot_bind_refuses_the_run_that_would_exceed_it() {
     )))["data"]
         .clone();
     assert_eq!(task["state"], "running");
+}
+
+/// The report an operator consults before dispatching and the run that would
+/// execute it ask the same question about a declared limit, so the report can
+/// never be ready for a dispatch the run refuses. A candidate declaring a CPU
+/// rate: the Host has the capacity (`host_capacity` stays satisfied — the
+/// measurement is real), the declared limit is not usable
+/// (`enforceable_limits` rejected in the one vocabulary activation refuses on),
+/// and the start's refusal names that same declared field. The same candidate
+/// without the demand is ready and gets past the same check.
+#[test]
+fn the_readiness_report_and_the_start_agree_about_a_limit_that_cannot_be_bound() {
+    let host = Host::new();
+    let host_id =
+        staffing_composition_with_limits(&host, Registration::Complete, None, Some(1_000));
+    let report = readiness_probe(&host);
+    let checks = report["checks"].as_array().unwrap();
+    // Capacity is a measurement and stays honest: this Host does have the CPU.
+    assert_eq!(checks[1]["prerequisite"], "host_capacity");
+    assert_eq!(checks[1]["result"], "satisfied", "{report}");
+    // The declared limit is the answer: the Host has no kernel bound for a CPU
+    // rate, so the candidate is not usable and the reason is named.
+    assert_eq!(checks[5]["prerequisite"], "enforceable_limits");
+    assert_eq!(checks[5]["result"], "rejected", "{report}");
+    assert_eq!(checks[5]["limit_refusal"], "cpu_rate", "{report}");
+    assert_eq!(report["status"], "not_ready", "{report}");
+    // The vocabulary is one: the report's refusal is the declared limit the
+    // activation check refuses on, and the start names that declared field.
+    let declared = symbiote_domain::ResourceLimits {
+        max_total_tokens: 10_000,
+        max_wall_time_ms: 60_000,
+        max_concurrency: 1,
+        max_memory_bytes: 256 * 1024 * 1024,
+        max_cpu_millicores: Some(1_000),
+    };
+    let activation = symbiote_host::limits::bounds_for(Some(&declared)).unwrap_err();
+    let symbiote_host::limits::BoundRefusal::Declared(limit) = activation else {
+        panic!("a declared CPU rate is the declared-limit refusal: {activation:?}");
+    };
+    assert_eq!(limit.field(), "max_cpu_millicores");
+    let refused = ok(&host.call(request(
+        "agree-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )))["data"]
+        .clone();
+    assert_eq!(refused["outcome"], "ready", "{refused}");
+    let started = ok(&host.call(request(
+        "agree-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    )))["data"]
+        .clone();
+    let run = host.call(request(
+        "agree-run",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+            "dispatch_id":started["dispatch_id"]}),
+    ));
+    let message = run["result"]["Err"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(limit.field()),
+        "the start's refusal names the declared limit the report named: {message}"
+    );
+    // The same candidate declaring no CPU demand passes the shared check, and
+    // activation passes it too: the verdict and the run agree both ways. (Its
+    // report is not ready only because this daemon declares no runtime, which
+    // is the observation prerequisite above, not a limit.)
+    let bounded = Host::new();
+    let bounded_host = staffing_composition(&bounded, Registration::Complete);
+    let bounded_report = readiness_probe(&bounded);
+    assert_eq!(
+        bounded_report["checks"][5]["result"], "satisfied",
+        "{bounded_report}"
+    );
+    assert!(
+        bounded_report["checks"][5].get("limit_refusal").is_none(),
+        "{bounded_report}"
+    );
+    ok(&bounded.call(request(
+        "agree-bounded-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )));
+    let bounded_started = ok(&bounded.call(request(
+        "agree-bounded-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":bounded_host}),
+    )))["data"]
+        .clone();
+    let next = bounded.call(request(
+        "agree-bounded-run",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+            "dispatch_id":bounded_started["dispatch_id"]}),
+    ));
+    assert_eq!(
+        next["result"]["Err"]["message"],
+        "no worktree reservation base configured"
+    );
 }
 
 /// Every registration the registry can be put into that cannot be bound is

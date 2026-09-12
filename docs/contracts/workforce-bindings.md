@@ -45,10 +45,11 @@ new strict protocol version. Existing Projects are not automatically bound.
 ## Readiness is not activation
 
 The read-only assessment separates prerequisite checks from pending activation
-gates, and reports five: the current Team, Host capacity, the provider
-registration the candidate profile names, runtime capabilities and runtime
-resources. It consumes existing Runtime SDK and Host Pulse contracts rather
-than inventing successful observations.
+gates, and reports six: the current Team, Host capacity, the provider
+registration the candidate profile names, runtime capabilities, runtime
+resources and whether the declared limits can be bound at all. It consumes
+existing Runtime SDK and Host Pulse contracts rather than inventing successful
+observations.
 
 **Absence and insufficiency are different results.** Every prerequisite is
 classified the same way: `missing_observation` means the Host holds no current
@@ -71,6 +72,18 @@ profile's registration, through the same validation a start and a run apply
 refusal name in `provider_refusal` whenever it refuses. The pre-dispatch report
 and the execution boundary therefore cannot disagree about whether a dispatch
 can run.
+
+`enforceable_limits` is the same answer for the candidate's declared resource
+limits: it asks the decision activation makes before it runs anything
+(`ResourceLimits::process_bound`), so a declared limit this Host has no kernel
+bound for is `rejected` with the declared limit named in `limit_refusal` — the
+one vocabulary the run refuses in. Because capacity and enforceability are
+different questions, the two checks stay separate and both stay honest: a Host
+that has the CPU a demand names still reports `host_capacity: satisfied` while
+`enforceable_limits: rejected` says the run will refuse, and the report as a
+whole is `not_ready`. A report that is `ready_for_preflight` is therefore a
+report whose every declared limit the Host can bind: an operator sees the reason
+the start will give before starting, not after.
 
 Host capacity is judged against the effective memory and effective CPU the Host
 actually observed from the process's own cgroup and CPU sets, not against the
@@ -135,9 +148,11 @@ What is **not** enforced today, stated rather than implied:
 - **CPU rate (`max_cpu_millicores`).** Linux has no bound for a CPU *rate*
   without cgroup delegation: `RLIMIT_CPU` caps cumulative CPU time, not a rate,
   so the Host refuses instead of substituting a different limit than the one
-  declared. Readiness and activation therefore answer different questions: the
-  report judges whether the Host *has* the capacity a demand names, and
-  activation decides whether it can *bind* the demand.
+  declared. Readiness answers both halves before the start: `host_capacity`
+  judges whether the Host *has* the capacity a demand names, and
+  `enforceable_limits` reports that the Host cannot *bind* the demand, so the
+  candidate is `not_ready` with `limit_refusal: cpu_rate` rather than ready for
+  a dispatch the run refuses.
 - **Wall time (`max_wall_time_ms`) and total tokens (`max_total_tokens`).**
   Validated and recorded, and the sandboxed shell executor's own deadline bounds
   each tool process, but no Host-side clock stops a run that outlives its
