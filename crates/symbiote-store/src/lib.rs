@@ -62,6 +62,9 @@ pub enum StoreError {
     InvalidProvider,
     InvalidPreparation,
     PreparationRefused,
+    /// The profile a start pins names a registry registration that is absent
+    /// or inconsistent — the reason is preserved, never collapsed away.
+    ProviderRegistrationRefused(ProviderRefusal),
     InvalidElevation,
     ElevationCeiling,
     ResourceExhausted,

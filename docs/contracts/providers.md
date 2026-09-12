@@ -10,7 +10,7 @@
 
 ## Authentication and billing
 
-`validate_registration` is the registry-facing half of `validate_binding`: the same RuntimeProfile/provider/model/entitlement identity consistency, non-empty endpoint reference, descriptor bounds, unexpired entitlement and supported authentication/billing mapping, without the credential record or the local-endpoint policy. A durable registry (and dispatch preparation, which consumes it) validates a stored registration through this function, so stored records are checked by the same rules rather than a parallel copy. `validate_binding` calls it first and then resolves the credential leg.
+`validate_registration` is the registry-facing half of `validate_binding`: the same RuntimeProfile/provider/model/entitlement identity consistency, non-empty endpoint reference, descriptor bounds, unexpired entitlement and supported authentication/billing mapping, without the credential record or the local-endpoint policy. A durable registry — and every boundary that consumes it (dispatch preparation, start and activation) — validates a stored registration through this function, so stored records are checked by the same rules rather than a parallel copy. `validate_binding` calls it first and then resolves the credential leg.
 
 `validate_binding` requires consistent RuntimeProfile/provider/model/credential/entitlement identities and an unexpired entitlement. An expiry equal to the current time is expired. Resulting `ProviderBinding` is read-only metadata and intentionally cannot be deserialized as authority; it retains the endpoint reference and only a credential *identity*, never its vault key or secret value. Recheck expiry at request execution, not only when loading configuration.
 

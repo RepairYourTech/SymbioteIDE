@@ -988,165 +988,7 @@ fn worker_completion_request_is_evidence_not_completion() {
 #[test]
 fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     let mut host = Host::new();
-    // Full composition for staffing-demo: team, binding, provider, model,
-    // classified objective origin, task, route, preparation.
-    let register: Value =
-        serde_json::from_str(include_str!("../../../fixtures/project-team/register.json")).unwrap();
-    let register_response = host.call(register);
-    if register_response["result"].get("Err").is_some() {
-        panic!("fixture step register failed: {register_response}");
-    }
-    // The team grants the engineer's role stream mutation (the dispatch
-    // compiles MutateStream from the binding, which must stay within the
-    // member's access and the ceiling).
-    let mut team: Value = serde_json::from_str(include_str!(
-        "../../../fixtures/project-team/configure.json"
-    ))
-    .unwrap();
-    team["command_id"] = json!("activation-team");
-    for pointer in ["/access_ceiling/grants", "/members/1/access/grants"] {
-        let mut grants: Vec<Value> = team["operation"]["team"]
-            .pointer_mut(pointer)
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .clone();
-        grants.push(json!("mutate_stream"));
-        *team["operation"]["team"].pointer_mut(pointer).unwrap() = json!(grants);
-    }
-    let team_response = host.call(team);
-    if team_response["result"].get("Err").is_some() {
-        panic!("fixture step team failed: {team_response}");
-    }
-    // The binding must name the live Host as eligible: resolve the real
-    // inventory identity first, then configure the workforce binding with
-    // it (the checked-in fixture pins a placeholder host).
-    let pulse_response = host.call(request(
-        "activation-pulse-early",
-        json!({"kind":"get_host_pulse"}),
-    ));
-    let host_id = pulse_response["result"]["Ok"]["data"]["host_id"].clone();
-    let mut binding: Value = serde_json::from_str(include_str!(
-        "../../../fixtures/workforce-bindings/configure.json"
-    ))
-    .unwrap();
-    binding["command_id"] = json!("activation-binding");
-    binding["operation"]["configuration"]["primary"]["profile"]["eligible_hosts"] =
-        json!([host_id]);
-    for path in [
-        ["operation", "configuration", "primary", "access", "grants"],
-        ["operation", "configuration", "binding", "access", "grants"],
-    ] {
-        let mut grants: Vec<Value> = binding
-            .pointer_mut(&format!("/{}", path.join("/")))
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .clone();
-        grants.push(json!("mutate_stream"));
-        *binding
-            .pointer_mut(&format!("/{}", path.join("/")))
-            .unwrap() = json!(grants);
-    }
-    let binding_response = host.call(binding);
-    if binding_response["result"].get("Err").is_some() {
-        panic!("fixture step binding failed: {binding_response}");
-    }
-    // Provider connection and model descriptor the binding's profile needs.
-    ok_step(
-        "activation-provider",
-        &host.call(request(
-            "activation-provider",
-            json!({"kind":"replace_provider_connection","attribution":"staffing-demo",
-            "connection":{"id":"native-openai","adapter":"openai-responses",
-            "endpoint_reference":"https://api.openai.example/v1","authentication":"api_credential"}}),
-        ),
-    ));
-    ok_step(
-        "activation-model",
-        &host.call(request(
-            "activation-model",
-            json!({"kind":"replace_model_descriptor","attribution":"staffing-demo",
-            "descriptor":{"schema_version":1,"id":"coding-model","provider_id":"native-openai",
-            "context_window_tokens":8192,"max_output_tokens":4096,
-            "capabilities":{"reasoning_efforts":[],"tools":true,"images":false,"streaming":false}}}),
-        ),
-    ));
-    // Classified origin the engineer's task can hang off.
-    ok_step(
-        "activation-objective",
-        &host.call(request(
-            "activation-objective",
-            json!({"kind":"create_work","work":{"id":{"kind":"objective","id":"staffing-objective"},
-            "project_id":"staffing-demo","role_id":"engineer","title":"Implement a bounded change",
-            "description":"Implement the bounded change described by this objective.",
-            "utterance":null,"objective_class":"maintenance","parent":null,"dependencies":[],
-            "requirements":[],"constraints":[],"risks":[],"acceptance":["done"],"priority":2,
-            "budget":null,"external_references":[]}}),
-        )),
-    );
-    ok_step(
-        "activation-task",
-        &host.call(request(
-            "activation-task",
-            json!({"kind":"create_task","task":{"id":"staffing-task","project_id":"staffing-demo",
-            "root_id":"staffing-root","role_id":"engineer",
-            "origin":{"kind":"objective","work":{"project_id":"staffing-demo",
-                "id":{"kind":"objective","id":"staffing-objective"}}},
-            "task_contract":{"id":"coding-contract","revision":1},
-            "stream":{"id":"staffing-stream","originating_chat":"chat","worktree":"staffing-worktree",
-            "branch":"task/staffing","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}),
-        ),
-    ));
-    // Route the task to the engineer explicitly.
-    ok_step(
-        "activation-route",
-        &host.call(request(
-            "activation-route",
-            json!({"kind":"record_route",
-            "request":{"project_id":"staffing-demo","work_id":{"kind":"objective","id":"staffing-objective"},
-            "requested":"engineer","domains":[]}}),
-        ),
-    ));
-    // The binding's profile names `native-api-entitlement`, which is not
-    // registered yet: the provider step is earned from the registry, so the
-    // composition refuses and names exactly what is missing — and no start
-    // consumes a refused preparation.
-    let unprepared = host.call(request(
-        "activation-prepare-refused",
-        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
-    ));
-    let refused_preparation = ok(&unprepared)["data"].clone();
-    assert_eq!(refused_preparation["outcome"], "refused");
-    let provider_step = refused_preparation["steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|step| step["kind"] == "provider")
-        .expect("every composition records a provider step");
-    assert_eq!(provider_step["validated"], false);
-    assert_eq!(provider_step["refusal"], "missing_entitlement");
-    let refused_start = host.call(request(
-        "activation-start-refused",
-        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
-    ));
-    assert_eq!(
-        refused_start["result"]["Err"]["code"],
-        "failed_precondition"
-    );
-    // Registering the entitlement the profile names completes the
-    // registration; preparation re-reads the registry, so it is ready now.
-    ok_step(
-        "activation-entitlement",
-        &host.call(request(
-            "activation-entitlement",
-            json!({"kind":"replace_billing_entitlement","attribution":"staffing-demo",
-            "entitlement":{"id":"native-api-entitlement","provider":"native-openai",
-            "kind":"metered_api","verification_evidence":"entitlement-proof",
-            "expires_at":4102444800000u64}}),
-        )),
-    );
+    let host_id = staffing_composition(&host, Registration::Complete);
     let prepare_response = host.call(request(
         "activation-prepare",
         json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
@@ -1435,4 +1277,381 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
         .unwrap();
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("run-started-dispatch"));
+}
+
+/// How `staffing_composition` registers the provider rows the binding's profile
+/// names. `Complete` is the valid registry; every other variant breaks exactly
+/// one fact, so a refusal test composes the same task with one thing wrong.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Registration {
+    /// Connection, entitlement and model all registered consistently.
+    Complete,
+    /// No `native-openai` connection: the profile's provider is unknown.
+    MissingConnection,
+    /// The entitlement the profile names is never registered.
+    MissingEntitlement,
+    /// The model descriptor the profile names is never registered.
+    MissingModel,
+    /// The entitlement is registered, but already past.
+    ExpiredEntitlement,
+    /// The model descriptor is registered to a different connection.
+    MismatchedModel,
+    /// `local_unauthenticated` authentication against a `metered_api`
+    /// entitlement: a pair the registry's mapping table rejects.
+    UnsupportedAuthenticationBilling,
+}
+
+impl Registration {
+    /// The refusal the registry's own contract must name for this variant.
+    fn refusal(self) -> Option<&'static str> {
+        match self {
+            Self::Complete => None,
+            Self::MissingConnection => Some("missing_connection"),
+            Self::MissingEntitlement => Some("missing_entitlement"),
+            Self::MissingModel => Some("missing_model"),
+            Self::ExpiredEntitlement => Some("expired_entitlement"),
+            Self::MismatchedModel => Some("binding_mismatch"),
+            Self::UnsupportedAuthenticationBilling => Some("unsupported_authentication_billing"),
+        }
+    }
+}
+
+/// Composes the staffing-demo task up to (not including) preparation: project,
+/// team, workforce binding with the live Host eligible, the provider
+/// registration the binding's profile names, a classified origin, the task and
+/// its explicit route. Returns the live Host's inventory identity.
+fn staffing_composition(host: &Host, registration: Registration) -> Value {
+    ok(&host.call(
+        serde_json::from_str(include_str!("../../../fixtures/project-team/register.json")).unwrap(),
+    ));
+    // The team grants the engineer's role stream mutation (the dispatch
+    // compiles MutateStream from the binding, which must stay within the
+    // member's access and the ceiling).
+    let mut team: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/project-team/configure.json"
+    ))
+    .unwrap();
+    team["command_id"] = json!("activation-team");
+    for pointer in ["/access_ceiling/grants", "/members/1/access/grants"] {
+        let mut grants: Vec<Value> = team["operation"]["team"]
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        grants.push(json!("mutate_stream"));
+        *team["operation"]["team"].pointer_mut(pointer).unwrap() = json!(grants);
+    }
+    ok(&host.call(team));
+    // The binding must name the live Host as eligible: resolve the real
+    // inventory identity first, then configure the workforce binding with it
+    // (the checked-in fixture pins a placeholder host).
+    let pulse = host.call(request(
+        "activation-pulse-early",
+        json!({"kind":"get_host_pulse"}),
+    ));
+    let host_id = ok(&pulse)["data"]["host_id"].clone();
+    let mut binding: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/configure.json"
+    ))
+    .unwrap();
+    binding["command_id"] = json!("activation-binding");
+    binding["operation"]["configuration"]["primary"]["profile"]["eligible_hosts"] =
+        json!([host_id]);
+    for path in [
+        ["operation", "configuration", "primary", "access", "grants"],
+        ["operation", "configuration", "binding", "access", "grants"],
+    ] {
+        let mut grants: Vec<Value> = binding
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        grants.push(json!("mutate_stream"));
+        *binding
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap() = json!(grants);
+    }
+    ok(&host.call(binding));
+    // The registration the profile names, with at most one fact broken.
+    if registration != Registration::MissingConnection {
+        let authentication = match registration {
+            Registration::UnsupportedAuthenticationBilling => "local_unauthenticated",
+            _ => "api_credential",
+        };
+        ok_step(
+            "activation-provider",
+            &host.call(request(
+                "activation-provider",
+                json!({"kind":"replace_provider_connection","attribution":"staffing-demo",
+                "connection":{"id":"native-openai","adapter":"openai-responses",
+                "endpoint_reference":"https://api.openai.example/v1","authentication":authentication}}),
+            )),
+        );
+        if registration != Registration::MissingEntitlement {
+            let expires_at = match registration {
+                Registration::ExpiredEntitlement => 1_u64,
+                _ => 4_102_444_800_000_u64,
+            };
+            ok_step(
+                "activation-entitlement",
+                &host.call(request(
+                    "activation-entitlement",
+                    json!({"kind":"replace_billing_entitlement","attribution":"staffing-demo",
+                    "entitlement":{"id":"native-api-entitlement","provider":"native-openai",
+                    "kind":"metered_api","verification_evidence":"entitlement-proof",
+                    "expires_at":expires_at}}),
+                )),
+            );
+        }
+    }
+    match registration {
+        // Every row is present, but the model is registered elsewhere.
+        Registration::MismatchedModel => {
+            ok_step(
+                "activation-other-provider",
+                &host.call(request(
+                    "activation-other-provider",
+                    json!({"kind":"replace_provider_connection","attribution":"staffing-demo",
+                    "connection":{"id":"native-other","adapter":"openai-responses",
+                    "endpoint_reference":"https://api.other.example/v1","authentication":"api_credential"}}),
+                )),
+            );
+            registry_model(host, "activation-model", "native-other");
+        }
+        Registration::Complete
+        | Registration::ExpiredEntitlement
+        | Registration::UnsupportedAuthenticationBilling => {
+            registry_model(host, "activation-model", "native-openai");
+        }
+        Registration::MissingConnection
+        | Registration::MissingEntitlement
+        | Registration::MissingModel => {}
+    }
+    // A classified origin the engineer's task can hang off, then the task and
+    // its explicit route to the engineer.
+    ok_step(
+        "activation-objective",
+        &host.call(request(
+            "activation-objective",
+            json!({"kind":"create_work","work":{"id":{"kind":"objective","id":"staffing-objective"},
+            "project_id":"staffing-demo","role_id":"engineer","title":"Implement a bounded change",
+            "description":"Implement the bounded change described by this objective.",
+            "utterance":null,"objective_class":"maintenance","parent":null,"dependencies":[],
+            "requirements":[],"constraints":[],"risks":[],"acceptance":["done"],"priority":2,
+            "budget":null,"external_references":[]}}),
+        )),
+    );
+    ok_step(
+        "activation-task",
+        &host.call(request(
+            "activation-task",
+            json!({"kind":"create_task","task":{"id":"staffing-task","project_id":"staffing-demo",
+            "root_id":"staffing-root","role_id":"engineer",
+            "origin":{"kind":"objective","work":{"project_id":"staffing-demo",
+                "id":{"kind":"objective","id":"staffing-objective"}}},
+            "task_contract":{"id":"coding-contract","revision":1},
+            "stream":{"id":"staffing-stream","originating_chat":"chat","worktree":"staffing-worktree",
+            "branch":"task/staffing","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}),
+        ),
+    ));
+    ok_step(
+        "activation-route",
+        &host.call(request(
+            "activation-route",
+            json!({"kind":"record_route",
+            "request":{"project_id":"staffing-demo","work_id":{"kind":"objective","id":"staffing-objective"},
+            "requested":"engineer","domains":[]}}),
+        ),
+    ));
+    host_id
+}
+
+/// Registers the profile's model descriptor against `provider_id`.
+fn registry_model(host: &Host, command_id: &'static str, provider_id: &str) {
+    ok_step(
+        command_id,
+        &host.call(request(
+            command_id,
+            json!({"kind":"replace_model_descriptor","attribution":"staffing-demo",
+            "descriptor":{"schema_version":1,"id":"coding-model","provider_id":provider_id,
+            "context_window_tokens":8192,"max_output_tokens":4096,
+            "capabilities":{"reasoning_efforts":[],"tools":true,"images":false,"streaming":false}}}),
+        )),
+    );
+}
+
+/// Replaces the entitlement the profile names with an already-expired one,
+/// leaving every identity intact: the registration lapses without any row
+/// disappearing.
+fn expire_entitlement(host: &Host, command_id: &'static str) {
+    ok_step(
+        command_id,
+        &host.call(request(
+            command_id,
+            json!({"kind":"replace_billing_entitlement","attribution":"staffing-demo",
+            "entitlement":{"id":"native-api-entitlement","provider":"native-openai",
+            "kind":"metered_api","verification_evidence":"entitlement-proof","expires_at":1}}),
+        )),
+    );
+}
+
+/// Every registration the registry can be put into that cannot be bound is
+/// reported with its own reason through the daemon, and none of them can start
+/// a dispatch: the refused preparation is the only record of the attempt, and
+/// the task never leaves Ready.
+#[test]
+fn unusable_provider_registrations_refuse_preparation_and_cannot_start() {
+    for registration in [
+        Registration::MissingConnection,
+        Registration::MissingEntitlement,
+        Registration::MissingModel,
+        Registration::ExpiredEntitlement,
+        Registration::MismatchedModel,
+        Registration::UnsupportedAuthenticationBilling,
+    ] {
+        let refusal = registration.refusal().unwrap();
+        let host = Host::new();
+        let host_id = staffing_composition(&host, registration);
+        let preparation = ok(&host.call(request(
+            "refused-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+        )))
+        .clone();
+        assert_eq!(preparation["data"]["outcome"], "refused", "{refusal}");
+        let provider_step = preparation["data"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "provider")
+            .expect("every composition records a provider step")
+            .clone();
+        assert_eq!(provider_step["validated"], false, "{refusal}");
+        assert_eq!(provider_step["refusal"], refusal);
+        // A refused preparation cannot start, so the configuration can never
+        // reach execution however it is driven afterwards.
+        let start = host.call(request(
+            "refused-start",
+            json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+        ));
+        assert_eq!(
+            start["result"]["Err"]["code"], "failed_precondition",
+            "{refusal}"
+        );
+        let task = ok(&host.call(request(
+            "refused-task-read",
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+        )))
+        .clone();
+        assert_eq!(task["data"]["state"], "ready", "{refusal}");
+    }
+}
+
+/// A registration that lapses between preparation and start is refused at the
+/// start boundary: no dispatch is compiled against a profile that can no
+/// longer be bound, and the task stays Ready rather than Running.
+#[test]
+fn start_prepared_task_refuses_a_registration_that_lapsed_after_preparation() {
+    let host = Host::new();
+    let host_id = staffing_composition(&host, Registration::Complete);
+    let preparation = ok(&host.call(request(
+        "lapse-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )))
+    .clone();
+    assert_eq!(preparation["data"]["outcome"], "ready");
+    expire_entitlement(&host, "lapse-entitlement");
+    let start = host.call(request(
+        "lapse-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    ));
+    assert_eq!(start["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        start["result"]["Err"]["message"],
+        "the dispatch's provider registration is not usable (expired_entitlement)"
+    );
+    let task = ok(&host.call(request(
+        "lapse-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    )))
+    .clone();
+    assert_eq!(task["data"]["state"], "ready");
+}
+
+/// The execution boundary re-validates the registration the dispatch's contract
+/// pins, so a registration that was valid at preparation and start and then
+/// lapsed refuses the run instead of executing it: an expired or unknown
+/// entitlement cannot execute.
+#[test]
+fn run_started_dispatch_refuses_a_registration_that_lapsed_after_start() {
+    let host = Host::new();
+    let host_id = staffing_composition(&host, Registration::Complete);
+    ok(&host.call(request(
+        "lapse-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )));
+    let started = ok(&host.call(request(
+        "lapse-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    )))
+    .clone();
+    assert_eq!(started["data"]["task_id"], "staffing-task");
+    expire_entitlement(&host, "lapse-entitlement");
+    let run = host.call(request(
+        "lapse-run",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+        "dispatch_id":started["data"]["dispatch_id"]}),
+    ));
+    assert_eq!(run["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        run["result"]["Err"]["message"],
+        "the dispatch's provider registration is not usable (expired_entitlement)"
+    );
+    // The refusal executed nothing: the dispatch is still the one that was
+    // started, and the task is still Running under it.
+    let task = ok(&host.call(request(
+        "lapse-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    )))
+    .clone();
+    assert_eq!(task["data"]["state"], "running");
+}
+
+/// The same re-check refuses a registration whose authentication/billing pair
+/// was replaced with a pair the mapping table rejects after the dispatch
+/// started.
+#[test]
+fn run_started_dispatch_refuses_a_pairing_that_lapsed_after_start() {
+    let host = Host::new();
+    let host_id = staffing_composition(&host, Registration::Complete);
+    ok(&host.call(request(
+        "pairing-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )));
+    let started = ok(&host.call(request(
+        "pairing-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    )))
+    .clone();
+    ok_step(
+        "pairing-provider",
+        &host.call(request(
+            "pairing-provider",
+            json!({"kind":"replace_provider_connection","attribution":"staffing-demo",
+            "connection":{"id":"native-openai","adapter":"openai-responses",
+            "endpoint_reference":"https://api.openai.example/v1","authentication":"local_unauthenticated"}}),
+        )),
+    );
+    let run = host.call(request(
+        "pairing-run",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+        "dispatch_id":started["data"]["dispatch_id"]}),
+    ));
+    assert_eq!(run["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        run["result"]["Err"]["message"],
+        "the dispatch's provider registration is not usable (unsupported_authentication_billing)"
+    );
 }
