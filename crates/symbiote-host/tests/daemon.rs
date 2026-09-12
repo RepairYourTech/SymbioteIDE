@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -12,12 +13,22 @@ struct Host {
     directory: PathBuf,
     child: Option<Child>,
     telemetry: bool,
+    config: Option<PathBuf>,
 }
 impl Host {
     fn new() -> Self {
         Self::with_telemetry(true)
     }
     fn with_telemetry(telemetry: bool) -> Self {
+        Self::build(telemetry, None)
+    }
+    /// A daemon with operator provisioning (#54): the configuration file is
+    /// written 0600 inside the private state directory before the daemon
+    /// starts, exactly as an operator would provision a Host.
+    fn with_operator_config(config: Value) -> Self {
+        Self::build(true, Some(config))
+    }
+    fn build(telemetry: bool, config: Option<Value>) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "symbiote-daemon-{}-{}",
             std::process::id(),
@@ -29,13 +40,26 @@ impl Host {
             directory,
             child: None,
             telemetry,
+            config: None,
         };
+        if let Some(config) = config {
+            let path = host.directory.join("operator-config.json");
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(serde_json::to_string_pretty(&config).unwrap().as_bytes())
+                .unwrap();
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+            host.config = Some(path);
+        }
         host.start();
         host
     }
     fn start(&mut self) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_symbioted"));
         command.arg("--state-dir").arg(&self.directory);
+        if let Some(config) = &self.config {
+            command.arg("--operator-config").arg(config);
+        }
         if !self.telemetry {
             command.arg("--no-telemetry");
         }
@@ -130,7 +154,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":16},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":17},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1496,6 +1520,123 @@ fn expire_entitlement(host: &Host, command_id: &'static str) {
             "kind":"metered_api","verification_evidence":"entitlement-proof","expires_at":1}}),
         )),
     );
+}
+
+/// The operator's declared native runtime for the staffing profile: the facts
+/// the Host cannot observe about an adapter by itself today. The observation
+/// identity and the evidence window are Host-owned and never appear here.
+fn runtime_declaration() -> Value {
+    json!({
+        "adapter_id": "native-agent",
+        "installation": null,
+        "profile_id": "native-worker",
+        "profile_revision": 1,
+        "model_id": "coding-model",
+        "adapter_version": "0.1.0",
+        "upstream_version": "0.1.0",
+        "runtime": "NATIVE_SYMBIOTE",
+        "owner": {"kind": "symbiote_native"},
+        "transport": "native_loop",
+        "tier": "detected",
+        "platform": "linux",
+        "capabilities": [],
+        "controls": {"completion_authority": {
+            "strength": "host_enforced", "mechanism": "the native loop files completion evidence"}},
+        "tools": [],
+        "skills": [],
+        "context_limits": {"context_window_tokens": 128000, "max_output_tokens": 16384}
+    })
+}
+
+fn readiness_probe(host: &Host) -> Value {
+    ok(&host.call(request(
+        "readiness",
+        json!({"kind":"get_binding_readiness","project_id":"staffing-demo","binding_id":"engineer-binding"}),
+    )))["data"]
+        .clone()
+}
+
+/// The report an operator consults before dispatching observes what the
+/// execution boundary decides. With a valid registration and the operator's
+/// declared runtime, every prerequisite the Host can observe is satisfied; the
+/// same registration lapsed is a rejection naming the registry's own reason;
+/// and a daemon with no declaration observes no runtime at all rather than
+/// assuming one.
+#[test]
+fn readiness_observes_the_registration_and_the_declared_runtime() {
+    let host = Host::with_operator_config(json!({
+        "reservation_base": std::env::temp_dir()
+            .join("symbiote-readiness-worktrees")
+            .display()
+            .to_string(),
+        "runtime_declarations": [runtime_declaration()],
+    }));
+    staffing_composition(&host, Registration::Complete);
+    let report = readiness_probe(&host);
+    assert_eq!(report["profile_id"], "native-worker");
+    let checks = report["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 5);
+    assert_eq!(checks[2]["prerequisite"], "provider_registration");
+    assert_eq!(checks[2]["result"], "satisfied");
+    assert!(
+        checks[2].get("provider_refusal").is_none(),
+        "a satisfied check names no refusal"
+    );
+    assert_eq!(checks[3]["prerequisite"], "runtime_capabilities");
+    assert_eq!(checks[3]["result"], "satisfied");
+    assert_eq!(checks[4]["prerequisite"], "runtime_resources");
+    assert_eq!(checks[4]["result"], "satisfied");
+    // Host capacity is the one prerequisite this Host still rejects: the
+    // profile requires 256 MiB of EFFECTIVE capacity, which the passive probe
+    // deliberately leaves unknown rather than substituting physical totals.
+    // Every other prerequisite is now observed, so the report's remaining
+    // refusal is a real observation, not an unobserved prerequisite.
+    assert_eq!(checks[1]["prerequisite"], "host_capacity");
+    assert_eq!(checks[1]["result"], "rejected");
+    assert_eq!(report["status"], "not_ready");
+    // The registration enforcement refuses is refused here, by the same name.
+    expire_entitlement(&host, "readiness-lapse");
+    let lapsed = readiness_probe(&host);
+    assert_eq!(lapsed["status"], "not_ready");
+    assert_eq!(lapsed["checks"][2]["result"], "rejected");
+    assert_eq!(
+        lapsed["checks"][2]["provider_refusal"],
+        "expired_entitlement"
+    );
+    // No declaration: the runtime prerequisites stay unobserved, so the report
+    // never implies a runtime fact nobody observed.
+    let bare = Host::new();
+    staffing_composition(&bare, Registration::Complete);
+    let bare_report = readiness_probe(&bare);
+    assert_eq!(bare_report["status"], "not_ready");
+    assert_eq!(bare_report["checks"][2]["result"], "satisfied");
+    for check in [3, 4] {
+        assert_eq!(
+            bare_report["checks"][check]["result"],
+            "missing_observation"
+        );
+    }
+    // A declaration for ANOTHER model is not an observation of this profile,
+    // so the runtime prerequisites stay unobserved — while the registration
+    // half of the report is unaffected by which runtime the operator declared.
+    let mut other_model = runtime_declaration();
+    other_model["model_id"] = json!("other-model");
+    let mismatched = Host::with_operator_config(json!({
+        "reservation_base": std::env::temp_dir()
+            .join("symbiote-readiness-worktrees")
+            .display()
+            .to_string(),
+        "runtime_declarations": [other_model],
+    }));
+    staffing_composition(&mismatched, Registration::Complete);
+    let mismatched_report = readiness_probe(&mismatched);
+    assert_eq!(mismatched_report["checks"][2]["result"], "satisfied");
+    for check in [3, 4] {
+        assert_eq!(
+            mismatched_report["checks"][check]["result"],
+            "missing_observation"
+        );
+    }
 }
 
 /// Every registration the registry can be put into that cannot be bound is

@@ -230,9 +230,23 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
     use symbiote_runtime_sdk::*;
     let b = binding();
     let t = team();
-    let missing = assess_readiness(&b, &t, None, None, Timestamp(10));
+    let resolved = ProviderResolution {
+        connection: b.primary.profile.provider.clone(),
+        model: b.primary.profile.model.clone(),
+        refusal: None,
+    };
+    let missing = assess_readiness(&b, &t, None, None, None, Timestamp(10));
     assert_eq!(missing.status, PrerequisiteStatus::NotReady);
     assert_eq!(missing.checks[1].result, CheckResult::MissingObservation);
+    // The provider prerequisite observes exactly what the registry resolved:
+    // no resolution is a missing observation, a refused one is a rejection
+    // that names the refusal, and a usable one is satisfied.
+    assert_eq!(
+        missing.checks[2].prerequisite,
+        Prerequisite::ProviderRegistration
+    );
+    assert_eq!(missing.checks[2].result, CheckResult::MissingObservation);
+    assert_eq!(missing.checks[2].provider_refusal, None);
     let p = &b.primary.profile;
     let pulse = HostPulse::new(
         HostId::new("host").unwrap(),
@@ -298,9 +312,43 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             max_output_tokens: 100,
         }),
     };
-    let report = assess_readiness(&b, &t, Some(&pulse), Some(&descriptor), Timestamp(10));
+    let report = assess_readiness(
+        &b,
+        &t,
+        Some(&pulse),
+        Some(&descriptor),
+        Some(&resolved),
+        Timestamp(10),
+    );
     assert_eq!(report.status, PrerequisiteStatus::ReadyForPreflight);
     assert_eq!(report.activation_pending.len(), 6);
+    assert_eq!(report.checks[2].result, CheckResult::Satisfied);
+    assert_eq!(report.checks[2].provider_refusal, None);
+    assert_eq!(
+        report.checks[4].prerequisite,
+        Prerequisite::RuntimeResources
+    );
+    // A registry refusal is a rejection that names itself, whatever the
+    // runtime observation says — the report never implies a run that the
+    // execution boundary would refuse.
+    let refused = ProviderResolution {
+        refusal: Some(ProviderRefusal::ExpiredEntitlement),
+        ..resolved.clone()
+    };
+    let denied = assess_readiness(
+        &b,
+        &t,
+        Some(&pulse),
+        Some(&descriptor),
+        Some(&refused),
+        Timestamp(10),
+    );
+    assert_eq!(denied.status, PrerequisiteStatus::NotReady);
+    assert_eq!(denied.checks[2].result, CheckResult::Rejected);
+    assert_eq!(
+        denied.checks[2].provider_refusal,
+        Some(ProviderRefusal::ExpiredEntitlement)
+    );
     let mut observed_binding = b.clone();
     observed_binding
         .policies
@@ -317,13 +365,22 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &t,
             Some(&pulse),
             Some(&descriptor),
+            Some(&resolved),
             Timestamp(10)
         )
         .status,
         PrerequisiteStatus::ReadyForPreflight
     );
     assert_eq!(
-        assess_readiness(&b, &t, Some(&pulse), Some(&descriptor), Timestamp(10)).status,
+        assess_readiness(
+            &b,
+            &t,
+            Some(&pulse),
+            Some(&descriptor),
+            Some(&resolved),
+            Timestamp(10)
+        )
+        .status,
         PrerequisiteStatus::NotReady
     );
     descriptor
@@ -338,6 +395,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &t,
             Some(&pulse),
             Some(&descriptor),
+            Some(&resolved),
             Timestamp(10)
         )
         .status,
@@ -355,12 +413,28 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
         .evidence
         .expires_at = Timestamp(100);
     assert_eq!(
-        assess_readiness(&b, &t, Some(&pulse), Some(&descriptor), Timestamp(100)).status,
+        assess_readiness(
+            &b,
+            &t,
+            Some(&pulse),
+            Some(&descriptor),
+            Some(&resolved),
+            Timestamp(100)
+        )
+        .status,
         PrerequisiteStatus::NotReady
     );
     descriptor.profile_revision = Revision(2);
     assert_eq!(
-        assess_readiness(&b, &t, Some(&pulse), Some(&descriptor), Timestamp(10)).status,
+        assess_readiness(
+            &b,
+            &t,
+            Some(&pulse),
+            Some(&descriptor),
+            Some(&resolved),
+            Timestamp(10)
+        )
+        .status,
         PrerequisiteStatus::NotReady
     );
 }

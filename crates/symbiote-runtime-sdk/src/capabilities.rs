@@ -218,6 +218,135 @@ impl RuntimeDescriptor {
     }
 }
 
+/// A Host-provisioned declaration of a runtime's identity and facts, before any
+/// observation exists. The evidence a [`RuntimeDescriptor`] carries is
+/// Host-owned: a declaration names WHAT an operator asserts about a runtime
+/// (its pinned profile identity, capabilities, controls and resources), and the
+/// Host turns it into a descriptor stamped with its own identity and a bounded
+/// evidence window — the same posture as Host enforcement claims, never a
+/// substitute for sandbox-observed evidence (#269).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredRuntime {
+    pub adapter_id: AgentRuntimeAdapterId,
+    pub installation: Option<InstallationId>,
+    pub profile_id: RuntimeProfileId,
+    pub profile_revision: Revision,
+    pub model_id: ModelId,
+    pub adapter_version: String,
+    pub upstream_version: String,
+    pub runtime: RuntimeKind,
+    pub owner: RuntimeOwner,
+    pub transport: Transport,
+    pub tier: IntegrationTier,
+    pub platform: String,
+    /// The capabilities the declared runtime supports. A capability absent here
+    /// is unknown to the Host, never assumed.
+    pub capabilities: BTreeSet<Capability>,
+    pub controls: BTreeMap<Control, DeclaredControl>,
+    pub tools: BTreeSet<String>,
+    pub skills: BTreeSet<String>,
+    pub context_limits: Option<RuntimeContextLimits>,
+}
+
+/// One declared enforcement control with the mechanism that realizes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredControl {
+    pub strength: EnforcementStrength,
+    pub mechanism: String,
+}
+
+impl DeclaredRuntime {
+    /// How long a Host-stamped observation stays valid. One hour, matching the
+    /// Host's own enforcement claims until sandbox-observed evidence lands.
+    pub const EVIDENCE_WINDOW_MS: u64 = 3_600_000;
+
+    /// The descriptor the Host observes from this declaration: identity is the
+    /// declaration's, while the observation identity, artifact and window are
+    /// the Host's own and are never operator-supplied. Every declared capability
+    /// and control carries the same fresh evidence; a capability a profile
+    /// requires but the declaration omits stays absent, so it refuses rather
+    /// than passing on an assumption.
+    pub fn observe(
+        &self,
+        host_id: &HostId,
+        at: Timestamp,
+    ) -> Result<RuntimeDescriptor, QualificationError> {
+        let artifact = EvidenceId::new(format!("runtime-declaration-{}", host_id.as_str()))
+            .map_err(|_| QualificationError::InvalidDescriptor)?;
+        let evidence = ProbeEvidence {
+            artifact,
+            adapter_id: self.adapter_id.clone(),
+            installation: self.installation.clone(),
+            profile_id: self.profile_id.clone(),
+            profile_revision: self.profile_revision,
+            model_id: self.model_id.clone(),
+            host_id: host_id.clone(),
+            adapter_version: self.adapter_version.clone(),
+            upstream_version: self.upstream_version.clone(),
+            platform: self.platform.clone(),
+            observed_at: at,
+            expires_at: Timestamp(at.0.saturating_add(Self::EVIDENCE_WINDOW_MS)),
+        };
+        Ok(RuntimeDescriptor {
+            sdk_version: crate::SDK_VERSION,
+            adapter_id: self.adapter_id.clone(),
+            installation: self.installation.clone(),
+            profile_id: self.profile_id.clone(),
+            profile_revision: self.profile_revision,
+            model_id: self.model_id.clone(),
+            adapter_version: self.adapter_version.clone(),
+            upstream_version: self.upstream_version.clone(),
+            runtime: self.runtime,
+            owner: self.owner.clone(),
+            transport: self.transport.clone(),
+            tier: self.tier.clone(),
+            host_id: host_id.clone(),
+            platform: self.platform.clone(),
+            capabilities: self
+                .capabilities
+                .iter()
+                .cloned()
+                .map(|capability| {
+                    (
+                        capability,
+                        Support::Supported {
+                            evidence: Box::new(evidence.clone()),
+                        },
+                    )
+                })
+                .collect(),
+            controls: self
+                .controls
+                .iter()
+                .map(|(control, declared)| {
+                    (
+                        control.clone(),
+                        ControlSupport {
+                            strength: declared.strength,
+                            mechanism: declared.mechanism.clone(),
+                            evidence: evidence.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            tools: self.tools.clone(),
+            skills: self.skills.clone(),
+            context_limits: self.context_limits.clone(),
+        })
+    }
+
+    /// Validates the declaration on its own terms, through the descriptor
+    /// contract it can produce: the Host identity is irrelevant to the checks
+    /// this performs, so it is a fixed local placeholder.
+    pub fn validate(&self) -> Result<(), QualificationError> {
+        let host =
+            HostId::new("host_declared").map_err(|_| QualificationError::InvalidDescriptor)?;
+        self.observe(&host, Timestamp(1))?.validate()
+    }
+}
+
 /// Checks current facts, not adapter names or marketing tiers. The caller must
 /// authenticate referenced proof artifacts before allowing this metadata to qualify.
 pub fn qualify_profile(
