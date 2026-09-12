@@ -437,4 +437,121 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
         .status,
         PrerequisiteStatus::NotReady
     );
+    // Every prerequisite classifies the same way: a fact the Host has not
+    // observed is an absence, a fact it observed that does not meet the
+    // requirement is a rejection, and the two are never swapped.
+    let mut observed = descriptor.clone();
+    observed.profile_revision = p.revision;
+    let report = |pulse: &HostPulse, descriptor: &RuntimeDescriptor| {
+        assess_readiness(
+            &b,
+            &t,
+            Some(pulse),
+            Some(descriptor),
+            Some(&resolved),
+            Timestamp(10),
+        )
+    };
+    // Capacity: unobserved effective availability is not a rejection, and an
+    // observed availability below the profile's limit is not an absence.
+    let mut unobserved = pulse.clone();
+    unobserved.resources.effective_memory_available_bytes = Fact::Unknown;
+    assert_eq!(
+        report(&unobserved, &observed).checks[1].result,
+        CheckResult::MissingObservation
+    );
+    let mut exhausted = pulse.clone();
+    exhausted.resources.effective_memory_available_bytes = Fact::Known(1);
+    assert_eq!(
+        report(&exhausted, &observed).checks[1].result,
+        CheckResult::Rejected
+    );
+    // Runtime capabilities: a capability the observation itself reports as
+    // unknown is an absence; one the observation says the runtime lacks is a
+    // rejection; evidence that expired is an absence again.
+    let mut requiring = b.clone();
+    requiring
+        .policies
+        .required_capabilities
+        .insert(Capability::Tools);
+    let mut unknown = observed.clone();
+    unknown
+        .capabilities
+        .insert(Capability::Tools, Support::Unknown);
+    assert_eq!(
+        assess_readiness(
+            &requiring,
+            &t,
+            Some(&pulse),
+            Some(&unknown),
+            Some(&resolved),
+            Timestamp(10)
+        )
+        .checks[3]
+            .result,
+        CheckResult::MissingObservation
+    );
+    assert_eq!(
+        assess_readiness(
+            &requiring,
+            &t,
+            Some(&pulse),
+            Some(&observed),
+            Some(&resolved),
+            Timestamp(10)
+        )
+        .checks[3]
+            .result,
+        CheckResult::Rejected
+    );
+    let mut stale = observed.clone();
+    stale.capabilities.insert(
+        Capability::Tools,
+        Support::Supported {
+            evidence: Box::new(ProbeEvidence {
+                artifact: EvidenceId::new("proof").unwrap(),
+                adapter_id: p.adapter.clone(),
+                installation: p.installation.clone(),
+                profile_id: p.id.clone(),
+                profile_revision: p.revision,
+                model_id: p.model.clone(),
+                host_id: pulse.host_id.clone(),
+                adapter_version: "1".into(),
+                upstream_version: "1".into(),
+                platform: "linux".into(),
+                observed_at: Timestamp(1),
+                expires_at: Timestamp(2),
+            }),
+        },
+    );
+    assert_eq!(
+        assess_readiness(
+            &requiring,
+            &t,
+            Some(&pulse),
+            Some(&stale),
+            Some(&resolved),
+            Timestamp(10)
+        )
+        .checks[3]
+            .result,
+        CheckResult::MissingObservation
+    );
+    // Runtime resources: absent context bounds are an absence, observed but
+    // insufficient bounds are a rejection.
+    let mut unbounded = observed.clone();
+    unbounded.context_limits = None;
+    assert_eq!(
+        report(&pulse, &unbounded).checks[4].result,
+        CheckResult::MissingObservation
+    );
+    let mut narrow = observed.clone();
+    narrow.context_limits = Some(RuntimeContextLimits {
+        context_window_tokens: 1,
+        max_output_tokens: 1,
+    });
+    assert_eq!(
+        report(&pulse, &narrow).checks[4].result,
+        CheckResult::Rejected
+    );
 }

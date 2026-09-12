@@ -128,8 +128,8 @@ fn probe_failures_are_preserved_and_contradictions_rejected() {
     use symbiote_host_inventory::linux::*;
     let p = pulse();
     let observation = LinuxObservation {
-        os: p.os,
-        architecture: p.architecture,
+        os: p.os.clone(),
+        architecture: p.architecture.clone(),
         resources: ResourceObservation::default(),
         observed_at: Timestamp(10),
         failures: vec![ProbeFailure {
@@ -137,11 +137,52 @@ fn probe_failures_are_preserved_and_contradictions_rejected() {
             reason: ProbeError::Unreadable,
         }],
     };
-    let mut result = HostPulse::from_observation(p.host_id, p.observation_id, observation).unwrap();
+    let mut result =
+        HostPulse::from_observation(p.host_id.clone(), p.observation_id.clone(), observation)
+            .unwrap();
     assert_eq!(result.probe_failures.len(), 1);
     assert_eq!(result.expires_at, Timestamp(5_010));
     result.resources.physical_memory_total_bytes = Fact::Known(100);
     assert_eq!(result.validate(), Err(PulseError::Invalid));
+
+    // The same rule for the effective facts: a failure that explains absent
+    // effective availability cannot coexist with an observed value, while a
+    // finite ceiling observed on its own is consistent — the failure explains
+    // the charge against the ceiling, not the ceiling.
+    let mut effective = p.clone();
+    effective.probe_failures = vec![
+        ProbeFailure {
+            resource: ProbeResource::EffectiveMemory,
+            reason: ProbeError::Unreadable,
+        },
+        ProbeFailure {
+            resource: ProbeResource::EffectiveCpu,
+            reason: ProbeError::UnsupportedHierarchy,
+        },
+    ];
+    assert_eq!(effective.validate(), Ok(()));
+    effective.resources.effective_memory_available_bytes = Fact::Known(10);
+    assert_eq!(effective.validate(), Err(PulseError::Invalid));
+    effective.resources.effective_memory_available_bytes = Fact::Unknown;
+    effective.resources.effective_cpu_millicores = Fact::Known(10);
+    assert_eq!(effective.validate(), Err(PulseError::Invalid));
+    effective.resources.effective_cpu_millicores = Fact::Unknown;
+    effective.resources.effective_memory_limit_bytes = Fact::Known(100);
+    assert_eq!(effective.validate(), Ok(()));
+    // At most one failure per resource, and a bounded total.
+    effective.probe_failures = vec![
+        ProbeFailure {
+            resource: ProbeResource::EffectiveMemory,
+            reason: ProbeError::Unreadable,
+        },
+        ProbeFailure {
+            resource: ProbeResource::EffectiveMemory,
+            reason: ProbeError::Malformed,
+        },
+    ];
+    assert_eq!(effective.validate(), Err(PulseError::Invalid));
+    effective.probe_failures = vec![effective.probe_failures[0].clone(); 5];
+    assert_eq!(effective.validate(), Err(PulseError::Capacity));
 }
 
 #[test]
