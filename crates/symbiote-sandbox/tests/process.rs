@@ -562,18 +562,21 @@ fn setup_failure_stderr_is_bounded_explicit_and_debug_redacted() {
 /// supports: `WorktreeWrite`, which is what a dispatch carrying the mutation
 /// grant runs the external lane's harness under, and `ReadOnly`, which is what
 /// a contract without that grant runs under. `/workspace` is the dispatch's
-/// reserved worktree, the one surface a writable run may change. Everything
-/// else the mount table leaves reachable inside is either absent (the sandbox
-/// root is a fresh tmpfs, so no Host directory, `/etc` or `/var` exists at
-/// all — errno 2) or read-only (`/usr` is a read-only bind and the root is
-/// remounted read-only — errno 30). The only other writable paths are `/tmp`
-/// and `/home/agent`, the sandbox's own tmpfs mounts: the test asserts a run
-/// may write there and that the write never reaches the Host path of the same
-/// name. Under `ReadOnly` the whole table holds and the reserved worktree joins
-/// the refusing side, so a dispatch with no mutation grant gets no write
-/// anywhere at all.
+/// reserved worktree, the one Host surface a run may change. Everything else
+/// the mount table leaves reachable inside is either absent (the sandbox root
+/// is a fresh tmpfs, so no Host directory, `/etc` or `/var` exists at all —
+/// errno 2) or read-only (`/usr` is a read-only bind and the root is remounted
+/// read-only — errno 30). The remaining writable paths — `/tmp`, `/home/agent`,
+/// and `/dev` with its `/dev/shm` — are the sandbox's own tmpfs mounts, not the
+/// Host's: the test asserts a run may write there and that the write never
+/// reaches the Host path of the same name. That Host-side assertion, not the
+/// writability itself, is what keeps them off the Host boundary; it is also what
+/// would fail if the inner `/dev` were ever replaced by a bind of the Host's.
+/// Under `ReadOnly` the same table holds minus the worktree, which joins the
+/// refusing side, so a dispatch with no mutation grant gets no Host write at
+/// all.
 #[test]
-fn the_mount_boundary_refuses_every_write_outside_a_writable_reserved_worktree() {
+fn the_mount_boundary_confines_host_writes_to_the_reserved_worktree() {
     let script = r#"import json,os,sys
 host_worktree,host_protected,shadow=sys.argv[1],sys.argv[2],sys.argv[3]
 tmp_before=len(os.listdir('/tmp'))
@@ -588,6 +591,8 @@ targets={
  'host_protected':host_protected+'/probe.txt',
  'sandbox_tmp':'/tmp/'+shadow,
  'sandbox_home':'/home/agent/'+shadow,
+ 'sandbox_dev':'/dev/'+shadow,
+ 'sandbox_dev_shm':'/dev/shm/'+shadow,
 }
 def attempt(path):
     try:
@@ -661,17 +666,26 @@ sys.stdout.flush()
                 "{profile:?} {target} must be invisible inside the sandbox: {observed}"
             );
         }
-        // The sandbox's own writable tmpfs mounts, not the Host's.
-        for target in ["sandbox_tmp", "sandbox_home"] {
+        // The sandbox's own writable tmpfs mounts, not the Host's. `/dev` is
+        // writable on purpose (its device nodes must be usable, and `/dev/shm`
+        // backs shared memory), so this row is pinned rather than refused.
+        for target in [
+            "sandbox_tmp",
+            "sandbox_home",
+            "sandbox_dev",
+            "sandbox_dev_shm",
+        ] {
             assert_eq!(
                 writes[target], "writable",
-                "{profile:?} {target} is the sandbox's own tmpfs: {observed}"
+                "{profile:?} {target} is the sandbox's own mount: {observed}"
             );
         }
         assert!(
             !std::path::Path::new("/tmp").join(&shadow).exists()
-                && !std::path::Path::new("/home/agent").join(&shadow).exists(),
-            "{profile:?}: a write inside the sandbox's /tmp or /home reached the Host"
+                && !std::path::Path::new("/home/agent").join(&shadow).exists()
+                && !std::path::Path::new("/dev").join(&shadow).exists()
+                && !std::path::Path::new("/dev/shm").join(&shadow).exists(),
+            "{profile:?}: a write inside the sandbox's own /tmp, /home or /dev reached the Host"
         );
         // Under the writable profile the file the probe wrote through
         // `/workspace` is the Host's own file in the reserved worktree; under
