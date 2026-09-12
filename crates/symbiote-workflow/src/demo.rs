@@ -29,6 +29,9 @@ pub const STREAM: &str = "staffing-stream";
 /// project, the root, the provider facts, and the daemon itself; the
 /// external profile's credential reference is its own and is never
 /// registered with the operator's broker.
+/// The demo's entitlement expiry: year 2100, so the fixture registration is
+/// unexpired for any plausible run clock.
+const ENTITLEMENT_EXPIRY: u64 = 4_102_444_800_000;
 pub const EXTERNAL_TASK: &str = "external-task";
 pub const EXTERNAL_STREAM: &str = "external-stream";
 pub const EXTERNAL_ROLE: &str = "engineer-external";
@@ -61,11 +64,12 @@ pub struct DemoLane {
     pub lead_role: &'static str,
     pub role: &'static str,
     pub binding_id: &'static str,
-    /// The lane's provider connection and model descriptor ids. These
-    /// records are HOST-GLOBAL (not project-scoped), so each lane names
-    /// its own.
+    /// The lane's provider connection, model descriptor and billing
+    /// entitlement ids. These records are HOST-GLOBAL (not project-scoped),
+    /// so each lane names its own.
     pub provider: &'static str,
     pub model: &'static str,
+    pub entitlement: &'static str,
     /// The credential reference this lane's profile names. It must be
     /// registered with the operator's broker FOR THIS PROJECT — a
     /// reference registered for another project is refused by the broker
@@ -90,6 +94,7 @@ pub const STAFFING: DemoLane = DemoLane {
     binding_id: "engineer-binding",
     provider: "native-openai",
     model: "coding-model",
+    entitlement: "native-api-entitlement",
     credential: "native-vault-ref",
     with_external_lane: true,
 };
@@ -375,6 +380,17 @@ impl DemoWorkflow {
             "capabilities":{"reasoning_efforts":[],"tools":true,"images":false,"streaming":false}}}),
             Some(&project),
         )?;
+        // The entitlement the lane's profile names: preparation validates the
+        // profile's registration against the registry, so a lane whose
+        // entitlement is missing is refused before any start.
+        self.call(
+            &format!("wf-entitlement-{}", lane.project),
+            serde_json::json!({"kind":"replace_billing_entitlement","attribution":lane.project,
+            "entitlement":{"id":lane.entitlement,"provider":lane.provider,
+            "kind":"metered_api","verification_evidence":"entitlement-proof",
+            "expires_at":ENTITLEMENT_EXPIRY}}),
+            Some(&project),
+        )?;
         self.start_lane_tail(lane, &host_id, &base, &target)
     }
 
@@ -626,6 +642,19 @@ impl DemoWorkflow {
     pub fn start_demo_external(&mut self) -> Result<String, WorkflowError> {
         let project = symbiote_domain::ProjectId::new(PROJECT).expect("fixture project");
         let host_id = self.host_pulse()?;
+        // The external lane's own entitlement, bound to the provider
+        // connection its profile keeps. It is metered-API because that is
+        // the connection's registered authentication (the supported mapping
+        // table pairs them); the harness's own subscription billing is
+        // harness-owned and never enters the registry.
+        self.call(
+            "wf-entitlement-external",
+            serde_json::json!({"kind":"replace_billing_entitlement","attribution":PROJECT,
+            "entitlement":{"id":"external-codex-entitlement","provider":STAFFING.provider,
+            "kind":"metered_api","verification_evidence":"entitlement-proof",
+            "expires_at":ENTITLEMENT_EXPIRY}}),
+            Some(&project),
+        )?;
         // Binding: the external profile pins its installation (the
         // validator's rule for harness runtimes) and carries stream
         // mutation but NOT UseCredential — the fixture credential
@@ -878,6 +907,8 @@ impl DemoWorkflow {
         binding["configuration"]["primary"]["profile"]["provider"] =
             serde_json::json!(lane.provider);
         binding["configuration"]["primary"]["profile"]["model"] = serde_json::json!(lane.model);
+        binding["configuration"]["primary"]["profile"]["billing_entitlement"] =
+            serde_json::json!(lane.entitlement);
         binding["configuration"]["primary"]["profile"]["credential"] =
             serde_json::json!(lane.credential);
         binding["configuration"]["primary"]["profile"]["eligible_hosts"] =

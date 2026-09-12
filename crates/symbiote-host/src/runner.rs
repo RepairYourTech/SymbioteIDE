@@ -2378,6 +2378,24 @@ mod tests {
                     Timestamp(11),
                 )
                 .unwrap();
+            // The entitlement the profile names. It is metered-API because
+            // the fixture's connection is an API-credential connection:
+            // preparation validates the registered pair, not mere presence.
+            store
+                .replace_billing_entitlement(
+                    command(tag, "entitlement"),
+                    project.id.clone(),
+                    BillingEntitlement {
+                        id: BillingEntitlementId::new(format!("ent-{tag}")).unwrap(),
+                        provider: ProviderConnectionId::new(format!("provider-{tag}")).unwrap(),
+                        kind: BillingKind::MeteredApi,
+                        verification_evidence: EvidenceId::new("proof").unwrap(),
+                        expires_at: Timestamp(1_000_000),
+                    },
+                    user(),
+                    Timestamp(11),
+                )
+                .unwrap();
             let profile = RuntimeProfile {
                 id: RuntimeProfileId::new(format!("profile-{tag}")).unwrap(),
                 revision: Revision(0),

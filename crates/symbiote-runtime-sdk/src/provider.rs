@@ -139,17 +139,24 @@ impl ProviderBinding {
     }
 }
 
-/// All inputs are canonical references, not secret values. Evidence authenticity,
-/// endpoint locality and the actual runtime loop owner are Host responsibilities.
-pub fn validate_binding(
+/// The registration-facing half of [`validate_binding`]: everything a durable
+/// provider registry can prove about a profile's binding on its own — model
+/// validity, profile/connection/entitlement/model identity consistency, an
+/// explicit endpoint reference, entitlement expiry and the native/harness
+/// authentication-billing rejection. Credential *material* and verified local
+/// endpoint policy are deliberately outside it: those are execution-time Host
+/// concerns that [the full binding check](validate_binding) adds.
+///
+/// Registry consumers (dispatch preparation) validate stored records through
+/// this same function, so a stored binding is checked by one set of rules
+/// rather than a parallel copy that could drift from the binding contract.
+pub fn validate_registration(
     profile: &RuntimeProfile,
     connection: &ProviderConnection,
-    credential: Option<&CredentialReference>,
     entitlement: &BillingEntitlement,
     model: &ModelDescriptor,
-    policy: &ProviderPolicy,
     now: Timestamp,
-) -> Result<ProviderBinding, ProviderError> {
+) -> Result<(), ProviderError> {
     model.validate()?;
     if profile.provider != connection.id
         || entitlement.provider != connection.id
@@ -163,12 +170,38 @@ pub fn validate_binding(
     if entitlement.expires_at <= now {
         return Err(ProviderError::ExpiredEntitlement);
     }
-    if profile.runtime == RuntimeKind::NativeSymbiote
-        && (connection.authentication == AuthenticationKind::HarnessManaged
-            || entitlement.kind == BillingKind::HarnessSubscription)
-    {
+    // The supported mapping table is a registry fact too: an authentication
+    // kind is only meaningful against the billing kind it was registered
+    // with, and harness-managed subscription is an external-runtime mapping
+    // only. An unsupported pair fails rather than switching billing methods.
+    let supported = match (&connection.authentication, &entitlement.kind) {
+        (AuthenticationKind::ApiCredential, BillingKind::MeteredApi) => true,
+        (AuthenticationKind::HarnessManaged, BillingKind::HarnessSubscription) => {
+            profile.runtime == RuntimeKind::ExternalHarness
+        }
+        (AuthenticationKind::LocalUnauthenticated, BillingKind::Local) => true,
+        _ => false,
+    };
+    if !supported {
         return Err(ProviderError::UnsupportedAuthenticationBilling);
     }
+    Ok(())
+}
+
+/// All inputs are canonical references, not secret values. Evidence authenticity,
+/// endpoint locality and the actual runtime loop owner are Host responsibilities.
+pub fn validate_binding(
+    profile: &RuntimeProfile,
+    connection: &ProviderConnection,
+    credential: Option<&CredentialReference>,
+    entitlement: &BillingEntitlement,
+    model: &ModelDescriptor,
+    policy: &ProviderPolicy,
+    now: Timestamp,
+) -> Result<ProviderBinding, ProviderError> {
+    validate_registration(profile, connection, entitlement, model, now)?;
+    // The registration check above already refused every unsupported
+    // authentication/billing pair, so these arms cover the whole table.
     let credential_reference = match (&connection.authentication, &entitlement.kind) {
         (AuthenticationKind::ApiCredential, BillingKind::MeteredApi) => {
             let credential = credential.ok_or(ProviderError::CredentialRequired)?;
@@ -177,9 +210,7 @@ pub fn validate_binding(
             }
             Some(credential.id.clone())
         }
-        (AuthenticationKind::HarnessManaged, BillingKind::HarnessSubscription)
-            if profile.runtime == RuntimeKind::ExternalHarness =>
-        {
+        (AuthenticationKind::HarnessManaged, BillingKind::HarnessSubscription) => {
             if credential.is_some() {
                 return Err(ProviderError::UnexpectedCredential);
             }

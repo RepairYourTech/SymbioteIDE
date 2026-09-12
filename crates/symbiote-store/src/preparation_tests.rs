@@ -1,5 +1,63 @@
 use super::*;
 
+/// Registers a billing entitlement bound to `provider`.
+fn register_entitlement(
+    store: &mut Store,
+    project: &ProjectId,
+    command: &str,
+    entitlement: &BillingEntitlementId,
+    provider: &ProviderConnectionId,
+    kind: BillingKind,
+    expires_at: Timestamp,
+) {
+    store
+        .replace_billing_entitlement(
+            id!(CommandId, command),
+            project.clone(),
+            BillingEntitlement {
+                id: entitlement.clone(),
+                provider: provider.clone(),
+                kind,
+                verification_evidence: id!(EvidenceId, "entitlement-proof"),
+                expires_at,
+            },
+            id!(UserId, "owner"),
+            Timestamp(11),
+        )
+        .unwrap();
+}
+
+/// Registers a model descriptor bound to `provider`.
+fn register_model(
+    store: &mut Store,
+    project: &ProjectId,
+    command: &str,
+    model: &ModelId,
+    provider: &ProviderConnectionId,
+) {
+    store
+        .replace_model_descriptor(
+            id!(CommandId, command),
+            project.clone(),
+            symbiote_runtime_sdk::provider::ModelDescriptor {
+                schema_version: symbiote_runtime_sdk::provider::PROVIDER_CONTRACT_VERSION,
+                id: model.clone(),
+                provider_id: provider.clone(),
+                context_window_tokens: 8192,
+                max_output_tokens: 4096,
+                capabilities: symbiote_runtime_sdk::provider::ModelCapabilities {
+                    reasoning_efforts: BTreeSet::new(),
+                    tools: true,
+                    images: false,
+                    streaming: false,
+                },
+            },
+            id!(UserId, "owner"),
+            Timestamp(11),
+        )
+        .unwrap();
+}
+
 /// Registers a project, a Team, a workforce binding (with the profile's
 /// provider connection registered in the #464 registry), an objective origin,
 /// and a Ready task — everything prepare_dispatch composes from.
@@ -99,6 +157,24 @@ fn full_fixture(store: &mut Store, tag: &str) -> (ProjectId, TaskId) {
             Timestamp(11),
         )
         .unwrap();
+    // The profile's entitlement and model descriptor, registered exactly as
+    // the binding will name them.
+    register_entitlement(
+        store,
+        &attribution,
+        &format!("entitlement-{tag}"),
+        &id!(BillingEntitlementId, &format!("ent-{tag}")),
+        &id!(ProviderConnectionId, &format!("provider-{tag}")),
+        BillingKind::MeteredApi,
+        Timestamp(1_000_000),
+    );
+    register_model(
+        store,
+        &attribution,
+        &format!("model-{tag}"),
+        &id!(ModelId, &format!("model-{tag}")),
+        &id!(ProviderConnectionId, &format!("provider-{tag}")),
+    );
     // Workforce binding bound to the routed Role, profile pointing at the
     // registered provider connection.
     let profile = RuntimeProfile {
@@ -254,11 +330,19 @@ fn preparation_composes_routing_lease_worktree_and_provider() {
             .any(|step| matches!(step, CompositionStep::Routing { resolved: None }))
     );
     // Provider resolves through the routed Role's workforce binding, which
-    // the fixture registered against the #464 registry.
+    // the fixture registered against the #464 registry, and the registration
+    // validated even though the composition is refused for want of a route.
     assert_eq!(
         preparation.provider_connection,
         Some(id!(ProviderConnectionId, "provider-one"))
     );
+    assert!(preparation.steps.iter().any(|step| matches!(
+        step,
+        CompositionStep::Provider {
+            validated: true,
+            refusal: None
+        }
+    )));
     // Worktree always composed from the stream record.
     assert!(preparation.worktree_id.is_some());
     assert!(preparation.branch.is_some());
@@ -285,6 +369,221 @@ fn preparation_composes_routing_lease_worktree_and_provider() {
         ),
         Err(StoreError::NotFound)
     ));
+}
+
+/// Records the fixture task's route (an explicit assignment of its own Role,
+/// whose origin work identity the fixture registered) and prepares, so the
+/// only step left to vary is the provider registration.
+fn routed_preparation(
+    store: &mut Store,
+    project: &ProjectId,
+    task: &TaskId,
+    tag: &str,
+) -> DispatchPreparation {
+    let task_role = store.task(task).unwrap().role_id().clone();
+    let request = symbiote_workforce::RouteRequest {
+        project_id: project.clone(),
+        work_id: WorkId::Objective(id!(ObjectiveId, &format!("project-prep-{tag}"))),
+        requested: Some(task_role),
+        domains: BTreeSet::new(),
+    };
+    let team = store.get_team(project).unwrap();
+    let decision = symbiote_workforce::resolve_route(&team, &request).unwrap();
+    store
+        .record_route(
+            id!(CommandId, &format!("route-{tag}")),
+            decision,
+            id!(UserId, "owner"),
+            Timestamp(20),
+        )
+        .unwrap();
+    let (_, preparation) = store
+        .prepare_dispatch(
+            id!(CommandId, &format!("prepare-{tag}")),
+            task.clone(),
+            id!(UserId, "owner"),
+            Timestamp(30),
+        )
+        .unwrap();
+    preparation
+}
+
+/// Replaces the fixture binding's primary profile with `mutate` applied, under
+/// an exact revision CAS, drifting the profile away from the registry records
+/// the fixture registered.
+fn drift_profile(
+    store: &mut Store,
+    project: &ProjectId,
+    tag: &str,
+    revision: u64,
+    mutate: impl FnOnce(&mut RuntimeProfile),
+) {
+    let mut binding = store
+        .get_binding(project, &id!(BindingId, &format!("binding-{tag}")))
+        .unwrap();
+    mutate(&mut binding.primary.profile);
+    binding.binding.revision = Revision(revision);
+    store
+        .replace_binding(
+            id!(CommandId, &format!("binding-drift-{tag}-{revision}")),
+            Some(Revision(revision - 1)),
+            binding,
+            id!(UserId, "owner"),
+            Timestamp(20 + revision),
+        )
+        .unwrap();
+}
+
+/// The provider step of a preparation, which is exactly what the registry can
+/// prove about the profile the task would start with.
+fn provider_step(preparation: &DispatchPreparation) -> (bool, Option<ProviderRefusal>) {
+    preparation
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            CompositionStep::Provider { validated, refusal } => Some((*validated, *refusal)),
+            _ => None,
+        })
+        .expect("every composition records a provider step")
+}
+
+/// The registry proves the profile's connection, entitlement and model and the
+/// composition reaches `ready`.
+#[test]
+fn preparation_validates_the_registered_provider_binding() {
+    let mut store = Store::memory().unwrap();
+    let (project, task) = full_fixture(&mut store, "prov");
+    let preparation = routed_preparation(&mut store, &project, &task, "prov");
+    assert_eq!(preparation.outcome, PreparationOutcome::Ready);
+    assert_eq!(provider_step(&preparation), (true, None));
+    assert_eq!(
+        preparation.provider_connection,
+        Some(id!(ProviderConnectionId, "provider-prov"))
+    );
+    assert_eq!(preparation.model_id, Some(id!(ModelId, "model-prov")));
+}
+
+/// One registration drift: the fixture tag, the mutation that moves the
+/// profile away from the registry, and the refusal it must earn.
+type ProviderDrift = (&'static str, fn(&mut RuntimeProfile), ProviderRefusal);
+
+/// Drifting the profile away from any registry record it names refuses the
+/// composition and names the missing record — never a silent substitution.
+#[test]
+fn preparation_refuses_a_profile_naming_unregistered_provider_records() {
+    let cases: [ProviderDrift; 3] = [
+        (
+            "noconn",
+            |profile| profile.provider = id!(ProviderConnectionId, "provider-ghost"),
+            ProviderRefusal::MissingConnection,
+        ),
+        (
+            "noent",
+            |profile| profile.billing_entitlement = id!(BillingEntitlementId, "ent-ghost"),
+            ProviderRefusal::MissingEntitlement,
+        ),
+        (
+            "nomodel",
+            |profile| profile.model = id!(ModelId, "model-ghost"),
+            ProviderRefusal::MissingModel,
+        ),
+    ];
+    for (tag, drift, expected) in cases {
+        let mut store = Store::memory().unwrap();
+        let (project, task) = full_fixture(&mut store, tag);
+        drift_profile(&mut store, &project, tag, 1, drift);
+        let preparation = routed_preparation(&mut store, &project, &task, tag);
+        assert_eq!(preparation.outcome, PreparationOutcome::Refused);
+        assert_eq!(provider_step(&preparation), (false, Some(expected)));
+        // The declared identities are still recorded: a refusal names what it
+        // refused rather than hiding it.
+        assert!(preparation.provider_connection.is_some());
+        assert!(preparation.model_id.is_some());
+    }
+}
+
+/// A registration that exists but is expired refuses at preparation time, with
+/// the profile's declared identities preserved.
+#[test]
+fn preparation_refuses_an_expired_entitlement() {
+    let mut store = Store::memory().unwrap();
+    let (project, task) = full_fixture(&mut store, "expired");
+    register_entitlement(
+        &mut store,
+        &project,
+        "entitlement-expired-again",
+        &id!(BillingEntitlementId, "ent-expired"),
+        &id!(ProviderConnectionId, "provider-expired"),
+        BillingKind::MeteredApi,
+        Timestamp(1),
+    );
+    let preparation = routed_preparation(&mut store, &project, &task, "expired");
+    assert_eq!(preparation.outcome, PreparationOutcome::Refused);
+    assert_eq!(
+        provider_step(&preparation),
+        (false, Some(ProviderRefusal::ExpiredEntitlement))
+    );
+}
+
+/// A model descriptor the profile names but that is registered to a different
+/// connection is an identity mismatch, not a usable binding.
+#[test]
+fn preparation_refuses_a_model_registered_to_another_connection() {
+    let mut store = Store::memory().unwrap();
+    let (project, task) = full_fixture(&mut store, "mismatch");
+    store
+        .replace_provider_connection(
+            id!(CommandId, "provider-mismatch-other"),
+            project.clone(),
+            symbiote_domain::ProviderConnection {
+                id: id!(ProviderConnectionId, "provider-mismatch-other"),
+                adapter: id!(InferenceProviderAdapterId, "adapter"),
+                endpoint_reference: "https://api.other.example/v1".into(),
+                authentication: symbiote_domain::AuthenticationKind::ApiCredential,
+            },
+            id!(UserId, "owner"),
+            Timestamp(12),
+        )
+        .unwrap();
+    register_model(
+        &mut store,
+        &project,
+        "model-mismatch-again",
+        &id!(ModelId, "model-mismatch"),
+        &id!(ProviderConnectionId, "provider-mismatch-other"),
+    );
+    let preparation = routed_preparation(&mut store, &project, &task, "mismatch");
+    assert_eq!(preparation.outcome, PreparationOutcome::Refused);
+    assert_eq!(
+        provider_step(&preparation),
+        (false, Some(ProviderRefusal::BindingMismatch))
+    );
+}
+
+/// A native Symbiote profile cannot be validated against harness-subscription
+/// billing: the unsupported mapping is refused rather than switching billing.
+#[test]
+fn preparation_refuses_a_native_profile_under_harness_subscription_billing() {
+    let mut store = Store::memory().unwrap();
+    let (project, task) = full_fixture(&mut store, "harness");
+    register_entitlement(
+        &mut store,
+        &project,
+        "entitlement-harness-again",
+        &id!(BillingEntitlementId, "ent-harness"),
+        &id!(ProviderConnectionId, "provider-harness"),
+        BillingKind::HarnessSubscription,
+        Timestamp(1_000_000),
+    );
+    let preparation = routed_preparation(&mut store, &project, &task, "harness");
+    assert_eq!(preparation.outcome, PreparationOutcome::Refused);
+    assert_eq!(
+        provider_step(&preparation),
+        (
+            false,
+            Some(ProviderRefusal::UnsupportedAuthenticationBilling)
+        )
+    );
 }
 
 #[test]

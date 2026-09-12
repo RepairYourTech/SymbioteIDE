@@ -56,8 +56,8 @@ impl Store {
     /// authoritative storage state: the scheduling projection's scheduling
     /// decision, the latest route decision's resolved Role, the task's held
     /// lease, the stream's reserved worktree identity, and the provider
-    /// binding resolved from the registry for the task's dispatch profile.
-    /// Refused compositions are recorded like ready ones — refusals are
+    /// registration the task's dispatch profile names, validated against the
+    /// registry. Refused compositions are recorded like ready ones — refusals are
     /// evidence, not errors. Callers authorize the owner policy.
     pub fn prepare_dispatch(
         &mut self,
@@ -99,9 +99,9 @@ impl Store {
                 lease.state == symbiote_domain::LeaseState::Held && lease.expires_at.0 > at.0
             })
             .map(|lease| (lease.dispatch_id.clone(), lease.fencing_token));
-        // Provider: resolve the binding from the registry for the dispatch
-        // profile the task would start with.
-        let provider_resolution = resolve_profile_provider(&transaction, &task)?;
+        // Provider: resolve the registration the dispatch profile names from
+        // the registry and validate it through the SDK contract.
+        let provider = resolve_provider_binding(&transaction, &task, at)?;
         let preparation = DispatchPreparation::compose(
             &task,
             routing
@@ -109,9 +109,7 @@ impl Store {
                 .and_then(|decision| decision.resolved.clone()),
             lease.as_ref().map(|(dispatch, token)| (dispatch, *token)),
             &stream,
-            provider_resolution
-                .as_ref()
-                .map(|(connection, model)| (connection, model)),
+            provider,
             at,
         );
         preparation
@@ -440,14 +438,21 @@ impl Store {
     }
 }
 
-/// Resolves the provider identity for the task's routed Role from the
+/// Resolves the provider registration for the task's routed Role from the
 /// workforce binding bound to that Role. The task has no dispatch yet at
 /// preparation time; the binding's primary candidate carries the runtime
-/// profile — including provider connection and model identities — directly.
-fn resolve_profile_provider(
+/// profile — including provider connection, entitlement and model identities
+/// — directly. All three registry rows must exist and the SDK's registration
+/// contract ([`validate_registration`]) must accept them at `at`; otherwise
+/// the resolution names the profile's declared identities and records why
+/// they could not be bound.
+///
+/// [`validate_registration`]: symbiote_runtime_sdk::provider::validate_registration
+fn resolve_provider_binding(
     transaction: &Transaction<'_>,
     task: &Task,
-) -> Result<Option<(ProviderConnectionId, ModelId)>> {
+    at: Timestamp,
+) -> Result<Option<ProviderResolution>> {
     let binding_id: Option<String> = transaction
         .query_row(
             "SELECT id FROM workforce_bindings WHERE project_id=?1 AND role_id=?2",
@@ -466,9 +471,50 @@ fn resolve_profile_provider(
     let binding: symbiote_workforce::BindingConfiguration =
         serde_json::from_str(&body).map_err(|_| StoreError::InvalidPreparation)?;
     let profile = &binding.primary.profile;
-    match provider::read(transaction, profile.provider.as_str())? {
-        Some(connection) => Ok(Some((connection.id.clone(), profile.model.clone()))),
-        None => Ok(None),
+    let resolution = |refusal| ProviderResolution {
+        connection: profile.provider.clone(),
+        model: profile.model.clone(),
+        refusal,
+    };
+    let Some(connection) = provider::read(transaction, profile.provider.as_str())? else {
+        return Ok(Some(resolution(Some(ProviderRefusal::MissingConnection))));
+    };
+    let Some(entitlement) =
+        provider::read_entitlement(transaction, profile.billing_entitlement.as_str())?
+    else {
+        return Ok(Some(resolution(Some(ProviderRefusal::MissingEntitlement))));
+    };
+    let Some(model) = provider::read_model(transaction, profile.model.as_str())? else {
+        return Ok(Some(resolution(Some(ProviderRefusal::MissingModel))));
+    };
+    let refusal = symbiote_runtime_sdk::provider::validate_registration(
+        profile,
+        &connection,
+        &entitlement,
+        &model,
+        at,
+    )
+    .err()
+    .map(provider_refusal);
+    Ok(Some(resolution(refusal)))
+}
+
+/// Maps the SDK's registration verdicts onto the domain's own refinement of
+/// them, so a preparation names why a stored registration was refused without
+/// the domain crate depending on the provider contract.
+fn provider_refusal(error: symbiote_runtime_sdk::provider::ProviderError) -> ProviderRefusal {
+    use symbiote_runtime_sdk::provider::ProviderError;
+    match error {
+        ProviderError::UnsupportedVersion => ProviderRefusal::UnsupportedVersion,
+        ProviderError::InvalidDescriptor => ProviderRefusal::InvalidDescriptor,
+        ProviderError::ExpiredEntitlement => ProviderRefusal::ExpiredEntitlement,
+        ProviderError::UnsupportedAuthenticationBilling => {
+            ProviderRefusal::UnsupportedAuthenticationBilling
+        }
+        // The registration contract's remaining refusal is identity
+        // consistency; adding another is a contract change that adds a case
+        // here rather than reusing this one.
+        _ => ProviderRefusal::BindingMismatch,
     }
 }
 
