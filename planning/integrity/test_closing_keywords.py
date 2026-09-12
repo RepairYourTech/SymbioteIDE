@@ -67,13 +67,56 @@ class ClosingKeywordTests(unittest.TestCase):
         self.assertEqual([closing.reference for closing in closings(body)], ["#12"])
         self.assertEqual(run(body)[0], 0)
 
-    def test_each_negated_clause_fails_on_its_own(self):
-        body = "We do NOT fix #7. But this fixes #8.\n"
+    def test_each_sentence_is_judged_on_its_own(self):
+        body = "We do NOT fix #7. Fixes #8.\n"
         code, output = run(body)
         self.assertEqual([closing.reference for closing in closings(body)], ["#7", "#8"])
         self.assertEqual(code, 1)
         self.assertIn('"We do NOT fix #7"', output)
-        self.assertNotIn('"But this fixes #8"', output)
+        self.assertNotIn("Fixes #8", output)
+
+    def test_a_negation_split_across_commas_is_still_read(self):
+        code, output = run("This does not, however, close #54.\n")
+        self.assertEqual(code, 1)
+        self.assertIn('"This does not, however, close #54"', output)
+
+    def test_a_closure_buried_in_a_sentence_is_refused(self):
+        # The description form of the accident: the keyword and the reference
+        # are adjacent inside prose that reads as a remark, and GitHub closes
+        # the issue all the same.
+        code, output = run("This lands the slice, and the defect that closed #54 is fixed.\n")
+        self.assertEqual(code, 1)
+        self.assertIn("buries a closing keyword", output)
+        self.assertIn('"Closes #54"', output)
+
+    def test_the_real_551_commit_message_is_refused_as_a_commit_message(self):
+        # The squash-merge commit of PR #551, verbatim: its last sentence
+        # closed #54 at 2026-09-12T21:00:18Z, the issue that PR was written to
+        # protect.
+        body = (
+            "chore(planning): fail a pull request whose prose negates a closing keyword (#551)\n"
+            "\n"
+            "GitHub's issue parser does not read negation, so a description that denies a\n"
+            "closure still performs it: #54 was closed one second after PR #530 merged,\n"
+            "whose own first line disclaimed the closure. Add planning/integrity/\n"
+            "closing_keywords.py, which reports the issues a description will close and\n"
+            "fails when a keyword it honours sits in a clause that negates it, plus a\n"
+            "roadmap-integrity job that runs it on every pull request. The tests pin the\n"
+            "verbatim descriptions of PR #530 and PR #507, so the defect that closed #54 is\n"
+            "reproduced rather than described.\n"
+        )
+        description, said = run(body)
+        self.assertEqual(description, 1)
+        self.assertIn("buries a closing keyword", said)
+        code, output = run(body, "--commits", "--label", "commit 5bf7437f")
+        self.assertEqual(code, 1)
+        self.assertIn("the commit 5bf7437f carries a closing keyword", output)
+        self.assertIn("so the defect that closed #54", output)
+
+    def test_a_commit_message_may_not_close_anything_even_in_a_stated_clause(self):
+        code, output = run("Closes #218.\n", "--commits")
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing in review reads a commit message", output)
 
     def test_keywords_on_a_non_default_base_close_nothing(self):
         body = "This does not close #54.\n"
