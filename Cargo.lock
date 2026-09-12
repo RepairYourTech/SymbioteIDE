@@ -3029,6 +3029,7 @@ dependencies = [
  "symbiote-runtime-sdk",
  "symbiote-runtime-transport",
  "symbiote-sandbox",
+ "symbiote-source-stamp",
  "symbiote-store",
  "symbiote-trust",
  "symbiote-workflow",
@@ -3137,7 +3138,15 @@ dependencies = [
  "serde_json",
  "symbiote-domain",
  "symbiote-runtime-transport",
+ "symbiote-source-stamp",
  "symbiote-trust",
+]
+
+[[package]]
+name = "symbiote-source-stamp"
+version = "0.1.0"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]
@@ -3175,6 +3184,7 @@ dependencies = [
  "symbiote-domain",
  "symbiote-protocol",
  "symbiote-repo",
+ "symbiote-source-stamp",
  "symbiote-trust",
  "symbiote-workflow",
  "symbiote-worktrees",
