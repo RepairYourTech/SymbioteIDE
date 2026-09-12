@@ -113,14 +113,29 @@ fn pulse_is_cached_identity_survives_restart_and_disabled_telemetry_stays_unknow
     let first = host.call(request_pulse());
     let pulse = ok(&first)["data"].clone();
     assert_eq!(ok(&first)["kind"], "host_pulse");
-    assert_eq!(
-        pulse["resources"]["effective_memory_available_bytes"]["status"],
-        "unknown"
-    );
-    assert_eq!(
-        pulse["resources"]["effective_cpu_millicores"]["status"],
-        "unknown"
-    );
+    // Effective capacity is observed from the process's own cgroup where the
+    // unified hierarchy can be read: a fact the Host could not observe is
+    // unknown AND carries its static reason, and no fact contradicts the
+    // failure that explains it.
+    let failed = |resource: &str| {
+        pulse["probe_failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|failure| failure["resource"] == resource)
+    };
+    if failed("effective_memory") {
+        assert_eq!(
+            pulse["resources"]["effective_memory_available_bytes"]["status"],
+            "unknown"
+        );
+    }
+    if failed("effective_cpu") {
+        assert_eq!(
+            pulse["resources"]["effective_cpu_millicores"]["status"],
+            "unknown"
+        );
+    }
     assert_eq!(ok(&host.call(request_pulse()))["data"], pulse);
     host.crash();
     host.start();
@@ -154,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":17},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":18},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1345,6 +1360,17 @@ impl Registration {
 /// registration the binding's profile names, a classified origin, the task and
 /// its explicit route. Returns the live Host's inventory identity.
 fn staffing_composition(host: &Host, registration: Registration) -> Value {
+    staffing_composition_with(host, registration, None)
+}
+
+/// Composes the staffing demo, optionally overriding the candidate's memory
+/// limit so a test can place the requirement on either side of what this Host
+/// has actually observed.
+fn staffing_composition_with(
+    host: &Host,
+    registration: Registration,
+    max_memory_bytes: Option<u64>,
+) -> Value {
     ok(&host.call(
         serde_json::from_str(include_str!("../../../fixtures/project-team/register.json")).unwrap(),
     ));
@@ -1382,6 +1408,10 @@ fn staffing_composition(host: &Host, registration: Registration) -> Value {
     binding["command_id"] = json!("activation-binding");
     binding["operation"]["configuration"]["primary"]["profile"]["eligible_hosts"] =
         json!([host_id]);
+    if let Some(max_memory_bytes) = max_memory_bytes {
+        binding["operation"]["configuration"]["primary"]["limits"]["max_memory_bytes"] =
+            json!(max_memory_bytes);
+    }
     for path in [
         ["operation", "configuration", "primary", "access", "grants"],
         ["operation", "configuration", "binding", "access", "grants"],
@@ -1586,14 +1616,13 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
     assert_eq!(checks[3]["result"], "satisfied");
     assert_eq!(checks[4]["prerequisite"], "runtime_resources");
     assert_eq!(checks[4]["result"], "satisfied");
-    // Host capacity is the one prerequisite this Host still rejects: the
-    // profile requires 256 MiB of EFFECTIVE capacity, which the passive probe
-    // deliberately leaves unknown rather than substituting physical totals.
-    // Every other prerequisite is now observed, so the report's remaining
-    // refusal is a real observation, not an unobserved prerequisite.
+    // Host capacity is observed from the process's own cgroup, so the profile's
+    // 256 MiB requirement is judged against a real measurement instead of an
+    // absence: every prerequisite is satisfied and the staffing profile is
+    // finally ready for preflight (which still authorizes nothing).
     assert_eq!(checks[1]["prerequisite"], "host_capacity");
-    assert_eq!(checks[1]["result"], "rejected");
-    assert_eq!(report["status"], "not_ready");
+    assert_eq!(checks[1]["result"], "satisfied");
+    assert_eq!(report["status"], "ready_for_preflight");
     // The registration enforcement refuses is refused here, by the same name.
     expire_entitlement(&host, "readiness-lapse");
     let lapsed = readiness_probe(&host);
@@ -1637,6 +1666,39 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
             "missing_observation"
         );
     }
+}
+
+/// Capacity is classified from what the Host observed, at both ends: a
+/// requirement beyond the effective availability it measured is a rejection,
+/// and a Host with sampling switched off has no observation at all, which is
+/// reported as an absence rather than as a judgement against it.
+#[test]
+fn host_capacity_reports_an_observation_and_never_a_guess() {
+    // No telemetry: the Host observes no capacity, so the prerequisite is an
+    // absence of evidence, not a rejection of the Host.
+    let blind = Host::with_telemetry(false);
+    staffing_composition(&blind, Registration::Complete);
+    let blind_report = readiness_probe(&blind);
+    assert_eq!(blind_report["checks"][1]["prerequisite"], "host_capacity");
+    assert_eq!(blind_report["checks"][1]["result"], "missing_observation");
+    assert_eq!(blind_report["status"], "not_ready");
+
+    // The same profile with a requirement no Host can satisfy (the contract's
+    // own 1 PiB ceiling) is a rejection when the Host has measured effective
+    // availability, and an absence when it has not: the classification follows
+    // the observation rather than the requirement.
+    let host = Host::new();
+    let pulse =
+        ok(&host.call(request("capacity-pulse", json!({"kind":"get_host_pulse"}))))["data"].clone();
+    let observed = &pulse["resources"]["effective_memory_available_bytes"];
+    let expected = if observed["status"] == "known" {
+        "rejected"
+    } else {
+        "missing_observation"
+    };
+    staffing_composition_with(&host, Registration::Complete, Some(1u64 << 50));
+    let report = readiness_probe(&host);
+    assert_eq!(report["checks"][1]["result"], expected, "{report}");
 }
 
 /// Every registration the registry can be put into that cannot be bound is

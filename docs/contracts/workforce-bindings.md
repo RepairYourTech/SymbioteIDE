@@ -48,8 +48,22 @@ The read-only assessment separates prerequisite checks from pending activation
 gates, and reports five: the current Team, Host capacity, the provider
 registration the candidate profile names, runtime capabilities and runtime
 resources. It consumes existing Runtime SDK and Host Pulse contracts rather
-than inventing successful observations, and a prerequisite the Host has not
-observed reports `missing_observation` — never a satisfied prerequisite.
+than inventing successful observations.
+
+**Absence and insufficiency are different results.** Every prerequisite is
+classified the same way: `missing_observation` means the Host holds no current
+observation of the fact the prerequisite names, and `rejected` means it holds
+one and the fact does not meet the requirement. A prerequisite no Host could
+observe is never presented as a judgement against it, and no prerequisite is
+`satisfied` by default. A Host sampling nothing (`--no-telemetry`), a sample
+that expired, a resource the Host did not observe, a runtime the operator did
+not declare for that profile, an unreadable cgroup, an expired runtime evidence
+window and a capability the observation itself marks unknown all report
+`missing_observation` — each is the absence of a current observation, not a
+verdict. An ineligible Host, an observed capacity below the profile's limit, a
+runtime observed on another Host, a runtime whose observed capabilities,
+controls, tools or context bounds do not meet the candidate's requirements, and
+a registry refusal all report `rejected`.
 
 `provider_registration` is the registry's own resolution of the candidate
 profile's registration, through the same validation a start and a run apply
@@ -58,16 +72,21 @@ refusal name in `provider_refusal` whenever it refuses. The pre-dispatch report
 and the execution boundary therefore cannot disagree about whether a dispatch
 can run.
 
+Host capacity is judged against the effective memory the Host actually
+observed from the process's own cgroup, not against the machine's totals: with
+no enforced cgroup ceiling the effective availability is the machine's observed
+availability, and a Host that cannot read its hierarchy reports unknown rather
+than substituting physical totals ([Host inventory](host-inventory.md)). A
+profile whose memory limit exceeds the observed effective availability is
+`rejected`; one the Host has not observed at all is `missing_observation`.
+
 Runtime capabilities and resources consume the Host's observation of the
 operator's declared runtime for that exact profile (see
 [runtime SDK](runtime-sdk.md)): the declaration states which runtime the
 operator provides and what it supports, and the Host stamps its own identity
 and a bounded evidence window onto the observation. With no matching
 declaration the Host observes no runtime, so both prerequisites remain
-`missing_observation` rather than passing on an assumption. Physical RAM/CPU
-totals do not satisfy required effective-capacity checks, so Host capacity still
-refuses where a profile requires effective memory until cgroup-aware
-observation lands.
+`missing_observation` rather than passing on an assumption.
 
 Environment resolution, effective access/resource consent, provider billing and
 model discovery, resource reservations, budget enforcement and Dispatch snapshots

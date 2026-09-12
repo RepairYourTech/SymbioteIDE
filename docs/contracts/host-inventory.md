@@ -8,16 +8,32 @@ The existing resource-discovery `Fact` contract preserves explicit unknowns.
 
 ## Actual observations and limitations
 
-The passive Linux probe uses fixed bounded reads of `/proc/meminfo` and
-`/proc/stat`. It reports logical CPUs, physical memory and kernel MemAvailable
-when those records validate. OS and architecture describe the compiled target.
-Failures affect their own facts and retain static reasons. No subprocess,
-container engine, network, account or provider configuration is accessed.
+The passive Linux probe uses fixed bounded reads of `/proc/meminfo`,
+`/proc/stat` and the process's own cgroup under the unified (cgroup v2)
+hierarchy: `/proc/self/cgroup` names the cgroup, and `memory.max`,
+`memory.current` and `cpu.max` say what the kernel actually enforces on this
+process. It reports logical CPUs, physical memory, kernel MemAvailable, the
+enforced memory ceiling, the effective memory availability under it and the CPU
+quota in millicores when those records validate. OS and architecture describe
+the compiled target. Failures affect their own facts and retain static reasons.
+No subprocess, container engine, network, account or provider configuration is
+accessed.
 
-Physical totals are not schedulable capacity. Effective CPU and memory limits
-remain unknown because cgroup/affinity limits, reservations and enforceable
-pressure policies are not integrated. Qualification requiring capacity uses the
-effective fields and rejects unknowns. GPU/VRAM, disk, Docker, toolchains,
+Physical totals are not schedulable capacity. An enforced cgroup ceiling is:
+the effective availability is the headroom under it (`memory.max` minus
+`memory.current`), never more than the machine's own observed availability. A
+ceiling the kernel reports as `max` imposes no bound, so the cgroup's effective
+availability is the machine's observed availability and no ceiling is claimed;
+the effective memory *limit* stays unknown with no failure recorded, because
+there is no enforced limit to report. Without a CPU quota the effective CPU
+stays unknown — online CPU counts establish neither affinity nor a reservation —
+and that absence carries no failure either, because nothing was enforced to
+observe. A host whose hierarchy cannot be read (no unified line, missing or
+malformed files, a platform without cgroups) reports the affected facts unknown
+with the static reason (`unsupported_hierarchy`, `unreadable`, `malformed`),
+so an unobserved fact is never replaced by the machine's totals. Qualification
+requiring capacity uses the effective fields and reports an unobserved one as a
+missing observation, not as a failed Host. GPU/VRAM, disk, Docker, toolchains,
 signing, models, inference servers and Project services remain unverified.
 Installed, authenticated and healthy capability claims stay distinct; one cannot
 substitute for another. Discovery observations must be attached through trusted
@@ -47,7 +63,8 @@ The switch is explicit and has no global environment/configuration side effects.
 
 ## Verification and remaining acceptance
 
-The crate tests malformed, duplicate, missing and overflowing kernel fields;
+The crate tests malformed, duplicate, missing and overflowing kernel and cgroup
+fields, path traversal in `/proc/self/cgroup`, ceilings, charges and quotas;
 stale/mismatched observations; unknown capacity; and disabled telemetry. Daemon
 tests exercise authenticated protocol behavior, caching, identity persistence,
 restart and telemetry disablement. Private identity tests include FIFO/symlink
@@ -60,8 +77,8 @@ Upgrade CLI and daemon together for protocol v1.5. This batch adds no database
 migration. Older binaries ignore `host-id`; preserve it when rolling back.
 
 Broad #193 remains open: atomic resource reservations/releases, pressure policies,
-effective container limits, signed Fabric responses, additional capability
-probes, static override validation and streaming telemetry are not complete.
-This is Linux integration evidence; Windows/macOS probes and transport remain
-pending. No UI is added, so accessibility acceptance stays with the workbench.
+signed Fabric responses, additional capability probes, static override
+validation, cgroup v1/hybrid hierarchies and streaming telemetry are not
+complete. This is Linux integration evidence; Windows/macOS probes and transport
+remain pending. No UI is added, so accessibility acceptance stays with the workbench.
 Neither this inventory nor a structurally valid Team enables agent execution.

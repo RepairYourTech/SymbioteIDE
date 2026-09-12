@@ -1,7 +1,7 @@
 //! Read-only prerequisite assessment. No result authorizes activation.
 use crate::*;
-use symbiote_host_inventory::{HostPulse, PulseRequirements};
-use symbiote_runtime_sdk::{RuntimeDescriptor, qualify_profile_with_minimums};
+use symbiote_host_inventory::{HostPulse, PulseError, PulseRequirements};
+use symbiote_runtime_sdk::{QualificationError, RuntimeDescriptor, qualify_profile_with_minimums};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PrerequisiteStatus {
@@ -25,6 +25,35 @@ pub enum CheckResult {
     Satisfied,
     MissingObservation,
     Rejected,
+}
+/// The one classification every prerequisite shares: the Host holds no current
+/// observation of the fact the prerequisite names (`missing_observation`), or it
+/// observed the fact and the fact does not meet the requirement (`rejected`).
+/// Neither is ever reported as the other, and only an observed fact that meets
+/// the requirement is `satisfied`.
+///
+/// Pulse rejections that mean the Host has not observed the fact: a disabled or
+/// non-operating-system probe, an expired sample and an unknown required value
+/// are absences of evidence. Every other rejection is evidence against.
+fn capacity_verdict(error: PulseError) -> CheckResult {
+    match error {
+        PulseError::Unknown | PulseError::Disabled | PulseError::Stale => {
+            CheckResult::MissingObservation
+        }
+        _ => CheckResult::Rejected,
+    }
+}
+/// Qualification rejections that mean the Host holds no usable observation of
+/// the runtime: evidence that expired, evidence this SDK cannot read, and a
+/// capability the observation itself reports as unknown. Every other rejection
+/// is an observed fact that does not qualify.
+fn runtime_verdict(error: QualificationError) -> CheckResult {
+    match error {
+        QualificationError::StaleEvidence
+        | QualificationError::UnsupportedVersion
+        | QualificationError::UnknownCapability(_) => CheckResult::MissingObservation,
+        _ => CheckResult::Rejected,
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -72,7 +101,9 @@ pub struct ReadinessReport {
 /// is the Host's observation of the declared runtime for that profile (`None`
 /// when the operator declared none). Both are inputs, never invented here: a
 /// check whose observation is absent reports `MissingObservation` rather than a
-/// satisfied prerequisite.
+/// satisfied prerequisite, and a check whose observation exists but does not
+/// meet the requirement reports `Rejected` — the report never presents an
+/// absence of evidence as a judgement against the Host.
 pub fn assess_readiness(
     configuration: &BindingConfiguration,
     team: &TeamConfiguration,
@@ -94,6 +125,11 @@ pub fn assess_readiness(
         Prerequisite::HostCapacity,
         match pulse {
             None => CheckResult::MissingObservation,
+            // Eligibility is the Host's own fact, observed with the pulse: an
+            // ineligible Host is a judgement, not an absence.
+            Some(pulse) if !candidate.profile.eligible_hosts.contains(&pulse.host_id) => {
+                CheckResult::Rejected
+            }
             Some(pulse) => {
                 let requirements = PulseRequirements {
                     host_id: pulse.host_id.clone(),
@@ -102,12 +138,9 @@ pub fn assess_readiness(
                     minimum_available_memory_bytes: Some(candidate.limits.max_memory_bytes),
                     capabilities: vec![],
                 };
-                if candidate.profile.eligible_hosts.contains(&pulse.host_id)
-                    && pulse.qualify(&requirements, now).is_ok()
-                {
-                    CheckResult::Satisfied
-                } else {
-                    CheckResult::Rejected
+                match pulse.qualify(&requirements, now) {
+                    Ok(()) => CheckResult::Satisfied,
+                    Err(error) => capacity_verdict(error),
                 }
             }
         },
@@ -125,22 +158,19 @@ pub fn assess_readiness(
         Prerequisite::RuntimeCapabilities,
         match descriptor {
             None => CheckResult::MissingObservation,
-            Some(d) => {
-                if pulse.is_some_and(|p| p.host_id == d.host_id)
-                    && qualify_profile_with_minimums(
-                        &candidate.profile,
-                        d,
-                        &configuration.policies.required_capabilities,
-                        &configuration.policies.minimum_enforcement,
-                        now,
-                    )
-                    .is_ok()
-                {
-                    CheckResult::Satisfied
-                } else {
-                    CheckResult::Rejected
-                }
-            }
+            // A descriptor observed on another Host is not an observation of
+            // this Host's runtime.
+            Some(d) if !pulse.is_some_and(|p| p.host_id == d.host_id) => CheckResult::Rejected,
+            Some(d) => match qualify_profile_with_minimums(
+                &candidate.profile,
+                d,
+                &configuration.policies.required_capabilities,
+                &configuration.policies.minimum_enforcement,
+                now,
+            ) {
+                Ok(()) => CheckResult::Satisfied,
+                Err(error) => runtime_verdict(error),
+            },
         },
     ));
     checks.push(PrerequisiteCheck::new(
@@ -148,18 +178,26 @@ pub fn assess_readiness(
         match descriptor {
             None => CheckResult::MissingObservation,
             Some(d) => {
-                if candidate.tools.is_subset(&d.tools)
-                    && candidate.skills.is_subset(&d.skills)
-                    && d.context_limits.as_ref().is_some_and(|limits| {
-                        u64::from(limits.context_window_tokens)
-                            >= u64::from(candidate.context.max_input_tokens)
-                                + u64::from(candidate.context.reserved_output_tokens)
-                            && limits.max_output_tokens >= candidate.context.reserved_output_tokens
-                    })
-                {
-                    CheckResult::Satisfied
-                } else {
+                if !candidate.tools.is_subset(&d.tools) || !candidate.skills.is_subset(&d.skills) {
+                    // The observation says the runtime does not carry a tool
+                    // or skill the candidate declares.
                     CheckResult::Rejected
+                } else {
+                    match &d.context_limits {
+                        // No observed context bounds: an absence, not an
+                        // insufficient runtime.
+                        None => CheckResult::MissingObservation,
+                        Some(limits)
+                            if u64::from(limits.context_window_tokens)
+                                >= u64::from(candidate.context.max_input_tokens)
+                                    + u64::from(candidate.context.reserved_output_tokens)
+                                && limits.max_output_tokens
+                                    >= candidate.context.reserved_output_tokens =>
+                        {
+                            CheckResult::Satisfied
+                        }
+                        Some(_) => CheckResult::Rejected,
+                    }
                 }
             }
         },

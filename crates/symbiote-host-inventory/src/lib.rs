@@ -320,7 +320,7 @@ impl HostPulse {
         if self.capabilities.len() > 32 {
             return Err(PulseError::Capacity);
         }
-        if self.probe_failures.len() > 2 {
+        if self.probe_failures.len() > 4 {
             return Err(PulseError::Capacity);
         }
         for (i, failure) in self.probe_failures.iter().enumerate() {
@@ -339,6 +339,20 @@ impl HostPulse {
                 }
                 linux::ProbeResource::LogicalCpuCount
                     if self.resources.logical_cpu_count != Fact::Unknown =>
+                {
+                    return Err(PulseError::Invalid);
+                }
+                // A recorded failure explains why EFFECTIVE AVAILABILITY is
+                // absent. A finite cgroup ceiling can still be observed when
+                // only the charge against it could not be read, so the ceiling
+                // itself is not required to be unknown.
+                linux::ProbeResource::EffectiveMemory
+                    if self.resources.effective_memory_available_bytes != Fact::Unknown =>
+                {
+                    return Err(PulseError::Invalid);
+                }
+                linux::ProbeResource::EffectiveCpu
+                    if self.resources.effective_cpu_millicores != Fact::Unknown =>
                 {
                     return Err(PulseError::Invalid);
                 }
