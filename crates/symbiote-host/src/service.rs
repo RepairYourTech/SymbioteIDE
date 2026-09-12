@@ -568,10 +568,38 @@ fn execute(
             let current = task_record
                 .current_dispatch()
                 .ok_or_else(dispatch_binding_refused)?;
-            if current.id() != dispatch_id
-                || task_record.state() != &symbiote_domain::TaskState::Running
-            {
+            if current.id() != dispatch_id {
+                // A foreign dispatch id never reaches a factory, and never
+                // reads as a replay of this task's own run.
                 return Err(dispatch_binding_refused());
+            }
+            if task_record.state() != &symbiote_domain::TaskState::Running {
+                // A run whose response was lost is recovered by replaying its
+                // command id, and the daemon's own contract on a disconnected
+                // response is that the retry "recovers the durable receipt".
+                // This command has no journaled receipt of its own — the run's
+                // completion is filed under the worker-completion id — so the
+                // durable evidence of it is the task's own state: a task that
+                // is at or past `CompletionRequested` under THIS dispatch had
+                // its run complete, and the outcome the caller is asking for
+                // is exactly the one already recorded. Re-deriving it here is
+                // not a claim: the run either filed completion under this
+                // dispatch (so `completed` was true) or it returned an error
+                // and left the task Running. Refusing instead would report the
+                // replay of a finished run as if the run never happened.
+                return match task_record.state() {
+                    symbiote_domain::TaskState::CompletionRequested
+                    | symbiote_domain::TaskState::Verifying
+                    | symbiote_domain::TaskState::Completed => {
+                        Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
+                            task_id: task_id.clone(),
+                            dispatch_id: current.id().clone(),
+                            runtime: current.contract().profile().runtime,
+                            completed: true,
+                        })))
+                    }
+                    _ => Err(dispatch_binding_refused()),
+                };
             }
             // The third precondition, and the one that makes #447 real: what
             // executes is the contract's PINNED profile, so its registration

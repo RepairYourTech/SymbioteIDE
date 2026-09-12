@@ -1014,6 +1014,70 @@ fn a_started_dispatch_runs_its_tools_under_the_declared_memory_bound() {
     );
 }
 
+/// A run whose response was lost is recovered by replaying its command id —
+/// the daemon's own contract on a disconnected response. The activation
+/// command carries no journaled receipt of its own, so the durable evidence a
+/// replay must read is the task state: a task at `CompletionRequested` under
+/// THIS dispatch had its run complete, and the replay must answer with that
+/// recorded outcome. It must not refuse it as "not running", which reads as if
+/// the run never happened and is what a client sees when a response write is
+/// cut short (the daemon's response deadline is seconds; the client's is
+/// longer, so the replay, not the first attempt, is the one that arrives
+/// second).
+#[test]
+fn a_replayed_activation_recovers_the_completed_run_instead_of_refusing() {
+    let env = demo_environment("replayed-activation");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let config_path = &env.config_path;
+    write_operator_config(
+        config_path,
+        reservation_base,
+        &launcher_binary(),
+        FIXTURE_TOOL_COMMAND,
+        true,
+        None,
+    );
+
+    let _daemon = Daemon::spawn(state_dir, config_path);
+    let mut workflow =
+        symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, &env.repo)
+            .expect("connect");
+    let dispatch_id = workflow.start_demo().expect("demo start half");
+    let first = workflow
+        .finish_demo(&dispatch_id)
+        .expect("demo finish half");
+    assert_eq!(first.task_state, "completion_requested");
+    assert_eq!(
+        first.report.as_deref(),
+        Some(symbiote_workflow::demo::FIXTURE_REPORT)
+    );
+
+    // The identical command id and intent, sent again on the same client path
+    // the daemon's own recovery contract describes — and sent twice, so the
+    // answer is a stable durable outcome rather than a one-shot allowance.
+    let mut driver = symbiote_workflow::Driver::connect(state_dir).expect("driver");
+    let activation = |dispatch_id: &str| {
+        serde_json::json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+        "dispatch_id":dispatch_id})
+    };
+    for attempt in 1..=2 {
+        let body = driver
+            .call("wf-run-staffing-task", activation(&dispatch_id), None)
+            .unwrap_or_else(|error| {
+                panic!("replayed activation {attempt} must recover, not refuse: {error:?}")
+            });
+        match body {
+            ResponseBody::WorkerRun(run) => {
+                assert!(run.completed, "the recorded outcome was a completed run");
+                assert_eq!(run.dispatch_id.as_str(), dispatch_id);
+                assert_eq!(run.task_id.as_str(), "staffing-task");
+            }
+            other => panic!("replayed activation {attempt} answered {other:?}"),
+        }
+    }
+}
+
 /// The external lane's own process carries the ceiling its dispatch declared,
 /// and its work lands in its own reserved worktree: the operator-provisioned
 /// harness is launched by the Host inside the sandbox under the recorded
