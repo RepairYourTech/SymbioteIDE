@@ -1,5 +1,6 @@
 //! Read-only prerequisite assessment. No result authorizes activation.
 use crate::*;
+use symbiote_domain::UnboundedLimit;
 use symbiote_host_inventory::{HostPulse, PulseError, PulseRequirements};
 use symbiote_runtime_sdk::{QualificationError, RuntimeDescriptor, qualify_profile_with_minimums};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -18,6 +19,14 @@ pub enum Prerequisite {
     ProviderRegistration,
     RuntimeCapabilities,
     RuntimeResources,
+    /// Whether this Host can honour the limits the candidate declares at all:
+    /// the same decision activation makes before it runs anything
+    /// (`ResourceLimits::process_bound`). A declared limit the Host has no
+    /// kernel bound for is not a capacity question — the Host may well have
+    /// the capacity and still refuse the run — so it is reported here, with the
+    /// reason the run will refuse on, instead of being left to contradict a
+    /// satisfied capacity check.
+    EnforceableLimits,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +74,12 @@ pub struct PrerequisiteCheck {
     /// not run rather than merely that it would not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_refusal: Option<ProviderRefusal>,
+    /// Present exactly on the enforceable-limits prerequisite, and only when a
+    /// declared limit cannot be bound: the declared limit in the one vocabulary
+    /// activation refuses on, so the report names the reason the run will give
+    /// rather than leaving the operator to discover it by starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_refusal: Option<UnboundedLimit>,
 }
 impl PrerequisiteCheck {
     fn new(prerequisite: Prerequisite, result: CheckResult) -> Self {
@@ -72,6 +87,7 @@ impl PrerequisiteCheck {
             prerequisite,
             result,
             provider_refusal: None,
+            limit_refusal: None,
         }
     }
 }
@@ -156,6 +172,7 @@ pub fn assess_readiness(
             Some(_) => CheckResult::Rejected,
         },
         provider_refusal: provider.and_then(|resolution| resolution.refusal),
+        limit_refusal: None,
     });
     checks.push(PrerequisiteCheck::new(
         Prerequisite::RuntimeCapabilities,
@@ -205,6 +222,21 @@ pub fn assess_readiness(
             }
         },
     ));
+    // The decision activation makes, asked before the run: a declared limit
+    // this Host cannot bind makes the candidate unusable, whatever capacity the
+    // Host has, and is reported with the same reason the start refuses on. The
+    // two boundaries therefore cannot disagree — a report that is ready for
+    // preflight is a report whose every declared limit the Host can bind.
+    let enforceable = match candidate.limits.process_bound() {
+        Ok(_) => PrerequisiteCheck::new(Prerequisite::EnforceableLimits, CheckResult::Satisfied),
+        Err(limit) => PrerequisiteCheck {
+            prerequisite: Prerequisite::EnforceableLimits,
+            result: CheckResult::Rejected,
+            provider_refusal: None,
+            limit_refusal: Some(limit),
+        },
+    };
+    checks.push(enforceable);
     ReadinessReport {
         status: if checks.iter().all(|c| c.result == CheckResult::Satisfied) {
             PrerequisiteStatus::ReadyForPreflight
