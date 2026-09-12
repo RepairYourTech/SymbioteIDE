@@ -168,10 +168,13 @@ What is **not** enforced today, stated rather than implied:
   a dispatch the run refuses.
 - **Wall time (`max_wall_time_ms`) and total tokens (`max_total_tokens`).**
   Validated and recorded. The sandboxed shell executor's own deadline bounds
-  each tool process, and the external lane's turn stops once the dispatch's
-  declared `max_wall_time_ms` has elapsed (the driver records the stop and files
-  nothing), but no Host-side clock stops a **native** run that outlives its
-  declared wall time, and nothing enforces a token budget on either lane.
+  each tool process. On the external lane the declared wall time is handed to
+  the harness transport, so the handshake and each turn's request and read end
+  at it rather than at the transport's own 30-second call timeout; a harness
+  that has not answered by then is cancelled — its process is terminated — and
+  the run stops with the typed wall-time refusal and files nothing. No
+  Host-side clock stops a **native** run that outlives its declared wall time,
+  and nothing enforces a token budget on either lane.
 - **Concurrency (`max_concurrency`).** A concurrency bound, not a CPU
   reservation; a run's tools execute one at a time, so a run never exceeds a
   declared bound, but nothing enforces the declaration.

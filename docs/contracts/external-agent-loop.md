@@ -121,9 +121,16 @@ the worktree profile (`Profile::WorktreeWrite`, otherwise `Profile::ReadOnly`)
 and the harness's own `thread/start` policy (`workspace-write`, otherwise
 `read-only`), so the outer sandbox and the harness cannot disagree about
 whether the worktree may be written. Transports are in-process only — the
-scripted fixture starts no OS process at all — and a turn stops once the
-dispatch's declared `max_wall_time_ms` has elapsed, rather than at a fixed
-multi-minute silence budget.
+scripted fixture starts no OS process at all, and the seam that installs one
+is sealed to the Host.
+
+The dispatch's declared `max_wall_time_ms` bounds the harness itself, not just
+the driver's poll loop: the deadline is handed to the transport, so the
+handshake and every turn's requests and reads end at the wall time rather than
+at the transport's own 30-second call timeout. A harness that has not answered
+by then is cancelled (its process is terminated) and the run stops with
+typed `WallTimeExceeded` — never at a fixed multi-minute silence budget, and
+never leaving a harness alive behind a stopped run.
 
 The `codex_thread_smoke` example is the real-binary proof, mirroring the
 #483 discovery proof: sandboxed launch, the driver's own `begin_thread`

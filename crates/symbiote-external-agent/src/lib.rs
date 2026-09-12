@@ -76,9 +76,10 @@ pub enum DriverError {
     ContractMismatch,
     /// Completion was already filed; the driver is finished.
     AlreadyComplete,
-    /// The turn outlived the wall time its dispatch declared: the harness was
-    /// still silent (or still working) when `max_wall_time_ms` elapsed. The
-    /// turn is not complete, and nothing may read it as one.
+    /// The harness outlived the wall time its dispatch declared: it was still
+    /// silent (or still working) when `max_wall_time_ms` elapsed, in the
+    /// handshake or in a turn. The harness is cancelled and the turn is not
+    /// complete, so nothing may read it as one.
     WallTimeExceeded,
 }
 
@@ -131,6 +132,15 @@ pub trait CodexTransport {
         request: &ServerRequest,
         decision: ApprovalDecision,
     ) -> Result<(), DriverError>;
+    /// Bounds this transport's own I/O waits by the dispatch's declared wall
+    /// time, so a harness that never answers cannot outlive it. The default
+    /// ignores the deadline: an in-process transport owns no process and is
+    /// already deterministic.
+    fn set_deadline(&mut self, _deadline: Option<std::time::Instant>) {}
+    /// Terminates any process this transport owns. The default has nothing to
+    /// stop. The driver calls it when a run stops at its deadline, so the
+    /// harness does not outlive the dispatch that bounded it.
+    fn cancel(&mut self) {}
 }
 
 /// Lets a Host hold `Box<dyn CodexTransport>` factories and pass
@@ -151,6 +161,12 @@ impl<T: CodexTransport + ?Sized> CodexTransport for &mut T {
     }
     fn recv_server_request(&mut self) -> Result<Option<ServerRequest>, DriverError> {
         (**self).recv_server_request()
+    }
+    fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        (**self).set_deadline(deadline)
+    }
+    fn cancel(&mut self) {
+        (**self).cancel()
     }
     fn refuse_server_request(
         &mut self,
@@ -273,9 +289,11 @@ pub struct ExternalSession {
     unreported_usage_turns: u32,
     completion_report: Option<String>,
     stopped: Option<StopKind>,
-    /// The dispatch's declared wall time (`max_wall_time_ms`), the deadline a
-    /// turn may not outlive. `None` when the contract records no limits: only
-    /// the frame and silence budgets bound the turn then.
+    /// The dispatch's declared wall time (`max_wall_time_ms`), the deadline
+    /// the harness may not outlive: handed to the transport so the handshake
+    /// and each turn's I/O end at it, and cancelled at it. `None` when the
+    /// contract records no limits: only the frame and silence budgets bound a
+    /// turn then.
     wall_time_ms: Option<u64>,
     /// Whether the contract's access snapshot grants `MutateStream`, i.e.
     /// whether the harness may change the worktree. One fact decided once,
@@ -445,11 +463,18 @@ impl ExternalSession {
         if worktree_cwd.is_empty() || worktree_cwd.len() > 4096 || !worktree_cwd.starts_with('/') {
             return Err(DriverError::InvalidInput);
         }
+        // The dispatch's declared wall time bounds the handshake too: a harness
+        // that never answers `initialize` or `thread/start` must not outlive it
+        // while the driver waits for the reply.
+        transport.set_deadline(self.wall_time_deadline());
         // The SDK's session consumers require Ready before any other event.
         self.record(RuntimeEventKind::Ready {})?;
         // From here the session has begun journaling: a failure must be
         // terminal so no entry point can append to a half-open session.
         if let Err(error) = self.complete_handshake(worktree_cwd, transport) {
+            if matches!(error, DriverError::WallTimeExceeded) {
+                return self.stop_on_wall_time(transport);
+            }
             self.stopped = Some(StopKind::TransportLost);
             self.record(RuntimeEventKind::Diagnostic {
                 message: truncate_event_text(&format!("harness handshake failed: {error}")),
@@ -531,16 +556,19 @@ impl ExternalSession {
         };
         self.turns_observed += 1;
         // The turn's deadline is the dispatch's declared wall time, measured
-        // from the moment the turn starts.
-        let deadline = self
-            .wall_time_ms
-            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+        // from the moment the turn starts. The transport is handed it first, so
+        // its own I/O waits end at the wall time rather than at its fixed call
+        // timeout — a harness that never answers `turn/start` cannot stall the
+        // run past the deadline the contract set.
+        let deadline = self.wall_time_deadline();
+        transport.set_deadline(deadline);
         let params = serde_json::json!({
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt}],
         });
         let result = match transport.call("turn/start", &params) {
             Ok(result) => result,
+            Err(DriverError::WallTimeExceeded) => return self.stop_on_wall_time(transport),
             Err(error) => {
                 self.stopped = Some(StopKind::TransportLost);
                 self.record(RuntimeEventKind::Diagnostic {
@@ -561,14 +589,28 @@ impl ExternalSession {
         // A dispatch whose declared wall time is shorter than the harness's
         // own call timeout can already be out of time here.
         if deadline_passed(deadline) {
-            return self.stop_on_wall_time();
+            return self.stop_on_wall_time(transport);
         }
         self.observe_turn(&thread_id, &turn_id, transport, deadline)
     }
 
+    /// The dispatch's declared wall time, measured from now. `None` when the
+    /// contract records no limits, in which case only the transport's own
+    /// timeouts and the driver's frame budgets apply.
+    fn wall_time_deadline(&self) -> Option<std::time::Instant> {
+        self.wall_time_ms
+            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms))
+    }
+
     /// Records the declared-wall-time stop and returns the typed refusal, so
-    /// no caller can read a deadline-exceeded turn as a completed one.
-    fn stop_on_wall_time(&mut self) -> Result<(), DriverError> {
+    /// no caller can read a deadline-exceeded turn as a completed one. The
+    /// transport is cancelled first: the harness does not outlive the deadline
+    /// that stopped it.
+    fn stop_on_wall_time<T: CodexTransport + ?Sized>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<(), DriverError> {
+        transport.cancel();
         self.stopped = Some(StopKind::Failed);
         self.record(RuntimeEventKind::Diagnostic {
             message: truncate_event_text(&format!(
@@ -599,7 +641,7 @@ impl ExternalSession {
             // that is still thinking, or already dead, stops here in the time
             // its own contract claims rather than minutes later.
             if deadline_passed(deadline) {
-                return self.stop_on_wall_time();
+                return self.stop_on_wall_time(transport);
             }
             let notification = match transport.recv_notification() {
                 Ok(Some(notification)) => {
@@ -651,6 +693,11 @@ impl ExternalSession {
                     // silenced here rather than relaxing it workspace-wide.
                     #[allow(clippy::collapsible_if)]
                     if let Err(error) = transport.refuse_server_request(&request, decision) {
+                        // A refusal that ran out of wall time is the same stop
+                        // as a silent harness, not a lost transport.
+                        if matches!(error, DriverError::WallTimeExceeded) {
+                            return self.stop_on_wall_time(transport);
+                        }
                         self.stopped = Some(StopKind::TransportLost);
                         self.record(RuntimeEventKind::Diagnostic {
                             message: truncate_event_text(&format!(
@@ -1296,6 +1343,41 @@ mod tests {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "the declared wall time bounds the turn, not the silence budget"
+        );
+    }
+
+    #[test]
+    fn a_harness_that_never_answers_turn_start_is_killed_at_the_declared_wall_time() {
+        let mut limits = fixture_limits();
+        limits.max_wall_time_ms = 300;
+        let mut session =
+            ExternalSession::new(&dispatch_with(&task(), &limits), Timestamp(20)).unwrap();
+        // A real process for the real transport: it completes the handshake
+        // (initialize → thread/start) and then never answers `turn/start`. The
+        // transport's own call timeout is 30 s, so nothing but the dispatch's
+        // declared wall time can end this wait.
+        let script = concat!(
+            "printf '%s\\n' '{\"id\":1,\"result\":{\"userAgent\":\"symbiote/0.118.0 (Linux)\"}}'; ",
+            "printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thr-wall\"}}}'; ",
+            "sleep 30"
+        );
+        let mut transport = crate::process::spawn_test_server(script);
+        session.begin_thread("/workspace", &mut transport).unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            session.turn("implement the bounded change", &mut transport),
+            Err(DriverError::WallTimeExceeded)
+        ));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "the declared wall time bounds the turn/start wait, not the transport's own \
+             30-second call timeout: {elapsed:?}"
+        );
+        assert_eq!(session.run_summary().stopped, Some(StopKind::Failed));
+        assert!(
+            matches!(transport.io().try_wait(), Ok(Some(_))),
+            "the harness must not outlive the deadline that stopped it"
         );
     }
 

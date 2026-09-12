@@ -378,12 +378,21 @@ pub struct ExternalHarnessInputs<'a> {
     pub bound: symbiote_domain::ProcessBound,
 }
 
+/// Seals the external transport seam. The Host owns every process launch in
+/// the external lane (see [`crate::external_harness`]), so only this crate may
+/// install an external transport: the seam exists for the labeled in-process
+/// fixture and in-crate tests, never for an embedder to install a
+/// process-owning transport that would bypass the declared bound.
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// Builds one external transport per run. An in-process transport starts no OS
 /// process: the Host owns every process launch in this lane (see
 /// [`crate::external_harness`]), so no transport can promise a memory bound it
 /// does not apply. It is handed the dispatch's declared `bound` for the
-/// transports that consult it.
-pub trait ExternalTransportFactory {
+/// transports that consult it. Sealed to this crate — see [`sealed`].
+pub trait ExternalTransportFactory: sealed::Sealed {
     fn build(
         &mut self,
         inputs: ExternalHarnessInputs<'_>,
@@ -1151,6 +1160,7 @@ mod tests {
     pub struct ObservedExternalFactory {
         pub built: std::rc::Rc<std::cell::Cell<bool>>,
     }
+    impl super::sealed::Sealed for ObservedExternalFactory {}
     impl ExternalTransportFactory for ObservedExternalFactory {
         fn build(
             &mut self,
@@ -2962,6 +2972,7 @@ mod tests {
             }
         }
         pub struct ScriptedFactory;
+        impl super::sealed::Sealed for ScriptedFactory {}
         impl super::ExternalTransportFactory for ScriptedFactory {
             fn build(
                 &mut self,
@@ -3492,6 +3503,7 @@ pub struct FixtureExternalFactory {
     pub thread_id: String,
     pub agent_message: String,
 }
+impl sealed::Sealed for FixtureExternalFactory {}
 impl ExternalTransportFactory for FixtureExternalFactory {
     fn build(
         &mut self,
