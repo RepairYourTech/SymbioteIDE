@@ -116,6 +116,12 @@ field and carrying no value, path or account:
 
     the dispatch declares a CPU demand (max_cpu_millicores) this Host has no kernel bound for
 
+A contract that records **no** limits — one journaled before limits were
+recorded — replays rather than breaking the read, and refuses activation for
+having no bound to apply: `the dispatch records no resource limits, so its
+execution cannot be bounded`. Older state is tolerated as older state; it is
+never silently translated into a runnable dispatch.
+
 The bound is applied by the sandboxed launcher: every process a dispatch's tool
 runs in, and every descendant it starts, carries the declared `max_memory_bytes`
 as an address-space ceiling (`RLIMIT_AS`) set inside the sandbox before the
