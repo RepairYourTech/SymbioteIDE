@@ -144,11 +144,13 @@ json.dump({"soft": soft, "under": probe(64 << 20), "over": probe(400 << 20)}, op
 PY
 "#;
 
-/// A harness program that speaks the pinned App Server framing and reports
-/// its OWN address-space ceiling (the soft `RLIMIT_AS`) in its agent message:
-/// the Host reads what the harness process observed of the bound the
-/// dispatch declared. Launched by the Host inside the sandbox, so the bound
-/// is the operator's launcher's, not this script's.
+/// A harness program that speaks the pinned App Server framing, writes its
+/// work inside the reserved worktree, and reports its OWN address-space
+/// ceiling (the soft `RLIMIT_AS`) in its agent message: the Host reads what
+/// the harness process observed of the bound the dispatch declared, and the
+/// worktree evidence reads what the harness actually produced. Launched by the
+/// Host inside the sandbox, so the bound is the operator's launcher's, not this
+/// script's.
 const HARNESS_RESPONDER: &str = r#"import json,sys,resource
 soft,_=resource.getrlimit(resource.RLIMIT_AS)
 def send(o):
@@ -166,6 +168,7 @@ for line in sys.stdin:
         send({"id":msg["id"],"result":{"thread":{"id":"thr-bounded"}}})
     elif m=="turn/start":
         send({"id":msg["id"],"result":{"turn":{"id":"turn-bounded"}}})
+        open("produced.txt","w").write("the external harness wrote its worktree\n")
         send({"method":"item/completed","params":{"threadId":"thr-bounded","turnId":"turn-bounded","item":{"type":"agentMessage","id":"i1","text":"harness address-space ceiling %d"%soft}}})
         send({"method":"turn/completed","params":{"threadId":"thr-bounded","turnId":"turn-bounded","turn":{"id":"turn-bounded","status":"completed","items":[]}}})
 "#;
@@ -1011,12 +1014,14 @@ fn a_started_dispatch_runs_its_tools_under_the_declared_memory_bound() {
     );
 }
 
-/// The external lane's own process carries the ceiling its dispatch declared:
-/// the operator-provisioned harness is launched by the Host inside the sandbox
-/// under the recorded `max_memory_bytes`, and the harness reports its own soft
-/// `RLIMIT_AS` in the completion report the Host reads back. The lane's
-/// readiness answer promises this bound, so it must hold for the process the
-/// lane actually starts — not only for the native lane's tools.
+/// The external lane's own process carries the ceiling its dispatch declared,
+/// and its work lands in its own reserved worktree: the operator-provisioned
+/// harness is launched by the Host inside the sandbox under the recorded
+/// `max_memory_bytes`, the harness reports its own soft `RLIMIT_AS` in the
+/// completion report the Host reads back, and the file it wrote is visible in
+/// the worktree evidence. The lane's readiness answer promises this bound, so
+/// it must hold for the process the lane actually starts — not only for the
+/// native lane's tools.
 #[test]
 fn a_started_external_harness_runs_under_the_declared_memory_bound() {
     let env = demo_environment("external-bound");
@@ -1063,5 +1068,14 @@ fn a_started_external_harness_runs_under_the_declared_memory_bound() {
         outcome.report.as_deref(),
         Some(format!("harness address-space ceiling {declared}").as_str()),
         "the harness process reports the dispatch's declared memory ceiling"
+    );
+    // The harness's work landed in the dispatch's own reserved worktree: the
+    // binding grants stream mutation, so the Host mounts that worktree
+    // writable and the harness's own sandbox policy is writable too. A lane
+    // launched read-only could only report, never produce.
+    assert!(
+        outcome.worktree.contains("produced.txt"),
+        "the external harness's produced file must be visible in its worktree: {:?}",
+        outcome.worktree
     );
 }

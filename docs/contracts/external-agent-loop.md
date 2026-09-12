@@ -110,15 +110,20 @@ real handshake (`initialize` → pinned `symbiote/0.118.0` check →
 `initialized`) before any thread or turn interaction; a server that does
 not report the pinned version is refused.
 
-The Host drives this transport through the external lane's factory seam, and
-the Host — never the caller — decides the harness process ceiling: activation
-hands the factory the dispatch's declared bound and requires the built transport
-to report what it did with the harness process, refusing a transport that would
-start one under any other ceiling. The operator-provisioned sandboxed harness
-(`external_harness`) composes `symbiote_sandbox::launch` with the configured
-harness program and the declared `address_space_bytes`, so the external lane's
-readiness answer is backed by the process it actually starts; the in-process
-scripted fixture starts no OS process and reports that as such.
+The Host owns the external lane's process launch, so the ceiling is a fact
+rather than a claim. When the operator provisions the sandboxed harness
+(`external_harness`), activation builds the sandbox `LaunchRequest` itself —
+the configured harness program, the dispatch's reserved worktree and its
+declared `address_space_bytes` — so no transport can start the harness under a
+bound the Host did not apply, and a launch the sandbox cannot bound refuses
+rather than running unbound. The same contract grant (`MutateStream`) selects
+the worktree profile (`Profile::WorktreeWrite`, otherwise `Profile::ReadOnly`)
+and the harness's own `thread/start` policy (`workspace-write`, otherwise
+`read-only`), so the outer sandbox and the harness cannot disagree about
+whether the worktree may be written. Transports are in-process only — the
+scripted fixture starts no OS process at all — and a turn stops once the
+dispatch's declared `max_wall_time_ms` has elapsed, rather than at a fixed
+multi-minute silence budget.
 
 The `codex_thread_smoke` example is the real-binary proof, mirroring the
 #483 discovery proof: sandboxed launch, the driver's own `begin_thread`

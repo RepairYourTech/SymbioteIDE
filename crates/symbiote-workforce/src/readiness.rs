@@ -1,6 +1,6 @@
 //! Read-only prerequisite assessment. No result authorizes activation.
 use crate::*;
-use symbiote_domain::UnboundedLimit;
+use symbiote_domain::{Permission, RuntimeKind, UnboundedLimit};
 use symbiote_host_inventory::{HostPulse, PulseError, PulseRequirements};
 use symbiote_runtime_sdk::{QualificationError, RuntimeDescriptor, qualify_profile_with_minimums};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -27,6 +27,14 @@ pub enum Prerequisite {
     /// reason the run will refuse on, instead of being left to contradict a
     /// satisfied capacity check.
     EnforceableLimits,
+    /// Whether the candidate's own lane can execute at all given the access its
+    /// snapshot grants. The external lane's dispatch IS a Host-launched
+    /// sandboxed process, and it can never acquire the process grant later
+    /// (capability elevation refuses an `EXTERNAL_HARNESS` dispatch), so a
+    /// candidate for that lane which does not grant `ExecuteProcess` is
+    /// `rejected` here instead of being reported ready and then refused by the
+    /// sandbox at the transport build.
+    ExecutionAccess,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +71,20 @@ fn runtime_verdict(error: QualificationError) -> CheckResult {
         | QualificationError::UnknownCapability(_) => CheckResult::MissingObservation,
         _ => CheckResult::Rejected,
     }
+}
+/// Whether the candidate's lane can execute at all given the access its
+/// snapshot grants. Candidate validation already guarantees the Root grant and
+/// a non-empty authorized root set, so the lane decides the rest: the external
+/// lane always launches the Host-owned harness process and therefore needs
+/// `ExecuteProcess`, while the native lane may run without one — a run whose
+/// contract starts no sandboxed process starts no Host process either — so
+/// demanding it there would reject a lane that would work.
+fn execution_access_ok(candidate: &StaffingCandidate) -> bool {
+    candidate.profile.runtime != RuntimeKind::ExternalHarness
+        || candidate
+            .access
+            .grants
+            .contains(&Permission::ExecuteProcess)
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -237,6 +259,19 @@ pub fn assess_readiness(
         },
     };
     checks.push(enforceable);
+    // What the candidate's own lane needs in order to execute at all, judged by
+    // the same grants the sandbox checks before it launches a process. The
+    // external lane always launches one and can never be granted it later, so a
+    // candidate for it whose access does not carry the grant is rejected here
+    // rather than reported ready and refused at the transport build.
+    checks.push(PrerequisiteCheck::new(
+        Prerequisite::ExecutionAccess,
+        if execution_access_ok(candidate) {
+            CheckResult::Satisfied
+        } else {
+            CheckResult::Rejected
+        },
+    ));
     ReadinessReport {
         status: if checks.iter().all(|c| c.result == CheckResult::Satisfied) {
             PrerequisiteStatus::ReadyForPreflight

@@ -734,3 +734,44 @@ fn a_bindable_ceiling_is_enforceable_on_both_lanes() {
         assert_eq!(check.limit_refusal, None, "{runtime:?}");
     }
 }
+
+/// The candidate's own lane decides which access its execution needs: the
+/// external lane always launches the Host-owned harness process, so it needs
+/// the process grant; the native lane may run without one, because nothing in
+/// its contract starts a Host process.
+#[test]
+fn execution_access_follows_what_the_lanes_execution_actually_needs() {
+    let t = team();
+    let check_of = |b: &BindingConfiguration| {
+        assess_readiness(b, &t, None, None, None, Timestamp(10))
+            .checks
+            .into_iter()
+            .find(|c| c.prerequisite == Prerequisite::ExecutionAccess)
+            .expect("every report carries the execution-access check")
+    };
+
+    // A native candidate that cannot launch a Host process is still a lane
+    // that can run: nothing in its contract starts one.
+    let mut native = binding();
+    native
+        .primary
+        .access
+        .grants
+        .remove(&Permission::ExecuteProcess);
+    native.binding.access = native.primary.access.clone();
+    assert_eq!(check_of(&native).result, CheckResult::Satisfied);
+
+    // The same access on the external lane is a refusal: its dispatch is a
+    // Host-launched process, and the sandbox would refuse to launch it. The
+    // report must not call that candidate ready.
+    let mut external = binding();
+    external.primary.profile.runtime = RuntimeKind::ExternalHarness;
+    external.primary.profile.installation = Some(InstallationId::new("codex-0-118-0").unwrap());
+    external
+        .primary
+        .access
+        .grants
+        .remove(&Permission::ExecuteProcess);
+    external.binding.access = external.primary.access.clone();
+    assert_eq!(check_of(&external).result, CheckResult::Rejected);
+}

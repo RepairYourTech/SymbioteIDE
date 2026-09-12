@@ -45,11 +45,12 @@ new strict protocol version. Existing Projects are not automatically bound.
 ## Readiness is not activation
 
 The read-only assessment separates prerequisite checks from pending activation
-gates, and reports six: the current Team, Host capacity, the provider
+gates, and reports seven: the current Team, Host capacity, the provider
 registration the candidate profile names, runtime capabilities, runtime
-resources and whether the declared limits can be bound at all. It consumes
-existing Runtime SDK and Host Pulse contracts rather than inventing successful
-observations.
+resources, whether the declared limits can be bound at all, and whether the
+candidate's own lane can execute with the access its snapshot grants. It
+consumes existing Runtime SDK and Host Pulse contracts rather than inventing
+successful observations.
 
 **Absence and insufficiency are different results.** Every prerequisite is
 classified the same way: `missing_observation` means the Host holds no current
@@ -84,6 +85,18 @@ that has the CPU a demand names still reports `host_capacity: satisfied` while
 whole is `not_ready`. A report that is `ready_for_preflight` is therefore a
 report whose every declared limit the Host can bind: an operator sees the reason
 the start will give before starting, not after.
+
+`execution_access` asks the same question of the candidate's own lane. The
+`EXTERNAL_HARNESS` lane's dispatch IS a Host-launched sandboxed process, and an
+external dispatch can never acquire the process grant later — capability
+elevation refuses an `EXTERNAL_HARNESS` dispatch outright — so an external
+candidate whose access snapshot does not grant `ExecuteProcess` is `rejected`
+here, exactly as the sandbox would refuse to launch it. The `NATIVE_SYMBIOTE`
+lane may run without that grant, because a run whose contract starts no
+sandboxed process starts no Host process either, and its shell path can be
+licensed one lease at a time; demanding the grant there would reject a lane that
+would work. Candidate validation already guarantees the Root grant and at least
+one authorized root, so the lane is the only remaining question.
 
 Host capacity is judged against the effective memory and effective CPU the Host
 actually observed from the process's own cgroup and CPU sets, not against the
@@ -154,28 +167,30 @@ What is **not** enforced today, stated rather than implied:
   candidate is `not_ready` with `limit_refusal: cpu_rate` rather than ready for
   a dispatch the run refuses.
 - **Wall time (`max_wall_time_ms`) and total tokens (`max_total_tokens`).**
-  Validated and recorded, and the sandboxed shell executor's own deadline bounds
-  each tool process, but no Host-side clock stops a run that outlives its
-  declared wall time.
+  Validated and recorded. The sandboxed shell executor's own deadline bounds
+  each tool process, and the external lane's turn stops once the dispatch's
+  declared `max_wall_time_ms` has elapsed (the driver records the stop and files
+  nothing), but no Host-side clock stops a **native** run that outlives its
+  declared wall time, and nothing enforces a token budget on either lane.
 - **Concurrency (`max_concurrency`).** A concurrency bound, not a CPU
   reservation; a run's tools execute one at a time, so a run never exceeds a
   declared bound, but nothing enforces the declaration.
 
-The **external-harness lane** carries the same bound, and the Host — not the
-caller — decides it. Activation hands the lane's transport factory the
-declared bound and requires it to report what it did with the harness process:
-a transport that starts the harness as an OS process must run it under exactly
-the declared `max_memory_bytes`, and one that would run it under any other
-ceiling refuses the run (*the external harness transport would run the harness
-outside the dispatch's declared memory bound*). The operator-provisioned
-sandboxed harness — `external_harness` in the operator configuration — is that
-process-starting transport: it launches the configured harness program inside
-the sandbox, in the dispatch's reserved worktree, with the declared ceiling
-applied by the launcher, so a started external dispatch's own harness process
-reports the bound its contract recorded. The in-process scripted fixture starts
-no OS process at all, which the lane reports as such: there is no process that
-could run outside the declared ceiling. So no lane promises a memory bound it
-does not apply.
+The **external-harness lane** carries the same bound, and the Host — not a
+transport and not the caller — applies it. When the operator provisions the
+sandboxed harness (`external_harness` in the operator configuration), the Host
+builds the sandbox `LaunchRequest` itself for every external run: the
+configured harness program, the dispatch's reserved worktree, and the declared
+`max_memory_bytes` as the launcher's address-space ceiling. There is no
+transport claim to trust — the one process this lane starts is the one the Host
+bounds, and a launch the sandbox cannot bound refuses rather than running
+unbound. The worktree profile is the same contract grant (`MutateStream`) the
+harness's own sandbox policy follows, so a dispatch's harness is read-only
+exactly when its contract does not authorize stream mutation (a compiled
+dispatch always does); a writable worktree is the lane doing the work it was
+staffed for, and a read-only one is the fallback for a hand-built contract. The
+in-process scripted fixture starts no OS process at all. So no lane promises a
+memory bound it does not apply.
 
 ## Demonstration and remaining acceptance
 

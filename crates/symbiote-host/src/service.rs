@@ -731,12 +731,11 @@ fn execute(
                     })))
                 }
                 symbiote_domain::RuntimeKind::ExternalHarness => {
-                    // The lane is handed the dispatch's declared ceiling and
-                    // must report what it does with the harness process: a
-                    // transport that starts one under any other ceiling (or
-                    // claims a process it does not bound) refuses before
-                    // anything runs, so the lane never promises a bound it
-                    // does not apply.
+                    // The Host launches the sandboxed harness itself, under
+                    // the dispatch's declared ceiling: the bound is applied by
+                    // the launcher, not asserted by a transport, so the lane
+                    // cannot promise a bound it does not apply. The one
+                    // process this lane starts is the one the Host bounds.
                     let harness_access = current.contract().effective_access().clone();
                     let mut transport = workers
                         .external_build(crate::runner::ExternalHarnessInputs {
@@ -1517,9 +1516,6 @@ fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
         }
         crate::runner::RunnerError::TransportBuild(_) => {
             "worker transport factory refused to build".into()
-        }
-        crate::runner::RunnerError::ExternalBoundRefused => {
-            "the external harness transport would run the harness outside the dispatch's declared memory bound (max_memory_bytes)".into()
         }
         crate::runner::RunnerError::ShellExecutorBuild(_) => {
             "worker shell executor factory refused to build".into()

@@ -76,6 +76,10 @@ pub enum DriverError {
     ContractMismatch,
     /// Completion was already filed; the driver is finished.
     AlreadyComplete,
+    /// The turn outlived the wall time its dispatch declared: the harness was
+    /// still silent (or still working) when `max_wall_time_ms` elapsed. The
+    /// turn is not complete, and nothing may read it as one.
+    WallTimeExceeded,
 }
 
 impl std::fmt::Display for DriverError {
@@ -269,6 +273,15 @@ pub struct ExternalSession {
     unreported_usage_turns: u32,
     completion_report: Option<String>,
     stopped: Option<StopKind>,
+    /// The dispatch's declared wall time (`max_wall_time_ms`), the deadline a
+    /// turn may not outlive. `None` when the contract records no limits: only
+    /// the frame and silence budgets bound the turn then.
+    wall_time_ms: Option<u64>,
+    /// Whether the contract's access snapshot grants `MutateStream`, i.e.
+    /// whether the harness may change the worktree. One fact decided once,
+    /// from the contract, so the harness's own sandbox policy and the outer
+    /// Host sandbox cannot disagree about it.
+    workspace_write: bool,
 }
 
 impl ExternalSession {
@@ -286,6 +299,15 @@ impl ExternalSession {
         }
         let session = SessionId::new(format!("sess_{}", dispatch.id().as_str()))
             .map_err(|_| DriverError::InvalidContract)?;
+        // The contract's own limits bind the observation window: the declared
+        // wall time is the deadline a turn may not outlive, not a fixed
+        // multi-minute silence budget. No kernel bound enforces it — the
+        // driver stops the observation itself and says so.
+        let wall_time_ms = contract.limits().map(|limits| limits.max_wall_time_ms);
+        // The access snapshot grants stream mutation exactly when the Host's
+        // sandbox will mount the worktree writable (`Profile::WorktreeWrite`
+        // requires `MutateStream`), so one grant decides both policies.
+        let workspace_write = workspace_is_writable(contract.effective_access());
         Ok(Self {
             binding: SessionBinding {
                 session_id: session,
@@ -304,6 +326,8 @@ impl ExternalSession {
             unreported_usage_turns: 0,
             completion_report: None,
             stopped: None,
+            wall_time_ms,
+            workspace_write,
         })
     }
 
@@ -462,9 +486,16 @@ impl ExternalSession {
         transport.notify("initialized", &serde_json::json!({}))?;
         // Thread identity is minted by the harness, not the driver. The
         // thread id is the correlation key for every later notification.
+        // The harness's own policy follows the contract's write grant: with
+        // `MutateStream` the workspace is writable, so the harness does its
+        // work inside the reserved worktree the Host provisioned. Without it
+        // the harness is read-only and can only report. Approvals stay
+        // refused either way: the dispatch contract's access snapshot is the
+        // only permission authority, and the outer Host sandbox is the
+        // enforcement boundary.
         let params = serde_json::json!({
             "cwd": worktree_cwd,
-            "sandbox": "read-only",
+            "sandbox": if self.workspace_write { "workspace-write" } else { "read-only" },
             "approvalPolicy": "never",
         });
         let result = transport.call("thread/start", &params)?;
@@ -499,6 +530,11 @@ impl ExternalSession {
             return Err(DriverError::ContractMismatch);
         };
         self.turns_observed += 1;
+        // The turn's deadline is the dispatch's declared wall time, measured
+        // from the moment the turn starts.
+        let deadline = self
+            .wall_time_ms
+            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
         let params = serde_json::json!({
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt}],
@@ -522,7 +558,25 @@ impl ExternalSession {
         if !valid_correlation_id(&turn_id) {
             return Err(DriverError::MalformedFrame);
         }
-        self.observe_turn(&thread_id, &turn_id, transport)
+        // A dispatch whose declared wall time is shorter than the harness's
+        // own call timeout can already be out of time here.
+        if deadline_passed(deadline) {
+            return self.stop_on_wall_time();
+        }
+        self.observe_turn(&thread_id, &turn_id, transport, deadline)
+    }
+
+    /// Records the declared-wall-time stop and returns the typed refusal, so
+    /// no caller can read a deadline-exceeded turn as a completed one.
+    fn stop_on_wall_time(&mut self) -> Result<(), DriverError> {
+        self.stopped = Some(StopKind::Failed);
+        self.record(RuntimeEventKind::Diagnostic {
+            message: truncate_event_text(&format!(
+                "harness exceeded the dispatch's declared wall time ({} ms)",
+                self.wall_time_ms.unwrap_or_default()
+            )),
+        })?;
+        Err(DriverError::WallTimeExceeded)
     }
 
     /// Drains frames until the turn reaches a terminal status. Item payloads
@@ -535,11 +589,18 @@ impl ExternalSession {
         thread_id: &str,
         turn_id: &str,
         transport: &mut T,
+        deadline: Option<std::time::Instant>,
     ) -> Result<(), DriverError> {
         let mut stop: Option<StopKind> = None;
         let mut frames = 0usize;
         let mut empty_polls = 0usize;
         while stop.is_none() {
+            // The declared wall time outranks the silence budget: a harness
+            // that is still thinking, or already dead, stops here in the time
+            // its own contract claims rather than minutes later.
+            if deadline_passed(deadline) {
+                return self.stop_on_wall_time();
+            }
             let notification = match transport.recv_notification() {
                 Ok(Some(notification)) => {
                     empty_polls = 0;
@@ -863,6 +924,25 @@ fn same_turn(params: &serde_json::Value, thread_id: &str, turn_id: &str) -> bool
     same_thread && turn_field.is_none_or(|id| id == turn_id)
 }
 
+/// Whether a turn's declared-wall-time deadline has elapsed. `None` means the
+/// contract records no wall time, so only the frame and silence budgets apply.
+fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
+    deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+}
+
+/// The harness's worktree policy: writable exactly when the contract's access
+/// snapshot grants stream mutation, which is the same grant the Host sandbox
+/// requires to mount the reserved worktree writable (`Profile::WorktreeWrite`).
+/// One fact decides both, so the harness's own sandbox policy and the outer
+/// Host sandbox cannot disagree about whether the worktree may be written.
+///
+/// A compiled dispatch always carries this grant — `Dispatch::compile`
+/// requires it — so the production external lane is writable; the false branch
+/// keeps the policy honest for a hand-built contract that does not grant it.
+fn workspace_is_writable(access: &AccessSnapshot) -> bool {
+    access.grants.contains(&Permission::MutateStream)
+}
+
 /// EventText permits 16 KiB; harness text may legally be larger, so event
 /// payloads truncate on a char boundary instead of failing. Truncation is
 /// visible (the marker), never silent.
@@ -912,6 +992,12 @@ mod tests {
         refusals: Vec<(String, ApprovalDecision)>,
         /// (kind, method) of everything sent, in order.
         sent: Vec<(&'static str, String)>,
+        /// The params of the most recent `call`, so a test can assert what
+        /// the driver told the harness (e.g. the sandbox policy).
+        last_params: Option<serde_json::Value>,
+        /// Optional per-poll delay, so a test can make silence outlast the
+        /// declared wall time instead of the frame-poll budget.
+        poll_delay: Option<std::time::Duration>,
         cursor: usize,
     }
     impl FixtureTransport {
@@ -930,6 +1016,8 @@ mod tests {
                 server_requests: server_requests.into(),
                 refusals: Vec::new(),
                 sent: Vec::new(),
+                last_params: None,
+                poll_delay: None,
                 cursor: 0,
             }
         }
@@ -938,9 +1026,10 @@ mod tests {
         fn call(
             &mut self,
             method: &str,
-            _params: &serde_json::Value,
+            params: &serde_json::Value,
         ) -> Result<serde_json::Value, DriverError> {
             self.sent.push(("request", method.to_owned()));
+            self.last_params = Some(params.clone());
             let index = self.cursor;
             self.cursor += 1;
             self.responses
@@ -953,6 +1042,9 @@ mod tests {
             Ok(())
         }
         fn recv_notification(&mut self) -> Result<Option<serde_json::Value>, DriverError> {
+            if let Some(delay) = self.poll_delay {
+                std::thread::sleep(delay);
+            }
             Ok(self.notifications.pop_front().flatten())
         }
         fn recv_server_request(&mut self) -> Result<Option<ServerRequest>, DriverError> {
@@ -1019,6 +1111,12 @@ mod tests {
     }
 
     fn dispatch(task: &Task) -> Dispatch {
+        dispatch_with(task, &fixture_limits())
+    }
+
+    /// A fixture dispatch whose declared limits the caller chooses, so the
+    /// wall-time deadline is observable independently of the defaults.
+    fn dispatch_with(task: &Task, limits: &ResourceLimits) -> Dispatch {
         let host_id = HostId::new("host").unwrap();
         let profile = RuntimeProfile {
             id: RuntimeProfileId::new("profile").unwrap(),
@@ -1104,7 +1202,7 @@ mod tests {
                 binding: &binding,
                 profile: &profile,
                 host: &host,
-                limits: &fixture_limits(),
+                limits,
                 minimum_enforcement: &std::collections::BTreeMap::new(),
                 now: Timestamp(10),
             },
@@ -1140,6 +1238,65 @@ mod tests {
             notifications,
             vec![],
         )
+    }
+
+    #[test]
+    fn the_harness_sandbox_policy_follows_the_contracts_write_grant() {
+        // The grant the Host sandbox needs for a writable bind also tells the
+        // harness its workspace is writable, so the two policies cannot
+        // disagree: one fact, one decision, from the contract.
+        let mut writable = session();
+        let mut transport = transport_with(Vec::new());
+        writable.begin_thread("/workspace", &mut transport).unwrap();
+        assert_eq!(
+            transport.last_params.as_ref().unwrap()["sandbox"],
+            "workspace-write"
+        );
+        assert_eq!(
+            transport.last_params.as_ref().unwrap()["approvalPolicy"],
+            "never",
+            "the contract's access snapshot stays the only permission authority"
+        );
+    }
+
+    #[test]
+    fn the_write_grant_is_the_one_decision_behind_the_harness_policy() {
+        let writable = AccessSnapshot {
+            project_id: ProjectId::new("project").unwrap(),
+            roots: BTreeSet::from([RootId::new("root").unwrap()]),
+            grants: BTreeSet::from([Permission::MutateStream]),
+            policy_revision: Revision(1),
+        };
+        assert!(workspace_is_writable(&writable));
+        let read_only = AccessSnapshot {
+            grants: BTreeSet::from([Permission::ReadRoot, Permission::ExecuteProcess]),
+            ..writable
+        };
+        assert!(!workspace_is_writable(&read_only));
+    }
+
+    #[test]
+    fn a_silent_harness_stops_at_the_declared_wall_time() {
+        let mut limits = fixture_limits();
+        limits.max_wall_time_ms = 30;
+        let mut session =
+            ExternalSession::new(&dispatch_with(&task(), &limits), Timestamp(20)).unwrap();
+        // No notifications at all: the harness accepts the turn and is silent.
+        // Each poll is delayed so the 17-minute silence budget cannot fire
+        // first; the declared wall time is the stop that must happen.
+        let mut transport = transport_with(Vec::new());
+        transport.poll_delay = Some(std::time::Duration::from_millis(5));
+        session.begin_thread("/workspace", &mut transport).unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            session.turn("implement the bounded change", &mut transport),
+            Err(DriverError::WallTimeExceeded)
+        ));
+        assert_eq!(session.run_summary().stopped, Some(StopKind::Failed));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the declared wall time bounds the turn, not the silence budget"
+        );
     }
 
     #[test]
