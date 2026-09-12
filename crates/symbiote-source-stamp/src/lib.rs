@@ -6,31 +6,45 @@
 //! other code. Comparing timestamps answers "was something touched after the
 //! build", which misses a real change whose timestamp is older than the binary
 //! (a restored file, a checkout with preserved times, a clock skew) and
-//! refuses a binary whose sources were only touched. This crate records the
-//! **content** instead, next to the binary the build produced:
+//! refuses a binary whose sources were only touched.
 //!
-//! * [`build_stamp`] is called from a `build.rs`. It walks the package's
-//!   normal and build dependency edges through `path = "..."` manifests,
-//!   hashes every `.rs` file they compile plus the manifests that shape them,
-//!   the package's own `build.rs` and the workspace lockfile, writes
-//!   `<target>/<profile>/<package>.source-stamp`, and asks cargo to rerun when
-//!   any of those files changes. The record sits beside the binary rather
-//!   than in `OUT_DIR` because the proof knows which binary it is about to
-//!   run and nothing else; `OUT_DIR` names a build-script invocation, not the
-//!   artifact that will be driven.
-//! * [`changed_sources`] is called by the proof. It re-hashes what the stamp
-//!   recorded and names every file whose content (or presence) differs, or
-//!   reports that the binary carries no stamp to check.
+//! This crate records the **content** instead, and binds the record to the
+//! artifact, so neither state can pass:
 //!
-//! The walk states what it covers rather than claiming the whole tree.
-//! Registry dependencies are outside it because `Cargo.lock`, which is inside
-//! it, pins them. Dev-dependency edges are outside it because nothing a binary
-//! compiles comes from them, and so are test, example and bench targets, which
-//! the binary's build does not compile. A file a crate consumes without
-//! compiling it — a fixture read with `include_str!`, say — is outside it too,
-//! and `src/` is walked for `.rs` files only.
+//! * [`build_stamp`] is called from a `build.rs`. For the package and every
+//!   workspace package it reaches through normal and build dependency edges it
+//!   records every file the package's binaries compile — everything under the
+//!   package that is not a test, example or bench target, whatever its
+//!   extension, because a compile can read a file no manifest mentions
+//!   (`include_str!("schema.sql")`) — together with the manifests, build
+//!   scripts and `Cargo.lock` that pin them. It hashes the content of all of
+//!   them, writes `<target>/<profile>/<package>.source-stamp`, tells cargo to
+//!   rerun the build script when any recorded file changes, and embeds the
+//!   record's own id in the binary it is about to compile.
+//! * [`changed_sources`] is called by the proof. It re-hashes what the record
+//!   holds and refuses a binary whose embedded id is not this record's — which
+//!   is what a failed compile leaves behind, since the record is written
+//!   before the crate is compiled — and names every file whose content (or
+//!   presence) differs.
+//!
+//! What the walk covers is stated rather than claimed whole. Test, example and
+//! bench targets are outside it because nothing a binary compiles comes from
+//! them, so a change there must not refuse a current binary. Registry
+//! dependencies are outside it because `Cargo.lock`, which is inside it, pins
+//! them, and dev-dependency edges are outside it because a binary compiles
+//! none of them. Files a package generates into its `OUT_DIR` are outside it
+//! too: their content comes from the build script, which is inside it. An
+//! input a package compiles from *outside* its own directory would be outside
+//! it, so the coverage was measured rather than assumed: cargo's own dep-info
+//! for both driven binaries lists 98 and 41 files, and every one of them is
+//! inside the packages this walk records (see the crate's tests for the
+//! fixture that pins the walk's shape). Cargo's dep-info is not read here
+//! because it is a private, versioned binary format that is written *after*
+//! the build script that must write the record, so it can neither populate a
+//! record on a first build nor be a completeness check the documented rebuild
+//! could ever clear.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -39,28 +53,58 @@ use sha2::{Digest, Sha256};
 /// in the profile directory that holds the binary.
 pub const STAMP_SUFFIX: &str = ".source-stamp";
 
+/// The marker a binary carries, followed by the id of the record it was built
+/// from. Written into the binary through `cargo:rustc-env`.
+pub const RECORD_MARKER: &str = "symbiote-source-record:";
+
+/// Directories under a package that its binaries do not compile. The targets
+/// cargo builds for tests, examples and benches are excluded because a change
+/// there must not refuse a current binary — no rebuild could clear that
+/// refusal, since a test file is not an input to the binary's build — and the
+/// rest is build output, dependency cache and version-control state.
+const UNCOMPILED_DIRECTORIES: [&str; 7] = [
+    ".git",
+    "benches",
+    "dist",
+    "examples",
+    "node_modules",
+    "target",
+    "tests",
+];
+
 /// Records the content of the sources this package's binaries are built from,
 /// next to the binaries, and asks cargo to rerun the build script when any of
 /// them changes. Call this from a build script's `main`.
 pub fn build_stamp() {
     let manifest_dir = PathBuf::from(environment("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(environment("OUT_DIR"));
-    let stamp = profile_directory(&out_dir)
-        .join(format!("{}{STAMP_SUFFIX}", environment("CARGO_PKG_NAME")));
+    let package = environment("CARGO_PKG_NAME");
+    let profile = profile_directory(&out_dir);
+    let stamp = profile.join(format!("{package}{STAMP_SUFFIX}"));
     let workspace = workspace_root(&manifest_dir)
         .unwrap_or_else(|problem| panic!("cannot record the sources under test: {problem}"));
 
+    let mut sources = BTreeSet::new();
+    for directory in closure_directories(&manifest_dir) {
+        sources.extend(package_sources(&directory));
+    }
+    let lockfile = workspace.join("Cargo.lock");
+    if lockfile.is_file() {
+        sources.insert(lockfile);
+    }
     let mut record = String::new();
-    for source in closure_sources(&manifest_dir, &workspace) {
-        let content = std::fs::read(&source)
+    for source in &sources {
+        let content = std::fs::read(source)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", source.display()));
         record.push_str(&format!(
             "{:x}\t{}\n",
             Sha256::digest(&content),
-            relative_to(&workspace, &source).display()
+            relative_to(&workspace, source).display()
         ));
         println!("cargo:rerun-if-changed={}", source.display());
     }
+    let id = format!("{:x}", Sha256::digest(record.as_bytes()));
+    println!("cargo:rustc-env=SYMBIOTE_SOURCE_RECORD={RECORD_MARKER}{id}");
     std::fs::write(&stamp, record).unwrap_or_else(|error| {
         panic!(
             "cannot write the source record at {}: {error}",
@@ -78,76 +122,90 @@ pub fn changed_sources(
     manifest_dir: &Path,
 ) -> Result<Vec<PathBuf>, String> {
     let stamp = binary.with_file_name(format!("{package}{STAMP_SUFFIX}"));
-    let recorded = read_stamp(&stamp)?;
+    let record = std::fs::read(&stamp)
+        .map_err(|error| format!("there is no source record at {} ({error})", stamp.display()))?;
+    let id = format!("{:x}", Sha256::digest(&record));
+    match embedded_record(binary) {
+        None => {
+            return Err(format!(
+                "the binary carries no build record, so it was not produced by the build that \
+                 wrote {}",
+                stamp.display()
+            ));
+        }
+        Some(embedded) if embedded != id => {
+            return Err(format!(
+                "the binary was built from record {embedded}, and the record beside it is {id}: \
+                 the build that wrote that record did not produce this binary"
+            ));
+        }
+        Some(_) => {}
+    }
+
     let workspace = workspace_root(manifest_dir)?;
+    let recorded = read_record(&record, &workspace)?;
     Ok(recorded
-        .into_iter()
-        .filter_map(|(path, hash)| {
-            let source = if Path::new(&path).is_absolute() {
-                PathBuf::from(&path)
-            } else {
-                workspace.join(&path)
-            };
-            (content_hash(&source).as_deref() != Some(hash.as_str())).then_some(source)
-        })
+        .iter()
+        .filter(|(source, hash)| content_hash(source).as_deref() != Some(hash.as_str()))
+        .map(|(source, _)| source.clone())
         .collect())
 }
-
-/// The files recorded in a stamp: `(path, sha256)` per line.
-fn read_stamp(stamp: &Path) -> Result<Vec<(String, String)>, String> {
-    let record = std::fs::read_to_string(stamp)
-        .map_err(|error| format!("there is no source record at {} ({error})", stamp.display()))?;
-    let mut recorded = Vec::new();
-    for line in record.lines().filter(|line| !line.is_empty()) {
+/// The sha256 of every file the record holds, keyed by the file itself, with a
+/// relative path resolved against the workspace. A line without both halves is
+/// reported rather than skipped: a record that lost one is not a shorter record
+/// but an unreadable one.
+fn read_record(record: &[u8], workspace: &Path) -> Result<BTreeMap<PathBuf, String>, String> {
+    let text =
+        std::str::from_utf8(record).map_err(|_| "the source record is not text".to_owned())?;
+    let mut recorded = BTreeMap::new();
+    for line in text.lines().filter(|line| !line.is_empty()) {
         let Some((hash, path)) = line.split_once('\t') else {
-            return Err(format!("{} is not a source record", stamp.display()));
+            return Err("the source record has a malformed line".to_owned());
         };
-        recorded.push((path.to_owned(), hash.to_owned()));
+        recorded.insert(workspace.join(path), hash.to_owned());
     }
     Ok(recorded)
 }
 
-/// The sha256 of a file's bytes, or `None` when it cannot be read — a file the
-/// build consumed and the tree no longer holds is a difference, not an error.
-fn content_hash(path: &Path) -> Option<String> {
-    std::fs::read(path)
-        .ok()
-        .map(|content| format!("{:x}", Sha256::digest(content)))
+/// The id a binary carries, read from the marker `build_stamp` embedded.
+fn embedded_record(binary: &Path) -> Option<String> {
+    let bytes = std::fs::read(binary).ok()?;
+    let marker = RECORD_MARKER.as_bytes();
+    let id_length = 64;
+    let start = bytes
+        .windows(marker.len() + id_length)
+        .position(|window| &window[..marker.len()] == marker)?;
+    let id = &bytes[start + marker.len()..start + marker.len() + id_length];
+    id.iter()
+        .all(u8::is_ascii_hexdigit)
+        .then(|| String::from_utf8(id.to_vec()).ok())?
 }
 
-/// Every source the binaries built from `manifest_dir` consume: the package,
-/// every workspace package it reaches through normal and build dependency
-/// edges, the lockfile that pins the rest, and nothing else.
-fn closure_sources(manifest_dir: &Path, workspace: &Path) -> Vec<PathBuf> {
-    let (mut pending, mut reached, mut sources) = (
-        vec![manifest_dir.to_path_buf()],
-        BTreeSet::new(),
-        BTreeSet::new(),
-    );
+/// Every workspace package directory reachable from `manifest_dir` through
+/// normal and build dependency edges, the package itself included.
+fn closure_directories(manifest_dir: &Path) -> Vec<PathBuf> {
+    let (mut pending, mut reached) = (vec![manifest_dir.to_path_buf()], BTreeSet::new());
     while let Some(directory) = pending.pop() {
         let directory = canonical(&directory);
         if !reached.insert(directory.clone()) {
             continue;
         }
-        sources.extend(package_sources(&directory));
         let manifest = std::fs::read_to_string(directory.join("Cargo.toml"))
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()));
         for dependency in path_dependencies(&manifest) {
             pending.push(directory.join(dependency));
         }
     }
-    let lockfile = workspace.join("Cargo.lock");
-    if lockfile.is_file() {
-        sources.insert(lockfile);
-    }
-    sources.into_iter().collect()
+    reached.into_iter().collect()
 }
 
-/// What one package's binaries compile: the `.rs` files under its `src`, the
-/// manifest that declares them, and its build script.
+/// Every file under a package that its binaries compile: all of the package
+/// except the directories in [`UNCOMPILED_DIRECTORIES`], whatever the file is
+/// called. Every file rather than `.rs` alone, because a compile can read a
+/// file no extension announces (`include_str!("schema.sql")`).
 fn package_sources(directory: &Path) -> Vec<PathBuf> {
-    let mut sources = Vec::new();
-    let mut directories = vec![directory.join("src")];
+    let mut sources = BTreeSet::new();
+    let mut directories = vec![directory.to_path_buf()];
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(&directory)
             .into_iter()
@@ -155,24 +213,19 @@ fn package_sources(directory: &Path) -> Vec<PathBuf> {
             .flatten()
         {
             let name = entry.file_name().to_string_lossy().to_string();
+            if UNCOMPILED_DIRECTORIES.contains(&name.as_str()) {
+                continue;
+            }
             match entry.file_type() {
-                Ok(kind) if kind.is_dir() => {
-                    if !matches!(name.as_str(), "target" | "node_modules" | "dist" | ".git") {
-                        directories.push(entry.path());
-                    }
+                Ok(kind) if kind.is_dir() => directories.push(entry.path()),
+                Ok(_) => {
+                    sources.insert(entry.path());
                 }
-                _ if name.ends_with(".rs") => sources.push(entry.path()),
                 _ => {}
             }
         }
     }
-    for name in ["Cargo.toml", "build.rs"] {
-        let file = directory.join(name);
-        if file.is_file() {
-            sources.push(file);
-        }
-    }
-    sources
+    sources.into_iter().collect()
 }
 
 /// The `path = "..."` values of a manifest's dependency tables. Dev-dependency
@@ -251,6 +304,14 @@ fn profile_directory(out_dir: &Path) -> PathBuf {
         .to_path_buf()
 }
 
+/// The sha256 of a file's bytes, or `None` when it cannot be read — a file the
+/// build consumed and the tree no longer holds is a difference, not an error.
+fn content_hash(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|content| format!("{:x}", Sha256::digest(content)))
+}
+
 fn relative_to(workspace: &Path, source: &Path) -> PathBuf {
     source
         .strip_prefix(workspace)
@@ -276,6 +337,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("a temporary directory");
         directory
+    }
+
+    fn record_for(root: &Path, files: &[(&str, &str)]) -> (PathBuf, String) {
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\n[package]\nname = \"symbiote-example\"\n",
+        )
+        .expect("the root manifest");
+        let mut record = String::new();
+        for (path, content) in files {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+            std::fs::write(&file, content).expect("the source");
+            record.push_str(&format!(
+                "{:x}\t{path}\n",
+                Sha256::digest(content.as_bytes())
+            ));
+        }
+        let stamp = root.join("symbiote-example.source-stamp");
+        std::fs::write(&stamp, &record).expect("the record");
+        let id = format!("{:x}", Sha256::digest(record.as_bytes()));
+        let binary = root.join("symbiote-example");
+        std::fs::write(
+            &binary,
+            format!("binary bytes before {RECORD_MARKER}{id} and after"),
+        )
+        .expect("the binary");
+        (binary, id)
     }
 
     #[test]
@@ -337,39 +426,100 @@ path = \"src/bin/example.rs\"
     }
 
     #[test]
+    fn every_compiled_file_is_recorded_and_test_targets_are_not() {
+        let root = fixture("walk");
+        for path in [
+            "src/lib.rs",
+            "src/schema.sql",
+            "Cargo.toml",
+            "build.rs",
+            "assets/logo.svg",
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+            std::fs::write(&file, "content").expect("the source");
+        }
+        for path in [
+            "tests/process.rs",
+            "examples/demo.rs",
+            "benches/speed.rs",
+            "target/debug/leftover",
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+            std::fs::write(&file, "content").expect("the target");
+        }
+        let sources = package_sources(&root);
+        for path in [
+            "src/lib.rs",
+            "src/schema.sql",
+            "Cargo.toml",
+            "build.rs",
+            "assets/logo.svg",
+        ] {
+            assert!(
+                sources.contains(&root.join(path)),
+                "{path} is an input to the binary's build and must be recorded"
+            );
+        }
+        for path in [
+            "tests/process.rs",
+            "examples/demo.rs",
+            "benches/speed.rs",
+            "target/debug/leftover",
+        ] {
+            assert!(
+                !sources.contains(&root.join(path)),
+                "{path} is not compiled into the binary, so recording it would refuse a \
+                 current binary for a change no rebuild could clear"
+            );
+        }
+    }
+
+    #[test]
     fn a_recorded_source_whose_content_differs_is_named() {
         let root = fixture("changed");
-        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").expect("the root manifest");
-        let source = root.join("crate/src/lib.rs");
-        std::fs::create_dir_all(source.parent().expect("src")).expect("src");
-        std::fs::write(&source, "one\n").expect("the source");
-        let stamp = root.join("symbiote-example.source-stamp");
+        let (binary, _) = record_for(&root, &[("src/lib.rs", "one\n")]);
+        assert!(
+            changed_sources(&binary, "symbiote-example", &root)
+                .expect("a readable record")
+                .is_empty()
+        );
+
+        std::fs::write(root.join("src/lib.rs"), "two\n").expect("the changed source");
+        assert_eq!(
+            changed_sources(&binary, "symbiote-example", &root).expect("a readable record"),
+            [root.join("src/lib.rs")]
+        );
+
+        std::fs::remove_file(root.join("src/lib.rs")).expect("the removed source");
+        assert_eq!(
+            changed_sources(&binary, "symbiote-example", &root).expect("a readable record"),
+            [root.join("src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn a_binary_from_another_record_is_refused() {
+        let root = fixture("other-record");
+        let (binary, _) = record_for(&root, &[("src/lib.rs", "one\n")]);
         std::fs::write(
-            &stamp,
+            &binary,
             format!(
-                "{:x}\tcrate/src/lib.rs\n",
-                Sha256::digest(std::fs::read(&source).expect("the source"))
+                "binary bytes before {RECORD_MARKER}{} and after",
+                "0".repeat(64)
             ),
         )
-        .expect("the stamp");
-
-        let unchanged = changed_sources(&root.join("symbiote-example"), "symbiote-example", &root)
-            .expect("a readable record");
-        assert!(unchanged.is_empty());
-
-        std::fs::write(&source, "two\n").expect("the changed source");
-        assert_eq!(
-            changed_sources(&root.join("symbiote-example"), "symbiote-example", &root)
-                .expect("a readable record"),
-            vec![source.clone()]
+        .expect("another binary");
+        let problem = changed_sources(&binary, "symbiote-example", &root).expect_err("a mismatch");
+        assert!(
+            problem.contains("the build that wrote that record did not produce"),
+            "{problem}"
         );
 
-        std::fs::remove_file(&source).expect("the removed source");
-        assert_eq!(
-            changed_sources(&root.join("symbiote-example"), "symbiote-example", &root)
-                .expect("a readable record"),
-            [root.join("crate/src/lib.rs")]
-        );
+        std::fs::write(&binary, "no record here").expect("a binary without a record");
+        let problem = changed_sources(&binary, "symbiote-example", &root).expect_err("none");
+        assert!(problem.contains("carries no build record"), "{problem}");
     }
 
     #[test]

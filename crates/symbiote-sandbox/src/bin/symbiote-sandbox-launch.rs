@@ -1,5 +1,15 @@
 //! Trusted, single-threaded descriptor boundary before bubblewrap. No untrusted
 //! code executes until every inherited descriptor other than stdio is closed.
+
+/// The id of the source record this build wrote, embedded in the binary so a
+/// proof can tell which record produced the launcher it is about to drive
+/// rather than trusting a record a failed compile may have refreshed. It lives
+/// in the binary's root because a static in the library is dropped when this
+/// crate links it without referencing it. See `symbiote-source-stamp`.
+#[used]
+#[doc(hidden)]
+static SOURCE_RECORD: &str = env!("SYMBIOTE_SOURCE_RECORD");
+
 use std::os::unix::{ffi::OsStrExt, process::CommandExt};
 
 fn run() -> Result<(), ()> {
