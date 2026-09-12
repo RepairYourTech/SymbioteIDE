@@ -968,6 +968,14 @@ fn start_command(task: &Task, role: &Role) -> TaskCommand {
         })
         .collect(),
     };
+    // The limits the dispatch records: fixture values, recorded not enforced.
+    let limits = ResourceLimits {
+        max_total_tokens: 100_000,
+        max_wall_time_ms: 60_000,
+        max_concurrency: 1,
+        max_memory_bytes: 1 << 30,
+        max_cpu_millicores: None,
+    };
     let dispatch = Dispatch::compile(
         id!(DispatchId, "dispatch"),
         id!(RuntimeContractId, "runtime-contract"),
@@ -977,6 +985,7 @@ fn start_command(task: &Task, role: &Role) -> TaskCommand {
             binding: &binding,
             profile: &profile,
             host: &host,
+            limits: &limits,
             minimum_enforcement: &std::collections::BTreeMap::new(),
             now: Timestamp(10),
         },

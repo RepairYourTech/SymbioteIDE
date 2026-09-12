@@ -73,6 +73,10 @@ pub struct ShellExecutorInputs<'a> {
     pub access: &'a symbiote_domain::AccessSnapshot,
     /// The consenting principal (the daemon's local owner).
     pub user_id: &'a symbiote_domain::UserId,
+    /// The bound the dispatch's declared limits reduce to: the memory ceiling
+    /// every process this run spawns is launched with. It comes from the
+    /// dispatch contract's recorded limits, never from loop or model input.
+    pub bound: symbiote_domain::ProcessBound,
 }
 
 /// Builds one shell executor per native run. Production installs the
@@ -1608,6 +1612,7 @@ mod tests {
             profile_id: &symbiote_domain::RuntimeProfileId::new("profile-shell-buildref").unwrap(),
             access: dispatch.contract().effective_access(),
             user_id: &symbiote_domain::UserId::new("owner").unwrap(),
+            bound: dispatch.contract().limits().process_bound().unwrap(),
         };
         assert!(matches!(
             transports.shell_build(inputs),
@@ -2680,6 +2685,7 @@ mod tests {
                     binding: &binding.binding,
                     profile: &binding.primary.profile,
                     host,
+                    limits: &binding.primary.limits,
                     minimum_enforcement: &std::collections::BTreeMap::new(),
                     now: Timestamp(40),
                 },
@@ -3364,6 +3370,7 @@ impl ShellExecutorFactory for SandboxShellExecutorFactory {
             profile_id: inputs.profile_id.clone(),
             access: inputs.access.clone(),
             user_id: inputs.user_id.clone(),
+            bound: inputs.bound,
         }))
     }
 }

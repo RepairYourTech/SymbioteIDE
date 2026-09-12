@@ -744,6 +744,7 @@ fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
             binding: &binding.binding,
             profile: &binding.primary.profile,
             host: &host,
+            limits: &binding.primary.limits,
             minimum_enforcement: &std::collections::BTreeMap::new(),
             now: Timestamp(35),
         },

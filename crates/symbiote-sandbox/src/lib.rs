@@ -44,6 +44,9 @@ pub enum SandboxError {
     PermissionDenied,
     UnsupportedEntry,
     ResourceLimit,
+    /// A requested process bound cannot be expressed by the launcher (a zero
+    /// address-space ceiling). Refused rather than launched unbounded.
+    UnrepresentableLimit,
     Unavailable,
     SetupFailed(SetupFailure),
     Transport(TransportError),
@@ -143,6 +146,13 @@ pub struct LaunchRequest<'a> {
     pub program: &'a str,
     pub args: &'a [String],
     pub limits: TransportLimits,
+    /// The address-space ceiling (`RLIMIT_AS`) applied inside the sandbox to
+    /// the launched process and everything it starts: the declared memory bound
+    /// of the dispatch this launch serves. The launcher and bubblewrap keep
+    /// their own address space — the bound binds what the dispatch runs, not
+    /// the mechanism that contains it. Zero is refused, never launched without
+    /// a bound.
+    pub address_space_bytes: u64,
 }
 
 /// The descriptor includes the absolute worktree, Root, command and fixed policy version.
@@ -313,7 +323,24 @@ impl SandboxProcess {
     }
 }
 
+/// The in-sandbox prologue: announce readiness (the launcher's handshake), then
+/// apply the declared address-space ceiling as a real kernel limit — inherited
+/// by every descendant — and only then exec the command. A bound the shell
+/// cannot set is fatal (`exit 125`) instead of a silent run without it: this is
+/// the one place the declared memory limit becomes an enforced one, so failing
+/// open is not an option.
+fn prologue(address_space_bytes: u64) -> Result<String> {
+    let kib = address_space_bytes.div_ceil(1024);
+    if kib == 0 {
+        return Err(SandboxError::UnrepresentableLimit);
+    }
+    Ok(format!(
+        "printf '%s\\n' '{{\"symbiote_sandbox_ready\":1}}'; ulimit -v {kib} || exit 125; exec \"$@\""
+    ))
+}
+
 pub fn launch(request: LaunchRequest<'_>) -> Result<SandboxProcess> {
+    let prologue = prologue(request.address_space_bytes)?;
     validate_helper(request.helper_path)?;
     authorize_load(
         request.consent,
@@ -426,12 +453,12 @@ pub fn launch(request: LaunchRequest<'_>) -> Result<SandboxProcess> {
             "--",
             "/usr/bin/sh",
             "-c",
-            "printf '%s\\n' '{\"symbiote_sandbox_ready\":1}'; exec \"$@\"",
-            "symbiote",
         ]
         .into_iter()
         .map(OsString::from),
     );
+    args.push(prologue.into());
+    args.push(OsString::from("symbiote"));
     args.push(request.program.into());
     args.extend(request.args.iter().map(OsString::from));
     let mut transport = JsonlTransport::spawn(

@@ -61,6 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &inputs[2..],
         profile,
         symbiote_runtime_transport::TransportLimits::default(),
+        // The ceiling the pinned harness runs under: the smoke proof uses a
+        // fixture dispatch, so the bound is the one its limits would reduce to.
+        1 << 30,
     ) {
         Ok(server) => server,
         Err(error) => {
@@ -200,6 +203,13 @@ fn smoke_dispatch(task: &Task) -> Result<Dispatch, Box<dyn std::error::Error>> {
             binding: &binding,
             profile: &profile,
             host: &host,
+            limits: &ResourceLimits {
+                max_total_tokens: 100_000,
+                max_wall_time_ms: 60_000,
+                max_concurrency: 1,
+                max_memory_bytes: 1 << 30,
+                max_cpu_millicores: None,
+            },
             minimum_enforcement: &std::collections::BTreeMap::new(),
             now: Timestamp(2),
         },

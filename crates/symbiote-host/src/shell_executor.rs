@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use symbiote_domain::{
-    AccessSnapshot, HostId, ProjectId, RoleId, RootId, RuntimeProfileId, Timestamp,
+    AccessSnapshot, HostId, ProcessBound, ProjectId, RoleId, RootId, RuntimeProfileId, Timestamp,
 };
 use symbiote_native_agent::tools::{ShellInvocation, ShellToolExecutor, ToolExecError};
 use symbiote_runtime_transport::TransportError;
@@ -232,6 +232,10 @@ pub struct SandboxShellExecutor {
     pub access: AccessSnapshot,
     /// The consenting principal (the daemon's local owner).
     pub user_id: symbiote_domain::UserId,
+    /// The bound this dispatch's declared limits reduce to: every tool process
+    /// is launched with it, so the execution the dispatch produces is bounded
+    /// by what it declared rather than by nothing.
+    pub bound: ProcessBound,
 }
 
 impl SandboxShellExecutor {
@@ -326,6 +330,7 @@ impl ShellToolExecutor for SandboxShellExecutor {
             program: &program,
             args: &args,
             limits: symbiote_runtime_transport::TransportLimits::default(),
+            address_space_bytes: self.bound.address_space_bytes,
         })
         .map_err(execution)?;
         let deadline = Instant::now() + SHELL_DEADLINE;
@@ -530,6 +535,14 @@ mod tests {
         }
     }
 
+    /// The bound a fixture dispatch's declared limits reduce to: roomy enough
+    /// that the tool output tests are about capture, not about the ceiling.
+    fn fixture_bound() -> ProcessBound {
+        ProcessBound {
+            address_space_bytes: 1 << 30,
+        }
+    }
+
     fn echo_access(project: &ProjectId, root: &RootId) -> AccessSnapshot {
         AccessSnapshot {
             project_id: project.clone(),
@@ -667,6 +680,7 @@ mod tests {
             profile_id: RuntimeProfileId::new("profile-shell-e2e").unwrap(),
             user_id: symbiote_domain::UserId::new("operator").unwrap(),
             access,
+            bound: fixture_bound(),
         };
         let (output, exit) = executor
             .run_shell(&invocation("echo", &["hello-symbiote"]), &fixture.worktree)
@@ -707,6 +721,7 @@ mod tests {
             profile_id: RuntimeProfileId::new("profile-shell-e2e").unwrap(),
             user_id: symbiote_domain::UserId::new("operator").unwrap(),
             access,
+            bound: fixture_bound(),
         };
         // PermissionDenied at the sandbox surfaces as Execution (launch
         // failures halt for Host retry policy; only authority refusals
@@ -737,6 +752,7 @@ mod tests {
             profile_id: RuntimeProfileId::new("profile-shell-e2e").unwrap(),
             user_id: symbiote_domain::UserId::new("operator").unwrap(),
             access,
+            bound: fixture_bound(),
         };
         // `sh` is not in the consented shape: the authority refuses and the
         // executor surfaces Refused without any sandbox launch.

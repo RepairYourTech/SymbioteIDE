@@ -22,6 +22,9 @@ pub mod cli_authorization;
 pub(crate) mod context_resolution;
 mod identity;
 mod inventory;
+/// Declared resource limits and the bound the Host applies for them: the
+/// dispatch's intent beside the Host's answer, consulted before anything runs.
+pub mod limits;
 /// Operator provisioning (#54): the explicit configuration file that turns
 /// dispatch activation into a working execution path.
 pub mod operator;

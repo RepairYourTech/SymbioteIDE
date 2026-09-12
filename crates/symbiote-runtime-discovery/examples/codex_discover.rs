@@ -80,6 +80,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         worktree: &inputs[1],
         protected_paths: &inputs[2..],
         profile: Profile::ReadOnly,
+        // The declared memory bound of the dispatch this probe stands in for.
+        address_space_bytes: 1 << 30,
         program: "/usr/bin/codex",
         args: &args,
         limits: TransportLimits::default(),

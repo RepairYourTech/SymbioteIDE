@@ -886,6 +886,18 @@ mod tests {
     use super::*;
     use std::collections::{BTreeSet, VecDeque};
 
+    /// The limits a fixture dispatch is staffed with. The contract records
+    /// them; nothing here enforces them.
+    fn fixture_limits() -> ResourceLimits {
+        ResourceLimits {
+            max_total_tokens: 100_000,
+            max_wall_time_ms: 60_000,
+            max_concurrency: 1,
+            max_memory_bytes: 1 << 30,
+            max_cpu_millicores: None,
+        }
+    }
+
     /// Deterministic offline fixture server: scripted frames consumed in
     /// order. Calls, notifications and refusals are recorded for assertions.
     /// Not a mock of verification — the driver's real logic runs against it.
@@ -1092,6 +1104,7 @@ mod tests {
                 binding: &binding,
                 profile: &profile,
                 host: &host,
+                limits: &fixture_limits(),
                 minimum_enforcement: &std::collections::BTreeMap::new(),
                 now: Timestamp(10),
             },
@@ -1761,6 +1774,7 @@ mod tests {
                 binding: &binding,
                 profile: &profile,
                 host: &host,
+                limits: &fixture_limits(),
                 minimum_enforcement: &std::collections::BTreeMap::new(),
                 now: Timestamp(10),
             },

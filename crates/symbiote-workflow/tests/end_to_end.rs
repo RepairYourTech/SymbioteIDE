@@ -124,6 +124,26 @@ fn git(repo: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+/// The demo's fixture tool: the command the fixture transport proposes and
+/// the sandboxed shell executor runs inside the reserved worktree.
+const FIXTURE_TOOL_COMMAND: &str = "printf worker-output > produced.txt";
+
+/// A tool that asks its own process what it is bound by: the address-space
+/// ceiling the dispatch's declared limits reduce to, and whether an allocation
+/// under that ceiling and one past it are granted. The answers are written into
+/// the worktree, so the host reads what the dispatch's own process observed.
+const BOUND_PROBE_COMMAND: &str = r#"printf '%s' "$(ulimit -v)" > observed.txt; /usr/bin/python3 - <<'PY'
+import json, resource
+soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+def probe(n):
+    try:
+        return len(bytearray(n))
+    except MemoryError:
+        return None
+json.dump({"soft": soft, "under": probe(64 << 20), "over": probe(400 << 20)}, open("probe.json", "w"))
+PY
+"#;
+
 /// The operator configuration for the demo: reservation base, the
 /// explicitly labeled fixture model transport proposing one shell tool,
 /// the fixture credential registration, and the shell program allowlist.
@@ -132,6 +152,7 @@ fn write_operator_config(
     path: &std::path::Path,
     reservation_base: &std::path::Path,
     launcher: &std::path::Path,
+    tool_command: &str,
     with_external_fixture: bool,
 ) {
     let mut config = serde_json::json!({
@@ -140,8 +161,7 @@ fn write_operator_config(
             "echo_text": symbiote_workflow::demo::FIXTURE_REPORT,
             "tool": {"call_id": "call-produce",
                 "arguments": {"program": "sh",
-                    "arguments": ["-c",
-                        "printf worker-output > produced.txt"]}}
+                    "arguments": ["-c", tool_command]}}
         },
         "credential_broker": [
             {"reference": "native-vault-ref",
@@ -198,7 +218,13 @@ fn demo_environment(tag: &str) -> DemoEnv {
     let repo = make_repo(&scratch.join("repo"), "demo repository\n");
     let repo_b = make_repo(&scratch.join("repo-b"), "second project repository\n");
     let config_path = scratch.join("operator-config.json");
-    write_operator_config(&config_path, &reservation_base, &launcher_binary(), true);
+    write_operator_config(
+        &config_path,
+        &reservation_base,
+        &launcher_binary(),
+        FIXTURE_TOOL_COMMAND,
+        true,
+    );
     DemoEnv {
         scratch,
         state_dir,
@@ -495,7 +521,13 @@ fn an_external_binding_refuses_to_start_without_operator_provisioned_harness_sup
 
     // Overwrite the shared config with one that does NOT provision the
     // external execution path.
-    write_operator_config(config_path, reservation_base, &launcher_binary(), false);
+    write_operator_config(
+        config_path,
+        reservation_base,
+        &launcher_binary(),
+        FIXTURE_TOOL_COMMAND,
+        false,
+    );
     // The daemon stays alive for the whole test; its Drop cleans up.
     let _daemon = Daemon::spawn(state_dir, config_path);
     let mut workflow = symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, repo)
@@ -877,4 +909,66 @@ fn positions_track_two_projects_and_both_lanes_across_a_daemon_crash() {
         Some(symbiote_workflow::demo::FIXTURE_REPORT)
     );
     assert_ne!(a.worktree.worktree, b.worktree.worktree);
+}
+
+/// A started dispatch's execution is bound by the limits it declared: the
+/// process the dispatch's own tool runs in carries the candidate's declared
+/// memory ceiling as a real kernel limit, an allocation under it is granted,
+/// and one past it fails even though this machine has far more memory than the
+/// declaration. The number asserted is read from the same committed fixture the
+/// demo composes the staffing candidate from, so a bound that drifts from the
+/// declaration fails here.
+#[test]
+fn a_started_dispatch_runs_its_tools_under_the_declared_memory_bound() {
+    let env = demo_environment("declared-bound");
+    let state_dir = &env.state_dir;
+    let reservation_base = &env.reservation_base;
+    let config_path = &env.config_path;
+    // The declared ceiling, straight from the fixture the demo staffs from.
+    let declared: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/configure.json"
+    ))
+    .expect("binding fixture");
+    let declared = declared["operation"]["configuration"]["primary"]["limits"]["max_memory_bytes"]
+        .as_u64()
+        .expect("the fixture candidate declares a memory limit");
+    // The operator's fixture transport proposes the probe tool instead of the
+    // demo's producer: the rest of the composition is unchanged.
+    write_operator_config(
+        config_path,
+        reservation_base,
+        &launcher_binary(),
+        BOUND_PROBE_COMMAND,
+        true,
+    );
+
+    let _daemon = Daemon::spawn(state_dir, config_path);
+    let mut workflow =
+        symbiote_workflow::DemoWorkflow::connect(state_dir, reservation_base, &env.repo)
+            .expect("connect");
+    let dispatch_id = workflow.start_demo().expect("demo start half");
+    let outcome = workflow
+        .finish_demo(&dispatch_id)
+        .expect("demo finish half");
+
+    let observed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.worktree.worktree.join("probe.json"))
+            .expect("the tool's own observation of its bound"),
+    )
+    .expect("probe json");
+    assert_eq!(
+        observed["soft"].as_u64(),
+        Some(declared),
+        "the tool process carries the dispatch's declared memory ceiling: {observed}"
+    );
+    assert_eq!(
+        observed["under"].as_u64(),
+        Some(64 << 20),
+        "an allocation under the declared ceiling is granted: {observed}"
+    );
+    assert_eq!(
+        observed["over"],
+        serde_json::Value::Null,
+        "an allocation past the declared ceiling fails, though the machine has far more memory: {observed}"
+    );
 }

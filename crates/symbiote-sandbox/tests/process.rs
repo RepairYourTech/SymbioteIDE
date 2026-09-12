@@ -20,6 +20,7 @@ struct Fixture {
     base: PathBuf,
     worktree: PathBuf,
     protected: Vec<PathBuf>,
+    bound_bytes: u64,
 }
 impl Fixture {
     fn new() -> Self {
@@ -45,6 +46,9 @@ impl Fixture {
             base,
             worktree,
             protected: vec![host],
+            // The address-space ceiling every launch in these tests carries
+            // unless a test narrows it: roomy enough for the tools under test.
+            bound_bytes: 1 << 30,
         }
     }
     fn consent(&self, profile: Profile, args: &[String]) -> ResourceConsent {
@@ -103,6 +107,7 @@ impl Fixture {
             program: "/usr/bin/python3",
             args,
             limits: TransportLimits::default(),
+            address_space_bytes: self.bound_bytes,
         }
     }
 }
@@ -177,6 +182,67 @@ print(json.dumps(result),flush=True)
         Some("HOME" | "PATH" | "TMPDIR" | "PWD" | "LC_CTYPE" | "SHLVL" | "_")
     )));
     assert!(!fixture.worktree.join("output").exists());
+}
+
+/// The declared memory bound is a real kernel ceiling on the process the
+/// dispatch runs, not a number recorded beside it: the same reservation that
+/// fails under a narrow bound succeeds under a roomy one. The reserved pages
+/// are never touched, so the proof costs address space, not memory.
+#[test]
+fn the_declared_memory_bound_binds_the_sandboxed_process() {
+    let script = r#"import json,resource,sys
+size=int(sys.argv[1])
+soft,hard=resource.getrlimit(resource.RLIMIT_AS)
+try:
+    block=bytearray(size)
+    granted=len(block)
+    del block
+except MemoryError:
+    granted=None
+print(json.dumps({'soft':soft,'granted':granted}),flush=True)
+"#;
+    let demand: u64 = 256 << 20;
+    let request = vec!["-c".into(), script.into(), demand.to_string()];
+    // A narrow declared bound: the process carries exactly what the dispatch
+    // declared, and an allocation past it fails rather than being granted.
+    let mut narrow = Fixture::new();
+    narrow.bound_bytes = 128 << 20;
+    let consent = narrow.consent(Profile::ReadOnly, &request);
+    let mut child = launch_ready(narrow.request(&consent, Profile::ReadOnly, &request));
+    let observed = child.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        observed["soft"],
+        serde_json::json!(128_u64 << 20),
+        "the declared bound is the process's own limit: {observed}"
+    );
+    assert_eq!(observed["granted"], serde_json::Value::Null, "{observed}");
+    // The same demand under a roomy declared bound succeeds: the refusal above
+    // is the declared limit, not the machine's memory.
+    let mut roomy = Fixture::new();
+    roomy.bound_bytes = 512 << 20;
+    let consent = roomy.consent(Profile::ReadOnly, &request);
+    let mut child = launch_ready(roomy.request(&consent, Profile::ReadOnly, &request));
+    let observed = child.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        observed["soft"],
+        serde_json::json!(512_u64 << 20),
+        "{observed}"
+    );
+    assert_eq!(observed["granted"], serde_json::json!(demand), "{observed}");
+}
+
+/// A bound the launcher cannot express refuses the launch: there is no path
+/// that starts a dispatch's process without the ceiling it declared.
+#[test]
+fn a_bound_the_launcher_cannot_express_is_refused_before_any_process_starts() {
+    let mut fixture = Fixture::new();
+    fixture.bound_bytes = 0;
+    let args = vec!["-c".into(), "print('never runs')".into()];
+    let consent = fixture.consent(Profile::ReadOnly, &args);
+    assert!(matches!(
+        launch(fixture.request(&consent, Profile::ReadOnly, &args)),
+        Err(SandboxError::UnrepresentableLimit)
+    ));
 }
 
 #[test]
@@ -399,6 +465,7 @@ fn sandbox_owner_death_child() {
         worktree: base.join("worktree"),
         protected: vec![base.join("host")],
         base,
+        bound_bytes: 1 << 30,
     };
     let args=vec!["-c".into(),"import os,time\nif os.fork()==0:\n os.setsid()\n deadline=time.monotonic()+10\n while time.monotonic()<deadline:\n  with open('/workspace/owner-heartbeat','ab') as f:f.write(b'x')\n  time.sleep(.01)\n os._exit(0)\ntime.sleep(10)".into()];
     let consent = fixture.consent(Profile::WorktreeWrite, &args);
