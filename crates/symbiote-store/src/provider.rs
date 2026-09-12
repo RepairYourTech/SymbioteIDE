@@ -84,7 +84,10 @@ pub(super) fn read(connection: &Connection, id: &str) -> Result<Option<Connectio
     Ok(Some(record))
 }
 
-fn read_entitlement(connection: &Connection, id: &str) -> Result<Option<EntitlementRecord>> {
+pub(super) fn read_entitlement(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<EntitlementRecord>> {
     let (provider, body): (String, String) = match connection
         .query_row(
             "SELECT provider, body FROM billing_entitlements WHERE id=?1",
@@ -105,7 +108,7 @@ fn read_entitlement(connection: &Connection, id: &str) -> Result<Option<Entitlem
     Ok(Some(record))
 }
 
-fn read_model(connection: &Connection, id: &str) -> Result<Option<ModelRecord>> {
+pub(super) fn read_model(connection: &Connection, id: &str) -> Result<Option<ModelRecord>> {
     let (provider, body): (String, String) = match connection
         .query_row(
             "SELECT provider, body FROM model_descriptors WHERE id=?1",

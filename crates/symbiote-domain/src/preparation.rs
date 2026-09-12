@@ -1,8 +1,9 @@
 //! Dispatch preparation: compose the merged primitives into one durable,
 //! explainable dispatch record. A `DispatchPreparation` binds the scheduler
 //! projection, the routed Role, the task's lease binding, the stream's
-//! reserved worktree identity, and the validated provider binding that the
-//! dispatch's runtime profile resolves to. Compilation into a live
+//! reserved worktree identity, and the provider registration that the
+//! dispatch's runtime profile names and the registry validates — or the
+//! typed reason it could not. Compilation into a live
 //! `Dispatch` + `Start` transition happens separately in the Host; this layer
 //! is the durable, journaled record of the composition and its refusals.
 use crate::*;
@@ -24,11 +25,63 @@ pub enum PreparationOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompositionStep {
-    Scheduling { schedulable: bool },
-    Routing { resolved: Option<RoleId> },
-    Lease { held: bool },
-    Worktree { declared: bool },
-    Provider { validated: bool },
+    Scheduling {
+        schedulable: bool,
+    },
+    Routing {
+        resolved: Option<RoleId>,
+    },
+    Lease {
+        held: bool,
+    },
+    Worktree {
+        declared: bool,
+    },
+    Provider {
+        validated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refusal: Option<ProviderRefusal>,
+    },
+}
+
+/// Why the provider registration a dispatch profile names could not be
+/// validated. Registry-owned facts only: credential material and verified
+/// endpoint locality are execution-time Host concerns and never appear here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRefusal {
+    /// No workforce binding resolved for the task's Role, so there is no
+    /// runtime profile to validate.
+    UnresolvedProfile,
+    /// The profile names a connection the registry does not hold.
+    MissingConnection,
+    /// The profile names an entitlement the registry does not hold.
+    MissingEntitlement,
+    /// The profile names a model descriptor the registry does not hold.
+    MissingModel,
+    /// The stored descriptor declares an unsupported provider contract version.
+    UnsupportedVersion,
+    /// The stored descriptor's own token bounds are invalid.
+    InvalidDescriptor,
+    /// Profile, connection, entitlement and model identities disagree.
+    BindingMismatch,
+    /// The entitlement is expired at preparation time.
+    ExpiredEntitlement,
+    /// The authentication/billing combination is not supported.
+    UnsupportedAuthenticationBilling,
+}
+
+/// The provider registration resolved for a task's dispatch profile, and
+/// whether the registry proved it usable. The identities are the profile's
+/// declared ones, so a refused preparation still names what it refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderResolution {
+    pub connection: ProviderConnectionId,
+    pub model: ModelId,
+    /// Present exactly when the registration did not validate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<ProviderRefusal>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -48,7 +101,8 @@ pub struct DispatchPreparation {
     /// The stream's reserved worktree identity and branch.
     pub worktree_id: Option<WorktreeId>,
     pub branch: Option<String>,
-    /// The provider binding resolved for the task's dispatch profile.
+    /// The provider identities the task's dispatch profile names. Present
+    /// whenever a profile resolved, even when its registration was refused.
     pub provider_connection: Option<ProviderConnectionId>,
     pub model_id: Option<ModelId>,
     pub compiled_at: Timestamp,
@@ -58,15 +112,12 @@ impl DispatchPreparation {
     /// Pure aggregation of already-resolved authoritative inputs. The Host
     /// resolves everything from storage; no field is client-supplied.
     #[allow(clippy::too_many_arguments)]
-    /// Pure aggregation of already-resolved authoritative inputs. The Host
-    /// resolves everything from storage; no field is client-supplied.
-    #[allow(clippy::too_many_arguments)]
     pub fn compose(
         task: &Task,
         routed_role: Option<RoleId>,
         lease: Option<(&DispatchId, u64)>,
         stream: &ChangeStream,
-        provider: Option<(&ProviderConnectionId, &ModelId)>,
+        provider: Option<ProviderResolution>,
         at: Timestamp,
     ) -> Self {
         let mut steps = Vec::new();
@@ -87,11 +138,19 @@ impl DispatchPreparation {
         // The stream row declares the worktree identity; filesystem
         // reservation is issue 211's separate concern and is NOT checked here.
         steps.push(CompositionStep::Worktree { declared: true });
-        let provider_resolved = provider.is_some();
+        // The provider step is earned by the registry validating the
+        // profile's stored connection/entitlement/model registration, not by
+        // the presence of a profile. A refused registration is recorded with
+        // its reason and refuses the composition.
+        let refusal = match &provider {
+            None => Some(ProviderRefusal::UnresolvedProfile),
+            Some(resolution) => resolution.refusal,
+        };
         steps.push(CompositionStep::Provider {
-            validated: provider_resolved,
+            validated: refusal.is_none(),
+            refusal,
         });
-        let ready = schedulable && routed_role.is_some() && provider_resolved;
+        let ready = schedulable && routed_role.is_some() && refusal.is_none();
         Self {
             version: PREPARATION_VERSION,
             project_id: task.project_id().clone(),
@@ -108,8 +167,10 @@ impl DispatchPreparation {
             fencing_token: lease.map(|(_, token)| token),
             worktree_id: Some(stream.worktree.clone()),
             branch: Some(stream.branch.clone()),
-            provider_connection: provider.map(|(connection, _)| connection.clone()),
-            model_id: provider.map(|(_, model)| model.clone()),
+            provider_connection: provider
+                .as_ref()
+                .map(|resolution| resolution.connection.clone()),
+            model_id: provider.map(|resolution| resolution.model),
             compiled_at: at,
         }
     }
@@ -117,6 +178,15 @@ impl DispatchPreparation {
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.version != PREPARATION_VERSION || self.steps.is_empty() || self.steps.len() > 8 {
             return Err(DomainError::InvalidStream);
+        }
+        for step in &self.steps {
+            // The two provider fields must agree: a refusal is recorded
+            // exactly when the step did not validate.
+            if let CompositionStep::Provider { validated, refusal } = step {
+                if *validated != refusal.is_none() {
+                    return Err(DomainError::InvalidStream);
+                }
+            }
         }
         Ok(())
     }

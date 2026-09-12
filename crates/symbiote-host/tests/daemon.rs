@@ -1109,6 +1109,44 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
             "requested":"engineer","domains":[]}}),
         ),
     ));
+    // The binding's profile names `native-api-entitlement`, which is not
+    // registered yet: the provider step is earned from the registry, so the
+    // composition refuses and names exactly what is missing — and no start
+    // consumes a refused preparation.
+    let unprepared = host.call(request(
+        "activation-prepare-refused",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    ));
+    let refused_preparation = ok(&unprepared)["data"].clone();
+    assert_eq!(refused_preparation["outcome"], "refused");
+    let provider_step = refused_preparation["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "provider")
+        .expect("every composition records a provider step");
+    assert_eq!(provider_step["validated"], false);
+    assert_eq!(provider_step["refusal"], "missing_entitlement");
+    let refused_start = host.call(request(
+        "activation-start-refused",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    ));
+    assert_eq!(
+        refused_start["result"]["Err"]["code"],
+        "failed_precondition"
+    );
+    // Registering the entitlement the profile names completes the
+    // registration; preparation re-reads the registry, so it is ready now.
+    ok_step(
+        "activation-entitlement",
+        &host.call(request(
+            "activation-entitlement",
+            json!({"kind":"replace_billing_entitlement","attribution":"staffing-demo",
+            "entitlement":{"id":"native-api-entitlement","provider":"native-openai",
+            "kind":"metered_api","verification_evidence":"entitlement-proof",
+            "expires_at":4102444800000u64}}),
+        )),
+    );
     let prepare_response = host.call(request(
         "activation-prepare",
         json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
@@ -1307,8 +1345,17 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
     let body: Value = serde_json::from_slice(&preparation.stdout).unwrap();
     assert_eq!(body["kind"], "dispatch_preparation");
     // Without routing/binding the composition is recorded as refused — the
-    // recorded outcome is machine-readable in the response.
+    // recorded outcome is machine-readable in the response, and the provider
+    // step names why it could not be earned (no profile resolved at all).
     assert_eq!(body["data"]["outcome"], "refused");
+    let provider_step = body["data"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "provider")
+        .expect("every composition records a provider step");
+    assert_eq!(provider_step["validated"], false);
+    assert_eq!(provider_step["refusal"], "unresolved_profile");
     let read_back = run(&["get-dispatch-preparation", "cli-task"]);
     assert!(
         read_back.status.success(),

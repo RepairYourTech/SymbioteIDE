@@ -145,6 +145,116 @@ fn native_api_requires_matching_credential_and_explicit_metered_entitlement() {
 }
 
 #[test]
+fn registration_validation_is_the_registry_facing_half_of_binding_validation() {
+    let (profile, connection, _credential, entitlement, model) = fixtures();
+    // A consistent, unexpired registration validates with no credential
+    // record and no local-endpoint policy: those are execution-time Host
+    // inputs, deliberately outside the registry check.
+    validate_registration(&profile, &connection, &entitlement, &model, Timestamp(1)).unwrap();
+    assert_eq!(
+        validate_registration(&profile, &connection, &entitlement, &model, Timestamp(100))
+            .unwrap_err(),
+        ProviderError::ExpiredEntitlement
+    );
+    // Drift on any identity leg, and an empty endpoint reference, is one
+    // refusal rather than a partial accept.
+    for drifted in [
+        ModelDescriptor {
+            provider_id: ProviderConnectionId::new("other").unwrap(),
+            ..model.clone()
+        },
+        ModelDescriptor {
+            id: ModelId::new("other").unwrap(),
+            ..model.clone()
+        },
+    ] {
+        assert_eq!(
+            validate_registration(&profile, &connection, &entitlement, &drifted, Timestamp(1))
+                .unwrap_err(),
+            ProviderError::BindingMismatch
+        );
+    }
+    for drifted in [
+        ProviderConnection {
+            endpoint_reference: "  ".into(),
+            ..connection.clone()
+        },
+        ProviderConnection {
+            id: ProviderConnectionId::new("other").unwrap(),
+            ..connection.clone()
+        },
+    ] {
+        assert_eq!(
+            validate_registration(&profile, &drifted, &entitlement, &model, Timestamp(1))
+                .unwrap_err(),
+            ProviderError::BindingMismatch
+        );
+    }
+    for drifted in [
+        BillingEntitlement {
+            provider: ProviderConnectionId::new("other").unwrap(),
+            ..entitlement.clone()
+        },
+        BillingEntitlement {
+            id: BillingEntitlementId::new("other").unwrap(),
+            ..entitlement.clone()
+        },
+    ] {
+        assert_eq!(
+            validate_registration(&profile, &connection, &drifted, &model, Timestamp(1))
+                .unwrap_err(),
+            ProviderError::BindingMismatch
+        );
+    }
+    // A native profile never accepts harness-managed authentication or
+    // harness-subscription billing, whichever leg carries it.
+    assert_eq!(
+        validate_registration(
+            &profile,
+            &connection,
+            &BillingEntitlement {
+                kind: BillingKind::HarnessSubscription,
+                ..entitlement.clone()
+            },
+            &model,
+            Timestamp(1)
+        )
+        .unwrap_err(),
+        ProviderError::UnsupportedAuthenticationBilling
+    );
+    assert_eq!(
+        validate_registration(
+            &profile,
+            &ProviderConnection {
+                authentication: AuthenticationKind::HarnessManaged,
+                ..connection.clone()
+            },
+            &entitlement,
+            &model,
+            Timestamp(1)
+        )
+        .unwrap_err(),
+        ProviderError::UnsupportedAuthenticationBilling
+    );
+    // A stored descriptor whose own bounds are invalid is refused before any
+    // identity comparison.
+    assert_eq!(
+        validate_registration(
+            &profile,
+            &connection,
+            &entitlement,
+            &ModelDescriptor {
+                max_output_tokens: model.context_window_tokens + 1,
+                ..model
+            },
+            Timestamp(1)
+        )
+        .unwrap_err(),
+        ProviderError::InvalidDescriptor
+    );
+}
+
+#[test]
 fn external_harness_subscription_never_accepts_copied_native_credentials() {
     let (mut profile, mut connection, credential, mut entitlement, model) = fixtures();
     profile.runtime = RuntimeKind::ExternalHarness;

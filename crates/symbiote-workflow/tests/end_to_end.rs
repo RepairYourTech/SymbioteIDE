@@ -744,6 +744,7 @@ fn b_leak_lane() -> symbiote_workflow::demo::DemoLane {
         binding_id: "b-leak-binding",
         provider: "b-openai",
         model: "b-coding-model",
+        entitlement: "b-entitlement",
         credential: "native-vault-ref",
         with_external_lane: false,
     }
@@ -764,6 +765,7 @@ fn b_ok_lane() -> symbiote_workflow::demo::DemoLane {
         binding_id: "b-leak-binding",
         provider: "b-openai",
         model: "b-coding-model",
+        entitlement: "b-entitlement",
         credential: "b-vault-ref",
         with_external_lane: false,
     }
