@@ -128,31 +128,31 @@ fn effective_capacity_is_observed_and_never_invented() {
     // A finite ceiling bounds availability by the headroom under it, and never
     // by more than the machine reports available.
     assert_eq!(
-        derive_memory(Ok(Some(1_000)), Ok(400), Fact::Known(5_000)),
+        derive_memory(Ok(Some(1_000)), Ok(400), &Fact::Known(5_000)),
         (Fact::Known(1_000), Fact::Known(600), None)
     );
     assert_eq!(
-        derive_memory(Ok(Some(1_000)), Ok(400), Fact::Known(500)),
+        derive_memory(Ok(Some(1_000)), Ok(400), &Fact::Known(500)),
         (Fact::Known(1_000), Fact::Known(500), None)
     );
     assert_eq!(
-        derive_memory(Ok(Some(1_000)), Ok(2_000), Fact::Known(5_000)),
+        derive_memory(Ok(Some(1_000)), Ok(2_000), &Fact::Known(5_000)),
         (Fact::Known(1_000), Fact::Known(0), None)
     );
     // No enforced ceiling: the machine's own availability is the bound, and no
     // ceiling is claimed from it.
     assert_eq!(
-        derive_memory(Ok(None), Ok(400), Fact::Known(5_000)),
+        derive_memory(Ok(None), Ok(400), &Fact::Known(5_000)),
         (Fact::Unknown, Fact::Known(5_000), None)
     );
     assert_eq!(
-        derive_memory(Ok(None), Err(ProbeError::Unreadable), Fact::Known(5_000)),
+        derive_memory(Ok(None), Err(ProbeError::Unreadable), &Fact::Known(5_000)),
         (Fact::Unknown, Fact::Known(5_000), None)
     );
     // An unreadable ceiling is an absence with its own static reason, never a
     // guess from the machine's totals.
     assert_eq!(
-        derive_memory(Err(ProbeError::Unreadable), Ok(400), Fact::Known(5_000)),
+        derive_memory(Err(ProbeError::Unreadable), Ok(400), &Fact::Known(5_000)),
         (Fact::Unknown, Fact::Unknown, Some(ProbeError::Unreadable))
     );
     // A ceiling whose charge could not be read keeps the observed ceiling and
@@ -161,7 +161,7 @@ fn effective_capacity_is_observed_and_never_invented() {
         derive_memory(
             Ok(Some(1_000)),
             Err(ProbeError::Malformed),
-            Fact::Known(5_000)
+            &Fact::Known(5_000)
         ),
         (
             Fact::Known(1_000),

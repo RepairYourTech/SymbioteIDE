@@ -222,16 +222,16 @@ pub fn parse_cpu_max(input: &str) -> Result<Option<u64>, ProbeError> {
 pub fn derive_memory(
     limit: Result<Option<u64>, ProbeError>,
     current: Result<u64, ProbeError>,
-    physical_available: Fact<u64>,
+    physical_available: &Fact<u64>,
 ) -> (Fact<u64>, Fact<u64>, Option<ProbeError>) {
     match limit {
-        Ok(None) => (Fact::Unknown, physical_available, None),
+        Ok(None) => (Fact::Unknown, physical_available.clone(), None),
         Err(reason) => (Fact::Unknown, Fact::Unknown, Some(reason)),
         Ok(Some(limit)) => match current {
             Ok(current) => {
                 let headroom = limit.saturating_sub(current);
                 let available = match physical_available {
-                    Fact::Known(physical) => Fact::Known(headroom.min(physical)),
+                    Fact::Known(physical) => Fact::Known(headroom.min(*physical)),
                     Fact::Unknown => Fact::Known(headroom),
                 };
                 (Fact::Known(limit), available, None)
@@ -362,7 +362,7 @@ pub fn probe(at: Timestamp) -> LinuxObservation {
     let (limit, available, memory_failure) = derive_memory(
         memory_limit,
         memory_current,
-        observation.resources.physical_memory_available_bytes.clone(),
+        &observation.resources.physical_memory_available_bytes,
     );
     observation.resources.effective_memory_limit_bytes = limit;
     observation.resources.effective_memory_available_bytes = available;
