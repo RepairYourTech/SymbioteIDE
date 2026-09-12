@@ -557,3 +557,150 @@ fn setup_failure_stderr_is_bounded_explicit_and_debug_redacted() {
     assert!(setup.truncated());
     assert_eq!(setup.diagnostics()[0].len(), 1024);
 }
+
+/// The mount boundary as an errno table, for both compositions the sandbox
+/// supports: `WorktreeWrite`, which is what a dispatch carrying the mutation
+/// grant runs the external lane's harness under, and `ReadOnly`, which is what
+/// a contract without that grant runs under. `/workspace` is the dispatch's
+/// reserved worktree, the one Host surface a run may change. Everything else
+/// the mount table leaves reachable inside is either absent (the sandbox root
+/// is a fresh tmpfs, so no Host directory, `/etc` or `/var` exists at all —
+/// errno 2) or read-only (`/usr` is a read-only bind and the root is remounted
+/// read-only — errno 30). The remaining writable paths — `/tmp`, `/home/agent`,
+/// and `/dev` with its `/dev/shm` — are the sandbox's own tmpfs mounts, not the
+/// Host's: the test asserts a run may write there and that the write never
+/// reaches the Host path of the same name. That Host-side assertion, not the
+/// writability itself, is what keeps them off the Host boundary; it is also what
+/// would fail if the inner `/dev` were ever replaced by a bind of the Host's.
+/// Under `ReadOnly` the same table holds minus the worktree, which joins the
+/// refusing side, so a dispatch with no mutation grant gets no Host write at
+/// all.
+#[test]
+fn the_mount_boundary_confines_host_writes_to_the_reserved_worktree() {
+    let script = r#"import json,os,sys
+host_worktree,host_protected,shadow=sys.argv[1],sys.argv[2],sys.argv[3]
+tmp_before=len(os.listdir('/tmp'))
+targets={
+ 'reserved_worktree':'/workspace/probe.txt',
+ 'worktree_traversal':'/workspace/../probe.txt',
+ 'sandbox_root':'/symbiote-probe',
+ 'sandbox_usr':'/usr/symbiote-probe',
+ 'sandbox_etc':'/etc/symbiote-probe',
+ 'sandbox_var':'/var/symbiote-probe',
+ 'host_worktree':host_worktree+'/probe.txt',
+ 'host_protected':host_protected+'/probe.txt',
+ 'sandbox_tmp':'/tmp/'+shadow,
+ 'sandbox_home':'/home/agent/'+shadow,
+ 'sandbox_dev':'/dev/'+shadow,
+ 'sandbox_dev_shm':'/dev/shm/'+shadow,
+}
+def attempt(path):
+    try:
+        with open(path,'w') as handle:
+            handle.write('probe')
+        return 'writable'
+    except OSError as error:
+        return error.errno
+json.dump({'cwd':os.getcwd(),'tmp_before':tmp_before,'writes':{name:attempt(path) for name,path in targets.items()}},sys.stdout)
+sys.stdout.write('\n')
+sys.stdout.flush()
+"#;
+    for (profile, reserved_worktree) in [
+        (Profile::WorktreeWrite, serde_json::json!("writable")),
+        (Profile::ReadOnly, serde_json::json!(30)),
+    ] {
+        let fixture = Fixture::new();
+        // A read-only run models a contract that carries NO mutation grant: the
+        // grant is absent from the consent itself, not merely left unused.
+        let shadow = format!(
+            "{}.probe",
+            fixture.base.file_name().unwrap().to_string_lossy()
+        );
+        let args = vec![
+            "-c".to_owned(),
+            script.to_owned(),
+            fixture.worktree.display().to_string(),
+            fixture.protected[0].display().to_string(),
+            shadow.clone(),
+        ];
+        let mut consent = fixture.consent(profile, &args);
+        if profile == Profile::ReadOnly {
+            consent
+                .snapshot
+                .access
+                .grants
+                .remove(&Permission::MutateStream);
+        }
+        let mut child = launch_ready(fixture.request(&consent, profile, &args));
+        let observed = child.recv(Duration::from_secs(10)).unwrap();
+        assert_eq!(observed["cwd"], "/workspace", "{profile:?}");
+        assert_eq!(
+            observed["tmp_before"],
+            serde_json::json!(0),
+            "the sandbox's /tmp is its own and empty at start: {observed}"
+        );
+        let writes = &observed["writes"];
+        assert_eq!(
+            writes["reserved_worktree"], reserved_worktree,
+            "{profile:?}: the reserved worktree is writable exactly under the mutation grant: {observed}"
+        );
+        // Read-only surfaces: the read-only `/usr` bind and the fresh root.
+        for target in ["worktree_traversal", "sandbox_root", "sandbox_usr"] {
+            assert_eq!(
+                writes[target],
+                serde_json::json!(30),
+                "{profile:?} {target} must be read-only: {observed}"
+            );
+        }
+        // Absent surfaces: nothing of the Host tree, `/etc` or `/var` exists
+        // inside the sandbox root at all.
+        for target in [
+            "sandbox_etc",
+            "sandbox_var",
+            "host_worktree",
+            "host_protected",
+        ] {
+            assert_eq!(
+                writes[target],
+                serde_json::json!(2),
+                "{profile:?} {target} must be invisible inside the sandbox: {observed}"
+            );
+        }
+        // The sandbox's own writable tmpfs mounts, not the Host's. `/dev` is
+        // writable on purpose (its device nodes must be usable, and `/dev/shm`
+        // backs shared memory), so this row is pinned rather than refused.
+        for target in [
+            "sandbox_tmp",
+            "sandbox_home",
+            "sandbox_dev",
+            "sandbox_dev_shm",
+        ] {
+            assert_eq!(
+                writes[target], "writable",
+                "{profile:?} {target} is the sandbox's own mount: {observed}"
+            );
+        }
+        assert!(
+            !std::path::Path::new("/tmp").join(&shadow).exists()
+                && !std::path::Path::new("/home/agent").join(&shadow).exists()
+                && !std::path::Path::new("/dev").join(&shadow).exists()
+                && !std::path::Path::new("/dev/shm").join(&shadow).exists(),
+            "{profile:?}: a write inside the sandbox's own /tmp, /home or /dev reached the Host"
+        );
+        // Under the writable profile the file the probe wrote through
+        // `/workspace` is the Host's own file in the reserved worktree; under
+        // the read-only profile the worktree has no new file at all.
+        let produced = fixture.worktree.join("probe.txt");
+        match profile {
+            Profile::WorktreeWrite => assert_eq!(
+                fs::read_to_string(&produced).unwrap(),
+                "probe",
+                "the writable worktree write lands on the Host"
+            ),
+            Profile::ReadOnly => assert!(
+                !produced.exists(),
+                "a contract with no mutation grant wrote into its worktree"
+            ),
+        }
+    }
+}
