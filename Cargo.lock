@@ -3031,6 +3031,7 @@ dependencies = [
  "symbiote-sandbox",
  "symbiote-store",
  "symbiote-trust",
+ "symbiote-workflow",
  "symbiote-workforce",
  "symbiote-worktrees",
 ]

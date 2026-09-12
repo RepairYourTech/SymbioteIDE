@@ -556,10 +556,10 @@ mod tests {
         }
     }
 
-    /// Locates (or builds) the trusted launcher. A partial `-p symbiote-host`
-    /// build may not have compiled the sandbox crate's binary, so the test
-    /// builds it directly — the e2e coverage must not silently degrade to a
-    /// counted-as-passed skip (PR #507 review P2).
+    /// The trusted launcher: `SYMBIOTE_SANDBOX_LAUNCHER` names one explicitly,
+    /// otherwise the workspace build is resolved through the shared freshness
+    /// check (PR #507 review P2 — a missing or stale launcher must not let the
+    /// e2e degrade to a counted-as-passed skip).
     fn obtain_launcher() -> PathBuf {
         if let Ok(path) = std::env::var("SYMBIOTE_SANDBOX_LAUNCHER") {
             let path = PathBuf::from(path);
@@ -567,64 +567,7 @@ mod tests {
                 return path;
             }
         }
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        for ancestor in manifest.ancestors().skip(1) {
-            let target = ancestor.join("target");
-            if !target.is_dir() {
-                continue;
-            }
-            let direct = target.join("debug").join("symbiote-sandbox-launch");
-            if direct.is_file() {
-                return direct;
-            }
-            if let Ok(entries) = std::fs::read_dir(&target) {
-                for entry in entries.flatten() {
-                    let candidate = entry.path().join("debug").join("symbiote-sandbox-launch");
-                    if candidate.is_file() {
-                        return candidate;
-                    }
-                }
-            }
-        }
-        // Build the launcher in the workspace target directory. `cargo
-        // test --workspace` has already compiled everything; this only
-        // fires for a partial single-crate build. If even the build fails
-        // the test fails loudly — a skip that looks like a pass is a
-        // coverage hole.
-        let workspace = manifest
-            // ancestors() includes the path itself: crates/symbiote-host →
-            // crates → workspace root, so the root is the second ancestor.
-            .ancestors()
-            .nth(2)
-            .expect("crates/symbiote-host lives two levels below the workspace root");
-        let status = std::process::Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "symbiote-sandbox",
-                "--bin",
-                "symbiote-sandbox-launch",
-            ])
-            .current_dir(workspace)
-            .status()
-            .expect("cargo build for the sandbox launcher");
-        assert!(
-            status.success(),
-            "the sandbox launcher could not be built; the real-sandbox e2e cannot run"
-        );
-        workspace
-            .join("target/debug/symbiote-sandbox-launch")
-            .assert_exists()
-    }
-
-    trait AssertExists {
-        fn assert_exists(self) -> PathBuf;
-    }
-    impl AssertExists for PathBuf {
-        fn assert_exists(self) -> PathBuf {
-            assert!(self.is_file(), "launcher missing after build: {self:?}");
-            self
-        }
+        symbiote_workflow::binaries::launcher_binary()
     }
 
     /// A 0o700 private fixture root with a worktree the launch validation
