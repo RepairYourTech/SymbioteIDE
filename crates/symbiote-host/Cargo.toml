@@ -26,6 +26,11 @@ serde.workspace = true
 serde_json.workspace = true
 nix = { version = "=0.30.1", features = ["socket", "user", "fs"] }
 
+[build-dependencies]
+# Records the content of the sources this crate's binaries are built from, so
+# the proofs that drive them run a binary built from the tree under test.
+symbiote-source-stamp = { path = "../symbiote-source-stamp" }
+
 [dev-dependencies]
 # The real-sandbox proofs resolve the launcher through the workflow crate's
 # freshness check, which only test builds carry.
