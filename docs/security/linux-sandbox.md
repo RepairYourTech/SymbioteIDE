@@ -52,6 +52,15 @@ worktree needs a private parent controlled by the trusted provisioner, which
 must not expose Host IPC endpoints, devices or hardlinks to protected files.
 Namespace isolation does not make a maliciously provisioned mount safe.
 
+The mount boundary's observable consequence is a table, not a profile name:
+the reserved worktree is writable only under worktree-write, the root is a fresh
+tmpfs remounted read-only and `/usr` is a read-only bind, so every other surface
+— the Host tree, `/etc`, `/var` — is absent inside (errno 2) or read-only
+(errno 30). `/tmp` and `/home/agent` are writable, but they are the sandbox's own
+tmpfs mounts, not the Host's. A test in `crates/symbiote-sandbox/tests/process.rs`
+(`the_mount_boundary_refuses_every_write_outside_a_writable_reserved_worktree`)
+pins that errno table for both profiles.
+
 A live adversarial probe demonstrated why: a pathname Unix socket inside a
 mounted worktree reached a Host listener despite network namespace isolation,
 and a writable hardlink changed a file outside that mount. See the
