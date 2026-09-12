@@ -590,12 +590,12 @@ fn execute(
                 return Err(storage_error(StoreError::DispatchRefused(
                     symbiote_domain::DispatchRefusal::Provider(refusal),
                 )));
-            }
-            // And the second execution-time precondition: the limits the
+            } // And the second execution-time precondition: the limits the
             // dispatch declared must bind the execution it is about to
             // produce. Every process a tool spawns is launched with the bound
-            // they reduce to; a limit the Host has no kernel bound for refuses
-            // the run here, naming the limit, rather than running past it.
+            // they reduce to; a limit the Host has no kernel bound for — and a
+            // contract that records no limits at all — refuses the run here,
+            // naming the reason, rather than running unbound.
             let bound =
                 crate::limits::bounds_for(current.contract().limits()).map_err(limit_unbounded)?;
             let runtime = current.contract().profile().runtime;
@@ -1456,11 +1456,11 @@ fn context_error(error: symbiote_context::ResolutionError) -> ProtocolError {
     protocol_error
 }
 
-/// The declared limit the Host cannot bind, named for the operator without
-/// carrying any input value.
-fn limit_unbounded(limit: symbiote_domain::UnboundedLimit) -> ProtocolError {
+/// Why the Host cannot bind this dispatch's declared limits, named for the
+/// operator without carrying any input value.
+fn limit_unbounded(refusal: crate::limits::BoundRefusal) -> ProtocolError {
     let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
-    protocol_error.message = crate::limits::refusal(limit).into();
+    protocol_error.message = refusal.refusal().into();
     protocol_error
 }
 

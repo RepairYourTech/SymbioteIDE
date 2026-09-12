@@ -16,7 +16,7 @@ fn a_dispatch_records_the_limits_it_was_staffed_with_or_refuses() {
     let mut declared = fixture_limits();
     declared.max_memory_bytes = 8 << 20;
     let dispatch = f.compile_with(&declared).unwrap();
-    assert_eq!(dispatch.contract().limits(), &declared);
+    assert_eq!(dispatch.contract().limits(), Some(&declared));
     for broken in [
         ResourceLimits {
             max_memory_bytes: 0,
@@ -38,7 +38,13 @@ fn a_dispatch_records_the_limits_it_was_staffed_with_or_refuses() {
     // dispatch whose execution would be bound by something impossible.
     let mut wire = serde_json::to_value(dispatch).unwrap();
     wire["contract"]["limits"]["max_memory_bytes"] = serde_json::json!(u64::MAX);
-    assert!(serde_json::from_value::<Dispatch>(wire).is_err());
+    assert!(serde_json::from_value::<Dispatch>(wire.clone()).is_err());
+    // A contract journaled before limits were recorded still replays: it
+    // carries none, which is older state rather than a false claim, and the
+    // execution boundary refuses it for having no bound to apply.
+    wire["contract"].as_object_mut().unwrap().remove("limits");
+    let older: Dispatch = serde_json::from_value(wire).unwrap();
+    assert_eq!(older.contract().limits(), None);
 }
 
 /// The limits a fixture dispatch records: what its execution may consume.

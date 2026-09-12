@@ -29,7 +29,11 @@ pub struct WorkforceRuntimeContract {
     /// The resource limits this dispatch was staffed with. They are recorded,
     /// not merely referenced: the Host binds the execution it produces to
     /// exactly these, and a limit it cannot bind refuses that execution.
-    limits: ResourceLimits,
+    /// `None` only on contracts journaled before limits were recorded: they
+    /// deserialize rather than break replay, and activation refuses them for
+    /// having no bound to apply instead of running unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limits: Option<ResourceLimits>,
     compiled_at: Timestamp,
 }
 
@@ -74,8 +78,11 @@ impl WorkforceRuntimeContract {
     pub fn gates(&self) -> &std::collections::BTreeSet<Gate> {
         &self.gates
     }
-    pub fn limits(&self) -> &ResourceLimits {
-        &self.limits
+    /// The limits this dispatch's execution is bound by, or `None` on a
+    /// contract journaled before limits were recorded — which activation
+    /// refuses rather than running unbounded.
+    pub fn limits(&self) -> Option<&ResourceLimits> {
+        self.limits.as_ref()
     }
 
     pub fn validate_at(&self, now: Timestamp) -> Result<(), DomainError> {
@@ -107,10 +114,16 @@ impl WorkforceRuntimeContract {
         {
             return Err(DomainError::InvalidContextBudget);
         }
-        // The recorded limits are a validated invariant like every other field:
-        // a replayed contract can never carry a limit the contract does not
-        // allow.
-        if !self.limits.validate() {
+        // A recorded limit is a validated invariant like every other field: a
+        // replayed contract can never carry a limit the contract does not
+        // allow. A contract recording none is tolerated — it is older state,
+        // not a false claim — and the execution boundary refuses it for having
+        // no bound to apply.
+        if self
+            .limits
+            .as_ref()
+            .is_some_and(|limits| !limits.validate())
+        {
             return Err(DomainError::ResourceLimit);
         }
         if self.gates != Gate::required() {
@@ -189,7 +202,8 @@ impl<'de> Deserialize<'de> for WorkforceRuntimeContract {
             enforcement: BTreeMap<Control, EnforcementClaim>,
             #[serde(default)]
             effective_access: Option<AccessSnapshot>,
-            limits: ResourceLimits,
+            #[serde(default)]
+            limits: Option<ResourceLimits>,
             compiled_at: Timestamp,
         }
         let w = Wire::deserialize(deserializer)?;
@@ -346,7 +360,7 @@ impl Dispatch {
                 gates: Gate::required(),
                 enforcement,
                 effective_access: Some(effective),
-                limits: limits.clone(),
+                limits: Some(limits.clone()),
                 compiled_at: now,
             },
         })

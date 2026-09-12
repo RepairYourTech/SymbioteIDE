@@ -1612,7 +1612,12 @@ mod tests {
             profile_id: &symbiote_domain::RuntimeProfileId::new("profile-shell-buildref").unwrap(),
             access: dispatch.contract().effective_access(),
             user_id: &symbiote_domain::UserId::new("owner").unwrap(),
-            bound: dispatch.contract().limits().process_bound().unwrap(),
+            bound: dispatch
+                .contract()
+                .limits()
+                .expect("the compiled contract records its limits")
+                .process_bound()
+                .unwrap(),
         };
         assert!(matches!(
             transports.shell_build(inputs),
