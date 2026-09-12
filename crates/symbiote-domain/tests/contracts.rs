@@ -6,6 +6,52 @@ macro_rules! id {
         $kind::new($value).unwrap()
     };
 }
+/// A dispatch records the limits it was staffed with, and a limit the contract
+/// does not allow never becomes one: the recorded limits are what a Host must
+/// bind the execution to, so an unallowable declaration refuses compilation as
+/// well as replay.
+#[test]
+fn a_dispatch_records_the_limits_it_was_staffed_with_or_refuses() {
+    let f = Fixture::new(RuntimeKind::NativeSymbiote);
+    let mut declared = fixture_limits();
+    declared.max_memory_bytes = 8 << 20;
+    let dispatch = f.compile_with(&declared).unwrap();
+    assert_eq!(dispatch.contract().limits(), &declared);
+    for broken in [
+        ResourceLimits {
+            max_memory_bytes: 0,
+            ..fixture_limits()
+        },
+        ResourceLimits {
+            max_cpu_millicores: Some(0),
+            ..fixture_limits()
+        },
+        ResourceLimits {
+            max_cpu_millicores: Some(MAX_CPU_MILLICORES + 1),
+            ..fixture_limits()
+        },
+    ] {
+        assert_eq!(f.compile_with(&broken), Err(DomainError::ResourceLimit));
+    }
+    // The same invariant holds on replay: a journaled contract carrying a
+    // limit the contract does not allow is refused, never rehydrated into a
+    // dispatch whose execution would be bound by something impossible.
+    let mut wire = serde_json::to_value(dispatch).unwrap();
+    wire["contract"]["limits"]["max_memory_bytes"] = serde_json::json!(u64::MAX);
+    assert!(serde_json::from_value::<Dispatch>(wire).is_err());
+}
+
+/// The limits a fixture dispatch records: what its execution may consume.
+fn fixture_limits() -> ResourceLimits {
+    ResourceLimits {
+        max_total_tokens: 100_000,
+        max_wall_time_ms: 60_000,
+        max_concurrency: 1,
+        max_memory_bytes: 1 << 30,
+        max_cpu_millicores: None,
+    }
+}
+
 fn sha(c: char) -> CommitSha {
     CommitSha::new(c.to_string().repeat(40)).unwrap()
 }
@@ -139,6 +185,11 @@ impl Fixture {
         }
     }
     fn compile(&self) -> Result<Dispatch, DomainError> {
+        self.compile_with(&fixture_limits())
+    }
+    /// The same compilation with declared limits of the caller's choosing, so a
+    /// test can put a limit the contract does not allow in front of it.
+    fn compile_with(&self, limits: &ResourceLimits) -> Result<Dispatch, DomainError> {
         Dispatch::compile(
             id!(DispatchId, format!("dispatch-{}", self.task.revision().0)),
             id!(RuntimeContractId, "runtime-contract"),
@@ -148,6 +199,7 @@ impl Fixture {
                 binding: &self.binding,
                 profile: &self.profile,
                 host: &self.host,
+                limits,
                 minimum_enforcement: &std::collections::BTreeMap::new(),
                 now: Timestamp(10),
             },
@@ -889,6 +941,7 @@ fn binding_enforcement_floor_refuses_weaker_host_claims_at_assignment() {
                 binding: &f.binding,
                 profile: &f.profile,
                 host: &f.host,
+                limits: &fixture_limits(),
                 minimum_enforcement: &BTreeMap::from([(Control::Filesystem, minimum)]),
                 now: Timestamp(10),
             },
@@ -915,6 +968,7 @@ fn binding_enforcement_floor_refuses_weaker_host_claims_at_assignment() {
             binding: &f.binding,
             profile: &f.profile,
             host: &f.host,
+            limits: &fixture_limits(),
             minimum_enforcement: &BTreeMap::from([(Control::Network, EnforcementStrength::Native)]),
             now: Timestamp(10),
         },

@@ -26,6 +26,10 @@ pub struct WorkforceRuntimeContract {
     /// full binding snapshot they were compiled with).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     effective_access: Option<AccessSnapshot>,
+    /// The resource limits this dispatch was staffed with. They are recorded,
+    /// not merely referenced: the Host binds the execution it produces to
+    /// exactly these, and a limit it cannot bind refuses that execution.
+    limits: ResourceLimits,
     compiled_at: Timestamp,
 }
 
@@ -70,6 +74,9 @@ impl WorkforceRuntimeContract {
     pub fn gates(&self) -> &std::collections::BTreeSet<Gate> {
         &self.gates
     }
+    pub fn limits(&self) -> &ResourceLimits {
+        &self.limits
+    }
 
     pub fn validate_at(&self, now: Timestamp) -> Result<(), DomainError> {
         if now < self.compiled_at {
@@ -99,6 +106,12 @@ impl WorkforceRuntimeContract {
             || self.binding.context.reserved_output_tokens == 0
         {
             return Err(DomainError::InvalidContextBudget);
+        }
+        // The recorded limits are a validated invariant like every other field:
+        // a replayed contract can never carry a limit the contract does not
+        // allow.
+        if !self.limits.validate() {
+            return Err(DomainError::ResourceLimit);
         }
         if self.gates != Gate::required() {
             return Err(DomainError::EvidenceMissing);
@@ -176,6 +189,7 @@ impl<'de> Deserialize<'de> for WorkforceRuntimeContract {
             enforcement: BTreeMap<Control, EnforcementClaim>,
             #[serde(default)]
             effective_access: Option<AccessSnapshot>,
+            limits: ResourceLimits,
             compiled_at: Timestamp,
         }
         let w = Wire::deserialize(deserializer)?;
@@ -193,6 +207,7 @@ impl<'de> Deserialize<'de> for WorkforceRuntimeContract {
             gates: w.gates,
             enforcement: w.enforcement,
             effective_access: w.effective_access,
+            limits: w.limits,
             compiled_at: w.compiled_at,
         };
         value
@@ -231,6 +246,7 @@ impl Dispatch {
             binding,
             profile,
             host,
+            limits,
             minimum_enforcement,
             now,
         } = inputs;
@@ -259,6 +275,9 @@ impl Dispatch {
         }
         if binding.context.max_input_tokens == 0 || binding.context.reserved_output_tokens == 0 {
             return Err(DomainError::InvalidContextBudget);
+        }
+        if !limits.validate() {
+            return Err(DomainError::ResourceLimit);
         }
         // Completion and mutation confinement are mandatory regardless of staffing.
         let mut required = binding.required_controls.clone();
@@ -327,6 +346,7 @@ impl Dispatch {
                 gates: Gate::required(),
                 enforcement,
                 effective_access: Some(effective),
+                limits: limits.clone(),
                 compiled_at: now,
             },
         })
@@ -368,6 +388,9 @@ pub struct DispatchInputs<'a> {
     pub binding: &'a WorkforceBinding,
     pub profile: &'a RuntimeProfile,
     pub host: &'a Host,
+    /// The staffing candidate's declared resource limits, recorded on the
+    /// contract so the execution they authorize is bound by them.
+    pub limits: &'a ResourceLimits,
     /// The binding's declared per-control enforcement floor. Controls the
     /// dispatch does not require are unconstrained by it.
     pub minimum_enforcement: &'a BTreeMap<Control, EnforcementStrength>,

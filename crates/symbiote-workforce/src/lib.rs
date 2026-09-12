@@ -39,19 +39,10 @@ impl Default for LocalChildPolicy {
         Self::Disabled {}
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ResourceLimits {
-    pub max_total_tokens: u64,
-    pub max_wall_time_ms: u64,
-    pub max_concurrency: u16,
-    pub max_memory_bytes: u64,
-    /// The CPU the candidate's dispatch needs, in millicores. Absent means the
-    /// candidate declares no CPU demand and the readiness report asks the Host
-    /// for none: concurrency is not a CPU reservation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_cpu_millicores: Option<u64>,
-}
+/// The declared limits live with the durable contract they are compiled into
+/// ([`symbiote_domain::ResourceLimits`]); a staffing candidate is one author of
+/// them, not their owner.
+pub use symbiote_domain::ResourceLimits;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StaffingCandidate {
@@ -181,17 +172,7 @@ impl StaffingCandidate {
             return Err(BindingError::InvalidPolicy);
         }
         let l = &self.limits;
-        if l.max_total_tokens == 0
-            || l.max_total_tokens > 1_000_000_000
-            || l.max_wall_time_ms == 0
-            || l.max_wall_time_ms > 604_800_000
-            || l.max_concurrency == 0
-            || l.max_concurrency > 64
-            || l.max_memory_bytes == 0
-            || l.max_memory_bytes > (1u64 << 50)
-            || l.max_cpu_millicores
-                .is_some_and(|millicores| millicores == 0 || millicores > 64_000)
-        {
+        if !l.validate() {
             return Err(BindingError::ResourceLimit);
         }
         let context = u64::from(self.context.max_input_tokens)

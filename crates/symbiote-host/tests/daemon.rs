@@ -1770,6 +1770,77 @@ fn a_declared_cpu_demand_is_judged_against_the_measured_effective_cpu() {
     );
 }
 
+/// A declared resource limit the Host has no kernel bound for refuses the run
+/// that would have exceeded it, naming the declared field — a dispatch's
+/// intent is never silently ignored. The refusal is the limit and not a
+/// blanket refusal of dispatches: the same composition without that demand
+/// passes the same check and reaches the next precondition instead, and the
+/// refused run is the only trace of the attempt.
+#[test]
+fn a_limit_the_host_cannot_bind_refuses_the_run_that_would_exceed_it() {
+    const REFUSAL: &str =
+        "the dispatch declares a CPU demand (max_cpu_millicores) this Host has no kernel bound for";
+    // With the demand: the Host HAS the capacity (the readiness prerequisite
+    // above is satisfied), so preparation and start succeed — what the Host
+    // lacks is a way to bind the declared rate, so the run refuses by name.
+    let mut demanding = Host::new();
+    let host_id =
+        staffing_composition_with_limits(&demanding, Registration::Complete, None, Some(1_000));
+    let prepared = ok(&demanding.call(request(
+        "limit-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )))["data"]
+        .clone();
+    assert_eq!(prepared["outcome"], "ready", "{prepared}");
+    let started = ok(&demanding.call(request(
+        "limit-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    )))["data"]
+        .clone();
+    let refused = demanding.call(request(
+        "limit-run",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+            "dispatch_id":started["dispatch_id"]}),
+    ));
+    assert_eq!(refused["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(refused["result"]["Err"]["message"], REFUSAL);
+    // The bound the Host cannot apply is checked before provisioning, so the
+    // refusal is not confused with the no-reservation-base refusal below.
+    assert!(refused["result"]["Err"]["message"] != "no worktree reservation base configured");
+    // The same composition declaring no CPU passes the same check and stops at
+    // the next precondition: the limit check is not a refusal of dispatches.
+    let bounded = Host::new();
+    let bounded_host = staffing_composition(&bounded, Registration::Complete);
+    ok(&bounded.call(request(
+        "bounded-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )));
+    let bounded_started = ok(&bounded.call(request(
+        "bounded-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":bounded_host}),
+    )))["data"]
+        .clone();
+    let next = bounded.call(request(
+        "bounded-run",
+        json!({"kind":"run_started_dispatch","task_id":"staffing-task",
+            "dispatch_id":bounded_started["dispatch_id"]}),
+    ));
+    assert_eq!(
+        next["result"]["Err"]["message"],
+        "no worktree reservation base configured"
+    );
+    // Nothing ran for the refused one: its task is still Running under its
+    // dispatch and replays identically after a crash.
+    demanding.crash();
+    demanding.start();
+    let task = ok(&demanding.call(request(
+        "limit-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    )))["data"]
+        .clone();
+    assert_eq!(task["state"], "running");
+}
+
 /// Every registration the registry can be put into that cannot be bound is
 /// reported with its own reason through the daemon, and none of them can start
 /// a dispatch: the refused preparation is the only record of the attempt, the

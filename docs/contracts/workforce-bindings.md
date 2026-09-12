@@ -103,6 +103,47 @@ checks pass is only ready for further preflight, never qualified for execution.
 Workers cannot obtain credentials, mutate source or request paid fallback through
 these configuration/readiness operations.
 
+## Declared limits bind the run, or the run refuses
+
+A candidate's resource limits are an intent the Host must honour, not a number
+recorded beside the execution. Preparing a dispatch records the candidate's
+limits on the dispatch's contract — validated against the contract's own bounds,
+so a limit the contract does not allow is refused at compilation and again on
+replay — and activating it reduces those recorded limits to the bound the Host
+can actually apply. When it has no bound for a declared limit the run refuses
+before any worktree is provisioned or transport built, naming the declared
+field and carrying no value, path or account:
+
+    the dispatch declares a CPU demand (max_cpu_millicores) this Host has no kernel bound for
+
+The bound is applied by the sandboxed launcher: every process a dispatch's tool
+runs in, and every descendant it starts, carries the declared `max_memory_bytes`
+as an address-space ceiling (`RLIMIT_AS`) set inside the sandbox before the
+command is executed. A ceiling the launcher cannot express refuses the launch,
+so there is no path that starts a dispatch's process without the limit it
+declared. The bound comes from the recorded contract, never from loop or model
+input.
+
+What is **not** enforced today, stated rather than implied:
+
+- **CPU rate (`max_cpu_millicores`).** Linux has no bound for a CPU *rate*
+  without cgroup delegation: `RLIMIT_CPU` caps cumulative CPU time, not a rate,
+  so the Host refuses instead of substituting a different limit than the one
+  declared. Readiness and activation therefore answer different questions: the
+  report judges whether the Host *has* the capacity a demand names, and
+  activation decides whether it can *bind* the demand.
+- **Wall time (`max_wall_time_ms`) and total tokens (`max_total_tokens`).**
+  Validated and recorded, and the sandboxed shell executor's own deadline bounds
+  each tool process, but no Host-side clock stops a run that outlives its
+  declared wall time.
+- **Concurrency (`max_concurrency`).** A concurrency bound, not a CPU
+  reservation; a run's tools execute one at a time, so a run never exceeds a
+  declared bound, but nothing enforces the declaration.
+
+The external-harness lane's process is launched by the caller-supplied
+transport, so its ceiling is the caller's decision: `launch_sandboxed` takes it
+as a required argument, so a caller cannot launch the harness without one.
+
 ## Demonstration and remaining acceptance
 
 With `symbioted --state-dir PRIVATE_DIRECTORY` running, send the Project Team

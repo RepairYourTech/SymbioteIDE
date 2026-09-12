@@ -26,11 +26,19 @@ content-bound consent and check/use guarantees.
 The internal entry point is `symbiote_sandbox::launch(LaunchRequest)`. Its
 non-serialized request carries the trusted consent, observed command snapshot,
 current access policy, Host identity, time, Root ID, reserved worktree, protected
-directories, profile, program arguments and transport bounds. Only explicit
+directories, profile, program arguments, transport bounds and the declared
+address-space ceiling the dispatch's limits reduce to. Only explicit
 `/usr/bin` commands are admitted. Both profiles require `ReadRoot` and
 `ExecuteProcess`; worktree-write also requires `MutateStream`. The command
 fingerprint includes the fixed invocation version, Root, absolute worktree,
 profile, program and arguments. Changing them requires matching consent.
+
+The in-sandbox prologue announces readiness, applies the declared ceiling with
+`ulimit -v` — a failure to set it is fatal (`exit 125`) rather than a silent run
+without it — and only then execs the command, so every descendant inherits the
+ceiling. The launcher and bubblewrap keep their own address space: the bound
+binds what the dispatch runs, not the mechanism that contains it. A ceiling of
+zero is refused before any process starts.
 
 The returned process supports bounded JSONL send/receive, exit inspection and
 cancellation. Launch setup must succeed before a process handle is returned;
@@ -130,7 +138,9 @@ the local failure is not a passing MSRV result.
 
 Pending acceptance includes production worktree provisioning, restricted worker
 protocol and authenticated launch integration, durable decision/effect journals,
-resource limits and disk quotas, network mediation, other sandbox profiles,
+disk quotas and every declared limit beyond the address-space ceiling (a CPU
+*rate* has no kernel bound here; see
+[workforce bindings](../contracts/workforce-bindings.md)), network mediation, other sandbox profiles,
 active consent revocation, MCP/browser/hook mediation, real native/Codex packs,
 Windows/macOS enforcement and the complete first-release demonstration. This
 slice introduces no durable storage migration or user credential changes.

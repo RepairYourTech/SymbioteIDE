@@ -317,6 +317,7 @@ impl Store {
                 binding: &binding.binding,
                 profile: &profile,
                 host,
+                limits: &binding.primary.limits,
                 minimum_enforcement: &binding.policies.minimum_enforcement,
                 now: at,
             },

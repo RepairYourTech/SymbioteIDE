@@ -392,6 +392,9 @@ pub fn launch_sandboxed(
     protected_paths: &[std::path::PathBuf],
     profile: symbiote_sandbox::Profile,
     limits: TransportLimits,
+    // The address-space ceiling the launched harness runs under: the declared
+    // memory bound of the dispatch this launch serves.
+    memory_limit_bytes: u64,
 ) -> Result<CodexServerProcess<symbiote_sandbox::SandboxProcess>, DriverError> {
     let process = symbiote_sandbox::launch(symbiote_sandbox::LaunchRequest {
         helper_path,
@@ -411,6 +414,7 @@ pub fn launch_sandboxed(
             "stdio://".to_owned(),
         ],
         limits,
+        address_space_bytes: memory_limit_bytes,
     })
     .map_err(|_| DriverError::TransportFailed)?;
     Ok(CodexServerProcess::new(process))

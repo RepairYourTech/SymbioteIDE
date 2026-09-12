@@ -591,6 +591,13 @@ fn execute(
                     symbiote_domain::DispatchRefusal::Provider(refusal),
                 )));
             }
+            // And the second execution-time precondition: the limits the
+            // dispatch declared must bind the execution it is about to
+            // produce. Every process a tool spawns is launched with the bound
+            // they reduce to; a limit the Host has no kernel bound for refuses
+            // the run here, naming the limit, rather than running past it.
+            let bound =
+                crate::limits::bounds_for(current.contract().limits()).map_err(limit_unbounded)?;
             let runtime = current.contract().profile().runtime;
             // Worktree provisioning happens after the precondition checks
             // and before any transport is built: the #211 composition
@@ -696,6 +703,7 @@ fn execute(
                         profile_id: &current.contract().profile().id,
                         access: &shell_access,
                         user_id: principal.user_id(),
+                        bound,
                     };
                     let tool_execution = match workers.shell_build(inputs) {
                         Ok(Some(executor)) => Some(crate::runner::ToolExecution {
@@ -1445,6 +1453,14 @@ fn context_error(error: symbiote_context::ResolutionError) -> ProtocolError {
         }
         symbiote_context::ResolutionError::StoreFailed => "store operation refused".into(),
     };
+    protocol_error
+}
+
+/// The declared limit the Host cannot bind, named for the operator without
+/// carrying any input value.
+fn limit_unbounded(limit: symbiote_domain::UnboundedLimit) -> ProtocolError {
+    let mut protocol_error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    protocol_error.message = crate::limits::refusal(limit).into();
     protocol_error
 }
 
