@@ -42,3 +42,5 @@ jobs:
         run: python -m unittest discover -s planning -p 'test_legacy_importers.py' -v
       - name: Verify registry and closing-keyword invariants
         run: python -m unittest discover -s planning/integrity -p 'test_*.py' -v
+      - name: Verify merged-checkout housekeeping
+        run: python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
