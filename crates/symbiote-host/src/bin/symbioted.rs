@@ -1,3 +1,12 @@
+/// The id of the source record this build wrote, embedded in the binary so a
+/// proof can tell which record produced the daemon it is about to drive rather
+/// than trusting a record a failed compile may have refreshed. It lives in the
+/// binary's root because a static in the library is dropped when this crate
+/// links it without referencing it. See `symbiote-source-stamp`.
+#[used]
+#[doc(hidden)]
+static SOURCE_RECORD: &str = env!("SYMBIOTE_SOURCE_RECORD");
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("symbioted: {error}");
