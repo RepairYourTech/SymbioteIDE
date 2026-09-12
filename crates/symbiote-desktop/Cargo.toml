@@ -30,6 +30,9 @@ tauri-build = { version = "2", features = [] }
 [dev-dependencies]
 symbiote-client-sdk = { path = "../symbiote-client-sdk" }
 serde_json.workspace = true
+# The controller proof resolves `symbioted` through the workflow crate's
+# freshness check, which only test builds carry.
+symbiote-workflow = { path = "../symbiote-workflow", features = ["test-support"] }
 
 [lints]
 workspace = true

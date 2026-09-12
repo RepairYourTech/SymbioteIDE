@@ -413,8 +413,18 @@ pub fn launch(request: LaunchRequest<'_>) -> Result<SandboxProcess> {
         "/lib64",
         "--proc",
         "/proc",
+        // The device tree is the sandbox's own tmpfs (`--dev`), then remounted
+        // read-only: the device nodes themselves are separate mounts and stay
+        // usable, but no new entry can be created in `/dev`. Shared memory
+        // needs a writable `/dev/shm`, so it is re-mounted as its own tmpfs on
+        // top of the now read-only `/dev`; the remount is not recursive, which
+        // is exactly why this ordering is required.
         "--dev",
         "/dev",
+        "--remount-ro",
+        "/dev",
+        "--tmpfs",
+        "/dev/shm",
         "--tmpfs",
         "/tmp",
         "--tmpfs",

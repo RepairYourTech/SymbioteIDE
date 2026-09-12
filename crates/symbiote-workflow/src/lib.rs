@@ -14,6 +14,8 @@
 //! explicit user authorization for credentials and billing. The worktree
 //! status this crate reads is a real filesystem fact of what the run
 //! produced through the sandboxed shell executor.
+#[cfg(feature = "test-support")]
+pub mod binaries;
 pub mod demo;
 pub mod socket;
 

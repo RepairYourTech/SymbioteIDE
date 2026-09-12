@@ -54,16 +54,26 @@ Namespace isolation does not make a maliciously provisioned mount safe.
 
 The mount boundary's observable consequence is a table, not a profile name:
 the reserved worktree is writable only under worktree-write, the root is a fresh
-tmpfs remounted read-only and `/usr` is a read-only bind, so every Host surface
-— the Host tree, `/etc`, `/var` — is absent inside (errno 2) or read-only
-(errno 30). `/tmp`, `/home/agent` and `/dev` (with its `/dev/shm`) are writable,
-because each is the sandbox's own tmpfs mount rather than the Host's: no write
-there reaches the Host path of the same name. `/dev` is left writable on purpose
-instead of remounted read-only — its device nodes must stay usable, and shared
-memory lives in `/dev/shm`, which a non-recursive `--remount-ro /` does not
-reach. A test in `crates/symbiote-sandbox/tests/process.rs`
+tmpfs remounted read-only, `/usr` is a read-only bind and the device tree is the
+sandbox's own tmpfs remounted read-only, so every Host surface — the Host tree,
+`/etc`, `/var` — is absent inside (errno 2) or read-only (errno 30). `/tmp` and
+`/home/agent` are writable because each is the sandbox's own tmpfs mount rather
+than the Host's: no write there reaches the Host path of the same name. `/dev`
+is hardened deliberately: `--dev` populates a private tmpfs whose device nodes
+are separate mounts, then it is remounted read-only, so the alias threat class
+the worktree preflight rejects — a planted Unix socket, device node, directory
+or symlink — cannot be created there at all (each refused EROFS). The device
+tree has two exceptions. `--tmpfs` re-mounts `/dev/shm` as its own writable
+mount: the test asserts a write there is readable by a forked second process and
+that the Host's `/dev/shm` never sees it. `/dev/pts` is a separate writable
+devpts mount: the test asserts pseudo-terminal allocation succeeds. A test in
+`crates/symbiote-sandbox/tests/process.rs`
 (`the_mount_boundary_confines_host_writes_to_the_reserved_worktree`) pins the
-whole errno table, Host-side effects included, for both profiles.
+whole errno table for both profiles — `/dev` refusing a file, directory, symlink,
+socket and device node with errno 30; `/dev/null` writable and `/dev/urandom`
+readable under the read-only mount; the cross-process `/dev/shm` observation; and
+PTY allocation through `/dev/pts` — and checks that the writes attempted under
+`/tmp`, `/home/agent`, `/dev` and `/dev/shm` never appear on the Host.
 
 A live adversarial probe demonstrated why: a pathname Unix socket inside a
 mounted worktree reached a Host listener despite network namespace isolation,

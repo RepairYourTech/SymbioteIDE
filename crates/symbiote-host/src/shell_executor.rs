@@ -493,19 +493,19 @@ mod tests {
     // When the launcher binary is absent from a partial build, the test
     // reports the skip loudly instead of pretending to run.
 
-    /// A fixture authority that consents ONLY to /usr/bin/echo as the model
-    /// program (wrapped args index 3) and computes the exact fingerprint the
-    /// sandbox will re-derive — the same authoring flow an operator tool
-    /// would follow.
-    struct EchoOnlyAuthority {
+    /// A fixture authority that consents ONLY to one model program (wrapped
+    /// args index 3) and computes the exact fingerprint the sandbox will
+    /// re-derive — the same authoring flow an operator tool would follow.
+    struct AllowProgramAuthority {
+        allowed_program: &'static str,
         access: AccessSnapshot,
     }
-    impl ShellConsentAuthority for EchoOnlyAuthority {
+    impl ShellConsentAuthority for AllowProgramAuthority {
         fn consent(
             &mut self,
             request: ShellConsentRequest<'_>,
         ) -> Result<ResourceConsent, &'static str> {
-            if request.args.get(3).map(String::as_str) != Some("/usr/bin/echo") {
+            if request.args.get(3).map(String::as_str) != Some(self.allowed_program) {
                 return Err("command not consented");
             }
             let fingerprint = symbiote_sandbox::fingerprint_command(
@@ -670,7 +670,8 @@ mod tests {
         let mut executor = SandboxShellExecutor {
             launcher_path: launcher,
             protected_paths: vec![fixture.base.join("protected-host")],
-            authority: Box::new(EchoOnlyAuthority {
+            authority: Box::new(AllowProgramAuthority {
+                allowed_program: "/usr/bin/echo",
                 access: access.clone(),
             }),
             root_id: root,
@@ -711,7 +712,8 @@ mod tests {
         let mut executor = SandboxShellExecutor {
             launcher_path: launcher,
             protected_paths: vec![fixture.base.join("protected-host")],
-            authority: Box::new(EchoOnlyAuthority {
+            authority: Box::new(AllowProgramAuthority {
+                allowed_program: "/usr/bin/echo",
                 access: access.clone(),
             }),
             root_id: root,
@@ -742,7 +744,8 @@ mod tests {
         let mut executor = SandboxShellExecutor {
             launcher_path: launcher,
             protected_paths: vec![fixture.base.join("protected-host")],
-            authority: Box::new(EchoOnlyAuthority {
+            authority: Box::new(AllowProgramAuthority {
+                allowed_program: "/usr/bin/echo",
                 access: access.clone(),
             }),
             root_id: root,
@@ -761,5 +764,64 @@ mod tests {
             Err(ToolExecError::Refused)
         );
         assert!(!fixture.worktree.join(TOOL_OUTPUT_FILE).exists());
+    }
+
+    /// The real shell tool keeps completing under the hardened mount table: a
+    /// tool that uses `/dev/shm` — the shared-memory surface the hardening
+    /// deliberately keeps — still runs to exit 0 and reports normally through
+    /// the capture path, so the lane the executor drives did not lose a
+    /// capability it uses. The boundary itself is pinned once, in the
+    /// sandbox's own errno table (`symbiote-sandbox/tests/process.rs`): the
+    /// errno rows, the cross-process shared-memory observation and the
+    /// `/dev/pts` exception are asserted there, not restated here.
+    #[test]
+    fn a_real_sandboxed_shell_turn_completes_under_a_read_only_dev() {
+        let launcher = obtain_launcher();
+        let fixture = WorktreeFixture::new("dev-shm");
+        let root = RootId::new("root-shell-dev").unwrap();
+        let project = ProjectId::new("project-shell-dev").unwrap();
+        let access = echo_access(&project, &root);
+        let mut executor = SandboxShellExecutor {
+            launcher_path: launcher,
+            protected_paths: vec![fixture.base.join("protected-host")],
+            authority: Box::new(AllowProgramAuthority {
+                allowed_program: "/usr/bin/python3",
+                access: access.clone(),
+            }),
+            root_id: root,
+            host: HostId::new("host-shell-dev").unwrap(),
+            project_id: project,
+            role_id: RoleId::new("worker-shell-dev").unwrap(),
+            profile_id: RuntimeProfileId::new("profile-shell-dev").unwrap(),
+            user_id: symbiote_domain::UserId::new("operator").unwrap(),
+            access,
+            bound: fixture_bound(),
+        };
+        // The tool's work uses `/dev/shm` and reports its own result: a broken
+        // shared-memory mount raises here and the turn fails instead of
+        // reporting normally.
+        let probe = r#"import json,sys
+path='/dev/shm/'+sys.argv[1]
+open(path,'w').write('shared-memory')
+print(json.dumps({'shm':open(path).read()}),flush=True)
+"#;
+        let name = format!("symbiote-shell-dev-{}", std::process::id());
+        let (output, exit) = executor
+            .run_shell(
+                &invocation("python3", &["-c", probe, name.as_str()]),
+                &fixture.worktree,
+            )
+            .unwrap();
+        assert_eq!(
+            exit,
+            Some(0),
+            "the tool must complete under a read-only /dev: {output:?}"
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output)
+            .unwrap_or_else(|_| panic!("tool report was not JSON: {output:?}"));
+        assert_eq!(
+            report["shm"], "shared-memory",
+            "the tool's own /dev/shm work must succeed: {report}"
+        );
     }
 }
