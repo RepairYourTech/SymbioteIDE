@@ -72,13 +72,21 @@ refusal name in `provider_refusal` whenever it refuses. The pre-dispatch report
 and the execution boundary therefore cannot disagree about whether a dispatch
 can run.
 
-Host capacity is judged against the effective memory the Host actually
-observed from the process's own cgroup, not against the machine's totals: with
-no enforced cgroup ceiling the effective availability is the machine's observed
-availability, and a Host that cannot read its hierarchy reports unknown rather
-than substituting physical totals ([Host inventory](host-inventory.md)). A
-profile whose memory limit exceeds the observed effective availability is
-`rejected`; one the Host has not observed at all is `missing_observation`.
+Host capacity is judged against the effective memory and effective CPU the Host
+actually observed from the process's own cgroup and CPU sets, not against the
+machine's totals: with no enforced cgroup ceiling the effective availability is
+the machine's observed availability, the effective CPU is the CPUs this process
+is allowed to run on within the online set and under any quota, and a Host that
+cannot read its hierarchy reports unknown rather than substituting physical
+totals ([Host inventory](host-inventory.md)). A profile whose memory limit
+exceeds the observed effective availability, or whose declared CPU demand
+exceeds the observed effective CPU, is `rejected`; one the Host has not observed
+at all is `missing_observation`. A candidate declares its CPU demand as an
+optional `max_cpu_millicores` in its resource limits — bounded like every other
+limit — and a candidate that declares none asks the Host for no CPU, because
+`max_concurrency` is a concurrency bound and not a CPU reservation. A declared
+demand is judged only against a measurement: an unobserved effective CPU is an
+absence, never a rejection.
 
 Runtime capabilities and resources consume the Host's observation of the
 operator's declared runtime for that exact profile (see

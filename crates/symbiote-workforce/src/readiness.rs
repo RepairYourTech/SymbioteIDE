@@ -133,8 +133,11 @@ pub fn assess_readiness(
             Some(pulse) => {
                 let requirements = PulseRequirements {
                     host_id: pulse.host_id.clone(),
-                    // Concurrency does not imply a CPU reservation.
-                    minimum_cpu_millicores: None,
+                    // Only a declared CPU demand is judged: concurrency does
+                    // not imply a CPU reservation, so a candidate that
+                    // declares none is not asking the Host for capacity it
+                    // never expressed.
+                    minimum_cpu_millicores: candidate.limits.max_cpu_millicores,
                     minimum_available_memory_bytes: Some(candidate.limits.max_memory_bytes),
                     capabilities: vec![],
                 };

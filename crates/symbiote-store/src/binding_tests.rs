@@ -296,6 +296,7 @@ fn candidate() -> StaffingCandidate {
             max_wall_time_ms: 1000,
             max_concurrency: 1,
             max_memory_bytes: 1000,
+            max_cpu_millicores: None,
         },
     }
 }

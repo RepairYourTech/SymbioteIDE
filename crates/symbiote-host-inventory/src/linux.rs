@@ -10,7 +10,11 @@ use symbiote_domain::Timestamp;
 
 pub const MAX_MEMINFO_BYTES: usize = 65_536;
 pub const MAX_STAT_BYTES: usize = 1_048_576;
+pub const MAX_STATUS_BYTES: usize = 65_536;
 pub const MAX_CGROUP_BYTES: usize = 4_096;
+/// The most CPUs one observation will expand and retain. A CPU list that
+/// claims more than this is refused rather than materialized.
+pub const MAX_OBSERVED_CPUS: usize = 65_536;
 /// The unified (cgroup v2) mount point. Only the unified hierarchy is observed:
 /// a hybrid or v1-only host reports unknown effective facts with a static
 /// reason rather than translating a hierarchy whose semantics differ.
@@ -102,9 +106,9 @@ pub fn parse_meminfo(input: &str) -> Result<PhysicalMemory, ProbeError> {
     })
 }
 
-/// Counts distinct cpuN rows, not the aggregate cpu row and not process affinity.
+/// The online CPUs named by distinct `cpuN` rows, not the aggregate `cpu` row.
 /// Validates numeric counters but does not infer utilization from one sample.
-pub fn parse_cpu_stat(input: &str) -> Result<u32, ProbeError> {
+pub fn parse_online_cpus(input: &str) -> Result<BTreeSet<u32>, ProbeError> {
     if input.len() > MAX_STAT_BYTES {
         return Err(ProbeError::TooLarge);
     }
@@ -122,10 +126,7 @@ pub fn parse_cpu_stat(input: &str) -> Result<u32, ProbeError> {
             }
             aggregate = true;
         } else {
-            let id = number(id)?;
-            if id > u64::from(u32::MAX) {
-                return Err(ProbeError::Overflow);
-            }
+            let id = u32::try_from(number(id)?).map_err(|_| ProbeError::Overflow)?;
             if !cpus.insert(id) {
                 return Err(ProbeError::DuplicateField);
             }
@@ -145,7 +146,74 @@ pub fn parse_cpu_stat(input: &str) -> Result<u32, ProbeError> {
     if !aggregate || cpus.is_empty() {
         return Err(ProbeError::MissingField);
     }
+    Ok(cpus)
+}
+
+/// How many CPUs are online, from the same `cpuN` rows [`parse_online_cpus`]
+/// reads. The count alone says nothing about what this process may use.
+pub fn parse_cpu_stat(input: &str) -> Result<u32, ProbeError> {
+    let cpus = parse_online_cpus(input)?;
     u32::try_from(cpus.len()).map_err(|_| ProbeError::Overflow)
+}
+
+/// A kernel CPU list (`0-3,8,10-11`): ascending, disjoint, exactly `<n>` or
+/// `<n>-<m>` items, bounded in both length and expansion. An empty list, a
+/// descending or overlapping range and anything else malformed is refused.
+pub fn parse_cpu_list(input: &str) -> Result<BTreeSet<u32>, ProbeError> {
+    if input.len() > MAX_CGROUP_BYTES {
+        return Err(ProbeError::TooLarge);
+    }
+    if input.is_empty() {
+        return Err(ProbeError::Malformed);
+    }
+    let mut cpus = BTreeSet::new();
+    let mut previous: Option<u32> = None;
+    for item in input.split(',') {
+        let mut bounds = item.split('-');
+        let first = number(bounds.next().ok_or(ProbeError::Malformed)?)?;
+        let last = match bounds.next() {
+            Some(last) => number(last)?,
+            None => first,
+        };
+        if bounds.next().is_some() || last < first {
+            return Err(ProbeError::Malformed);
+        }
+        let first = u32::try_from(first).map_err(|_| ProbeError::Overflow)?;
+        let last = u32::try_from(last).map_err(|_| ProbeError::Overflow)?;
+        if previous.is_some_and(|previous| first <= previous) {
+            return Err(ProbeError::DuplicateField);
+        }
+        let width = u64::from(last) - u64::from(first) + 1;
+        if cpus.len() + usize::try_from(width).unwrap_or(usize::MAX) > MAX_OBSERVED_CPUS {
+            return Err(ProbeError::TooLarge);
+        }
+        for cpu in first..=last {
+            cpus.insert(cpu);
+        }
+        previous = Some(last);
+    }
+    Ok(cpus)
+}
+
+/// `Cpus_allowed_list` from `/proc/self/status`: the CPUs the kernel will
+/// schedule this process on, which already reflects both any cgroup cpuset and
+/// any process affinity. Unrelated status lines are ignored, including their
+/// values; no command, account or path is retained.
+pub fn parse_cpus_allowed(input: &str) -> Result<BTreeSet<u32>, ProbeError> {
+    if input.len() > MAX_STATUS_BYTES {
+        return Err(ProbeError::TooLarge);
+    }
+    let mut allowed = None;
+    for line in input.lines() {
+        let Some(rest) = line.strip_prefix("Cpus_allowed_list:") else {
+            continue;
+        };
+        if allowed.is_some() {
+            return Err(ProbeError::DuplicateField);
+        }
+        allowed = Some(parse_cpu_list(rest.trim())?);
+    }
+    allowed.ok_or(ProbeError::MissingField)
 }
 
 /// The unified path of the process's own cgroup, from `/proc/self/cgroup`'s
@@ -241,16 +309,38 @@ pub fn derive_memory(
     }
 }
 
-/// What the process's cgroup establishes about CPU. A quota is a real
-/// measurement; without one the effective CPU stays unknown — online CPU
-/// counts establish neither affinity nor a reservation — which is an absence of
-/// evidence, never a claim of capacity.
-pub fn derive_cpu(quota: Result<Option<u64>, ProbeError>) -> (Fact<u64>, Option<ProbeError>) {
-    match quota {
-        Ok(Some(millicores)) => (Fact::Known(millicores), None),
-        Ok(None) => (Fact::Unknown, None),
-        Err(reason) => (Fact::Unknown, Some(reason)),
-    }
+/// What the process's cgroup and the scheduler establish about CPU: the
+/// millicores it may actually use, and the static reason that is unknown. The
+/// bound is the CPUs this process is allowed to run on, restricted to the CPUs
+/// that are online, capped by any enforced quota — a real measurement of what
+/// this process may use. It is never the machine's CPU total standing in for an
+/// unreadable bound: a source that cannot be read leaves the whole fact unknown
+/// with its own reason, because a quota that cannot be seen may still bind.
+pub fn derive_cpu(
+    quota: Result<Option<u64>, ProbeError>,
+    online: Result<BTreeSet<u32>, ProbeError>,
+    allowed: Result<BTreeSet<u32>, ProbeError>,
+) -> (Fact<u64>, Option<ProbeError>) {
+    let (quota, online, allowed) = match (quota, online, allowed) {
+        (Ok(quota), Ok(online), Ok(allowed)) => (quota, online, allowed),
+        (quota, online, allowed) => {
+            let reason = [quota.err(), online.err(), allowed.err()]
+                .into_iter()
+                .flatten()
+                .next()
+                .unwrap_or(ProbeError::MissingField);
+            return (Fact::Unknown, Some(reason));
+        }
+    };
+    let cpus = allowed.intersection(&online).count();
+    let allowed_millicores = u64::try_from(cpus)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(1_000);
+    let millicores = match quota {
+        Some(quota) => allowed_millicores.min(quota),
+        None => allowed_millicores,
+    };
+    (Fact::Known(millicores), None)
 }
 
 /// The process's own cgroup, read file by file so one unreadable file reports
@@ -314,12 +404,18 @@ pub fn probe(at: Timestamp) -> LinuxObservation {
         failures: Vec::new(),
     };
     #[cfg(target_os = "linux")]
-    let (memory, cpu) = (
+    let (memory, cpus, allowed) = (
         read_bounded("/proc/meminfo", MAX_MEMINFO_BYTES).and_then(|s| parse_meminfo(&s)),
-        read_bounded("/proc/stat", MAX_STAT_BYTES).and_then(|s| parse_cpu_stat(&s)),
+        read_bounded("/proc/stat", MAX_STAT_BYTES).and_then(|s| parse_online_cpus(&s)),
+        read_bounded("/proc/self/status", MAX_STATUS_BYTES).and_then(|s| parse_cpus_allowed(&s)),
     );
     #[cfg(not(target_os = "linux"))]
-    let (memory, cpu): (Result<PhysicalMemory, ProbeError>, Result<u32, ProbeError>) = (
+    let (memory, cpus, allowed): (
+        Result<PhysicalMemory, ProbeError>,
+        Result<BTreeSet<u32>, ProbeError>,
+        Result<BTreeSet<u32>, ProbeError>,
+    ) = (
+        Err(ProbeError::UnsupportedPlatform),
         Err(ProbeError::UnsupportedPlatform),
         Err(ProbeError::UnsupportedPlatform),
     );
@@ -334,11 +430,15 @@ pub fn probe(at: Timestamp) -> LinuxObservation {
             reason,
         }),
     }
-    match cpu {
-        Ok(count) => observation.resources.logical_cpu_count = Fact::Known(count),
+    match &cpus {
+        Ok(cpus) => {
+            observation.resources.logical_cpu_count = u32::try_from(cpus.len())
+                .map(Fact::Known)
+                .unwrap_or(Fact::Unknown)
+        }
         Err(reason) => observation.failures.push(ProbeFailure {
             resource: ProbeResource::LogicalCpuCount,
-            reason,
+            reason: *reason,
         }),
     }
     #[cfg(target_os = "linux")]
@@ -372,7 +472,7 @@ pub fn probe(at: Timestamp) -> LinuxObservation {
             reason,
         });
     }
-    let (millicores, cpu_failure) = derive_cpu(cpu_quota);
+    let (millicores, cpu_failure) = derive_cpu(cpu_quota, cpus, allowed);
     observation.resources.effective_cpu_millicores = millicores;
     if let Some(reason) = cpu_failure {
         observation.failures.push(ProbeFailure {

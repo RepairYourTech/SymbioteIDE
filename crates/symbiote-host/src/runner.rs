@@ -2467,6 +2467,7 @@ mod tests {
                     max_wall_time_ms: 60_000,
                     max_concurrency: 1,
                     max_memory_bytes: 1 << 20,
+                    max_cpu_millicores: None,
                 },
             };
             let policy = || symbiote_workforce::PolicyReference {

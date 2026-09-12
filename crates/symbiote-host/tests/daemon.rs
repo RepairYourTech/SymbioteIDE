@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor":18},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor":19},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1371,6 +1371,18 @@ fn staffing_composition_with(
     registration: Registration,
     max_memory_bytes: Option<u64>,
 ) -> Value {
+    staffing_composition_with_limits(host, registration, max_memory_bytes, None)
+}
+
+/// The same composition, also optionally declaring the candidate's CPU demand,
+/// so a test can place it on either side of the effective CPU this Host
+/// actually measured.
+fn staffing_composition_with_limits(
+    host: &Host,
+    registration: Registration,
+    max_memory_bytes: Option<u64>,
+    max_cpu_millicores: Option<u64>,
+) -> Value {
     ok(&host.call(
         serde_json::from_str(include_str!("../../../fixtures/project-team/register.json")).unwrap(),
     ));
@@ -1411,6 +1423,10 @@ fn staffing_composition_with(
     if let Some(max_memory_bytes) = max_memory_bytes {
         binding["operation"]["configuration"]["primary"]["limits"]["max_memory_bytes"] =
             json!(max_memory_bytes);
+    }
+    if let Some(max_cpu_millicores) = max_cpu_millicores {
+        binding["operation"]["configuration"]["primary"]["limits"]["max_cpu_millicores"] =
+            json!(max_cpu_millicores);
     }
     for path in [
         ["operation", "configuration", "primary", "access", "grants"],
@@ -1699,6 +1715,59 @@ fn host_capacity_reports_an_observation_and_never_a_guess() {
     staffing_composition_with(&host, Registration::Complete, Some(1u64 << 50));
     let report = readiness_probe(&host);
     assert_eq!(report["checks"][1]["result"], expected, "{report}");
+}
+
+/// A candidate that declares a CPU demand is judged against the effective CPU
+/// this Host measured from its own allowed and online CPU sets, capped by any
+/// enforced quota — a real measurement rather than the machine's totals, and a
+/// demand the Host never observed stays an absence.
+#[test]
+fn a_declared_cpu_demand_is_judged_against_the_measured_effective_cpu() {
+    let probe = Host::new();
+    let pulse =
+        ok(&probe.call(request("cpu-pulse", json!({"kind":"get_host_pulse"}))))["data"].clone();
+    let observed = &pulse["resources"]["effective_cpu_millicores"];
+    let failed = pulse["probe_failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|failure| failure["resource"] == "effective_cpu");
+    if !failed {
+        // The Host read its own allowed and online CPU sets, so it holds a
+        // measurement: an unknown here would be an absence with no reason.
+        assert_eq!(observed["status"], "known", "{pulse}");
+        let measured = observed["value"].as_u64().unwrap();
+        // The measurement was observed, so the answer is a verdict: the demand
+        // it meets is satisfied, and one millicore past it is a rejection.
+        let verdict = |demand: u64| {
+            let host = Host::new();
+            staffing_composition_with_limits(&host, Registration::Complete, None, Some(demand));
+            readiness_probe(&host)["checks"][1]["result"].clone()
+        };
+        assert_eq!(verdict(measured), "satisfied");
+        if measured < 64_000 {
+            assert_eq!(verdict(measured + 1), "rejected");
+        }
+    } else {
+        // A Host whose own cgroup or CPU sets could not be read holds no
+        // measurement: the demand is an absence, never a rejection of the
+        // Host.
+        assert_eq!(observed["status"], "unknown", "{pulse}");
+        let unobserved = Host::new();
+        staffing_composition_with_limits(&unobserved, Registration::Complete, None, Some(1));
+        assert_eq!(
+            readiness_probe(&unobserved)["checks"][1]["result"],
+            "missing_observation"
+        );
+    }
+    // Sampling switched off observes no capacity at all, so a declared CPU
+    // demand is classified exactly like the memory requirement beside it.
+    let silent = Host::with_telemetry(false);
+    staffing_composition_with_limits(&silent, Registration::Complete, None, Some(1));
+    assert_eq!(
+        readiness_probe(&silent)["checks"][1]["result"],
+        "missing_observation"
+    );
 }
 
 /// Every registration the registry can be put into that cannot be bound is
