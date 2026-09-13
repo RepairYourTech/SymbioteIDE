@@ -35,10 +35,10 @@
 //! none of them. Files a package generates into its `OUT_DIR` are outside it
 //! too: their content comes from the build script, which is inside it. An
 //! input a package compiles from *outside* its own directory would be outside
-//! it, so the coverage was measured rather than assumed: cargo's own dep-info
-//! for both driven binaries lists 98 and 41 files, and every one of them is
-//! inside the packages this walk records (see the crate's tests for the
-//! fixture that pins the walk's shape). Cargo's dep-info is not read here
+//! it, so the coverage was measured rather than assumed: when this walk was
+//! written, every input cargo's own dep-info listed for the two driven
+//! binaries resolved inside the packages it records (see the crate's tests for
+//! the fixture that pins the walk's shape). Cargo's dep-info is not read here
 //! because it is a private, versioned binary format that is written *after*
 //! the build script that must write the record, so it can neither populate a
 //! record on a first build nor be a completeness check the documented rebuild
