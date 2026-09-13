@@ -16,11 +16,14 @@
 //!   records every file the package's binaries compile — everything under the
 //!   package that is not a test, example or bench target, whatever its
 //!   extension, because a compile can read a file no manifest mentions
-//!   (`include_str!("schema.sql")`) — together with the manifests, build
-//!   scripts and `Cargo.lock` that pin them. It hashes the content of all of
-//!   them, writes `<target>/<profile>/<package>.source-stamp`, tells cargo to
-//!   rerun the build script when any recorded file changes, and embeds the
-//!   record's own id in the binary it is about to compile.
+//!   (`include_str!("schema.sql")`), and every file those sources pull in
+//!   through a literal `include!`, `include_bytes!` or `include_str!`,
+//!   wherever it lives, because `symbiote-workflow` compiles fixtures kept at
+//!   the workspace root — together with the manifests, build scripts and
+//!   `Cargo.lock` that pin them. It hashes the content of all of them, writes
+//!   `<target>/<profile>/<package>.source-stamp`, tells cargo to rerun the
+//!   build script when any recorded file changes, and embeds the record's own
+//!   id in the binary it is about to compile.
 //! * [`changed_sources`] is called by the proof. It re-hashes what the record
 //!   holds and refuses a binary whose embedded id is not this record's — which
 //!   is what a failed compile leaves behind, since the record is written
@@ -34,15 +37,16 @@
 //! them, and dev-dependency edges are outside it because a binary compiles
 //! none of them. Files a package generates into its `OUT_DIR` are outside it
 //! too: their content comes from the build script, which is inside it. An
-//! input a package compiles from *outside* its own directory would be outside
-//! it, so the coverage was measured rather than assumed: when this walk was
-//! written, every input cargo's own dep-info listed for the two driven
-//! binaries resolved inside the packages it records (see the crate's tests for
-//! the fixture that pins the walk's shape). Cargo's dep-info is not read here
-//! because it is a private, versioned binary format that is written *after*
-//! the build script that must write the record, so it can neither populate a
-//! record on a first build nor be a completeness check the documented rebuild
-//! could ever clear.
+//! include path built at compile time (`concat!`, an environment variable) is
+//! outside it as well, because the walk reads literals and none of these
+//! sources builds one that way. The include scan reads source text, so a path
+//! named only by a comment is recorded when it exists — wrong in the safe
+//! direction, since it can add an input but not miss one (see the crate's
+//! tests for the fixtures that pin the walk's shape). Cargo's dep-info is not
+//! read here because it is a private, versioned binary format that is written
+//! *after* the build script that must write the record, so it can neither
+//! populate a record on a first build nor be a completeness check the
+//! documented rebuild could ever clear.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -75,6 +79,11 @@ const UNCOMPILED_DIRECTORIES: [&str; 7] = [
     "tests",
 ];
 
+/// The macros through which a source pulls in another file at compile time,
+/// in a form the walk can follow: a literal path the compiler resolves
+/// relative to the file that names it.
+const INCLUDE_MACROS: [&str; 3] = ["include!", "include_bytes!", "include_str!"];
+
 /// Records the content of the sources this package's binaries are built from,
 /// next to the binaries, and asks cargo to rerun the build script when any of
 /// them changes. Call this from a build script's `main`.
@@ -87,14 +96,7 @@ pub fn build_stamp() {
     let workspace = workspace_root(&manifest_dir)
         .unwrap_or_else(|problem| panic!("cannot record the sources under test: {problem}"));
 
-    let mut sources = BTreeSet::new();
-    for directory in closure_directories(&manifest_dir) {
-        sources.extend(package_sources(&directory));
-    }
-    let lockfile = workspace.join("Cargo.lock");
-    if lockfile.is_file() {
-        sources.insert(lockfile);
-    }
+    let sources = recorded_sources(&manifest_dir, &workspace);
     let mut record = String::new();
     for source in &sources {
         let content = std::fs::read(source)
@@ -183,6 +185,89 @@ fn embedded_record(binary: &Path) -> Option<String> {
                 && window[marker.len()..].iter().all(u8::is_ascii_hexdigit)
         })
         .and_then(|window| String::from_utf8(window[marker.len()..].to_vec()).ok())
+}
+
+/// Every file the build of the package at `manifest_dir` compiles: the walk
+/// over each closure package's directory, plus every file those sources
+/// include from wherever it lives, plus the lockfile that pins the registry
+/// dependencies. Followed to a fixed point, so an included file that includes
+/// another is recorded too.
+fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> BTreeSet<PathBuf> {
+    let mut sources = BTreeSet::new();
+    for directory in closure_directories(manifest_dir) {
+        sources.extend(package_sources(&directory));
+    }
+    loop {
+        let added: Vec<PathBuf> = included_sources(&sources)
+            .into_iter()
+            .filter(|file| !sources.contains(file))
+            .collect();
+        if added.is_empty() {
+            break;
+        }
+        sources.extend(added);
+    }
+    let lockfile = workspace.join("Cargo.lock");
+    if lockfile.is_file() {
+        sources.insert(lockfile);
+    }
+    sources
+}
+
+/// Every file the given sources pull in through a literal include macro,
+/// resolved the way the compiler resolves it: relative to the file that names
+/// it. A package can compile an input from outside its own directory this way
+/// — the workspace-root fixtures `symbiote-workflow` reads — which walking the
+/// package's directory alone would not find. A path that does not name an
+/// existing file is skipped: a compile that needs one fails on its own.
+fn included_sources(sources: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    let mut included = BTreeSet::new();
+    for source in sources.iter().filter(|source| {
+        source
+            .extension()
+            .is_some_and(|extension| extension == "rs")
+    }) {
+        let Ok(text) = std::fs::read_to_string(source) else {
+            continue;
+        };
+        let Some(directory) = source.parent() else {
+            continue;
+        };
+        for target in include_targets(&text) {
+            let file = canonical(&directory.join(target));
+            if file.is_file() {
+                included.insert(file);
+            }
+        }
+    }
+    included
+}
+
+/// The literal paths a source names through an include macro. A path assembled
+/// at compile time (`concat!`, an environment variable) is not a literal and
+/// is not read; no source here builds one that way.
+fn include_targets(source: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    for name in INCLUDE_MACROS {
+        let mut remaining = source;
+        while let Some(found) = remaining.find(name) {
+            remaining = &remaining[found + name.len()..];
+            let Some(argument) = remaining.trim_start().strip_prefix('(') else {
+                continue;
+            };
+            let Some(literal) = argument.trim_start().strip_prefix('"') else {
+                continue;
+            };
+            let Some(end) = literal.find('"') else {
+                continue;
+            };
+            let path = &literal[..end];
+            if !path.contains('\\') {
+                targets.push(path.to_owned());
+            }
+        }
+    }
+    targets
 }
 
 /// Every workspace package directory reachable from `manifest_dir` through
@@ -343,20 +428,17 @@ mod tests {
         directory
     }
 
-    fn record_for(root: &Path, files: &[(&str, &str)]) -> (PathBuf, String) {
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[workspace]\n[package]\nname = \"symbiote-example\"\n",
-        )
-        .expect("the root manifest");
+    /// A record over exactly `sources`, beside a binary carrying its id — the
+    /// shape `build_stamp` writes, so a test can check what the walk recorded
+    /// rather than re-listing what it should have found.
+    fn record_over(root: &Path, sources: &BTreeSet<PathBuf>) -> (PathBuf, String) {
         let mut record = String::new();
-        for (path, content) in files {
-            let file = root.join(path);
-            std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
-            std::fs::write(&file, content).expect("the source");
+        for source in sources {
+            let content = std::fs::read(source).expect("a recorded source");
             record.push_str(&format!(
-                "{:x}\t{path}\n",
-                Sha256::digest(content.as_bytes())
+                "{:x}\t{}\n",
+                Sha256::digest(&content),
+                relative_to(root, source).display()
             ));
         }
         let stamp = root.join("symbiote-example.source-stamp");
@@ -369,6 +451,22 @@ mod tests {
         )
         .expect("the binary");
         (binary, id)
+    }
+
+    fn record_for(root: &Path, files: &[(&str, &str)]) -> (PathBuf, String) {
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\n[package]\nname = \"symbiote-example\"\n",
+        )
+        .expect("the root manifest");
+        let mut sources = BTreeSet::new();
+        for (path, content) in files {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+            std::fs::write(&file, content).expect("the source");
+            sources.insert(file);
+        }
+        record_over(root, &sources)
     }
 
     #[test]
@@ -407,6 +505,26 @@ path = \"src/bin/example.rs\"
     #[test]
     fn a_path_dependency_split_across_lines_is_not_claimed() {
         assert!(path_dependencies("[dependencies]\nx = {\n  path = \"../x\"\n}\n").is_empty());
+    }
+
+    #[test]
+    fn include_targets_reads_literals_and_ignores_built_paths() {
+        assert_eq!(
+            include_targets("include_str!(\n  \"../fixtures/a.json\"\n)"),
+            ["../fixtures/a.json"]
+        );
+        assert_eq!(
+            include_targets("include_bytes!(\"logo.svg\")"),
+            ["logo.svg"]
+        );
+        assert_eq!(include_targets("include!(\"part.rs\")"), ["part.rs"]);
+        assert!(include_targets("include_str!(concat!(env!(\"OUT_DIR\"), \"/x.rs\"))").is_empty());
+        // The scan reads text, so a path only a comment names is still read:
+        // the record is conservative, never missing an input.
+        assert_eq!(
+            include_targets("/// include_str!(\"doc.txt\")"),
+            ["doc.txt"]
+        );
     }
 
     #[test]
@@ -478,6 +596,44 @@ path = \"src/bin/example.rs\"
                  current binary for a change no rebuild could clear"
             );
         }
+    }
+
+    #[test]
+    fn an_input_compiled_from_outside_the_package_is_recorded_and_named() {
+        let root = fixture("outside");
+        std::fs::create_dir_all(root.join("crates/app/src")).expect("the package");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/app\"]\n",
+        )
+        .expect("the root manifest");
+        std::fs::write(
+            root.join("crates/app/Cargo.toml"),
+            "[package]\nname = \"app\"\n",
+        )
+        .expect("the package manifest");
+        std::fs::write(
+            root.join("crates/app/src/lib.rs"),
+            "pub const FIXTURE: &str = include_str!(\"../../../fixtures/register.json\");\n",
+        )
+        .expect("the source that compiles a file outside its package");
+        let compiled = root.join("fixtures/register.json");
+        std::fs::create_dir_all(compiled.parent().expect("a parent")).expect("the fixtures");
+        std::fs::write(&compiled, "{\"one\": true}\n").expect("the fixture");
+
+        let sources = recorded_sources(&root.join("crates/app"), &root);
+        assert!(
+            sources.contains(&canonical(&compiled)),
+            "a package that compiles {} must record it; the walk found {sources:?}",
+            compiled.display()
+        );
+
+        let (binary, _) = record_over(&root, &sources);
+        std::fs::write(&compiled, "{\"two\": true}\n").expect("the changed fixture");
+        assert_eq!(
+            changed_sources(&binary, "symbiote-example", &root).expect("a readable record"),
+            [compiled]
+        );
     }
 
     #[test]
