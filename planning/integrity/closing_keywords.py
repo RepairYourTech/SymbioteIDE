@@ -13,15 +13,19 @@ This tool reports the references GitHub will close and fails under two rules:
 
 * a description fails when one of them sits in a clause that negates the
   keyword, so the wording can be fixed before the merge instead of after it;
-* a commit message (`--commits`) fails on any closing keyword at all. GitHub
-  scans the commit messages of the merged commits, nothing in review reads
-  them, and the description is where an intended closure belongs. PR #551 was
-  landed to prevent accidental closures and was itself closed through this
-  channel: its final sentence, "so the defect that closed #54 is reproduced
-  rather than described", closed #54 on merge because the guard read only
-  descriptions. That is also why a description now has to *state* its
-  closures: `Closes #54` opens its own clause, while a keyword buried in a
-  sentence is prose about a closure, and GitHub cannot tell the difference.
+* a text GitHub reads on merge but no reviewer reads as a closure statement
+  (`--commits`, `--title`) fails on any closing keyword at all. The channels
+  are the commit messages of the merged commits and, for a pull request whose
+  branch carries more than one commit, the title, which the repository's squash
+  settings (`squash_title=COMMIT_OR_PR_TITLE`) put at the head of the merged
+  message. An intended closure belongs in the description, which is what a
+  reviewer reads and can object to. PR #551 was landed to prevent accidental
+  closures and was itself closed through the commit channel: its final
+  sentence, "so the defect that closed #54 is reproduced rather than
+  described", closed #54 on merge because the guard read only descriptions.
+  That is also why a description now has to *state* its closures: `Closes #54`
+  opens its own clause, while a keyword buried in a sentence is prose about a
+  closure, and GitHub cannot tell the difference.
 
 It reads the text from stdin (or --body-file), writes nothing, and implements
 only the documented syntax table:
@@ -31,6 +35,7 @@ so `--base` reports them as ignored rather than failing text on a branch where
 merging cannot close anything.
 
     printf '%s' "$PR_BODY" | python3 planning/integrity/closing_keywords.py
+    printf '%s' "$PR_TITLE" | python3 planning/integrity/closing_keywords.py --title
     git log -1 --format=%B "$SHA" | python3 planning/integrity/closing_keywords.py --commits
 """
 
@@ -56,6 +61,15 @@ SENTENCE_END = re.compile(r"[.!?;\n]+")
 # What may precede a keyword that still opens its clause: list markers,
 # quotes, emphasis, an ordered-list number.
 CLAUSE_OPENING = re.compile(r"^[\s>*+`\"'|\-]*(?:\d+\.)?[\s>*+`\"'|\-]*$")
+
+# A channel GitHub reads on merge and no reviewer reads as a closure
+# statement: text there refuses every closing keyword, accepted or denied.
+COMMIT_CHANNEL = "Nothing in review reads a commit message"
+TITLE_CHANNEL = (
+    "A pull request's title becomes the merged commit's subject when its branch "
+    "carries more than one commit, and nothing in review reads it as a closure "
+    "statement"
+)
 
 
 @dataclass(frozen=True)
@@ -108,14 +122,14 @@ def closings(body):
     return found
 
 
-def report(closings, label="description", refuse_all=False):
+def report(closings, label="description", channel=None):
     """The lines to print for `closings`, and whether any of them is refused.
-    `refuse_all` is the commit-message rule: a closing keyword there is
-    honoured on merge and read by nobody, so it is refused whatever the
-    sentence around it means. A description is refused when its sentence
-    denies the closure, or when the keyword is buried in prose rather than
-    stated as its own clause."""
-    hazards = closings if refuse_all else [c for c in closings if c.denied()]
+    `channel` names a text GitHub reads on merge and no reviewer reads as a
+    closure statement; every closing keyword in it is refused, whatever the
+    sentence around it means. A description (no channel) is refused when its
+    sentence denies the closure, or when the keyword is buried in prose rather
+    than stated as its own clause."""
+    hazards = closings if channel else [c for c in closings if c.denied()]
     lines = []
     if not closings:
         lines.append("No closing keyword: merging this text closes nothing.")
@@ -125,13 +139,13 @@ def report(closings, label="description", refuse_all=False):
                 f'Merging closes {closing.reference} (keyword "{closing.keyword}").'
             )
     for closing in hazards:
-        if refuse_all:
+        if channel:
             lines.append(
                 f"FAIL: the {label} carries a closing keyword, and GitHub closes "
                 "the issue when the pull request merges into the default branch:\n"
                 f'  "{closing.clause.strip()}"\n'
-                "Nothing in review reads a commit message, so state an intended "
-                f"closure in the description instead (\"Closes {closing.reference}\"), "
+                f"{channel}. State an intended closure in the description instead "
+                f"(\"Closes {closing.reference}\"), "
                 "or rephrase this one so the keyword and the number are not "
                 f'adjacent — for example, "{closing.reference} was closed by …".'
             )
@@ -170,6 +184,13 @@ def main(argv=None):
         help="the text is a commit message: refuse any closing keyword",
     )
     parser.add_argument(
+        "--title",
+        action="store_true",
+        help="the text is a pull-request title, which a squash merge of more than "
+        "one commit puts at the head of the merged message: refuse any closing "
+        "keyword",
+    )
+    parser.add_argument(
         "--label",
         help="what the text is, named in a refusal",
     )
@@ -192,8 +213,14 @@ def main(argv=None):
         )
         return 0
 
-    label = arguments.label or ("commit message" if arguments.commits else "description")
-    lines, failed = report(closings(body), label, refuse_all=arguments.commits)
+    channel = None
+    if arguments.title:
+        channel, default_label = TITLE_CHANNEL, "pull-request title"
+    elif arguments.commits:
+        channel, default_label = COMMIT_CHANNEL, "commit message"
+    else:
+        default_label = "description"
+    lines, failed = report(closings(body), arguments.label or default_label, channel)
     for line in lines:
         print(line)
     return 1 if failed else 0
