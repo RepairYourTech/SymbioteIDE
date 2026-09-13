@@ -1,5 +1,14 @@
 //! Trusted, single-threaded descriptor boundary before bubblewrap. No untrusted
 //! code executes until every inherited descriptor other than stdio is closed.
+
+/// The id of the source record this build wrote, embedded in the binary so a
+/// proof can tell which record produced the launcher it is about to drive
+/// rather than trusting a record a failed compile may have refreshed. It lives
+/// in the binary's root because a static in the library is dropped when this
+/// crate links it without referencing it. See `symbiote-source-stamp`.
+#[doc(hidden)]
+static SOURCE_RECORD: &str = env!("SYMBIOTE_SOURCE_RECORD");
+
 use std::os::unix::{ffi::OsStrExt, process::CommandExt};
 
 fn run() -> Result<(), ()> {
@@ -38,6 +47,12 @@ fn run() -> Result<(), ()> {
     Err(())
 }
 fn main() {
+    // Read, not merely declared: a static the binary never reads is one the
+    // compiler or linker may drop, and Rust 1.85 does drop this one (`#[used]`
+    // did not keep it, and the desktop proofs refused its daemon for carrying
+    // no record at all). A marker that can be dropped cannot bind a record to
+    // the binary a proof drives.
+    std::hint::black_box(SOURCE_RECORD);
     if run().is_err() {
         eprintln!("sandbox launcher unavailable");
         std::process::exit(126);
