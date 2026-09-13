@@ -113,6 +113,45 @@ class ClosingKeywordTests(unittest.TestCase):
         self.assertIn("the commit 5bf7437f carries a closing keyword", output)
         self.assertIn("so the defect that closed #54", output)
 
+    def test_the_real_546_title_is_read_as_a_title(self):
+        # PR #546's title, verbatim: this repository's style of citing issue
+        # numbers in parentheses, which the title rule must not refuse. It
+        # became that merge's subject, because the branch carried more than
+        # one commit.
+        title = (
+            "fix(runtime): the Host owns the external harness lane — its launch, "
+            "ceiling, worktree and wall time (#229, #464)\n"
+        )
+        code, output = run(title, "--title")
+        self.assertEqual(code, 0)
+        self.assertIn("closes nothing", output)
+
+    def test_a_landed_title_citing_an_issue_number_passes(self):
+        # PR #554's title, verbatim.
+        code, output = run(
+            "chore(planning): refuse a closing keyword in a commit message (#54)\n",
+            "--title",
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("closes nothing", output)
+
+    def test_a_title_that_states_a_closure_is_still_refused(self):
+        # `Closes #218` is the form a description is told to use, and the
+        # reason the title carries its own rule: the merged subject is read by
+        # GitHub, not by a reviewer.
+        self.assertEqual(run("Closes #218.\n")[0], 0)
+        code, output = run("Closes #218.\n", "--title")
+        self.assertEqual(code, 1)
+        self.assertIn("the pull-request title carries a closing keyword", output)
+        self.assertIn("becomes the merged commit's subject", output)
+
+    def test_a_hazardous_title_is_refused(self):
+        # A title with a keyword buried in it, of the kind that closed #54 when
+        # it arrived through a commit message.
+        code, output = run("fix(host): the preflight that closed #54 now refuses\n", "--title")
+        self.assertEqual(code, 1)
+        self.assertIn('"fix(host): the preflight that closed #54"', output)
+
     def test_a_commit_message_may_not_close_anything_even_in_a_stated_clause(self):
         code, output = run("Closes #218.\n", "--commits")
         self.assertEqual(code, 1)

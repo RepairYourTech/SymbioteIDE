@@ -10,13 +10,16 @@ permissions:
 
 jobs:
   closing-keywords:
-    # GitHub honours a closing keyword wherever it appears in the description
-    # or in the messages of the merged commits, and it reads no negation. Both
-    # channels have closed an issue here by accident: #54 by the sentence
-    # "This does not close #54." in PR #530, and #54 again by the sentence
-    # "the defect that closed #54 is reproduced rather than described" in the
-    # commit message of PR #551, which read only descriptions. Fail the pull
-    # request so the wording is fixed before the merge instead of after it.
+    # GitHub honours a closing keyword wherever it appears in the description,
+    # in the messages of the merged commits, or in the pull-request title —
+    # which the repository's squash settings (squash_title=COMMIT_OR_PR_TITLE,
+    # squash_message=COMMIT_MESSAGES) put at the head of the merged message
+    # whenever the branch carries more than one commit. It reads no negation.
+    # Every channel has closed an issue here by accident: #54 by the sentence
+    # "This does not close #54." in PR #530, #54 again by the sentence "the
+    # defect that closed #54 is reproduced rather than described" in the commit
+    # message of PR #551, which read only descriptions. Fail the pull request
+    # so the wording is fixed before the merge instead of after it.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -33,6 +36,11 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_BASE: ${{ github.event.pull_request.base.ref }}
         run: printf '%s' "$PR_BODY" | python3 planning/integrity/closing_keywords.py --base "$PR_BASE"
+      - name: A pull-request title may not carry a closing keyword either
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+        run: printf '%s' "$PR_TITLE" | python3 planning/integrity/closing_keywords.py --title --base "$PR_BASE"
       - name: A commit message may not carry a closing keyword at all
         env:
           PR_BASE: ${{ github.event.pull_request.base.ref }}
