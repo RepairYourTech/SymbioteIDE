@@ -57,6 +57,9 @@ pub const STAMP_SUFFIX: &str = ".source-stamp";
 /// from. Written into the binary through `cargo:rustc-env`.
 pub const RECORD_MARKER: &str = "symbiote-source-record:";
 
+/// The characters of the record id that follow the marker: a sha256 in hex.
+const ID_LENGTH: usize = 64;
+
 /// Directories under a package that its binaries do not compile. The targets
 /// cargo builds for tests, examples and benches are excluded because a change
 /// there must not refuse a current binary — no rebuild could clear that
@@ -167,18 +170,19 @@ fn read_record(record: &[u8], workspace: &Path) -> Result<BTreeMap<PathBuf, Stri
     Ok(recorded)
 }
 
-/// The id a binary carries, read from the marker `build_stamp` embedded.
+/// The id a binary carries, read from the marker `build_stamp` embedded: the
+/// first marker that is followed by a sha256 in hex, so a marker that appears
+/// in the binary for any other reason cannot hide the record.
 fn embedded_record(binary: &Path) -> Option<String> {
     let bytes = std::fs::read(binary).ok()?;
     let marker = RECORD_MARKER.as_bytes();
-    let id_length = 64;
-    let start = bytes
-        .windows(marker.len() + id_length)
-        .position(|window| &window[..marker.len()] == marker)?;
-    let id = &bytes[start + marker.len()..start + marker.len() + id_length];
-    id.iter()
-        .all(u8::is_ascii_hexdigit)
-        .then(|| String::from_utf8(id.to_vec()).ok())?
+    bytes
+        .windows(marker.len() + ID_LENGTH)
+        .find(|window| {
+            &window[..marker.len()] == marker
+                && window[marker.len()..].iter().all(u8::is_ascii_hexdigit)
+        })
+        .and_then(|window| String::from_utf8(window[marker.len()..].to_vec()).ok())
 }
 
 /// Every workspace package directory reachable from `manifest_dir` through
