@@ -21,6 +21,8 @@ class Fixture:
         self.target = self.root / "target" / "debug"
         (self.target / "deps").mkdir(parents=True)
         self.package = self.root / "crates" / "demo"
+        self.write("Cargo.toml", "[workspace]\nmembers = [\"crates/demo\"]\n")
+        self.write("Cargo.lock", "version = 4\n")
         self.write("crates/demo/Cargo.toml", "[package]\nname = \"demo\"\n")
         self.main = self.write("crates/demo/src/main.rs", "fn main() {}\n")
 
@@ -48,11 +50,13 @@ class Fixture:
     def metadata(self):
         identifier = f"demo 0.1.0 (path+file://{self.package})"
         return {
+            "workspace_root": str(self.root),
             "packages": [
                 {
                     "name": "demo",
                     "id": identifier,
                     "manifest_path": str(self.package / "Cargo.toml"),
+                    "source": None,
                     "targets": [{"name": self.target_name, "kind": ["bin"]}],
                 }
             ],
@@ -66,8 +70,15 @@ class Fixture:
 
 
 def complete(fixture):
-    """A record that covers what `fixture`'s unit reads, and its configuration."""
-    return {"crates/demo/src/main.rs": "a", "crates/demo/Cargo.toml": "b", "env:CARGO": "c"}
+    """A record that covers what `fixture`'s unit reads, its cargo inputs, and
+    its configuration."""
+    return {
+        "crates/demo/src/main.rs": "a",
+        "crates/demo/Cargo.toml": "b",
+        "Cargo.toml": "d",
+        "Cargo.lock": "e",
+        "env:CARGO": "c",
+    }
 
 
 class RecordReadingTests(unittest.TestCase):
@@ -169,6 +180,96 @@ class CompletenessTests(unittest.TestCase):
             self.assertEqual(
                 found, [f"{fixture.target / 'demo'} does not exist: build it before checking its record"]
             )
+
+
+class CargoInputTests(unittest.TestCase):
+    """The inputs cargo reads rather than rustc, which no dep-info names.
+
+    On a build-only checkout the completeness oracle above sees none of them,
+    so without this half a record that stopped covering the workspace manifest
+    would pass every proof and this check too.
+    """
+
+    def test_a_workspace_manifest_the_record_does_not_name_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            del record["Cargo.toml"]
+            self.assertEqual(
+                fixture.problems(record),
+                [
+                    f"demo: {fixture.root / 'Cargo.toml'} is read by cargo to build this "
+                    f"binary, but the record does not name it"
+                ],
+            )
+
+    def test_a_lockfile_the_record_does_not_name_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            del record["Cargo.lock"]
+            self.assertEqual(
+                fixture.problems(record),
+                [
+                    f"demo: {fixture.root / 'Cargo.lock'} is read by cargo to build this "
+                    f"binary, but the record does not name it"
+                ],
+            )
+
+    def test_a_closure_package_manifest_the_record_does_not_name_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            del record["crates/demo/Cargo.toml"]
+            self.assertEqual(
+                fixture.problems(record),
+                [
+                    f"demo: {fixture.package / 'Cargo.toml'} is read by cargo to build this "
+                    f"binary, but the record does not name it"
+                ],
+            )
+
+    def test_an_absent_lockfile_is_not_required(self):
+        # The record names what existed when it was built; a workspace without a
+        # lockfile must not refuse a record for not naming one.
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            (fixture.root / "Cargo.lock").unlink()
+            record = complete(fixture)
+            del record["Cargo.lock"]
+            self.assertEqual(fixture.problems(record), [])
+
+    def test_a_registry_dependency_manifest_is_not_the_records_business(self):
+        # A registry package is in the closure, but its sources are outside the
+        # record by design — the lockfile it names pins them.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as cache:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            registry = Path(cache) / "registry" / "serde" / "Cargo.toml"
+            registry.parent.mkdir(parents=True)
+            registry.write_text("[package]\nname = \"serde\"\n")
+            metadata = fixture.metadata()
+            identifier = f"serde 1.0.0 (registry+file://{registry.parent})"
+            metadata["packages"].append(
+                {
+                    "name": "serde",
+                    "id": identifier,
+                    "manifest_path": str(registry),
+                    "source": "registry+file:///registry",
+                    "targets": [{"name": "serde", "kind": ["lib"]}],
+                }
+            )
+            metadata["resolve"]["nodes"][0]["deps"].append(
+                {"pkg": identifier, "dep_kinds": [{"kind": None}]}
+            )
+            metadata["resolve"]["nodes"].append({"id": identifier, "deps": []})
+            fixture.binary(complete(fixture))
+            problems, _ = check(fixture.root, fixture.target, [("demo", "demo")], metadata)
+            self.assertEqual(problems, [])
 
 
 class ConfigurationTests(unittest.TestCase):

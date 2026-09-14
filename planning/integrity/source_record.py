@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Whether a driven binary's embedded record covers what the compiler read.
+"""Whether a driven binary's embedded record covers every input its build read.
 
 The end-to-end proofs drive workspace binaries, and each binary carries a
 record of the inputs its own build compiled (`symbiote-source-stamp`). The
@@ -21,14 +21,23 @@ written *after* the build script that must write the record, so it can neither
 populate a record on a first build nor be an input the documented rebuild could
 clear. A check that runs after the build has neither problem.
 
-Two things are compared:
+Three things are compared:
 
-* **Completeness.** Every workspace file the units of the driven binary's
-  closure read must be named by the record. Registry sources and generated
-  files under the target directory are excluded, as the record's own
+* **Completeness (rustc).** Every workspace file the units of the driven
+  binary's closure read must be named by the record. Registry sources and
+  generated files under the target directory are excluded, as the record's own
   documentation excludes them, and so are the test, example and bench
   directories, which the record excludes on purpose and whose own units read
   them.
+* **Completeness (cargo).** The record must also name the workspace manifest,
+  the lockfile and the manifest of every closure package. These are read by
+  cargo rather than compiled by rustc, so no per-unit dep-info names them — on
+  a build-only checkout the oracle above names none of them, and a record that
+  silently stopped covering them would pass everything else. One of them is not
+  a technicality: the workspace manifest carries `edition.workspace = true`, so
+  its content decides the edition each member compiles under while every `.rs`
+  file stays byte-identical, which is the exact class of stale binary the
+  record exists to refuse.
 * **Effective configuration.** The record holds `env:CARGO` and every
   configuration file cargo reads for a build of a closure package
   (`.cargo/config.toml`, `.cargo/config`, `rust-toolchain.toml`,
@@ -262,6 +271,23 @@ def recorded_files(record, workspace):
     return files
 
 
+def cargo_inputs(metadata, package_ids):
+    """The build inputs cargo itself reads for those packages.
+
+    The workspace manifest and its lockfile sit above every package of the
+    workspace, so no walk over package directories reaches them; the manifest
+    of each closure package is read by cargo rather than compiled by rustc. Only
+    packages in this workspace: a registry dependency's sources are outside the
+    record by design, pinned by the lockfile it names.
+    """
+    root = Path(metadata["workspace_root"])
+    inputs = {root / "Cargo.toml", root / "Cargo.lock"}
+    for package in metadata["packages"]:
+        if package["id"] in package_ids and package["source"] is None:
+            inputs.add(Path(package["manifest_path"]))
+    return sorted(inputs)
+
+
 def excluded(path, package_dirs):
     """Whether the record excludes this path by its own documented rule.
 
@@ -327,6 +353,19 @@ def check(workspace, target_dir, binaries, metadata):
                 f"{binary_name}: the record does not name {path}, which {source} says was read"
             )
 
+        # The inputs cargo reads rather than rustc, which no dep-info above
+        # names: the workspace manifest and lockfile and each closure package's
+        # manifest. Checked from `cargo metadata`, not from the record's walk.
+        cargo = cargo_inputs(metadata, package_ids)
+        cargo_missing = [
+            path for path in cargo if path.is_file() and Path(os.path.normpath(path)) not in recorded
+        ]
+        for path in cargo_missing:
+            problems.append(
+                f"{binary_name}: {path} is read by cargo to build this binary, but the "
+                f"record does not name it"
+            )
+
         # The effective configuration: what the record holds must be what is
         # there now, and what is there now must be in the record.
         if record.get(f"{ENVIRONMENT_PREFIX}{TOOLCHAIN_VARIABLE}", "unset") == "unset":
@@ -348,7 +387,8 @@ def check(workspace, target_dir, binaries, metadata):
                 problems.append(f"{binary_name}: {candidate} is recorded but no longer exists")
         summaries.append(
             f"{binary_name}: {len(reads)} workspace inputs read by {len(dep_info)} units, "
-            f"{len(recorded)} named by the record, {len(missing)} unnamed"
+            f"{len(recorded)} named by the record, {len(missing)} unnamed; "
+            f"{len(cargo)} inputs cargo read, {len(cargo_missing)} unnamed"
         )
     return problems, summaries
 
@@ -389,7 +429,10 @@ def main():
             file=sys.stderr,
         )
         return 1
-    print("OK: every workspace input the compiler read is named by the record that drove it")
+    print(
+        "OK: every workspace input the compiler read, and every input cargo read to build "
+        "it, is named by the record that drove it"
+    )
     return 0
 
 
