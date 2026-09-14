@@ -29,15 +29,17 @@ Three things are compared:
   documentation excludes them, and so are the test, example and bench
   directories, which the record excludes on purpose and whose own units read
   them.
-* **Completeness (cargo).** The record must also name the workspace manifest,
-  the lockfile and the manifest of every closure package. These are read by
-  cargo rather than compiled by rustc, so no per-unit dep-info names them — on
-  a build-only checkout the oracle above names none of them, and a record that
-  silently stopped covering them would pass everything else. One of them is not
-  a technicality: the workspace manifest carries `edition.workspace = true`, so
-  its content decides the edition each member compiles under while every `.rs`
-  file stays byte-identical, which is the exact class of stale binary the
-  record exists to refuse.
+* **Completeness (cargo).** The record must also name, for every closure
+  package, its own manifest and the manifest and lockfile of the workspace that
+  owns it. These are read by cargo rather than compiled by rustc, so no per-unit
+  dep-info names them — on a build-only checkout the oracle above names none of
+  them, and a record that silently stopped covering them would pass everything
+  else. One of them is not a technicality: a workspace manifest carries
+  `edition.workspace = true` and `version.workspace = true` for its members, so
+  its content decides what they compile as while every `.rs` file stays
+  byte-identical, which is the exact class of stale binary the record exists to
+  refuse. A path dependency may belong to a workspace of its own, and then that
+  root — not this one — is where those values come from.
 * **Effective configuration.** The record holds `env:CARGO` and every
   configuration file cargo reads for a build of a closure package
   (`.cargo/config.toml`, `.cargo/config`, `rust-toolchain.toml`,
@@ -271,20 +273,48 @@ def recorded_files(record, workspace):
     return files
 
 
+def owning_workspace_root(directory):
+    """The workspace root that owns `directory`, or None.
+
+    The nearest ancestor manifest declaring `[workspace]` — the same rule the
+    record's own walk uses to find the manifest whose `[workspace.package]`
+    table a member's `version.workspace = true` and `edition.workspace = true`
+    resolve against.
+    """
+    current = Path(directory).resolve()
+    while True:
+        manifest = current / "Cargo.toml"
+        if manifest.is_file() and any(
+            line.strip() == "[workspace]"
+            for line in manifest.read_text(errors="replace").splitlines()
+        ):
+            return current
+        if current.parent == current:
+            return None
+        current = current.parent
+
+
 def cargo_inputs(metadata, package_ids):
     """The build inputs cargo itself reads for those packages.
 
-    The workspace manifest and its lockfile sit above every package of the
-    workspace, so no walk over package directories reaches them; the manifest
-    of each closure package is read by cargo rather than compiled by rustc. Only
-    packages in this workspace: a registry dependency's sources are outside the
-    record by design, pinned by the lockfile it names.
+    The manifest of each closure package, and — because a workspace manifest
+    and its lockfile sit above every package, where no walk over package
+    directories reaches them — each package's *own* workspace root. A path
+    dependency may live in a workspace of its own, and then that root manifest
+    is the one its edition and version come from. Only local packages: a
+    registry dependency's sources are outside the record by design, pinned by
+    the lockfile it names.
     """
-    root = Path(metadata["workspace_root"])
-    inputs = {root / "Cargo.toml", root / "Cargo.lock"}
+    inputs = set()
     for package in metadata["packages"]:
-        if package["id"] in package_ids and package["source"] is None:
-            inputs.add(Path(package["manifest_path"]))
+        if package["id"] not in package_ids or package["source"] is not None:
+            continue
+        manifest = Path(package["manifest_path"])
+        inputs.add(manifest)
+        root = owning_workspace_root(manifest.parent)
+        if root is not None:
+            inputs.add(root / "Cargo.toml")
+            inputs.add(root / "Cargo.lock")
     return sorted(inputs)
 
 
@@ -354,8 +384,9 @@ def check(workspace, target_dir, binaries, metadata):
             )
 
         # The inputs cargo reads rather than rustc, which no dep-info above
-        # names: the workspace manifest and lockfile and each closure package's
-        # manifest. Checked from `cargo metadata`, not from the record's walk.
+        # names: each closure package's manifest and its own workspace root's
+        # manifest and lockfile. Checked from `cargo metadata` and the tree, not
+        # from the record's walk.
         cargo = cargo_inputs(metadata, package_ids)
         cargo_missing = [
             path for path in cargo if path.is_file() and Path(os.path.normpath(path)) not in recorded

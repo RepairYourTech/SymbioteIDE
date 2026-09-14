@@ -50,7 +50,6 @@ class Fixture:
     def metadata(self):
         identifier = f"demo 0.1.0 (path+file://{self.package})"
         return {
-            "workspace_root": str(self.root),
             "packages": [
                 {
                     "name": "demo",
@@ -63,10 +62,47 @@ class Fixture:
             "resolve": {"nodes": [{"id": identifier, "deps": []}]},
         }
 
-    def problems(self, record):
+    def problems(self, record, metadata=None):
         self.binary(record)
-        found, _ = check(self.root, self.target, [("demo", self.target_name)], self.metadata())
+        found, _ = check(
+            self.root, self.target, [("demo", self.target_name)], metadata or self.metadata()
+        )
         return found
+
+
+def dependency_in_its_own_workspace(fixture, directory):
+    """A closure package that belongs to a second workspace outside the fixture.
+
+    Returns the metadata with the edge added, the dependency's own manifest and
+    that workspace's root directory: the record must name all three, and the
+    root's lockfile too, since the walk over the dependency's directory reaches
+    neither the manifest above it nor the lockfile beside that.
+    """
+    second = Path(directory)
+    (second / "dep" / "src").mkdir(parents=True)
+    (second / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["dep"]\n\n[workspace.package]\nversion = "0.1.0"\n'
+    )
+    (second / "Cargo.lock").write_text("version = 4\n")
+    manifest = second / "dep" / "Cargo.toml"
+    manifest.write_text('[package]\nname = "dep"\nversion.workspace = true\n')
+    (second / "dep" / "src" / "lib.rs").write_text("// dep\n")
+    metadata = fixture.metadata()
+    identifier = f"dep 0.1.0 (path+file://{second / 'dep'})"
+    metadata["packages"].append(
+        {
+            "name": "dep",
+            "id": identifier,
+            "manifest_path": str(manifest),
+            "source": None,
+            "targets": [{"name": "dep", "kind": ["lib"]}],
+        }
+    )
+    metadata["resolve"]["nodes"][0]["deps"].append(
+        {"pkg": identifier, "dep_kinds": [{"kind": None}]}
+    )
+    metadata["resolve"]["nodes"].append({"id": identifier, "deps": []})
+    return metadata, manifest, second
 
 
 def complete(fixture):
@@ -267,9 +303,59 @@ class CargoInputTests(unittest.TestCase):
                 {"pkg": identifier, "dep_kinds": [{"kind": None}]}
             )
             metadata["resolve"]["nodes"].append({"id": identifier, "deps": []})
-            fixture.binary(complete(fixture))
-            problems, _ = check(fixture.root, fixture.target, [("demo", "demo")], metadata)
-            self.assertEqual(problems, [])
+            self.assertEqual(fixture.problems(complete(fixture), metadata), [])
+
+    def test_a_dependency_in_a_second_workspace_brings_its_root_manifest(self):
+        # A path dependency may live in a workspace of its own, and then that
+        # root manifest — not this workspace's — is where its `version.workspace`
+        # and `edition.workspace` come from.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            metadata, manifest, second = dependency_in_its_own_workspace(fixture, other)
+            record = complete(fixture)
+            record[str(manifest)] = "f"
+            record[str(second / "Cargo.toml")] = "g"
+            record[str(second / "Cargo.lock")] = "h"
+            self.assertEqual(fixture.problems(record, metadata), [])
+            del record[str(second / "Cargo.toml")]
+            self.assertEqual(
+                fixture.problems(record, metadata),
+                [
+                    f"demo: {second / 'Cargo.toml'} is read by cargo to build this binary, "
+                    f"but the record does not name it"
+                ],
+            )
+
+    def test_a_dependency_in_a_second_workspace_brings_its_lockfile(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            metadata, manifest, second = dependency_in_its_own_workspace(fixture, other)
+            record = complete(fixture)
+            record[str(manifest)] = "f"
+            record[str(second / "Cargo.toml")] = "g"
+            record[str(second / "Cargo.lock")] = "h"
+            del record[str(second / "Cargo.lock")]
+            self.assertEqual(
+                fixture.problems(record, metadata),
+                [
+                    f"demo: {second / 'Cargo.lock'} is read by cargo to build this binary, "
+                    f"but the record does not name it"
+                ],
+            )
+
+    def test_a_dependency_in_no_workspace_requires_only_its_manifest(self):
+        # A package under no `[workspace]` manifest at all: nothing above it is
+        # an input, so nothing above it may be required.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            metadata, manifest, _ = dependency_in_its_own_workspace(fixture, other)
+            (Path(other) / "Cargo.toml").write_text("[package]\nname = \"loose\"\n")
+            record = complete(fixture)
+            record[str(manifest)] = "f"
+            self.assertEqual(fixture.problems(record, metadata), [])
 
 
 class ConfigurationTests(unittest.TestCase):
