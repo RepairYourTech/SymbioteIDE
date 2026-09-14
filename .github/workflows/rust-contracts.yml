@@ -30,6 +30,30 @@ jobs:
       - name: Committed dist matches the rebuild
         working-directory: ${{ github.workspace }}
         run: git diff --exit-code -- crates/symbiote-desktop/app/dist
+  source-records:
+    # The end-to-end proofs drive workspace binaries, and each binary carries a
+    # record of the inputs its own build compiled; the proofs compare that
+    # record against the tree, which catches a binary built from other sources.
+    # Nothing checked that the record *covers* what the compiler read: a new way
+    # to compile a file would leave the record quietly short and every proof
+    # green — which is how the `#[path]` gap survived until an audit found it by
+    # hand. This job is that independent check, against cargo's own per-unit
+    # dep-info, on the toolchain the artifacts ship from. It builds only the two
+    # driven binaries and their closure, so it needs none of the desktop stack.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Build the driven binaries from this checkout
+        run: cargo build --locked -p symbiote-host --bin symbioted -p symbiote-sandbox --bin symbiote-sandbox-launch
+      - name: Each record covers every input its own build read
+        run: |
+          python3 planning/integrity/source_record.py \
+            --binary symbiote-host:symbioted \
+            --binary symbiote-sandbox:symbiote-sandbox-launch
+
   contracts:
     # Noble's default runner rejects isolated loopback setup. Keep that failure
     # documented; do not disable AppArmor or relax the invocation to pass tests.
