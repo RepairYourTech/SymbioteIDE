@@ -30,16 +30,20 @@ Three things are compared:
   directories, which the record excludes on purpose and whose own units read
   them.
 * **Completeness (cargo).** The record must also name, for every closure
-  package, its own manifest and the manifest and lockfile of the workspace that
-  owns it. These are read by cargo rather than compiled by rustc, so no per-unit
-  dep-info names them — on a build-only checkout the oracle above names none of
-  them, and a record that silently stopped covering them would pass everything
-  else. One of them is not a technicality: a workspace manifest carries
-  `edition.workspace = true` and `version.workspace = true` for its members, so
-  its content decides what they compile as while every `.rs` file stays
-  byte-identical, which is the exact class of stale binary the record exists to
-  refuse. A path dependency may belong to a workspace of its own, and then that
-  root — not this one — is where those values come from.
+  package, its own manifest and every workspace root cargo can resolve for it —
+  each ancestor manifest declaring `[workspace]`, the root a `package.workspace`
+  names, and the package's own directory, which is the root of one its workspace
+  `exclude`s — together with each root's lockfile. These are read by cargo rather
+  than compiled by rustc, so no per-unit dep-info names them — on a build-only checkout the
+  oracle above names none of them, and a record that silently stopped covering
+  them would pass everything else. One of them is not a technicality: a
+  workspace manifest carries `edition.workspace = true` and
+  `version.workspace = true` for its members, so its content decides what they
+  compile as while every `.rs` file stays byte-identical, which is the exact
+  class of stale binary the record exists to refuse. The nearest ancestor alone
+  is not enough, which is what this half used to require: an invoked workspace
+  can list a member that sits below another `[workspace]` manifest, and then the
+  invoked root — not the nearer one — is what the member inherits from.
 * **Effective configuration.** The record holds `env:CARGO` and every
   configuration file cargo reads for a build of a closure package
   (`.cargo/config.toml`, `.cargo/config`, `rust-toolchain.toml`,
@@ -260,50 +264,119 @@ def workspace_reads(dep_info_files, workspace):
     return reads
 
 
-def recorded_files(record, workspace):
-    """The file inputs a record names, resolved against the workspace."""
+def recorded_files(record, base):
+    """The file inputs a record names, resolved against the record's base.
+
+    A relative locator is relative to the workspace the record was written
+    against — the driven package's own nearest root, which is what `check`
+    passes — not to whichever workspace this check happens to be invoked in,
+    since the two differ for a package that sits below a nearer `[workspace]`
+    manifest than the root its build used.
+    """
     files = {}
     for locator, hash in record.items():
         if locator.startswith(ENVIRONMENT_PREFIX):
             continue
         path = Path(locator)
         if not path.is_absolute():
-            path = Path(workspace) / path
+            path = Path(base) / path
         files[Path(os.path.normpath(path))] = hash
     return files
 
 
-def owning_workspace_root(directory):
-    """The workspace root that owns `directory`, or None.
+def declares_workspace(text):
+    """Whether a manifest declares a workspace of its own."""
+    return any(line.strip() == "[workspace]" for line in text.splitlines())
 
-    The nearest ancestor manifest declaring `[workspace]` — the same rule the
-    record's own walk uses to find the manifest whose `[workspace.package]`
-    table a member's `version.workspace = true` and `edition.workspace = true`
-    resolve against.
+
+def manifest_text(path):
+    """A manifest's text, or empty when it cannot be read."""
+    try:
+        return Path(path).read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def package_workspace(manifest_path):
+    """The `workspace = "..."` a manifest's `[package]` table names, or None.
+
+    A package that names its own workspace root rather than inheriting the one
+    above it.
+    """
+    table = False
+    for line in manifest_text(manifest_path).splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            table = line == "[package]"
+            continue
+        name, separator, value = line.partition("=")
+        if table and separator and name.strip() == "workspace":
+            return value.strip().strip('"')
+    return None
+
+
+def nearest_workspace_root(directory):
+    """The nearest ancestor manifest declaring `[workspace]`, or None.
+
+    The base a record spells its relative locators against, which is the same
+    rule the record's own walk uses for that base.
     """
     current = Path(directory).resolve()
     while True:
         manifest = current / "Cargo.toml"
-        if manifest.is_file() and any(
-            line.strip() == "[workspace]"
-            for line in manifest.read_text(errors="replace").splitlines()
-        ):
+        if manifest.is_file() and declares_workspace(manifest_text(manifest)):
             return current
         if current.parent == current:
             return None
         current = current.parent
 
 
+def workspace_roots(directory):
+    """Every workspace root cargo can resolve for the package at `directory`.
+
+    Each ancestor manifest that declares `[workspace]`, the directory a
+    `package.workspace` key names, and the package's own directory.
+
+    Not the nearest ancestor alone, because that is not cargo's rule: an invoked
+    workspace lists members that may sit below another `[workspace]` manifest,
+    and then *the invoked root* is the one whose `[workspace.package]` values a
+    member inherits — the manifest passed on the way down is never loaded. A
+    package its workspace `exclude`s is a workspace of one — measured, cargo
+    reads the excluding manifest, walks past it, and resolves the package to
+    itself — which is why its own directory is a root whether or not anything
+    above it excludes it. This is the superset of what cargo can read for a
+    package, and it is the same rule the record's own walk applies; naming an
+    input a build did not read costs a needless refusal, and the opposite costs
+    the guarantee.
+    """
+    package = Path(directory).resolve()
+    roots = [package]
+    current = package
+    while True:
+        manifest = current / "Cargo.toml"
+        if manifest.is_file() and declares_workspace(manifest_text(manifest)):
+            roots.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    target = package_workspace(package / "Cargo.toml")
+    if target is not None:
+        root = Path(os.path.normpath(package / target))
+        if (root / "Cargo.toml").is_file():
+            roots.append(root)
+    return sorted(set(roots))
+
+
 def cargo_inputs(metadata, package_ids):
     """The build inputs cargo itself reads for those packages.
 
-    The manifest of each closure package, and — because a workspace manifest
-    and its lockfile sit above every package, where no walk over package
-    directories reaches them — each package's *own* workspace root. A path
-    dependency may live in a workspace of its own, and then that root manifest
-    is the one its edition and version come from. Only local packages: a
-    registry dependency's sources are outside the record by design, pinned by
-    the lockfile it names.
+    The manifest of each closure package, and every workspace root cargo can
+    resolve for it — a manifest and its lockfile sit above every package, where
+    no walk over package directories reaches them. The workspace this check was
+    invoked in is required as well, since its `[workspace.package]` table is
+    what every member of it inherits. Only local packages: a registry
+    dependency's sources are outside the record by design, pinned by the
+    lockfile it names.
     """
     inputs = set()
     for package in metadata["packages"]:
@@ -311,10 +384,12 @@ def cargo_inputs(metadata, package_ids):
             continue
         manifest = Path(package["manifest_path"])
         inputs.add(manifest)
-        root = owning_workspace_root(manifest.parent)
-        if root is not None:
+        for root in workspace_roots(manifest.parent):
             inputs.add(root / "Cargo.toml")
             inputs.add(root / "Cargo.lock")
+    invoked = Path(metadata["workspace_root"])
+    inputs.add(invoked / "Cargo.toml")
+    inputs.add(invoked / "Cargo.lock")
     return sorted(inputs)
 
 
@@ -372,7 +447,16 @@ def check(workspace, target_dir, binaries, metadata):
         ]
         dep_info = unit_dep_info(target_dir, metadata, package_ids)
         reads = workspace_reads(dep_info, workspace)
-        recorded = recorded_files(record, workspace)
+        # A record's relative locators are spelled against the workspace its own
+        # build resolved, which is the driven package's nearest `[workspace]`
+        # ancestor — not necessarily the workspace this check is invoked in.
+        driven = next(
+            (p for p in metadata["packages"] if p["name"] == package_name), None
+        )
+        base = workspace
+        if driven is not None:
+            base = nearest_workspace_root(Path(driven["manifest_path"]).parent) or workspace
+        recorded = recorded_files(record, base)
         missing = sorted(
             (path, source)
             for path, source in reads.items()
@@ -416,10 +500,11 @@ def check(workspace, target_dir, binaries, metadata):
                     problems.append(f"{binary_name}: {candidate} is not the content recorded")
             elif recorded_hash is not None:
                 problems.append(f"{binary_name}: {candidate} is recorded but no longer exists")
+        existing = [path for path in cargo if path.is_file()]
         summaries.append(
             f"{binary_name}: {len(reads)} workspace inputs read by {len(dep_info)} units, "
             f"{len(recorded)} named by the record, {len(missing)} unnamed; "
-            f"{len(cargo)} inputs cargo read, {len(cargo_missing)} unnamed"
+            f"{len(existing)} inputs cargo read, {len(cargo_missing)} unnamed"
         )
     return problems, summaries
 
