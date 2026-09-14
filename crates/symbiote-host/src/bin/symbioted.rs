@@ -1,17 +1,18 @@
-/// The id of the source record this build wrote, embedded in the binary so a
-/// proof can tell which record produced the daemon it is about to drive rather
-/// than trusting a record a failed compile may have refreshed. It lives in the
-/// binary's root because a static in the library is dropped when this crate
-/// links it without referencing it. See `symbiote-source-stamp`.
-#[doc(hidden)]
-static SOURCE_RECORD: &str = env!("SYMBIOTE_SOURCE_RECORD");
+// The record of the sources this build compiled, written by the build script
+// into OUT_DIR and included here so it travels inside the binary. A proof can
+// then tell whether the daemon it is about to drive was built from the sources
+// under test, without a record file that a later build could refresh on its
+// own. It is a `static` in the binary's root because a `static` in the library
+// is dropped when this crate links it without referencing it. See
+// `symbiote-source-stamp`, which names this file.
+include!(concat!(env!("OUT_DIR"), "/source_record.rs"));
 
 fn main() {
     // Read, not merely declared: a static the binary never reads is one the
     // compiler or linker may drop, and Rust 1.85 does drop this one (`#[used]`
     // did not keep it, and the desktop proofs refused its daemon for carrying
-    // no record at all). A marker that can be dropped cannot bind a record to
-    // the binary a proof drives.
+    // no record at all). A record that can be dropped cannot bind a binary to
+    // the sources a proof drives it against.
     std::hint::black_box(SOURCE_RECORD);
 
     if let Err(error) = run() {

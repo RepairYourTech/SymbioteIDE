@@ -7,11 +7,12 @@
 //! test would let a proof stay green while running other code. The resolvers
 //! here build a binary that is absent and refuse one whose recorded source
 //! content no longer matches the tree, naming the rebuild that fixes it. The
-//! record is written by the binary's own build (`symbiote-source-stamp`), so
-//! the check is about content rather than timestamps: a file restored with an
-//! older timestamp still refuses, and a file only touched does not. Gated
-//! behind the `test-support` feature, so a production build does not carry
-//! them.
+//! record is carried inside the binary by the binary's own build
+//! (`symbiote-source-stamp`), so no record file exists that a later build could
+//! refresh on its own, and the check is about content rather than timestamps: a
+//! file restored with an older timestamp still refuses, and a file only touched
+//! does not. Gated behind the `test-support` feature, so a production build
+//! does not carry them.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -55,7 +56,6 @@ fn binary(package: &str, name: &str, subject: &str) -> PathBuf {
     );
     let problem = match symbiote_source_stamp::changed_sources(
         &binary,
-        package,
         Path::new(env!("CARGO_MANIFEST_DIR")),
     ) {
         Ok(changed) if changed.is_empty() => None,
