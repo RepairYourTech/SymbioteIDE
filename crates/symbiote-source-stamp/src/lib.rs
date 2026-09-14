@@ -18,7 +18,8 @@
 //!   package that is not a test, example or bench target, whatever its
 //!   extension, because a compile can read a file no manifest mentions
 //!   (`include_str!("schema.sql")`) — together with the manifests, build
-//!   scripts and `Cargo.lock` that pin them, and every file those sources pull
+//!   scripts, `Cargo.lock` and the workspace manifest that pin and configure
+//!   them, and every file those sources pull
 //!   in through an `include!`, `include_bytes!` or `include_str!` or a
 //!   `#[path = "…"]` module attribute, wherever it lives:
 //!   `symbiote-workflow` compiles fixtures kept at the workspace root.
@@ -215,13 +216,12 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Every file the build of the package at `manifest_dir` compiles — the walk
 /// over each closure package's directory, every file those sources include or
-/// declare as a module from wherever it lives, and the lockfile that pins the
-/// registry
-/// dependencies — together with the include sites the scan cannot follow, each
-/// one a reason this build must stop. Followed to a fixed point over the Rust
-/// sources, so an included `.rs` file that includes another is recorded too,
-/// and a non-Rust file pulled in by `include!` is recorded but not scanned for
-/// includes of its own.
+/// declare as a module from wherever it lives, and the workspace manifest and
+/// lockfile, which sit above every package directory — together with the
+/// include sites the scan cannot follow, each one a reason this build must
+/// stop. Followed to a fixed point over the Rust sources, so an included `.rs`
+/// file that includes another is recorded too, and a non-Rust file pulled in by
+/// `include!` is recorded but not scanned for includes of its own.
 fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>, Vec<String>) {
     let packages = closure_directories(manifest_dir);
     let mut sources = BTreeSet::new();
@@ -256,9 +256,16 @@ fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>
         }
     }
 
-    let lockfile = workspace.join("Cargo.lock");
-    if lockfile.is_file() {
-        sources.insert(lockfile);
+    // The workspace manifest and the lockfile sit above every closure package,
+    // so the walk over those directories reaches neither. The lockfile pins the
+    // registry dependencies; the manifest configures the packages — a member
+    // says `edition.workspace = true`, which makes the edition its code is
+    // compiled under a property of a file kept outside it.
+    for shared in ["Cargo.toml", "Cargo.lock"] {
+        let file = workspace.join(shared);
+        if file.is_file() {
+            sources.insert(file);
+        }
     }
     (sources, unfollowed)
 }
@@ -1570,6 +1577,43 @@ path = \"src/bin/example.rs\"
         let root = fixture("no-workspace");
         let problem = workspace_root(&root).expect_err("no workspace");
         assert!(problem.contains("no [workspace] manifest"), "{problem}");
+    }
+
+    #[test]
+    fn the_workspace_manifest_is_recorded_and_named() {
+        let root = fixture("workspace-manifest");
+        let package = root.join("crates/app");
+        std::fs::create_dir_all(package.join("src")).expect("the package");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/app\"]\n\n[workspace.package]\nedition = \"2024\"\n",
+        )
+        .expect("the workspace manifest");
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nedition.workspace = true\n",
+        )
+        .expect("the package manifest");
+        std::fs::write(package.join("src/lib.rs"), "pub fn nothing() {}\n").expect("the source");
+
+        let (sources, unfollowed) = recorded_sources(&package, &root);
+        assert!(unfollowed.is_empty(), "{unfollowed:?}");
+        assert!(
+            sources.contains(&root.join("Cargo.toml")),
+            "the manifest that sets the edition this package compiles under must be recorded; the \
+             walk found {sources:?}"
+        );
+
+        let binary = record_over(&root, &sources);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/app\"]\n\n[workspace.package]\nedition = \"2021\"\n",
+        )
+        .expect("the changed workspace manifest");
+        assert_eq!(
+            changed_sources(&binary, &root).expect("a readable record"),
+            [root.join("Cargo.toml")]
+        );
     }
 
     #[test]
