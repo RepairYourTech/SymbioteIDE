@@ -5,14 +5,16 @@
 //! `symbiote-sandbox-launch`, the descriptor boundary every sandboxed process
 //! is started through — so a binary that does not contain the sources under
 //! test would let a proof stay green while running other code. The resolvers
-//! here build a binary that is absent and refuse one whose recorded source
-//! content no longer matches the tree, naming the rebuild that fixes it. The
+//! here build a binary that is absent and refuse one whose recorded inputs no
+//! longer match the tree and this run, naming the rebuild that fixes it. The
 //! record is carried inside the binary by the binary's own build
 //! (`symbiote-source-stamp`), so no record file exists that a later build could
 //! refresh on its own, and the check is about content rather than timestamps: a
 //! file restored with an older timestamp still refuses, and a file only touched
-//! does not. Gated behind the `test-support` feature, so a production build
-//! does not carry them.
+//! does not. An input is a file or a value of the build's environment, so a
+//! binary whose recorded configuration file, or recorded toolchain, has moved
+//! is refused too. Gated behind the `test-support` feature, so a production
+//! build does not carry them.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -43,8 +45,8 @@ pub fn launcher_binary() -> PathBuf {
 }
 
 /// `name` built from `package`, resolved once per test process: built when it
-/// is absent, refused when the content it was built from is no longer the
-/// content of the tree.
+/// is absent, refused when the inputs it was built from are no longer the
+/// inputs of the tree and this run.
 fn binary(package: &str, name: &str, subject: &str) -> PathBuf {
     let binary = profile_directory().join(name);
     if !binary.is_file() {
@@ -60,7 +62,7 @@ fn binary(package: &str, name: &str, subject: &str) -> PathBuf {
     ) {
         Ok(changed) if changed.is_empty() => None,
         Ok(changed) => Some(format!(
-            "the source content it was built from is not the content of the tree: {}",
+            "the inputs it was built from are not those of the tree and this run: {}",
             listing(&changed)
         )),
         Err(problem) => Some(problem),
@@ -87,13 +89,14 @@ fn profile_directory() -> PathBuf {
         .to_path_buf()
 }
 
-/// The changed files, named: a refusal that does not say which file outdates
-/// the binary leaves the reader to guess at the rebuild.
-fn listing(changed: &[PathBuf]) -> String {
+/// The changed inputs, named: a refusal that does not say which input outdates
+/// the binary leaves the reader to guess at the rebuild. An environment input
+/// is named as `env:NAME`, the locator a record holds it under.
+fn listing(changed: &[symbiote_source_stamp::Input]) -> String {
     let named = changed
         .iter()
         .take(3)
-        .map(|path| path.display().to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
     match changed.len().saturating_sub(3) {
