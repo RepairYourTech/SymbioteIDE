@@ -388,14 +388,12 @@ fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>
     // lockfile pins the registry dependencies; the manifest configures the
     // packages — a member says `edition.workspace = true`, which makes the
     // edition its code is compiled under a property of a file kept outside it.
-    // Every closure package is asked, not only the one being built: a path
-    // dependency may live in a workspace of its own, and then *that* root
-    // manifest is the one its edition and version come from.
+    // Every closure package is asked, not only the one being built, and every
+    // root cargo can resolve for it rather than the nearest one: see
+    // [`workspace_roots`].
     let mut roots = BTreeSet::from([workspace.to_path_buf()]);
     for package in &packages {
-        if let Ok(root) = workspace_root(package) {
-            roots.insert(root);
-        }
+        roots.extend(workspace_roots(package));
     }
     for root in roots {
         for shared in ["Cargo.toml", "Cargo.lock"] {
@@ -1222,15 +1220,125 @@ fn inline_table_value(line: &str, key: &str) -> Option<String> {
     })
 }
 
+/// Every workspace root cargo can resolve for the package at `manifest_dir`:
+/// each ancestor manifest that declares `[workspace]`, the directory a
+/// `package.workspace` key names, and the package's own directory.
+///
+/// Not the nearest ancestor alone, because that is not cargo's rule. An invoked
+/// workspace lists members that may sit below another `[workspace]` manifest,
+/// and then *the invoked root* is the one whose `[workspace.package]` values a
+/// member inherits; the manifest passed on the way down is never loaded, so
+/// nothing in the package's own directory tree says which of the two applied.
+/// A package its workspace `exclude`s is a workspace of one — measured, cargo
+/// reads the excluding manifest, walks past it, and resolves the package to
+/// itself — which is why its own directory is a root whether or not anything
+/// above it excludes it. Recording every candidate is the superset of what
+/// cargo can read for a package; naming an input a build of the closure did not
+/// read costs a needless refusal, and the opposite costs the guarantee.
+fn workspace_roots(manifest_dir: &Path) -> Vec<PathBuf> {
+    let package = canonical(manifest_dir);
+    let mut roots = vec![package.clone()];
+    let mut directory = Some(package.clone());
+    while let Some(candidate) = directory {
+        let manifest = candidate.join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            if declares_workspace(&text) {
+                roots.push(candidate.clone());
+            }
+        }
+        directory = candidate.parent().map(Path::to_path_buf);
+    }
+    if let Some(target) =
+        package_workspace(&std::fs::read_to_string(package.join("Cargo.toml")).unwrap_or_default())
+    {
+        let target = canonical(&package.join(target));
+        if target.join("Cargo.toml").is_file() {
+            roots.push(target);
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Whether a manifest declares a workspace of its own.
+fn declares_workspace(manifest: &str) -> bool {
+    manifest
+        .lines()
+        .any(|line| table_name(line).as_deref() == Some("workspace"))
+}
+
+/// The name inside a table header, or `None` when the line is not one. TOML
+/// allows whitespace inside the brackets and a comment after them, so
+/// `[ workspace ]` and `[workspace] # the members` both name the same table as
+/// `[workspace]`, and a line that is a key is not a header at all.
+fn table_name(line: &str) -> Option<String> {
+    let line = line.split('#').next()?.trim();
+    let inner = line.strip_prefix('[')?.strip_suffix(']')?;
+    Some(inner.split_whitespace().collect())
+}
+
+/// The `workspace = "..."` path of a manifest's `[package]` table, if it has
+/// one: the workspace a package names for itself rather than inheriting from an
+/// ancestor. Cargo spells it as a plain key — `workspace = "../.."` — so this
+/// reads a scalar, where [`inline_table_value`] reads an inline table.
+fn package_workspace(manifest: &str) -> Option<String> {
+    let mut table = false;
+    for line in manifest.lines() {
+        if let Some(name) = table_name(line) {
+            table = name == "package";
+            continue;
+        }
+        if !table {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() == "workspace" {
+            return string_value(value);
+        }
+    }
+    None
+}
+
+/// The content of a TOML string scalar — `"…"` or `'…'` — with a comment or
+/// whitespace after it ignored. `None` for anything else: a `workspace` a
+/// manifest does not spell as a string is not a path this can follow, and
+/// leaving it unrecorded is the safe direction where the ancestor roots are
+/// still candidates.
+fn string_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    let quote = value.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &value[1..];
+    let mut escaped = false;
+    for (index, character) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote == '"' {
+            escaped = true;
+            continue;
+        }
+        if character == quote {
+            return Some(rest[..index].to_owned());
+        }
+    }
+    None
+}
+
 /// The directory holding the workspace's packages: the nearest ancestor
-/// manifest that declares `[workspace]`.
+/// manifest that declares `[workspace]`. The base every locator in a record is
+/// spelled against, and the directory [`changed_sources`] resolves them from.
 fn workspace_root(manifest_dir: &Path) -> Result<PathBuf, String> {
     let mut directory = Some(canonical(manifest_dir));
     while let Some(candidate) = directory {
         let manifest = candidate.join("Cargo.toml");
-        if std::fs::read_to_string(&manifest)
-            .is_ok_and(|manifest| manifest.lines().any(|line| line.trim() == "[workspace]"))
-        {
+        if std::fs::read_to_string(&manifest).is_ok_and(|manifest| declares_workspace(&manifest)) {
             return Ok(candidate);
         }
         directory = candidate.parent().map(Path::to_path_buf);
@@ -1882,6 +1990,142 @@ path = \"src/bin/example.rs\"
             changed_sources(&binary, &package).expect("a readable record"),
             [Input::File(elsewhere.join("Cargo.toml"))]
         );
+    }
+
+    #[test]
+    fn a_package_below_another_workspace_manifest_records_every_root() {
+        // Cargo resolves a package to the *invoked* workspace, which can be an
+        // ancestor reached past a nearer `[workspace]` manifest: measured with
+        // these two manifests, cargo read the outer one's `[workspace.package]`
+        // for both packages. The nearest-ancestor rule named the inner manifest
+        // and left the outer one, which cargo did read, unrecorded.
+        let root = fixture("nested-workspaces");
+        let package = root.join("outer/inner/crate");
+        let nested = root.join("outer/inner");
+        std::fs::create_dir_all(package.join("src")).expect("the package");
+        std::fs::create_dir_all(nested.join("dep/src")).expect("the dependency");
+        std::fs::write(
+            root.join("outer/Cargo.toml"),
+            "[workspace]\nmembers = [\"inner/dep\", \"inner/crate\"]\n\n[workspace.package]\n\
+             version = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("the outer manifest");
+        std::fs::write(
+            nested.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"dep\", \"crate\"]\n\n[workspace.package]\n\
+             version = \"0.2.0\"\nedition = \"2021\"\n",
+        )
+        .expect("the nearer manifest");
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion.workspace = true\nedition.workspace = true\n\n\
+             [dependencies]\ndep = { path = \"../dep\" }\n",
+        )
+        .expect("the package manifest");
+        std::fs::write(package.join("src/lib.rs"), "pub fn nothing() {}\n").expect("the source");
+        std::fs::write(
+            nested.join("dep/Cargo.toml"),
+            "[package]\nname = \"dep\"\nversion.workspace = true\nedition.workspace = true\n\
+             workspace = \"../..\"\n",
+        )
+        .expect("the dependency manifest");
+        std::fs::write(nested.join("dep/src/lib.rs"), "pub fn nothing() {}\n")
+            .expect("the dependency source");
+
+        let roots = workspace_roots(&package);
+        assert!(roots.contains(&canonical(&root.join("outer"))), "{roots:?}");
+        assert!(roots.contains(&canonical(&nested)), "{roots:?}");
+
+        let (sources, unfollowed) = recorded_sources(&package, &root.join("outer"));
+        assert!(unfollowed.is_empty(), "{unfollowed:?}");
+        assert!(
+            sources.contains(&root.join("outer/Cargo.toml")),
+            "the manifest cargo read for this build must be recorded; the walk found {sources:?}"
+        );
+    }
+
+    #[test]
+    fn an_excluded_package_is_its_own_workspace_root() {
+        // Cargo does not claim a package its `exclude` names — measured: its
+        // search reads the excluding manifest, walks past it, and with no other
+        // workspace above, the package is a workspace of one, so its own
+        // directory holds the manifest and lockfile the build reads. The
+        // excluding manifest is read to learn that, and stays recorded.
+        let root = fixture("excluded-package");
+        let package = root.join("ws/dep");
+        std::fs::create_dir_all(package.join("src")).expect("the package");
+        std::fs::create_dir_all(root.join("ws/app/src")).expect("the member");
+        std::fs::write(
+            root.join("ws/Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\nexclude = [\"dep\"]\n",
+        )
+        .expect("the excluding manifest");
+        std::fs::write(
+            root.join("ws/app/Cargo.toml"),
+            "[package]\nname = \"app\"\n",
+        )
+        .expect("the member manifest");
+        std::fs::write(root.join("ws/app/src/lib.rs"), "pub fn nothing() {}\n")
+            .expect("the member source");
+        std::fs::write(package.join("Cargo.toml"), "[package]\nname = \"dep\"\n")
+            .expect("the package manifest");
+        std::fs::write(package.join("src/lib.rs"), "pub fn nothing() {}\n")
+            .expect("the package source");
+        std::fs::write(package.join("Cargo.lock"), "version = 4\n").expect("its own lockfile");
+
+        let roots = workspace_roots(&package);
+        assert_eq!(
+            roots,
+            vec![canonical(&root.join("ws")), canonical(&package)],
+            "the excluding manifest is read and the package is a workspace of one"
+        );
+
+        let (sources, _) = recorded_sources(&package, &root.join("ws"));
+        assert!(
+            sources.contains(&package.join("Cargo.lock")),
+            "an excluded package's own lockfile is its workspace's; the walk found {sources:?}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_workspace_key_is_read_as_the_scalar_cargo_spells() {
+        // `workspace = "../other"` in `[package]` names the root a package
+        // inherits from, and cargo spells it as a plain string rather than an
+        // inline table. `../other` is not an ancestor of the package, so only
+        // the explicit key reaches it, and the header carries the spacing and
+        // the comment TOML allows.
+        let root = fixture("explicit-workspace");
+        let package = root.join("app/crate");
+        let target = root.join("app/other");
+        std::fs::create_dir_all(package.join("src")).expect("the package");
+        std::fs::create_dir_all(target.join("src")).expect("the target");
+        std::fs::write(target.join("Cargo.toml"), "[ workspace ] # the root\n")
+            .expect("the target manifest");
+        std::fs::write(target.join("Cargo.lock"), "version = 4\n").expect("the target lockfile");
+        std::fs::write(target.join("src/lib.rs"), "pub fn nothing() {}\n")
+            .expect("the target source");
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nworkspace = \"../other\" # the root\n",
+        )
+        .expect("the package manifest");
+        std::fs::write(package.join("src/lib.rs"), "pub fn nothing() {}\n")
+            .expect("the package source");
+
+        assert_eq!(
+            workspace_roots(&package),
+            vec![canonical(&package), canonical(&target)],
+            "the workspace the package names is a root even where no ancestor is one"
+        );
+
+        let (sources, unfollowed) = recorded_sources(&package, &root);
+        assert!(unfollowed.is_empty(), "{unfollowed:?}");
+        for shared in ["Cargo.toml", "Cargo.lock"] {
+            assert!(
+                sources.contains(&target.join(shared)),
+                "the root a package names must be recorded; the walk found {sources:?}"
+            );
+        }
     }
 
     #[test]

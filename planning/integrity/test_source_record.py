@@ -4,7 +4,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from source_record import RECORD_END, RECORD_START, check, parse_dep_info, read_record
+from source_record import (
+    RECORD_END,
+    RECORD_START,
+    check,
+    declares_workspace,
+    package_workspace,
+    parse_dep_info,
+    read_record,
+    workspace_roots,
+)
 
 
 class Fixture:
@@ -50,6 +59,7 @@ class Fixture:
     def metadata(self):
         identifier = f"demo 0.1.0 (path+file://{self.package})"
         return {
+            "workspace_root": str(self.root),
             "packages": [
                 {
                     "name": "demo",
@@ -70,6 +80,26 @@ class Fixture:
         return found
 
 
+def with_dependency(fixture, manifest):
+    """`fixture`'s metadata with one more local package at `manifest`."""
+    metadata = fixture.metadata()
+    identifier = f"dep 0.1.0 (path+file://{manifest.parent})"
+    metadata["packages"].append(
+        {
+            "name": "dep",
+            "id": identifier,
+            "manifest_path": str(manifest),
+            "source": None,
+            "targets": [{"name": "dep", "kind": ["lib"]}],
+        }
+    )
+    metadata["resolve"]["nodes"][0]["deps"].append(
+        {"pkg": identifier, "dep_kinds": [{"kind": None}]}
+    )
+    metadata["resolve"]["nodes"].append({"id": identifier, "deps": []})
+    return metadata
+
+
 def dependency_in_its_own_workspace(fixture, directory):
     """A closure package that belongs to a second workspace outside the fixture.
 
@@ -87,22 +117,50 @@ def dependency_in_its_own_workspace(fixture, directory):
     manifest = second / "dep" / "Cargo.toml"
     manifest.write_text('[package]\nname = "dep"\nversion.workspace = true\n')
     (second / "dep" / "src" / "lib.rs").write_text("// dep\n")
-    metadata = fixture.metadata()
-    identifier = f"dep 0.1.0 (path+file://{second / 'dep'})"
-    metadata["packages"].append(
-        {
-            "name": "dep",
-            "id": identifier,
-            "manifest_path": str(manifest),
-            "source": None,
-            "targets": [{"name": "dep", "kind": ["lib"]}],
-        }
+    return with_dependency(fixture, manifest), manifest, second
+
+
+def dependency_below_another_workspace_manifest(fixture, directory):
+    """A closure package under a nearer `[workspace]` manifest than its root.
+
+    Returns the metadata with the edge added, the dependency's manifest and the
+    two workspace directories above it. Cargo resolves such a package to the
+    workspace the build was invoked in, which can be the outer one; the nearer
+    manifest is never loaded, so the nearest-ancestor rule named it and left the
+    manifest cargo read unrecorded.
+    """
+    outer = Path(directory) / "outer"
+    nested = outer / "inner"
+    (nested / "dep" / "src").mkdir(parents=True)
+    (outer / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["inner/dep"]\n\n[workspace.package]\nversion = "1.1.1"\n'
     )
-    metadata["resolve"]["nodes"][0]["deps"].append(
-        {"pkg": identifier, "dep_kinds": [{"kind": None}]}
+    (nested / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["dep"]\n\n[workspace.package]\nversion = "2.2.2"\n'
     )
-    metadata["resolve"]["nodes"].append({"id": identifier, "deps": []})
-    return metadata, manifest, second
+    manifest = nested / "dep" / "Cargo.toml"
+    manifest.write_text('[package]\nname = "dep"\nversion.workspace = true\nworkspace = "../.."\n')
+    (nested / "dep" / "src" / "lib.rs").write_text("// dep\n")
+    return with_dependency(fixture, manifest), manifest, outer, nested
+
+
+def excluded_dependency(fixture, directory):
+    """A closure package the workspace above it excludes.
+
+    Returns the metadata with the edge added and the package's own directory.
+    Cargo does not claim such a package — measured, its search reads the
+    excluding manifest and walks past it, so with nothing above the package is
+    a workspace of one — and its own lockfile is then what cargo reads for it,
+    while the excluding manifest is still read to learn that.
+    """
+    workspace = Path(directory) / "ws"
+    (workspace / "dep" / "src").mkdir(parents=True)
+    (workspace / "Cargo.toml").write_text('[workspace]\nmembers = ["app"]\nexclude = ["dep"]\n')
+    (workspace / "dep" / "Cargo.toml").write_text('[package]\nname = "dep"\n')
+    (workspace / "dep" / "src" / "lib.rs").write_text("// dep\n")
+    (workspace / "dep" / "Cargo.lock").write_text("version = 4\n")
+    manifest = workspace / "dep" / "Cargo.toml"
+    return with_dependency(fixture, manifest), manifest, workspace
 
 
 def complete(fixture):
@@ -356,6 +414,112 @@ class CargoInputTests(unittest.TestCase):
             record = complete(fixture)
             record[str(manifest)] = "f"
             self.assertEqual(fixture.problems(record, metadata), [])
+
+    def test_every_ancestor_workspace_manifest_is_required(self):
+        # Cargo resolves a package to the workspace the build was invoked in,
+        # which can be an ancestor of a nearer `[workspace]` manifest: measured,
+        # a build invoked at the outer root read the outer manifest's
+        # `[workspace.package]` values for both packages while the nearer
+        # manifest was never loaded. The nearest rule named the nearer one and
+        # left the manifest cargo read unrecorded.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            metadata, manifest, outer, nested = dependency_below_another_workspace_manifest(
+                fixture, other
+            )
+            record = complete(fixture)
+            record[str(manifest)] = "f"
+            record[str(outer / "Cargo.toml")] = "g"
+            record[str(nested / "Cargo.toml")] = "h"
+            self.assertEqual(fixture.problems(record, metadata), [])
+            del record[str(outer / "Cargo.toml")]
+            self.assertEqual(
+                fixture.problems(record, metadata),
+                [
+                    f"demo: {outer / 'Cargo.toml'} is read by cargo to build this binary, "
+                    f"but the record does not name it"
+                ],
+            )
+
+    def test_an_excluded_package_is_its_own_workspace_root(self):
+        # Cargo does not claim a package its workspace `exclude`s — it reports
+        # "failed to find a workspace root" for one that asks to inherit — so
+        # the package's own directory is its workspace root and its own lockfile
+        # is an input, while the excluding manifest is still read to learn that.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            metadata, manifest, workspace = excluded_dependency(fixture, other)
+            record = complete(fixture)
+            record[str(manifest)] = "f"
+            record[str(manifest.parent / "Cargo.lock")] = "g"
+            record[str(workspace / "Cargo.toml")] = "h"
+            self.assertEqual(fixture.problems(record, metadata), [])
+            del record[str(manifest.parent / "Cargo.lock")]
+            self.assertEqual(
+                fixture.problems(record, metadata),
+                [
+                    f"demo: {manifest.parent / 'Cargo.lock'} is read by cargo to build this "
+                    f"binary, but the record does not name it"
+                ],
+            )
+
+    def test_the_roots_of_a_package_are_what_cargo_can_resolve(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            fixture = Fixture(directory)
+            metadata, manifest, outer, nested = dependency_below_another_workspace_manifest(
+                fixture, other
+            )
+            self.assertEqual(
+                workspace_roots(manifest.parent),
+                sorted({outer.resolve(), nested.resolve(), manifest.parent.resolve()}),
+            )
+            _, excluded, workspace = excluded_dependency(fixture, other)
+            self.assertEqual(
+                workspace_roots(excluded.parent),
+                sorted({workspace.resolve(), excluded.parent.resolve()}),
+                "the excluding manifest is read and the package is a workspace of one",
+            )
+
+
+class ManifestTests(unittest.TestCase):
+    def test_the_workspace_key_is_read_as_the_scalar_cargo_spells(self):
+        # `workspace = "../other"` in `[package]` names the root a package
+        # inherits from, and cargo spells it as a plain string rather than an
+        # inline table. `../other` is not an ancestor of the package, so only
+        # the explicit key reaches it, and the header carries the spacing and
+        # the comment TOML allows.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "app" / "crate"
+            target = root / "app" / "other"
+            (package / "src").mkdir(parents=True)
+            (target / "src").mkdir(parents=True)
+            (target / "Cargo.toml").write_text("[ workspace ] # the root\n")
+            (target / "Cargo.lock").write_text("version = 4\n")
+            manifest = package / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname = "app"\nversion = "0.1.0"\nworkspace = "../other" # the root\n'
+            )
+            self.assertEqual(package_workspace(manifest), "../other")
+            self.assertEqual(
+                workspace_roots(package),
+                sorted({package.resolve(), target.resolve()}),
+                "the workspace the package names is a root even where no ancestor is one",
+            )
+
+    def test_a_workspace_key_that_is_not_a_string_or_not_the_packages_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "Cargo.toml"
+            manifest.write_text('[package]\nname = "app"\nworkspace = 3\n')
+            self.assertIsNone(package_workspace(manifest))
+            manifest.write_text(
+                '[package]\nname = "app"\n\n[package.metadata]\nworkspace = "../other"\n'
+            )
+            self.assertIsNone(package_workspace(manifest))
+            manifest.write_text('[toolchain]\nchannel = "1.85.0" # [workspace]\n')
+            self.assertFalse(declares_workspace(manifest.read_text()))
 
 
 class ConfigurationTests(unittest.TestCase):
