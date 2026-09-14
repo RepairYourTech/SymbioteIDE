@@ -410,7 +410,14 @@ fn concat_parts(argument: &[Token]) -> Option<Vec<Part>> {
     if name != "concat" {
         return None;
     }
-    split_commas(inner).into_iter().map(part).collect()
+    split_commas(inner)
+        .into_iter()
+        // An empty element is the remainder after a trailing or repeated comma.
+        // A trailing comma is ordinary Rust, so it must not read as a path
+        // this scan cannot follow.
+        .filter(|element| !element.is_empty())
+        .map(part)
+        .collect()
 }
 
 /// One `concat!` element: a string literal, or `env!("...")`.
@@ -927,6 +934,20 @@ path = \"src/bin/example.rs\"
                 .as_slice(),
             [Include::Generated]
         ));
+    }
+
+    #[test]
+    fn a_trailing_comma_in_a_built_path_is_not_a_refusal() {
+        for text in [
+            "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/fixtures/a.json\",))",
+            "include_str!(concat!(\n    env!(\"CARGO_MANIFEST_DIR\"),\n    \"/fixtures/a.json\",\n))",
+        ] {
+            assert!(
+                matches!(include_arguments(text).as_slice(), [Include::Parts(_)]),
+                "{text} is ordinary Rust naming a path the scan can follow, so it must not stop \
+                 the build"
+            );
+        }
     }
 
     #[test]
