@@ -29,4 +29,22 @@ Every count in this section is a snapshot of `main` at `40a43b2d`, not a propert
 
 Keywords count only against the default branch, so a non-default base is reported as closing nothing rather than failing.
 
+## Driven-binary source records
+
+`source_record.py` checks that a driven binary's embedded record covers what its own build read. The end-to-end proofs run workspace binaries, and each binary carries a record of the inputs its build compiled (`symbiote-source-stamp`); the proofs compare that record against the tree, so a proof cannot run against a binary built from other sources. What no proof checks is whether the record *covers every input the compiler read*: if a new way to compile a file appears and the walk does not follow it, the record is quietly short, every proof stays green, and only an audit finds it. That happened here — the walk did not follow `#[path = "…"]` module attributes, and `crates/symbiote-store/src/tests.rs` was compiling six files the record named only for packages that happened to be walked anyway.
+
+The oracle is cargo's own per-unit dep-info, written by rustc for each unit that produces the binary. The record's implementation never reads it — its module documentation says why: it is a private, versioned binary format written *after* the build script that must write the record, so it can neither populate a record on a first build nor be an input the documented rebuild could clear. A check that runs after the build has neither problem. Cargo's *merged* dep-info for a binary is **not** usable for this: it also carries the build script's `rerun-if-changed` declarations, so it echoes the record back and agrees with it by construction. A build-script unit's generated files under `target/` and registry sources outside the workspace are excluded, as the record documents, and so are the test, example and bench directories, which the record excludes on purpose and whose own units read them.
+
+A configuration file that exists and is not named, or a named one whose content moved or that has gone, and a record that names no `env:CARGO`, are failures too — the build configuration is what the record cannot watch without making cargo relink the stamped crates on every build.
+
+```sh
+cargo build --locked -p symbiote-host --bin symbioted -p symbiote-sandbox --bin symbiote-sandbox-launch
+python3 planning/integrity/source_record.py \
+    --binary symbiote-host:symbioted \
+    --binary symbiote-sandbox:symbiote-sandbox-launch
+python3 planning/integrity/test_source_record.py
+```
+
+It reads and writes nothing; exit status is 0 when every input the compiler read is named. The `source-records` job in `Rust contracts` runs it on every pull request after building those two binaries, so a newly unrecorded input class fails the build instead of waiting for an audit; its own tests run with the rest of this directory's in `Roadmap integrity`.
+
 This implements a bounded portion of #470. It does **not** certify conversation-to-issue coverage, acceptance completion, or exact-body mutation safety. `acceptance_items` is only a checkbox inventory. Safe importer regeneration, three-way merge, stale-revision refusal, concurrent-edit/ambiguous-create reconciliation, and post-mutation readback remain separate work. The original bootstrap importer must not be used to overwrite this registry's newer issue authority.
