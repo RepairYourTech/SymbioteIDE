@@ -30,16 +30,36 @@
 //!   a `static`, which the binary includes so the record travels inside the
 //!   binary itself.
 //! * [`changed_sources`] is called by the proof. It reads the record out of
-//!   the binary's own bytes, re-hashes everything the record holds, and
+//!   the binary's own bytes, re-reads every input the record holds, and
 //!   refuses a binary that carries no record — one built without the stamp —
-//!   naming every file whose content (or presence) differs.
+//!   naming every input whose content differs. An input is a file, or a value
+//!   of the build's environment ([`Input`]).
+//!
+//! What a compile produces depends on more than the source files, so the
+//! record holds the other two kinds of input that can change it while every
+//! file stays byte-identical: the configuration files cargo reads for a build
+//! of any closure package — `.cargo/config.toml`, `.cargo/config`,
+//! `rust-toolchain.toml`, `rust-toolchain`, in each package directory and
+//! workspace root and every directory above them, plus the ones beside the
+//! registry cache — and the one environment variable both a build script and a
+//! proof see alike, `RECORDED_ENVIRONMENT`, which names the toolchain. The flags
+//! a build was given are covered through the files that carry them rather than
+//! through `RUSTFLAGS`, which the two sides do not see alike; the constant's own
+//! documentation says what is left outside and why.
 //!
 //! What the walk covers is stated rather than claimed whole. Test, example and
 //! bench targets are outside it because nothing a binary compiles comes from
 //! them, so a change there must not refuse a current binary. Registry
 //! dependencies are outside it because `Cargo.lock`, which is inside it, pins
 //! them, and dev-dependency edges are outside it because a binary compiles
-//! none of them. Files a package generates into its `OUT_DIR` are outside it
+//! none of them. A configuration file that did not exist when the binary was
+//! built and appears afterwards is outside it: cargo reads no such file at
+//! build time, and naming the absent location as a build-script input would
+//! list a missing path, which makes cargo recompile every stamped crate on
+//! every build (measured: `Dirty symbiote-host: the file ... is missing`, and
+//! the binary relinked each time). A `rust-toolchain.toml` that appears is
+//! still caught, because the toolchain it selects is named by the recorded
+//! cargo. Files a package generates into its `OUT_DIR` are outside it
 //! too: their content comes from the build script, which is inside it. The
 //! include scan reads code, not text — a path named in a comment or a string
 //! literal is not an input — and follows a literal path and a `concat!` of
@@ -82,6 +102,69 @@ pub const RECORD_FILE: &str = "source_record.rs";
 /// The `static` that file defines, holding [`RECORD_START`]..[`RECORD_END`].
 pub const RECORD_STATIC: &str = "SOURCE_RECORD";
 
+/// The environment variables a record holds: the cargo that ran the build,
+/// which names the toolchain a `rust-toolchain.toml` selects. It is set for a
+/// build script and for a test process alike — and to the same value whether a
+/// build is started through the rustup shim or through that toolchain's own
+/// binary — so the record can be checked against the run rather than only
+/// described.
+///
+/// Two neighbours are deliberately not here:
+///
+/// * `RUSTFLAGS`, because the two sides never see the same value. Measured,
+///   cargo passes it to a test process untouched
+///   (`TEST RUSTFLAGS=Some("--cfg from_shell")`) while a build script gets it
+///   stripped (`BUILD RUSTFLAGS=None`) and sees only the effective flags in
+///   `CARGO_ENCODED_RUSTFLAGS` (`Some("--cfg\u{1f}from_shell")`). Recording
+///   what the build saw would refuse a current binary whenever a flag is set;
+///   recording what the run sees would refuse one built from a
+///   `.cargo/config`. The flags a build is given are covered through the
+///   configuration files that carry them.
+/// * `RUSTUP_TOOLCHAIN`, because it reports how cargo was invoked rather than
+///   which compiler ran: a build through the rustup shim sets it and an
+///   invocation of that toolchain's own cargo does not, which would make the
+///   two refuse each other alternately. The toolchain is named by `CARGO`'s
+///   path, which does not move.
+const RECORDED_ENVIRONMENT: [&str; 1] = ["CARGO"];
+
+/// How an environment variable is spelled as the locator of an input, so a
+/// record can hold a value beside the files it holds.
+const ENVIRONMENT: &str = "env:";
+
+/// The content of an input that is not there: a variable that is not set, or a
+/// recorded file that has gone.
+const UNSET: &str = "unset";
+
+/// The configuration files cargo reads for a build of any closure package,
+/// relative to the directory it is looked for in.
+const CONFIGURATION_FILES: [&str; 4] = [
+    ".cargo/config.toml",
+    ".cargo/config",
+    "rust-toolchain.toml",
+    "rust-toolchain",
+];
+
+/// One input a record holds, as [`changed_sources`] reports it: a file the
+/// build compiled, or a value of the environment it compiled under.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Input {
+    /// A file, named as the record names it: relative to the workspace, or
+    /// absolute when it lives outside it.
+    File(PathBuf),
+    /// An environment variable, named without the `env:` prefix the record
+    /// spells it with.
+    Environment(String),
+}
+
+impl std::fmt::Display for Input {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Input::File(path) => write!(formatter, "{}", path.display()),
+            Input::Environment(name) => write!(formatter, "{ENVIRONMENT}{name}"),
+        }
+    }
+}
+
 /// Directories under a package that its binaries do not compile. The targets
 /// cargo builds for tests, examples and benches are excluded because a change
 /// there must not refuse a current binary — no rebuild could clear that
@@ -102,10 +185,12 @@ const UNCOMPILED_DIRECTORIES: [&str; 7] = [
 /// not part of the name it looks for.
 const INCLUDE_MACROS: [&str; 3] = ["include", "include_bytes", "include_str"];
 
-/// Records the content of the sources this package's binaries are built from
-/// as a `static` in `OUT_DIR`, for the binary to include, and asks cargo to
-/// rerun the build script when any of them changes. Call this from a build
-/// script's `main`.
+/// Records the content of the inputs this package's binaries are built from —
+/// its sources, the files they compile, the manifests and configuration that
+/// describe and shape the build, and the environment it runs under — as a
+/// `static` in `OUT_DIR`, for the binary to include, and asks cargo to rerun
+/// the build script when any of them changes. Call this from a build script's
+/// `main`.
 pub fn build_stamp() {
     let manifest_dir = PathBuf::from(environment("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(environment("OUT_DIR"));
@@ -131,6 +216,17 @@ pub fn build_stamp() {
             relative_to(&workspace, source).display()
         ));
         println!("cargo:rerun-if-changed={}", source.display());
+    }
+    // The environment this compile runs under, held as an input of its own:
+    // the cargo that ran it, which names the toolchain. Cargo re-runs this
+    // build script when it changes, so the record describes the toolchain in
+    // use rather than the one that built it first.
+    for name in RECORDED_ENVIRONMENT {
+        record.push_str(&format!(
+            "{}\t{ENVIRONMENT}{name}\n",
+            environment_content(name)
+        ));
+        println!("cargo:rerun-if-env-changed={name}");
     }
 
     let generated = out_dir.join(RECORD_FILE);
@@ -158,7 +254,7 @@ fn record_static(record: &str) -> String {
 /// error naming why the binary at `binary` cannot be checked at all. An empty
 /// list means the binary carries a record of exactly the content the tree
 /// holds.
-pub fn changed_sources(binary: &Path, manifest_dir: &Path) -> Result<Vec<PathBuf>, String> {
+pub fn changed_sources(binary: &Path, manifest_dir: &Path) -> Result<Vec<Input>, String> {
     let bytes = std::fs::read(binary)
         .map_err(|error| format!("cannot read the binary at {} ({error})", binary.display()))?;
     let record = embedded_record(&bytes).ok_or_else(|| {
@@ -170,31 +266,59 @@ pub fn changed_sources(binary: &Path, manifest_dir: &Path) -> Result<Vec<PathBuf
     })?;
 
     let workspace = workspace_root(manifest_dir)?;
-    let recorded = read_record(&record, &workspace)?;
+    let recorded = read_record(&record)?;
     if recorded.is_empty() {
         return Err(format!(
-            "the binary at {} carries an empty build record, which names no source to check",
+            "the binary at {} carries an empty build record, which names no input to check",
             binary.display()
         ));
     }
     Ok(recorded
         .iter()
-        .filter(|(source, hash)| content_hash(source).as_deref() != Some(hash.as_str()))
-        .map(|(source, _)| source.clone())
+        .filter_map(|(locator, hash)| {
+            let (input, content) = input_at(locator, &workspace);
+            (content != *hash).then_some(input)
+        })
         .collect())
 }
 
-/// The sha256 of every file the record holds, keyed by the file itself, with a
-/// relative path resolved against the workspace. A line without both halves is
-/// reported rather than skipped: a record that lost one is not a shorter record
-/// but an unreadable one.
-fn read_record(record: &str, workspace: &Path) -> Result<BTreeMap<PathBuf, String>, String> {
+/// The input a locator names — with a relative file locator resolved against
+/// the workspace — and the content it holds now, spelled as a record spells
+/// content: a file's sha256, an environment variable's, or [`UNSET`] when it
+/// is not there.
+fn input_at(locator: &str, workspace: &Path) -> (Input, String) {
+    match locator.strip_prefix(ENVIRONMENT) {
+        Some(name) => (
+            Input::Environment(name.to_owned()),
+            environment_content(name),
+        ),
+        None => {
+            let path = workspace.join(locator);
+            let content = content_hash(&path).unwrap_or_else(|| UNSET.to_owned());
+            (Input::File(path), content)
+        }
+    }
+}
+
+/// The content of an environment variable: its value's sha256, or [`UNSET`]
+/// when it is not set at all, which is a different fact from set and empty.
+fn environment_content(name: &str) -> String {
+    std::env::var(name)
+        .map(|value| format!("{:x}", Sha256::digest(value.as_bytes())))
+        .unwrap_or_else(|_| UNSET.to_owned())
+}
+
+/// The sha256 of every input the record holds, keyed by the locator it is
+/// spelled with — a path, or `env:NAME` for an environment variable. A line
+/// without both halves is reported rather than skipped: a record that lost one
+/// is not a shorter record but an unreadable one.
+fn read_record(record: &str) -> Result<BTreeMap<String, String>, String> {
     let mut recorded = BTreeMap::new();
     for line in record.lines().filter(|line| !line.is_empty()) {
-        let Some((hash, path)) = line.split_once('\t') else {
+        let Some((hash, locator)) = line.split_once('\t') else {
             return Err("the source record has a malformed line".to_owned());
         };
-        recorded.insert(workspace.join(path), hash.to_owned());
+        recorded.insert(locator.to_owned(), hash.to_owned());
     }
     Ok(recorded)
 }
@@ -216,12 +340,13 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// Every file the build of the package at `manifest_dir` compiles — the walk
-/// over each closure package's directory, every file those sources include or
-/// declare as a module from wherever it lives, and the workspace manifest and
+/// Every file the build of the package at `manifest_dir` reads — the walk over
+/// each closure package's directory, every file those sources include or
+/// declare as a module from wherever it lives, the workspace manifest and
 /// lockfile of each closure package's own workspace, which sit above every
-/// package directory — together with the include sites the scan cannot follow,
-/// each one a reason this build must stop. Followed to a fixed point over the Rust sources, so an included `.rs`
+/// package directory, and the configuration files cargo reads for the build —
+/// together with the include sites the scan cannot follow, each one a reason
+/// this build must stop. Followed to a fixed point over the Rust sources, so an included `.rs`
 /// file that includes another is recorded too, and a non-Rust file pulled in by
 /// `include!` is recorded but not scanned for includes of its own.
 fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>, Vec<String>) {
@@ -280,7 +405,46 @@ fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>
             }
         }
     }
+
+    // The files cargo reads to configure a build rather than to find one: a
+    // `rustflags` entry in a `.cargo/config.toml`, or the channel a
+    // `rust-toolchain.toml` selects, changes what the compiler produces while
+    // every source file stays byte-identical. Only those that exist are
+    // recorded — the module documentation says why the absent ones are not.
+    sources.extend(configuration_files(&packages, workspace));
     (sources, unfollowed)
+}
+
+/// The configuration files cargo reads for a build of a package in this
+/// workspace: each of [`CONFIGURATION_FILES`] in every closure package's own
+/// directory and in the workspace root, in every directory above those, and
+/// beside the registry cache — whichever of them exist.
+///
+/// Above a package, because cargo reads configuration from its working
+/// directory upwards whichever directory a build was started in; and beside
+/// `CARGO_HOME`, because that is where a machine-wide configuration lives.
+fn configuration_files(packages: &[PathBuf], workspace: &Path) -> Vec<PathBuf> {
+    let mut directories: BTreeSet<PathBuf> = BTreeSet::new();
+    for start in packages.iter().map(PathBuf::as_path).chain([workspace]) {
+        let mut directory = Some(canonical(start));
+        while let Some(candidate) = directory {
+            directories.insert(candidate.clone());
+            directory = candidate.parent().map(Path::to_path_buf);
+        }
+    }
+    if let Some(cache) = std::env::var_os("CARGO_HOME") {
+        directories.insert(PathBuf::from(cache));
+    }
+    directories
+        .into_iter()
+        .flat_map(|directory| {
+            CONFIGURATION_FILES
+                .iter()
+                .map(move |name| directory.join(name))
+        })
+        .filter(|file| file.is_file())
+        .map(|file| canonical(&file))
+        .collect()
 }
 
 /// The inputs one source pulls in — the files its include macros name and the
@@ -1429,7 +1593,7 @@ path = \"src/bin/example.rs\"
         std::fs::write(&compiled, "{\"two\": true}\n").expect("the changed fixture");
         assert_eq!(
             changed_sources(&binary, &root).expect("a readable record"),
-            [compiled]
+            [Input::File(compiled)]
         );
     }
 
@@ -1468,7 +1632,7 @@ path = \"src/bin/example.rs\"
         std::fs::write(&compiled, "{\"two\": true}\n").expect("the changed fixture");
         assert_eq!(
             changed_sources(&binary, &root).expect("a readable record"),
-            [compiled]
+            [Input::File(compiled)]
         );
     }
 
@@ -1530,6 +1694,43 @@ path = \"src/bin/example.rs\"
     }
 
     #[test]
+    fn an_environment_input_that_differs_is_named() {
+        let root = fixture("environment");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\n[package]\nname = \"symbiote-example\"\n",
+        )
+        .expect("the root manifest");
+        let binary = root.join("symbiote-example");
+        // A variable no test sets: a record that names it as set is a
+        // difference, and a record that names it `unset` is not — which is
+        // also the difference between set-and-empty and not set at all.
+        for (hash, expected) in [("0123456789abcdef", 1), (UNSET, 0), ("", 1)] {
+            std::fs::write(
+                &binary,
+                format!(
+                    "bytes {RECORD_START}{hash}\t{ENVIRONMENT}SYMBIOTE_STAMP_PROBE_VARIABLE\n\
+                     {RECORD_END} bytes"
+                ),
+            )
+            .expect("the binary");
+            assert_eq!(
+                changed_sources(&binary, &root)
+                    .expect("a readable record")
+                    .len(),
+                expected,
+                "a record holding {hash:?} for an unset variable"
+            );
+        }
+        assert_eq!(
+            changed_sources(&binary, &root).expect("a readable record"),
+            [Input::Environment(
+                "SYMBIOTE_STAMP_PROBE_VARIABLE".to_owned()
+            )]
+        );
+    }
+
+    #[test]
     fn a_recorded_source_whose_content_differs_is_named() {
         let root = fixture("changed");
         let binary = record_for(&root, &[("src/lib.rs", "one\n")]);
@@ -1542,13 +1743,13 @@ path = \"src/bin/example.rs\"
         std::fs::write(root.join("src/lib.rs"), "two\n").expect("the changed source");
         assert_eq!(
             changed_sources(&binary, &root).expect("a readable record"),
-            [root.join("src/lib.rs")]
+            [Input::File(root.join("src/lib.rs"))]
         );
 
         std::fs::remove_file(root.join("src/lib.rs")).expect("the removed source");
         assert_eq!(
             changed_sources(&binary, &root).expect("a readable record"),
-            [root.join("src/lib.rs")]
+            [Input::File(root.join("src/lib.rs"))]
         );
     }
 
@@ -1625,7 +1826,7 @@ path = \"src/bin/example.rs\"
         .expect("the changed workspace manifest");
         assert_eq!(
             changed_sources(&binary, &root).expect("a readable record"),
-            [root.join("Cargo.toml")]
+            [Input::File(root.join("Cargo.toml"))]
         );
     }
 
@@ -1679,7 +1880,7 @@ path = \"src/bin/example.rs\"
         .expect("the changed second workspace manifest");
         assert_eq!(
             changed_sources(&binary, &package).expect("a readable record"),
-            [elsewhere.join("Cargo.toml")]
+            [Input::File(elsewhere.join("Cargo.toml"))]
         );
     }
 
@@ -1717,7 +1918,7 @@ path = \"src/bin/example.rs\"
         std::fs::write(&compiled, "pub const ONE: u8 = 2;\n").expect("the changed module");
         assert_eq!(
             changed_sources(&binary, &root).expect("a readable record"),
-            [compiled]
+            [Input::File(compiled)]
         );
     }
 
