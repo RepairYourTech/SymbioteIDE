@@ -17,9 +17,11 @@
 //!   records every file the package's binaries compile — everything under the
 //!   package that is not a test, example or bench target, whatever its
 //!   extension, because a compile can read a file no manifest mentions
-//!   (`include_str!("schema.sql")`) — together with the manifests, build
-//!   scripts, `Cargo.lock` and the workspace manifest that pin and configure
-//!   them, and every file those sources pull
+//!   (`include_str!("schema.sql")`) — together with the manifests and build
+//!   scripts that name them and the workspace manifest and `Cargo.lock` that
+//!   configure and pin each package's build, a path dependency in another
+//!   workspace bringing that workspace's root manifest as well, and every file
+//!   those sources pull
 //!   in through an `include!`, `include_bytes!` or `include_str!` or a
 //!   `#[path = "…"]` module attribute, wherever it lives:
 //!   `symbiote-workflow` compiles fixtures kept at the workspace root.
@@ -217,9 +219,9 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Every file the build of the package at `manifest_dir` compiles — the walk
 /// over each closure package's directory, every file those sources include or
 /// declare as a module from wherever it lives, and the workspace manifest and
-/// lockfile, which sit above every package directory — together with the
-/// include sites the scan cannot follow, each one a reason this build must
-/// stop. Followed to a fixed point over the Rust sources, so an included `.rs`
+/// lockfile of each closure package's own workspace, which sit above every
+/// package directory — together with the include sites the scan cannot follow,
+/// each one a reason this build must stop. Followed to a fixed point over the Rust sources, so an included `.rs`
 /// file that includes another is recorded too, and a non-Rust file pulled in by
 /// `include!` is recorded but not scanned for includes of its own.
 fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>, Vec<String>) {
@@ -256,15 +258,26 @@ fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>
         }
     }
 
-    // The workspace manifest and the lockfile sit above every closure package,
-    // so the walk over those directories reaches neither. The lockfile pins the
-    // registry dependencies; the manifest configures the packages — a member
-    // says `edition.workspace = true`, which makes the edition its code is
-    // compiled under a property of a file kept outside it.
-    for shared in ["Cargo.toml", "Cargo.lock"] {
-        let file = workspace.join(shared);
-        if file.is_file() {
-            sources.insert(file);
+    // A workspace manifest and its lockfile sit above every package of that
+    // workspace, so the walk over package directories reaches neither. The
+    // lockfile pins the registry dependencies; the manifest configures the
+    // packages — a member says `edition.workspace = true`, which makes the
+    // edition its code is compiled under a property of a file kept outside it.
+    // Every closure package is asked, not only the one being built: a path
+    // dependency may live in a workspace of its own, and then *that* root
+    // manifest is the one its edition and version come from.
+    let mut roots = BTreeSet::from([workspace.to_path_buf()]);
+    for package in &packages {
+        if let Ok(root) = workspace_root(package) {
+            roots.insert(root);
+        }
+    }
+    for root in roots {
+        for shared in ["Cargo.toml", "Cargo.lock"] {
+            let file = root.join(shared);
+            if file.is_file() {
+                sources.insert(file);
+            }
         }
     }
     (sources, unfollowed)
@@ -1613,6 +1626,60 @@ path = \"src/bin/example.rs\"
         assert_eq!(
             changed_sources(&binary, &root).expect("a readable record"),
             [root.join("Cargo.toml")]
+        );
+    }
+
+    #[test]
+    fn a_dependency_in_a_second_workspace_contributes_that_workspace_root() {
+        let root = fixture("second-workspace");
+        let package = root.join("wsA/app");
+        let elsewhere = root.join("other");
+        std::fs::create_dir_all(package.join("src")).expect("the package");
+        std::fs::create_dir_all(elsewhere.join("dep/src")).expect("the dependency");
+        std::fs::write(
+            root.join("wsA/Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\n\n[workspace.package]\nedition = \"2024\"\n",
+        )
+        .expect("the workspace manifest");
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nedition.workspace = true\n\n[dependencies]\n\
+             dep = { path = \"../../other/dep\" }\n",
+        )
+        .expect("the package manifest");
+        std::fs::write(package.join("src/lib.rs"), "pub fn nothing() {}\n").expect("the source");
+        // The dependency is a member of a workspace of its own, whose root is
+        // the manifest that sets the edition and version it is compiled with.
+        std::fs::write(
+            elsewhere.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"dep\"]\n\n[workspace.package]\nedition = \"2024\"\n",
+        )
+        .expect("the second workspace manifest");
+        std::fs::write(
+            elsewhere.join("dep/Cargo.toml"),
+            "[package]\nname = \"dep\"\nedition.workspace = true\n",
+        )
+        .expect("the dependency manifest");
+        std::fs::write(elsewhere.join("dep/src/lib.rs"), "pub fn nothing() {}\n")
+            .expect("the dependency source");
+
+        let (sources, unfollowed) = recorded_sources(&package, &root.join("wsA"));
+        assert!(unfollowed.is_empty(), "{unfollowed:?}");
+        assert!(
+            sources.contains(&elsewhere.join("Cargo.toml")),
+            "the manifest that sets this dependency's edition must be recorded; the walk found \
+             {sources:?}"
+        );
+
+        let binary = record_over(&root.join("wsA"), &sources);
+        std::fs::write(
+            elsewhere.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"dep\"]\n\n[workspace.package]\nedition = \"2021\"\n",
+        )
+        .expect("the changed second workspace manifest");
+        assert_eq!(
+            changed_sources(&binary, &package).expect("a readable record"),
+            [elsewhere.join("Cargo.toml")]
         );
     }
 
