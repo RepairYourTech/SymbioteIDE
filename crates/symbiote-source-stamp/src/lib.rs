@@ -19,8 +19,9 @@
 //!   extension, because a compile can read a file no manifest mentions
 //!   (`include_str!("schema.sql")`) — together with the manifests, build
 //!   scripts and `Cargo.lock` that pin them, and every file those sources pull
-//!   in through an `include!`, `include_bytes!` or `include_str!`, wherever it
-//!   lives: `symbiote-workflow` compiles fixtures kept at the workspace root.
+//!   in through an `include!`, `include_bytes!` or `include_str!` or a
+//!   `#[path = "…"]` module attribute, wherever it lives:
+//!   `symbiote-workflow` compiles fixtures kept at the workspace root.
 //!   It hashes the content of all of them, tells cargo to rerun the build
 //!   script when any of them changes, and writes the record into `OUT_DIR` as
 //!   a `static`, which the binary includes so the record travels inside the
@@ -42,9 +43,18 @@
 //! literals and `env!("CARGO_MANIFEST_DIR")`, which is how a package names an
 //! input it does not keep beside itself. It follows those to a fixed point
 //! over Rust sources, so a non-Rust file pulled in by `include!` is recorded
-//! but not itself scanned for includes. A path built any other way is **not
-//! skipped**: the build stops and names it, because a record that is quietly
-//! short is the one failure this crate exists to make impossible.
+//! but not itself scanned for includes. A `#[path = "…"]` module attribute is
+//! followed the same way when it sits on a `mod name;` declaration, resolved
+//! against the directory the compiler looks in: the file's own directory at the
+//! top level of a file, and a directory inside it when the declaration sits in
+//! an inline module block. A file does not say whether the compiler found it as
+//! `mod name;` — which puts its modules under a directory of its own name — or
+//! named it through a `#[path]`, as a crate root or as a `mod.rs`, which do not,
+//! so inside an inline module the record keeps both directories rather than
+//! choose: a record that is long is a rebuild, and a record that is short is
+//! the failure this crate exists to prevent. A path built any other way, and a
+//! `#[path]` on an inline module, is **not skipped**: the build stops and names
+//! it.
 //!
 //! Cargo's dep-info is not read here because it is a private, versioned binary
 //! format that is written *after* the build script that must write the record,
@@ -204,8 +214,9 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Every file the build of the package at `manifest_dir` compiles — the walk
-/// over each closure package's directory, every file those sources include
-/// from wherever it lives, and the lockfile that pins the registry
+/// over each closure package's directory, every file those sources include or
+/// declare as a module from wherever it lives, and the lockfile that pins the
+/// registry
 /// dependencies — together with the include sites the scan cannot follow, each
 /// one a reason this build must stop. Followed to a fixed point over the Rust
 /// sources, so an included `.rs` file that includes another is recorded too,
@@ -231,7 +242,7 @@ fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>
         }
         for source in pending {
             scanned.insert(source.clone());
-            match followed_includes(&source, &packages) {
+            match followed_inputs(&source, &packages) {
                 Ok(included) => {
                     for file in included {
                         let file = canonical(&file);
@@ -252,24 +263,25 @@ fn recorded_sources(manifest_dir: &Path, workspace: &Path) -> (BTreeSet<PathBuf>
     (sources, unfollowed)
 }
 
-/// The inputs one source pulls in through an include macro, or the reason this
-/// scan cannot follow one of them. A literal path is resolved the way the
-/// compiler resolves it — relative to the file that names it — and a `concat!`
-/// of literals and `env!("CARGO_MANIFEST_DIR")` is resolved against the
-/// package the file belongs to. An input the compiler takes from `OUT_DIR` is
-/// left to the build script that wrote it, which is itself recorded.
-fn followed_includes(source: &Path, packages: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+/// The inputs one source pulls in — the files its include macros name and the
+/// module sources its `#[path]` attributes name — or the reason this scan
+/// cannot follow one of them. A literal path is resolved the way the compiler
+/// resolves it — relative to the file that names it — and a `concat!` of
+/// literals and `env!("CARGO_MANIFEST_DIR")` is resolved against the package
+/// the file belongs to. An input the compiler takes from `OUT_DIR` is left to
+/// the build script that wrote it, which is itself recorded.
+fn followed_inputs(source: &Path, packages: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let Ok(text) = std::fs::read_to_string(source) else {
         return Ok(Vec::new());
     };
     let Some(directory) = source.parent() else {
         return Ok(Vec::new());
     };
-    let mut included = Vec::new();
+    let mut inputs = Vec::new();
     for include in include_arguments(&text) {
         match include {
             Include::Generated => {}
-            Include::Literal(path) => included.push(directory.join(path)),
+            Include::Literal(path) => inputs.push(directory.join(path)),
             Include::Parts(parts) => {
                 let mut joined = String::new();
                 for part in parts {
@@ -293,7 +305,7 @@ fn followed_includes(source: &Path, packages: &[PathBuf]) -> Result<Vec<PathBuf>
                     }
                 }
                 let path = PathBuf::from(joined);
-                included.push(if path.is_absolute() {
+                inputs.push(if path.is_absolute() {
                     path
                 } else {
                     directory.join(path)
@@ -310,7 +322,275 @@ fn followed_includes(source: &Path, packages: &[PathBuf]) -> Result<Vec<PathBuf>
             }
         }
     }
-    Ok(included)
+    for module in module_paths(&text) {
+        match module {
+            ModulePath::File { path, inline } => {
+                inputs.extend(module_inputs(source, &path, &inline));
+            }
+            ModulePath::Inline { path } => {
+                return Err(format!(
+                    "{} attaches a `#[path = {path:?}]` to an inline module, which moves the \
+                     directory that module's children are found in — including children this \
+                     scan does not model — so the source record cannot follow it. Declare the \
+                     module in its own file, where the record covers it",
+                    source.display()
+                ));
+            }
+            ModulePath::Unreadable(snippet) => {
+                return Err(format!(
+                    "{} names a module source through a `#[path]` this scan cannot read: \
+                     {snippet}. Write it as a literal `#[path = \"…\"]` attribute directly on a \
+                     `mod name;` declaration, so the record covers every input the binary \
+                     compiles",
+                    source.display()
+                ));
+            }
+        }
+    }
+    Ok(inputs)
+}
+
+/// A module source a `#[path]` attribute names, as far as the scan can follow
+/// it.
+#[derive(Debug)]
+enum ModulePath {
+    /// `#[path = "…"] mod name;`, the file the module's own source lives in.
+    File { path: String, inline: Vec<String> },
+    /// `#[path = "…"] mod name { … }`, which moves the directory the module's
+    /// children are found in.
+    Inline { path: String },
+    /// A `#[path]` this scan cannot read, spelled for the refusal.
+    Unreadable(String),
+}
+
+/// The module sources a source's `#[path]` attributes name, each with the
+/// inline modules it sits inside. Read from the code, so a `#[path]` a comment
+/// or a string literal names is not an input, and every enclosing inline module
+/// is tracked because it moves the directory the attribute resolves against.
+fn module_paths(source: &str) -> Vec<ModulePath> {
+    let tokens = tokens(source);
+    let mut paths = Vec::new();
+    // One entry per open brace: the inline module it opens, when it opens one.
+    let mut frames: Vec<Option<String>> = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        match &tokens[index] {
+            Token::Punct('{') => {
+                frames.push(opened_module(&tokens, index));
+                index += 1;
+            }
+            Token::Punct('}') => {
+                frames.pop();
+                index += 1;
+            }
+            Token::Punct('#') => match attribute(&tokens, index) {
+                Some(Attribute::Path { value, next }) => {
+                    paths.push(declaration(&tokens, next, value, &enclosing(&frames)));
+                    index = next;
+                }
+                Some(Attribute::Other { next }) => index = next,
+                None => index += 1,
+            },
+            _ => index += 1,
+        }
+    }
+    paths
+}
+
+/// The inline modules a scan is inside, outermost first.
+fn enclosing(frames: &[Option<String>]) -> Vec<String> {
+    frames.iter().flatten().cloned().collect()
+}
+
+/// The inline module whose body the `{` at `index` opens, or `None` for a brace
+/// that closes over a function body, a block or anything else.
+fn opened_module(tokens: &[Token], index: usize) -> Option<String> {
+    match tokens.get(..index) {
+        Some([.., Token::Ident(keyword), Token::Ident(name)]) if keyword == "mod" => {
+            Some(module_name(name).to_owned())
+        }
+        _ => None,
+    }
+}
+
+/// The name a module declaration gives, without the `r#` of a raw identifier,
+/// which is the name the compiler spells its directory with.
+fn module_name(identifier: &str) -> &str {
+    identifier.strip_prefix("r#").unwrap_or(identifier)
+}
+
+/// One `#[…]` attribute group.
+enum Attribute {
+    /// `#[path = …]`, with the value it names and the index after its `]`.
+    Path {
+        value: Result<String, String>,
+        next: usize,
+    },
+    /// Any other attribute group, with the index after it.
+    Other { next: usize },
+}
+
+/// The attribute group the `#` at `index` opens, or `None` when it opens none.
+/// A `path` inside another attribute (`#[cfg_attr(unix, path = "…")]`) names an
+/// input this scan cannot decide, so it is read as a value it cannot follow
+/// rather than passed over.
+fn attribute(tokens: &[Token], index: usize) -> Option<Attribute> {
+    let mut cursor = index + 1;
+    if matches!(tokens.get(cursor), Some(Token::Punct('!'))) {
+        cursor += 1;
+    }
+    if !matches!(tokens.get(cursor), Some(Token::Punct('['))) {
+        return None;
+    }
+    let end = matching_bracket(tokens, cursor)?;
+    let content = &tokens[cursor + 1..end];
+    let next = end + 1;
+    Some(match content {
+        [Token::Ident(name), Token::Punct('='), rest @ ..] if name == "path" => Attribute::Path {
+            value: match rest {
+                [Token::Literal(path)] => Ok(path.clone()),
+                _ => Err(render(rest)),
+            },
+            next,
+        },
+        _ if names_a_path(content) => Attribute::Path {
+            value: Err(render(content)),
+            next,
+        },
+        _ => Attribute::Other { next },
+    })
+}
+
+/// Whether an attribute's content assigns `path`, which only a conditional
+/// attribute does without `path` being the attribute itself.
+fn names_a_path(content: &[Token]) -> bool {
+    content
+        .windows(2)
+        .any(|pair| matches!(pair, [Token::Ident(name), Token::Punct('=')] if name == "path"))
+}
+
+/// The index of the bracket closing the one at `index`.
+fn matching_bracket(tokens: &[Token], index: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, token) in tokens[index..].iter().enumerate() {
+        match token {
+            Token::Punct('[' | '(' | '{') => depth += 1,
+            Token::Punct(']' | ')' | '}') => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The module a `#[path]` attribute declares: the file the module's source
+/// lives in, an inline module, or the reason this scan cannot read it. The
+/// attributes and the `pub` visibility between the attribute and the item are
+/// skipped, and an item that is not a `mod` declaration is refused rather than
+/// passed over, because a `#[path]` this scan walks past could name an input it
+/// never records.
+fn declaration(
+    tokens: &[Token],
+    mut index: usize,
+    value: Result<String, String>,
+    inline: &[String],
+) -> ModulePath {
+    while matches!(tokens.get(index), Some(Token::Punct('#'))) {
+        match attribute(tokens, index) {
+            Some(Attribute::Other { next }) => index = next,
+            _ => break,
+        }
+    }
+    if matches!(tokens.get(index..), Some([Token::Ident(word), ..]) if word == "pub") {
+        index += 1;
+        if matches!(tokens.get(index), Some(Token::Punct('('))) {
+            index = matching_bracket(tokens, index).map_or(index, |end| end + 1);
+        }
+    }
+    let path = match value {
+        Ok(path) => path,
+        Err(snippet) => return ModulePath::Unreadable(format!("#[path = {snippet}]")),
+    };
+    match module_declaration(tokens, index) {
+        Some(false) => ModulePath::File {
+            path,
+            inline: inline.to_vec(),
+        },
+        Some(true) => ModulePath::Inline { path },
+        None => ModulePath::Unreadable(format!(
+            "#[path = {path:?}] on an item that is not a module declaration"
+        )),
+    }
+}
+
+/// Whether a module declaration starts at `index`, and whether it is an inline
+/// module (`mod name {`) rather than one with a file of its own (`mod name;`).
+fn module_declaration(tokens: &[Token], index: usize) -> Option<bool> {
+    match tokens.get(index..) {
+        Some(
+            [
+                Token::Ident(keyword),
+                Token::Ident(_),
+                Token::Punct(';'),
+                ..,
+            ],
+        ) if keyword == "mod" => Some(false),
+        Some(
+            [
+                Token::Ident(keyword),
+                Token::Ident(_),
+                Token::Punct('{'),
+                ..,
+            ],
+        ) if keyword == "mod" => Some(true),
+        _ => None,
+    }
+}
+
+/// The files a `#[path]` module declaration compiles, from the directory the
+/// compiler resolves it against. A declaration at the top level of a file
+/// resolves against the file's own directory. One inside an inline module block
+/// resolves against that directory with the inline modules appended, and with
+/// the module's own name in front when the compiler found the file as `mod
+/// name;` — which a file named by a `#[path]`, a crate root and a `mod.rs` do
+/// not. A file alone does not say which it is, so both candidates are recorded:
+/// one of them is the compiler's, and a record that is long is a rebuild.
+fn module_inputs(source: &Path, path: &str, inline: &[String]) -> Vec<PathBuf> {
+    let Some(directory) = source.parent() else {
+        return Vec::new();
+    };
+    if inline.is_empty() {
+        return vec![directory.join(path)];
+    }
+    let mut bases = vec![directory.to_path_buf()];
+    if let Some(name) = added_module_directory(source) {
+        bases.push(directory.join(name));
+    }
+    bases
+        .into_iter()
+        .map(|base| {
+            inline
+                .iter()
+                .fold(base, |directory, name| directory.join(name))
+                .join(path)
+        })
+        .collect()
+}
+
+/// The directory a file adds to the paths of its nested modules, or `None` when
+/// it adds none: a crate root (`lib.rs`, `main.rs`) and a `mod.rs` are the
+/// directory of their own module, while a file the compiler found as `mod
+/// name;` keeps its modules under a directory of its own name.
+fn added_module_directory(source: &Path) -> Option<&str> {
+    let name = source.file_name()?.to_str()?;
+    if matches!(name, "lib.rs" | "main.rs" | "mod.rs") {
+        return None;
+    }
+    source.file_stem()?.to_str()
 }
 
 /// A path an include macro names, as far as the scan can follow it.
@@ -471,11 +751,12 @@ fn render(tokens: &[Token]) -> String {
         .join(" ")
 }
 
-/// What the include scan needs to tell code from text: an identifier, a string
+/// What the scan needs to tell code from text: an identifier, a string
 /// literal's value, or one punctuation character. Whitespace is dropped, so an
 /// argument written across lines reads the same as one written on a line;
-/// comments are dropped, so a path a comment names is not an input; and a
-/// literal is kept as a value, so a macro named inside a string is not code.
+/// comments are dropped, so a path a comment names is not an input; a literal is
+/// kept as a value, so a macro named inside a string is not code; and a raw
+/// identifier is one identifier, so `mod r#type` names the module `type`.
 enum Token {
     Ident(String),
     Literal(String),
@@ -499,6 +780,20 @@ fn tokens(source: &str) -> Vec<Token> {
             index = next;
         } else if let Some(next) = char_literal(&characters, index) {
             index = next;
+        } else if character == 'r'
+            && characters.get(index + 1) == Some(&'#')
+            && characters
+                .get(index + 2)
+                .is_some_and(|next| next.is_alphanumeric() || *next == '_')
+        {
+            let start = index;
+            index += 2;
+            while index < characters.len()
+                && (characters[index].is_alphanumeric() || characters[index] == '_')
+            {
+                index += 1;
+            }
+            tokens.push(Token::Ident(characters[start..index].iter().collect()));
         } else if character.is_alphanumeric() || character == '_' {
             let start = index;
             while index < characters.len()
@@ -889,12 +1184,17 @@ path = \"src/bin/example.rs\"
             "let example = \"include_str!(\\\"doc.txt\\\")\";",
             "let example = r#\"include_str!(\"doc.txt\")\"#;",
             "let example = '\\'';",
+            "/// #[path = \"doc.rs\"]",
+            "// #[path = \"doc.rs\"]",
+            "/* #[path = \"doc.rs\"] */",
+            "let example = \"#[path = \\\"doc.rs\\\"] mod m;\";",
+            "let example = r#\"#[path = \"doc.rs\"] mod m;\"#;",
         ] {
             assert_eq!(
-                include_arguments(text).len(),
-                0,
-                "{text} names no input, and recording one would refuse a current binary for a \
-                 change to a file the build never reads"
+                (include_arguments(text).len(), module_paths(text).len()),
+                (0, 0),
+                "{text} names no input: recording one would refuse a current binary for a change \
+                 to a file the build never reads"
             );
         }
     }
@@ -973,7 +1273,7 @@ path = \"src/bin/example.rs\"
         std::fs::create_dir_all(source.parent().expect("a parent")).expect("the package");
         std::fs::write(&source, "// no includes here\n").expect("the source");
 
-        let literal = followed_includes(&source, &packages).expect("a followable path");
+        let literal = followed_inputs(&source, &packages).expect("a followable path");
         assert!(literal.is_empty());
 
         std::fs::write(
@@ -982,7 +1282,7 @@ path = \"src/bin/example.rs\"
         )
         .expect("the source");
         assert_eq!(
-            followed_includes(&source, &packages).expect("a followable path"),
+            followed_inputs(&source, &packages).expect("a followable path"),
             [root.join("crates/app/src/../../../fixtures/a.json")]
         );
 
@@ -992,13 +1292,13 @@ path = \"src/bin/example.rs\"
         )
         .expect("the source");
         assert_eq!(
-            followed_includes(&source, &packages).expect("a followable path"),
+            followed_inputs(&source, &packages).expect("a followable path"),
             [root.join("crates/app/fixtures/a.json")]
         );
 
         std::fs::write(&source, "const F: &str = include_str!(UNKNOWN_PATH);\n")
             .expect("the source");
-        let problem = followed_includes(&source, &packages).expect_err("a refusal");
+        let problem = followed_inputs(&source, &packages).expect_err("a refusal");
         assert!(problem.contains("include_str"), "{problem}");
         assert!(problem.contains("UNKNOWN_PATH"), "{problem}");
     }
@@ -1270,5 +1570,143 @@ path = \"src/bin/example.rs\"
         let root = fixture("no-workspace");
         let problem = workspace_root(&root).expect_err("no workspace");
         assert!(problem.contains("no [workspace] manifest"), "{problem}");
+    }
+
+    #[test]
+    fn a_module_attribute_at_the_top_of_a_file_is_recorded_and_named() {
+        let root = fixture("module");
+        std::fs::create_dir_all(root.join("crates/app/src")).expect("the package");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/app\"]\n",
+        )
+        .expect("the root manifest");
+        std::fs::write(
+            root.join("crates/app/Cargo.toml"),
+            "[package]\nname = \"app\"\n",
+        )
+        .expect("the package manifest");
+        std::fs::write(
+            root.join("crates/app/src/lib.rs"),
+            "#[path = \"../../../fixtures/module.rs\"]\nmod module;\n",
+        )
+        .expect("the source that declares a module outside its package");
+        let compiled = root.join("fixtures/module.rs");
+        std::fs::create_dir_all(compiled.parent().expect("a parent")).expect("the fixtures");
+        std::fs::write(&compiled, "pub const ONE: u8 = 1;\n").expect("the module");
+
+        let (sources, unfollowed) = recorded_sources(&root.join("crates/app"), &root);
+        assert!(unfollowed.is_empty(), "{unfollowed:?}");
+        assert!(
+            sources.contains(&canonical(&compiled)),
+            "a module declared outside the package must be recorded; the walk found {sources:?}"
+        );
+
+        let binary = record_over(&root, &sources);
+        std::fs::write(&compiled, "pub const ONE: u8 = 2;\n").expect("the changed module");
+        assert_eq!(
+            changed_sources(&binary, &root).expect("a readable record"),
+            [compiled]
+        );
+    }
+
+    #[test]
+    fn a_module_attribute_inside_an_inline_module_records_both_directories() {
+        let root = fixture("nested-module");
+        let package = root.join("crates/app");
+        std::fs::create_dir_all(package.join("src")).expect("the package");
+        std::fs::write(package.join("Cargo.toml"), "[package]\nname = \"app\"\n")
+            .expect("the package manifest");
+        std::fs::write(
+            package.join("src/leaf.rs"),
+            "mod inline {\n    #[path = \"deep.rs\"]\n    mod deep;\n}\n",
+        )
+        .expect("the source that nests a module attribute");
+        // The compiler resolves this against `src/leaf/` when it found the file
+        // as `mod leaf;`, and against `src/` when a `#[path]` named it. The scan
+        // cannot tell the two apart from the file alone, so a record that is
+        // never short names both.
+        let candidates = ["src/leaf/inline/deep.rs", "src/inline/deep.rs"];
+        for path in candidates {
+            let file = package.join(path);
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("the directories");
+            std::fs::write(&file, "pub const DEEP: u8 = 1;\n").expect("the module");
+        }
+
+        let (sources, unfollowed) = recorded_sources(&package, &root);
+        assert!(unfollowed.is_empty(), "{unfollowed:?}");
+        for path in candidates {
+            assert!(
+                sources.contains(&package.join(path)),
+                "the record must not be short of {path}; the walk found {sources:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_module_path_resolves_where_the_compiler_looks_for_it() {
+        let root = PathBuf::from("example");
+        let nested = ["inner".to_owned()];
+        assert_eq!(
+            module_inputs(&root.join("src/lib.rs"), "a.rs", &[]),
+            [root.join("src/a.rs")]
+        );
+        assert_eq!(
+            module_inputs(&root.join("src/lib.rs"), "a.rs", &nested),
+            [root.join("src/inner/a.rs")]
+        );
+        assert_eq!(
+            module_inputs(&root.join("src/leaf/mod.rs"), "a.rs", &nested),
+            [root.join("src/leaf/inner/a.rs")]
+        );
+        assert_eq!(
+            module_inputs(&root.join("src/leaf.rs"), "a.rs", &nested),
+            [
+                root.join("src/inner/a.rs"),
+                root.join("src/leaf/inner/a.rs")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_module_attribute_is_read_from_the_item_it_declares() {
+        assert!(matches!(
+            module_paths("#[path = \"../shared.rs\"]\npub mod shared;\n").as_slice(),
+            [ModulePath::File { path, inline }] if path == "../shared.rs" && inline.is_empty()
+        ));
+        assert!(matches!(
+            module_paths("#[cfg(test)]\n#[path = \"../shared.rs\"]\nmod shared;\n").as_slice(),
+            [ModulePath::File { path, .. }] if path == "../shared.rs"
+        ));
+        assert!(matches!(
+            module_paths("mod inline {\n    #[path = \"../shared.rs\"]\n    mod shared;\n}\n").as_slice(),
+            [ModulePath::File { inline, .. }] if inline.as_slice() == ["inline"]
+        ));
+        assert!(matches!(
+            module_paths("pub mod r#type {\n    #[path = \"deep.rs\"]\n    mod deep;\n}\n")
+                .as_slice(),
+            [ModulePath::File { inline, .. }] if inline.as_slice() == ["type"]
+        ));
+    }
+
+    #[test]
+    fn a_module_attribute_the_scan_cannot_read_is_reported_rather_than_skipped() {
+        for text in [
+            "#[path = concat!(\"src\", \"/a.rs\")]\nmod a;\n",
+            "#[cfg_attr(unix, path = \"../a.rs\")]\nmod a;\n",
+            "#[path = \"sub\"]\nmod inline {\n}\n",
+            "mod outer {\n    #[path = \"sub\"]\n    mod inner {\n    }\n}\n",
+            "#[path = \"../a.rs\"]\nfn a() {}\n",
+        ] {
+            let paths = module_paths(text);
+            assert!(
+                matches!(
+                    paths.as_slice(),
+                    [ModulePath::Unreadable(_)] | [ModulePath::Inline { .. }]
+                ),
+                "{text} names a module source the record cannot follow, which must stop the build \
+                 rather than leave the record quietly short; the scan read {paths:?}"
+            );
+        }
     }
 }
