@@ -8,6 +8,8 @@ from source_record import (
     RECORD_END,
     RECORD_START,
     check,
+    declares_workspace,
+    package_workspace,
     parse_dep_info,
     read_record,
     workspace_roots,
@@ -137,9 +139,7 @@ def dependency_below_another_workspace_manifest(fixture, directory):
         '[workspace]\nmembers = ["dep"]\n\n[workspace.package]\nversion = "2.2.2"\n'
     )
     manifest = nested / "dep" / "Cargo.toml"
-    manifest.write_text(
-        '[package]\nname = "dep"\nversion.workspace = true\npackage.workspace = "../.."\n'
-    )
+    manifest.write_text('[package]\nname = "dep"\nversion.workspace = true\nworkspace = "../.."\n')
     (nested / "dep" / "src" / "lib.rs").write_text("// dep\n")
     return with_dependency(fixture, manifest), manifest, outer, nested
 
@@ -481,6 +481,45 @@ class CargoInputTests(unittest.TestCase):
                 sorted({workspace.resolve(), excluded.parent.resolve()}),
                 "the excluding manifest is read and the package is a workspace of one",
             )
+
+
+class ManifestTests(unittest.TestCase):
+    def test_the_workspace_key_is_read_as_the_scalar_cargo_spells(self):
+        # `workspace = "../other"` in `[package]` names the root a package
+        # inherits from, and cargo spells it as a plain string rather than an
+        # inline table. `../other` is not an ancestor of the package, so only
+        # the explicit key reaches it, and the header carries the spacing and
+        # the comment TOML allows.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "app" / "crate"
+            target = root / "app" / "other"
+            (package / "src").mkdir(parents=True)
+            (target / "src").mkdir(parents=True)
+            (target / "Cargo.toml").write_text("[ workspace ] # the root\n")
+            (target / "Cargo.lock").write_text("version = 4\n")
+            manifest = package / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname = "app"\nversion = "0.1.0"\nworkspace = "../other" # the root\n'
+            )
+            self.assertEqual(package_workspace(manifest), "../other")
+            self.assertEqual(
+                workspace_roots(package),
+                sorted({package.resolve(), target.resolve()}),
+                "the workspace the package names is a root even where no ancestor is one",
+            )
+
+    def test_a_workspace_key_that_is_not_a_string_or_not_the_packages_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "Cargo.toml"
+            manifest.write_text('[package]\nname = "app"\nworkspace = 3\n')
+            self.assertIsNone(package_workspace(manifest))
+            manifest.write_text(
+                '[package]\nname = "app"\n\n[package.metadata]\nworkspace = "../other"\n'
+            )
+            self.assertIsNone(package_workspace(manifest))
+            manifest.write_text('[toolchain]\nchannel = "1.85.0" # [workspace]\n')
+            self.assertFalse(declares_workspace(manifest.read_text()))
 
 
 class ConfigurationTests(unittest.TestCase):

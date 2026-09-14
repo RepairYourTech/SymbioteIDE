@@ -284,9 +284,22 @@ def recorded_files(record, base):
     return files
 
 
+def table_name(line):
+    """The name inside a table header, or None when the line is not one.
+
+    TOML allows whitespace inside the brackets and a comment after them, so
+    `[ workspace ]` and `[workspace] # the members` both name the same table as
+    `[workspace]`, and a line that is a key is not a header at all.
+    """
+    line = line.split("#", 1)[0].strip()
+    if not (line.startswith("[") and line.endswith("]")):
+        return None
+    return "".join(line[1:-1].split())
+
+
 def declares_workspace(text):
     """Whether a manifest declares a workspace of its own."""
-    return any(line.strip() == "[workspace]" for line in text.splitlines())
+    return any(table_name(line) == "workspace" for line in text.splitlines())
 
 
 def manifest_text(path):
@@ -297,21 +310,47 @@ def manifest_text(path):
         return ""
 
 
+def string_value(value):
+    """The content of a TOML string scalar — `"…"` or `'…'` — or None.
+
+    A comment or whitespace after the closing quote is ignored. A `workspace` a
+    manifest does not spell as a string is not a path this can follow, and
+    leaving it unrecorded is the safe direction where the ancestor roots are
+    still candidates.
+    """
+    value = value.strip()
+    if not value or value[0] not in "\"'":
+        return None
+    quote = value[0]
+    escaped = False
+    for index, character in enumerate(value[1:], start=1):
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote == '"':
+            escaped = True
+        elif character == quote:
+            return value[1:index]
+    return None
+
+
 def package_workspace(manifest_path):
     """The `workspace = "..."` a manifest's `[package]` table names, or None.
 
     A package that names its own workspace root rather than inheriting the one
-    above it.
+    above it. Cargo spells it as a plain key — `workspace = "../.."` — so this
+    reads a scalar.
     """
     table = False
     for line in manifest_text(manifest_path).splitlines():
-        line = line.strip()
-        if line.startswith("["):
-            table = line == "[package]"
+        name = table_name(line)
+        if name is not None:
+            table = name == "package"
             continue
-        name, separator, value = line.partition("=")
-        if table and separator and name.strip() == "workspace":
-            return value.strip().strip('"')
+        if not table:
+            continue
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "workspace":
+            return string_value(value)
     return None
 
 
