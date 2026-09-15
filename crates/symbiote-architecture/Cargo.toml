@@ -10,10 +10,15 @@ autoexamples = false
 name = "architecture_schema"
 path = "examples/schema.rs"
 
+[[example]]
+name = "decisions"
+path = "examples/decisions.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+sha2 = "=0.10.9"
 
 [lints]
 workspace = true

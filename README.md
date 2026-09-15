@@ -36,6 +36,7 @@ cargo fmt --all --check
 cargo run -p symbiote-domain --example domain_schema
 cargo run -p symbiote-config --example config_schema
 cargo run -p symbiote-architecture --example architecture_schema
+cargo run -p symbiote-architecture --example decisions
 cargo run -p symbiote-protocol --example protocol_schema
 cargo run -p symbiote-runtime-sdk --example runtime_schema
 cargo run -p symbiote-constitution --example constitution_report
@@ -47,6 +48,6 @@ Contract documentation: [constitution](docs/contracts/constitution.md), [domain]
 
 ## Architecture
 
-Rust owns `symbioted`, native agent, CLI and canonical control; strict TypeScript/React is the preferred static workbench. Desktop is a Host client. No Electron. Tauri 2 and SurrealDB remain preferred candidates pending [#38](https://github.com/RepairYourTech/SymbioteIDE/issues/38) proof; control-plane persistence is evaluated separately.
+Rust owns `symbioted`, native agent, CLI and canonical control; strict TypeScript/React is the preferred static workbench. Desktop is a Host client. No Electron. Tauri 2 and SurrealDB remain preferred candidates pending [#38](https://github.com/RepairYourTech/SymbioteIDE/issues/38) proof; control-plane persistence is evaluated separately. The decisions behind that direction are committed as data in [the decision ledger](docs/architecture/decisions.json) and checked against cargo's own workspace: every member pins the decisions it depends on, the desktop crate's Tauri dependency is published as `provisional` against [#38](https://github.com/RepairYourTech/SymbioteIDE/issues/38) rather than as a settled choice, and an unresolved candidate cannot reach a member unrecorded. See [architecture governance](docs/contracts/architecture.md).
 
 The historical roadmap importers are retired and refuse execution. Use the [read-only integrity tooling](planning/integrity/README.md) for inventory/validation, never historical encoded payloads as authoritative synchronizers.

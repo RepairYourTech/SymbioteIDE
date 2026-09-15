@@ -1,8 +1,24 @@
 //! Versioned decision/proof contracts (#173). These are in-memory policy
 //! mechanisms; the future Host must authenticate authority and evidence inputs.
+//!
+//! [`ledger`] holds this repository's own decisions as data and replays them
+//! through the registry below, so the states, pins and evidence the tree claims
+//! are the ones these rules produce rather than statements to be believed.
+//! [`repository`] reads what cargo reports about the workspace and [`checks`]
+//! joins the two into the refusals the repository must survive.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+pub mod checks;
+pub mod ledger;
+pub mod repository;
+
+/// The repository this ledger belongs to.
+pub fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractError(pub String);
@@ -12,8 +28,8 @@ impl std::fmt::Display for ContractError {
     }
 }
 impl std::error::Error for ContractError {}
-type Result<T> = std::result::Result<T, ContractError>;
-fn require(condition: bool, message: &str) -> Result<()> {
+pub(crate) type Result<T> = std::result::Result<T, ContractError>;
+pub(crate) fn require(condition: bool, message: impl Into<String>) -> Result<()> {
     if condition {
         Ok(())
     } else {
@@ -492,7 +508,7 @@ impl DecisionRegistry {
         let result = self.gate(artifact, now);
         require(
             result.status == GateStatus::Settled,
-            &result.reasons.join("; "),
+            result.reasons.join("; "),
         )
     }
 

@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "decisions": [
+    {
+      "published": { "state": "accepted", "revision": 2 },
+      "draft": {
+        "schema_version": 1,
+        "id": "ADR-0001/HOST-STACK",
+        "revision": 1,
+        "state": "proposed",
+        "title": "Rust Host and CLI, a strict TypeScript workbench, and no Electron client",
+        "constraints": [
+          "Rust owns the Host, native runtime, CLI, supervision and first-party coordination",
+          "the workbench is strict TypeScript, preferably React, compiled to static assets",
+          "no Electron client and no second Go core language"
+        ],
+        "alternatives": [
+          "Electron, excluded by explicit client constraint",
+          "Go as a second core language, excluded by explicit client constraint",
+          "a TypeScript control plane"
+        ],
+        "consequences": [
+          "language-specific SDK and analyzer sidecars stay sidecars behind versioned protocols",
+          "desktop remains a Host client without canonical state or headless work lifetime"
+        ],
+        "security": "the client shell holds no canonical state or Host authority; Preview content, localhost included, is untrusted and needs an isolated permission surface and a narrow authenticated design bridge",
+        "reversal": "replacing the language stack after dependent implementation would rewrite the Host and the client; the client accepted that cost by instruction rather than by measurement",
+        "high_reversal_cost": true,
+        "issue_refs": [170, 173, 38],
+        "requirement_refs": ["A01", "A04", "FND-05"],
+        "graph_refs": [],
+        "deployment_refs": [],
+        "compatibility": [],
+        "evidence": [
+          {
+            "artifact": "planning/technology-amendment.md",
+            "sha256": "fcc867e9cd05e29b0b52a77756fcb8f899daefd875cddae6d9f4691f81be92f0",
+            "method": "the client's execution takeover instruction as recorded 2026-09-08 UTC; this check verifies these bytes and does not fetch or authenticate them",
+            "observed_at": 1788825600,
+            "reviewer": "client instruction; no independent reviewer of these records exists in this repository"
+          }
+        ],
+        "supersedes": null
+      },
+      "record": "docs/architecture/adr-0001-technology-direction.md",
+      "record_sha256": "876741f3c6c66982385f9c0372c1c133ce242d143d9758876f21779f0701d990",
+      "acceptance": {
+        "actor": "client (execution takeover instruction received 2026-09-07 US/Eastern)",
+        "authority": "client",
+        "now": 1788825600,
+        "client_exception": "the client fixed the Host language and excluded Electron by instruction rather than by benchmark, so this acceptance rests on that authority and not on measured evidence"
+      }
+    },
+    {
+      "published": { "state": "investigating", "revision": 2 },
+      "draft": {
+        "schema_version": 1,
+        "id": "ADR-0001/DESKTOP-SHELL",
+        "revision": 1,
+        "state": "investigating",
+        "title": "Desktop shell: Tauri 2 is the preferred, unproven candidate and Electron is ineligible",
+        "constraints": [
+          "no shell implementation may treat Tauri 2 as the final choice before #38 records its measurements",
+          "Preview origins, localhost included, inherit neither workbench nor Host authority",
+          "a failed hard requirement triggers a documented non-Electron alternative, never reduced Preview scope"
+        ],
+        "alternatives": [
+          "Electron, excluded by explicit client constraint",
+          "any non-Electron shell that passes the representative workload"
+        ],
+        "consequences": [
+          "dependent shell implementation stops on an unresolved hard requirement",
+          "shell, packaging and cross-platform behavior stay unproven until the proof artifacts exist"
+        ],
+        "security": "Preview is untrusted; an iframe is not the boundary, and the design surface needs isolated permissions and a narrow authenticated bridge",
+        "reversal": "a shell is not chosen by preference: acceptance needs measured evidence or an explicit client exception, and replacing one later needs its own migration and rollback evidence",
+        "high_reversal_cost": true,
+        "issue_refs": [38],
+        "requirement_refs": ["FND-05", "A04"],
+        "graph_refs": [],
+        "deployment_refs": [],
+        "compatibility": [],
+        "evidence": [],
+        "supersedes": null
+      },
+      "record": "docs/architecture/adr-0001-technology-direction.md",
+      "record_sha256": "876741f3c6c66982385f9c0372c1c133ce242d143d9758876f21779f0701d990",
+      "blocking_issue": 38,
+      "proposed_dependencies": ["tauri", "tauri-build"]
+    },
+    {
+      "published": { "state": "investigating", "revision": 2 },
+      "draft": {
+        "schema_version": 1,
+        "id": "ADR-0001/GRAPH-STORAGE",
+        "revision": 1,
+        "state": "investigating",
+        "title": "System Graph storage: SurrealDB is the preferred, unproven candidate",
+        "constraints": [
+          "verify actual version, behavior, resource profile and deployment model before implementing",
+          "control-plane transactional persistence is evaluated separately from System Graph storage",
+          "no storage implementation may treat the candidate as final before its proof"
+        ],
+        "alternatives": [
+          "another graph, vector and full-text store that meets the measured requirements",
+          "separate persistence for the control plane"
+        ],
+        "consequences": [
+          "System Graph implementation waits on the storage proof",
+          "storage stays behind explicit protocols to bound migration cost"
+        ],
+        "security": "stored knowledge carries provenance and uncertainty rather than presenting inferred knowledge as confirmed",
+        "reversal": "storage is chosen on measured version, behavior, resource and deployment evidence, so acceptance needs that evidence or an explicit client exception; this record performs no state migration",
+        "high_reversal_cost": true,
+        "issue_refs": [233],
+        "requirement_refs": ["G01", "G02"],
+        "graph_refs": [],
+        "deployment_refs": [],
+        "compatibility": [],
+        "evidence": [],
+        "supersedes": null
+      },
+      "record": "docs/architecture/adr-0001-technology-direction.md",
+      "record_sha256": "876741f3c6c66982385f9c0372c1c133ce242d143d9758876f21779f0701d990",
+      "blocking_issue": 233,
+      "proposed_dependencies": ["surrealdb"]
+    }
+  ],
+  "facts": [],
+  "artifacts": [
+    { "pins": { "artifact": "crates/symbiote-architecture", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-client-sdk", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-config", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-constitution", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-context", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-desktop", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }, { "id": "ADR-0001/DESKTOP-SHELL", "revision": 2 }], "compatibility": [] }, "status": "provisional", "blocking_issue": 38 },
+    { "pins": { "artifact": "crates/symbiote-domain", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-external-agent", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-host", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-host-inventory", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-native-agent", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-projection", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-protocol", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-repo", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-runtime-discovery", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-runtime-sdk", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-runtime-transport", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-sandbox", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-source-stamp", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-store", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-trust", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-workflow", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-workforce", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-worktrees", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" }
+  ]
+}
