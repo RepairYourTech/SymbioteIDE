@@ -598,6 +598,22 @@ class RecordLineRuleTests(unittest.TestCase):
                 [f"demo: {MARKS[UNASKED_CARGO]} (mark: {UNASKED_CARGO})"],
             )
 
+    def test_a_malformed_line_is_reported_ahead_of_a_mark(self):
+        """The precedence the file states: a record the wire cannot read is one
+        whose marks cannot be stood behind either, so the line is what is named
+        rather than a mark the record also spells — the crate's own test pins the
+        same record under the same rule."""
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            named = [f"{hash}\t{locator}" for locator, hash in complete(fixture).items()]
+            self.assertEqual(
+                fixture.problems_of_lines(
+                    named + [f"{'0' * HASH_LENGTH}\t{UNASKED_CARGO}", "no tab at all"]
+                ),
+                [f"demo: {MALFORMED_REMEDY} The line is 'no tab at all'."],
+            )
+
     def test_a_line_the_wire_does_not_read_refuses_the_record(self):
         """A line that is neither an input nor a mark is not guessed at.
 

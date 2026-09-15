@@ -951,6 +951,49 @@ fn every_compiled_file_is_recorded_and_test_targets_are_not() {
 }
 
 #[test]
+fn a_directory_of_a_target_name_below_the_root_holds_compiled_files() {
+    // The targets cargo builds for tests, examples and benches are the ones at
+    // the package root, because that is where cargo looks for them. A file under
+    // `src/tests/` declared as `mod tests;` — no `#[cfg(test)]` anywhere — is
+    // compiled into the binary, so excluding the name at every depth left a
+    // compiled file out of the record and a change to it was reported clean.
+    let root = fixture("walk-nested-targets");
+    for path in ["src/lib.rs", "src/tests/mod.rs", "src/benches/mod.rs"] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+        std::fs::write(&file, "content").expect("the source");
+    }
+    for path in [
+        "tests/process.rs",
+        "benches/speed.rs",
+        "target/debug/leftover",
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+        std::fs::write(&file, "content").expect("the target");
+    }
+    let sources = package_sources(&root);
+    for path in ["src/lib.rs", "src/tests/mod.rs", "src/benches/mod.rs"] {
+        assert!(
+            sources.contains(&root.join(path)),
+            "{path} is compiled into the binary: the package root is where cargo looks for \
+             target directories, not every directory that carries one of their names"
+        );
+    }
+    for path in [
+        "tests/process.rs",
+        "benches/speed.rs",
+        "target/debug/leftover",
+    ] {
+        assert!(
+            !sources.contains(&root.join(path)),
+            "{path} sits in a target directory at the package root, whose own unit reads it: \
+             recording it would refuse a current binary for a change no rebuild could clear"
+        );
+    }
+}
+
+#[test]
 fn an_input_compiled_from_outside_the_package_is_recorded_and_named() {
     let root = fixture("outside");
     std::fs::create_dir_all(root.join("crates/app/src")).expect("the package");

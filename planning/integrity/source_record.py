@@ -27,8 +27,11 @@ Three things are compared:
   binary's closure read must be named by the record. Registry sources and
   generated files under the target directory are excluded, as the record's own
   documentation excludes them, and so are the test, example and bench
-  directories, which the record excludes on purpose and whose own units read
-  them.
+  directories at a package root, which the record excludes on purpose and whose
+  own units read them. A directory that carries one of those names deeper in a
+  package is not one of them: cargo looks for its target directories at the
+  package root alone, so `src/tests/mod.rs` compiles into the binary and the
+  record must name it.
 * **Completeness (cargo).** The record must also name, for every closure
   package, its own manifest and every workspace root cargo can resolve for it —
   the root a `package.workspace` names, or else each ancestor manifest declaring
@@ -260,9 +263,19 @@ HASH_LENGTH, HASH_ALPHABET = WIRE["hash"]
 # build script, which the record does name.
 GENERATED_DIRECTORY = "target"
 
-# Directory names the record excludes under a package, whose own units read
-# them: a change there must not refuse a current binary.
-EXCLUDED_DIRECTORIES = {".git", "benches", "dist", "examples", "node_modules", "target", "tests"}
+# Directory names the record excludes wherever they sit under a package: build
+# output, dependency cache and version-control state, none of which is an input
+# to a build, so naming one would refuse a current binary for a change no rebuild
+# could clear.
+EXCLUDED_ANYWHERE = {".git", "dist", "node_modules", "target"}
+
+# The directories cargo builds *other* targets from, which it looks for at the
+# package root alone: their own units read them, so a change there must not
+# refuse a current binary. Excluded at the package root alone because that is
+# where cargo looks for them — measured, `src/tests/mod.rs` declared as
+# `mod tests;`, with no `#[cfg(test)]` anywhere, compiles into the binary, so the
+# record names it and this rule must not excuse a record that does not.
+EXCLUDED_TARGETS = {"benches", "examples", "tests"}
 
 # The configuration files cargo reads for a build of a package, relative to a
 # directory it looks in for them.
@@ -754,14 +767,20 @@ def cargo_inputs(metadata, package_ids):
 def excluded(path, package_dirs):
     """Whether the record excludes this path by its own documented rule.
 
-    Under a closure package, the test, example and bench targets and the build
-    output are outside the walk. Those units read files the record does not
-    name on purpose, so a comparison that ignored the rule would fail on them.
+    Under a closure package, the build output is outside the walk wherever it
+    sits and the test, example and bench targets are outside it at the package
+    root alone, which is the only place cargo looks for them. Those units read
+    files the record does not name on purpose, so a comparison that ignored the
+    rule would fail on them; a directory that merely carries one of those names
+    deeper in the package is not one of them, and a record that left it out is
+    short rather than excused.
     """
     for directory in package_dirs:
         if directory in path.parents:
             relative = path.relative_to(directory)
-            if any(part in EXCLUDED_DIRECTORIES for part in relative.parts):
+            if any(part in EXCLUDED_ANYWHERE for part in relative.parts):
+                return True
+            if relative.parts and relative.parts[0] in EXCLUDED_TARGETS:
                 return True
     return False
 

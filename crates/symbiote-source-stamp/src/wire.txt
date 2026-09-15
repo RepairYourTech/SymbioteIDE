@@ -108,6 +108,13 @@
 # record the readers cannot decode at all refuses it through `undecodable`,
 # which names no line because there is none to name.
 #
+# A malformed line is refused ahead of every mark, wherever the two sit in the
+# record and however many of either it holds: a record the wire cannot read is one
+# whose marks cannot be stood behind either, so the line is what is named rather
+# than a mark the record also spells — the checker reads every line and reports
+# the line first, the crate stops at the line as it reads — and the rebuild the
+# line's remedy asks for is what makes a mark it hid readable again.
+#
 # A mark's *role* is how the crate's code asks for it; a record spells the
 # *locator*, and a refusal prints the *remedy*. The `mark` lines are in the
 # order a rebuild has to clear them, and the order matters because a record can
@@ -131,8 +138,8 @@ unset	unset
 hash	64	0123456789abcdef
 unknown-order	first-in-record
 unknown	this build marked its record with a locator the wire does not name — an `unset` content under a locator no `mark` line names — so what it could not establish is unknown, and the record may omit the `[patch]` fork that build compiled. Rebuild it from the workspace, where the shell reports `PWD` (sh, bash, zsh and git bash set it), and check that build
-malformed	this record spells a line the wire cannot read — one with no TAB, with no locator, with a CR in it, or with a content that is neither the wire's `unset` nor a hash — so neither what the record holds nor whether the build could stand behind it is known. Rebuild the binary from the workspace and check that build
-undecodable	this record's bytes are not the {encoding} the wire spells them in, so neither what the record holds nor whether the build could stand behind it is known. Rebuild the binary from the workspace and check that build The bytes stop being {encoding} at byte {byte} of the record.
+malformed	this record spells a line the wire cannot read — one with no TAB, with no locator, with a CR in it, or with a content that is neither the wire's `unset` nor a hash — so neither what the record holds nor whether the build could stand behind it is known. Rebuild the binary from the workspace and check that build.
+undecodable	this record's bytes are not the {encoding} the wire spells them in, so neither what the record holds nor whether the build could stand behind it is known. Rebuild the binary from the workspace and check that build. The bytes stop being {encoding} at byte {byte} of the record.
 unframed	this record's own bytes spell one of the markers the wire frames it with, which no build writes and which leaves where the record ends unreadable from its bytes, so what the record holds is not known. Rebuild the binary from the workspace and check that build
 mark	unasked-cargo	cargo-not-asked	the cargo that ran that build could not be run to answer the questions the record rests on, so neither the workspace a run directory names nor the closure cargo resolves in it is known, and the record may omit the `[patch]` fork that build compiled. Rebuild it with a cargo that can be started — a cargo replaced or crippled since the build is the arrangement this catches — and check that build
 mark	unnamed-resolution	resolution-not-named	the workspace cargo resolved in could not be established: the readings that can name it — the directory the invoking cargo was started in, the manifest its command line named, the build directory and `PWD` — do not, so the record may omit the `[patch]` fork that build compiled, and a change to one cannot be ruled out. Rebuild it from the workspace, where the shell reports `PWD` (sh, bash, zsh and git bash set it), and check that build

@@ -356,17 +356,30 @@ fn expanded_arguments(arguments: &[String], directory: &Path) -> Vec<String> {
 
 /// The index of the subcommand in a cargo command line: the executable at 0,
 /// then the options before it — `--color` and `--config` take a value, and a
-/// `+toolchain` argument is not an option — until the first argument that is
-/// neither.
+/// `+toolchain` argument is a value of its own rather than an option with one —
+/// until the first argument that is neither.
+///
+/// `+toolchain` is the rustup shim's directive, and the cargo whose command line
+/// this reads is the one the shim runs: measured, `cargo +stable build` spawns a
+/// build script's parent with `argv=["…/bin/cargo", "build"]`, the directive
+/// consumed before it, and that toolchain's own cargo refuses the directive
+/// outright (`error: no such command: '+stable'`, whose help says to invoke
+/// cargo through rustup). A line that carries one is still read as one argument,
+/// because reading it as an option that takes a value reads the subcommand as
+/// that value: `cargo +nightly b --offline`, where `b` is an alias whose
+/// expansion names a manifest, would then name no subcommand at all — no
+/// expansion is read, the line names no manifest, and the record names the run
+/// directory's workspace while the fork the alias made the build compile goes
+/// unnamed and a change to it is reported clean.
 #[cfg(target_os = "linux")]
 fn subcommand_index(arguments: &[String]) -> Option<usize> {
     let mut index = 1;
     while let Some(argument) = arguments.get(index) {
-        if argument.starts_with('+') || argument == "--color" || argument == "--config" {
+        if argument == "--color" || argument == "--config" {
             index += 2;
             continue;
         }
-        if argument.starts_with('-') {
+        if argument.starts_with('-') || argument.starts_with('+') {
             index += 1;
             continue;
         }
@@ -468,3 +481,6 @@ fn cargo_workspace(directory: &Path) -> Answer<Option<PathBuf>> {
         Answer::Unasked => Answer::Unasked,
     }
 }
+
+#[cfg(test)]
+mod tests;

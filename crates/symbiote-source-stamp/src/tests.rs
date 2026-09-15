@@ -290,6 +290,37 @@ fn a_line_the_wire_does_not_read_is_a_malformed_record() {
 }
 
 #[test]
+fn a_malformed_line_is_refused_ahead_of_a_mark_the_record_also_carries() {
+    // The precedence the wire states: a record the wire cannot read is one whose
+    // marks cannot be stood behind either, so the line is what is named rather
+    // than a mark the record also spells. The checker reads every line and
+    // reports the line before the mark it also found, and this reader stops at
+    // the line as it reads, so a record carrying both is refused one way.
+    let (root, workspace) = workspace_package("malformed-before-mark");
+    let wire = wire();
+    let record = format!(
+        "{}{}\tsrc/lib.rs\n{}\t{}\nno tab at all\n{}",
+        wire.start,
+        recorded_hash(),
+        recorded_hash(),
+        wire.mark("unasked-cargo").locator,
+        wire.end
+    );
+    let binary = root.join("binary");
+    std::fs::write(&binary, record).expect("the binary carrying the record");
+    let problem = changed_sources(&binary, &workspace)
+        .expect_err("a record the wire cannot read cannot be stood behind");
+    assert!(
+        problem.contains(wire.malformed_remedy) && problem.contains("no tab at all"),
+        "the line is refused rather than the mark the record also carries: {problem}"
+    );
+    assert!(
+        !problem.contains("cargo-not-asked"),
+        "the mark beside the line is not what is reported: {problem}"
+    );
+}
+
+#[test]
 fn an_environment_input_that_differs_is_named() {
     let root = fixture("environment");
     std::fs::write(
