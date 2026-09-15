@@ -67,11 +67,28 @@ class Fixture:
         path.write_text(content)
         return path
 
-    def unit(self, stem, reads, artifact=None):
-        """A dep-info file named after the unit, describing the artifact it names."""
+    def fingerprint(self, package, hash):
+        """Cargo's own record of a unit, which is what places it in a package.
+
+        One directory per unit, named after the package that compiles it and the
+        unit's metadata hash — the same hash the unit's dep-info file carries.
+        """
+        directory = self.target / ".fingerprint" / f"{package}-{hash}"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"bin-{package}").write_text("")
+        return directory
+
+    def unit(self, stem, reads, artifact=None, package="demo"):
+        """A dep-info file named after the unit, describing the artifact it names.
+
+        The unit's package is the one cargo's fingerprint of its hash names, so a
+        test that is about *which* unit a dep-info is writes that too: a stem's
+        crate name is shared by every package carrying a target of that name.
+        """
         target = self.target / "deps" / (artifact or stem)
         body = f"{target}: " + " ".join(str(self.root / read) for read in reads) + "\n"
         (self.target / "deps" / f"{stem}.d").write_text(body)
+        self.fingerprint(package, stem.rsplit("-", 1)[-1])
 
     def binary(self, record, name=None):
         """A binary carrying `record`, as `locator -> hash`."""
@@ -467,6 +484,54 @@ class CompletenessTests(unittest.TestCase):
             )
             self.assertEqual(fixture.problems(complete(fixture)), [])
 
+    def test_a_unit_of_another_package_is_not_one_of_the_driven_packages_own(self):
+        """A green rests on a unit of the driven package, not on its name.
+
+        Two packages can each carry a target of the same name, and both can be in
+        the closure when one depends on the other — measured, `probe`'s binary
+        `guard` and another package's binary `guard` wrote dep-info files differing
+        in nothing but the hash. With the driven package's own dep-info gone — what
+        `cargo clean -p <package>` leaves — a rule that reads crate names alone
+        finds a unit of that name, reports the record covered, and has measured
+        nothing of the build that made the binary.
+
+        Here the dependency's unit is the one named `demo`, and everything it read
+        is in the record, so nothing but the unit's *package* can refuse it.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            dependency = fixture.write("crates/dep/Cargo.toml", '[package]\nname = "dep"\n')
+            metadata = with_dependency(fixture, dependency)
+            for package in metadata["packages"]:
+                if package["name"] == "dep":
+                    package["targets"] = [{"name": "demo", "kind": ["bin"]}]
+            record = complete(fixture)
+            record["crates/dep/src/main.rs"] = "f" * 64
+            fixture.unit("demo-9a", ["crates/dep/src/main.rs"], package="dep")
+            self.assertEqual(
+                fixture.problems(record, metadata),
+                [
+                    f"demo: {fixture.target} holds no dep-info for any unit of demo, so "
+                    f"nothing here measured what this binary's build read — build it "
+                    f"before checking its record"
+                ],
+            )
+
+    def test_a_foreign_unit_is_not_compared_as_one_of_the_driven_binaries(self):
+        """The other face of the same collision: a needless refusal.
+
+        A unit of a package this build does not compile is not one of the closure,
+        so what it read is not the driven binary's record to cover — measured, the
+        foreign `guard-<hash>.d` was compared and its own source reported as an
+        input the record does not name.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.write("crates/other/src/main.rs", "fn main() {}\n")
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            fixture.unit("demo-25d0", ["crates/other/src/main.rs"], package="other")
+            self.assertEqual(fixture.problems(complete(fixture)), [])
+
     def test_an_oracle_with_no_unit_of_the_driven_package_measures_nothing(self):
         """A green has to be earned by a dep-info of the driven package's own units.
 
@@ -515,6 +580,7 @@ class CompletenessTests(unittest.TestCase):
             (fixture.target / "deps" / "demo-9a.d").write_text(
                 f"{fixture.target / 'deps' / 'demo-9a'}: {fixture.main} {registry} {generated}\n"
             )
+            fixture.fingerprint("demo", "9a")
             self.assertEqual(fixture.problems(complete(fixture)), [])
 
     def test_a_hyphenated_unit_is_matched_by_its_file_name(self):
