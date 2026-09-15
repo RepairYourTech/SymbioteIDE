@@ -24,14 +24,18 @@
 //! every cargo invocation `--offline`, no fixture outside those directories, and
 //! no dependency but this crate. They need the cargo that is running them
 //! (`CARGO`) and `python3`, which the second reader is written in — the same two
-//! things the entry-point tests need.
+//! things the entry-point tests need — and the scaffolding they share with those
+//! tests lives in `support`, so neither harness can drift from the other's
+//! mechanics.
 //!
 //! [`changed_sources`]: symbiote_source_stamp::changed_sources
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod support;
 
-use symbiote_source_stamp::{Input, RECORD_FILE, changed_sources};
+use std::path::{Path, PathBuf};
+
+use support::{Workspace, wire_scalar};
+use symbiote_source_stamp::Input;
 
 /// The fixture the cases build from.
 ///
@@ -50,22 +54,16 @@ use symbiote_source_stamp::{Input, RECORD_FILE, changed_sources};
 ///                         nothing but the metadata hash
 /// ```
 struct Fixture {
-    root: PathBuf,
+    workspace: Workspace,
 }
 
 impl Fixture {
-    /// The fixture under a fresh temporary directory named after `case`.
+    /// The fixture: its cases' workspace under a fresh temporary directory named
+    /// after `case`, and the files below.
     fn new(case: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "symbiote-record-guard-{case}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("the fixture directory");
-        // Canonical, because a record spells a path outside the package's own
-        // workspace absolutely and the walk canonicalizes what it records.
-        let root = std::fs::canonicalize(&root).expect("a canonical fixture directory");
-        let fixture = Self { root };
+        let fixture = Self {
+            workspace: Workspace::new(case),
+        };
         let stamp = format!("{:?}", env!("CARGO_MANIFEST_DIR"));
         fixture.write(
             "ws/Cargo.toml",
@@ -132,13 +130,11 @@ impl Fixture {
     }
 
     fn write(&self, relative: &str, contents: &str) {
-        let path = self.path(relative);
-        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
-        std::fs::write(path, contents).expect("the fixture file");
+        self.workspace.write(relative, contents);
     }
 
     fn path(&self, relative: &str) -> PathBuf {
-        self.root.join(relative)
+        self.workspace.path(relative)
     }
 
     /// Cargo's build of the fixture, `args` beside `build --offline`, run in
@@ -146,14 +142,7 @@ impl Fixture {
     /// fixture's own, which is what makes a check of it a check of the directory
     /// it was given rather than of a name.
     fn build(&self, run_from: &str, target: &str, args: &[&str]) -> std::process::Output {
-        let cargo = std::env::var_os("CARGO").expect("these tests run under cargo");
-        Command::new(cargo)
-            .args(["build", "--offline"])
-            .args(args)
-            .current_dir(self.path(run_from))
-            .env("CARGO_TARGET_DIR", self.path(target))
-            .output()
-            .expect("cargo runs")
+        self.workspace.build(run_from, target, args)
     }
 
     /// The metadata hash of the unit that compiles `package`'s target
@@ -185,30 +174,15 @@ impl Fixture {
 
     /// The record the fixture's build wrote, as the lines it holds.
     fn record(&self, target: &str) -> String {
-        let build = self.path(target).join("debug/build");
-        let mut records: Vec<PathBuf> = std::fs::read_dir(&build)
-            .expect("cargo wrote a build directory")
-            .flatten()
-            .map(|entry| entry.path().join("out").join(RECORD_FILE))
-            .filter(|path| path.is_file())
-            .collect();
-        records.sort();
-        assert_eq!(records.len(), 1, "one record for the package: {records:?}");
-        std::fs::read_to_string(records.pop().expect("the package's record"))
-            .expect("the record is readable")
+        self.workspace.record(target)
     }
 
     /// The guard's verdict for `artifact`: the inputs whose recorded content no
-    /// longer matches the tree, or the reason the record cannot be checked.
-    fn verdict(&self, artifact: &Path) -> Result<Vec<Input>, String> {
-        changed_sources(artifact, &self.path("ws/probe"))
-    }
-
-    /// The verdict for an artifact whose record must stand behind the tree, so a
+    /// longer matches the tree, or the reason the record cannot be checked. The
+    /// cases here drive artifacts whose record must stand behind the tree, so a
     /// refusal is a failure of the fixture rather than a verdict.
     fn differences(&self, artifact: &Path) -> Vec<Input> {
-        self.verdict(artifact)
-            .unwrap_or_else(|problem| panic!("the fixture's record is readable: {problem}"))
+        self.workspace.differences(artifact, "ws/probe")
     }
 
     /// The repository's own checker, run on `binaries` — `(package, path under
@@ -219,20 +193,11 @@ impl Fixture {
     /// build's record has to name is the checker's question, and the shapes here
     /// are refused or accepted by it rather than by this crate.
     fn checker(&self, profile: &str, binaries: &[(&str, &str)]) -> std::process::Output {
-        let checker =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../planning/integrity/source_record.py");
-        let mut command = Command::new("python3");
-        command.arg(&checker);
+        let mut command = self.workspace.checker("ws", &self.workspace.path(profile));
         for (package, binary) in binaries {
             command.arg("--binary").arg(format!("{package}:{binary}"));
         }
         command
-            .arg("--workspace")
-            .arg(self.path("ws"))
-            .arg("--target-dir")
-            .arg(self.path(profile))
-            // The fixture builds offline, so its metadata resolves offline too.
-            .env("CARGO_NET_OFFLINE", "true")
             .output()
             .expect("the integrity checker runs (it needs python3)")
     }
@@ -267,35 +232,11 @@ impl Fixture {
     }
 }
 
-/// Nothing the fixture built outlives the test that built it.
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
 /// The first index of `needle` in `haystack`.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
-}
-
-/// The one value a scalar keyword holds in the wire file.
-///
-/// Taken from the file rather than spelled here, so a test that removes a line
-/// from a record or reads a marker uses the one copy of the wire — and fails,
-/// rather than drifting, if the framing moves.
-fn wire_scalar(keyword: &str) -> String {
-    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire.txt"))
-        .expect("the wire file")
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            (fields.next() == Some(keyword)).then(|| fields.next().unwrap_or_default().to_owned())
-        })
-        .next()
-        .unwrap_or_else(|| panic!("the wire file names {keyword}"))
 }
 
 /// A module the compiler finds in a directory the walk skips is in the record.

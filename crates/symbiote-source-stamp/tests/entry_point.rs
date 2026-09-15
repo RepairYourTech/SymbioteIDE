@@ -17,12 +17,20 @@
 //! directories. They need the cargo that is running them (`CARGO`), which is
 //! what a test run through `cargo test` has.
 //!
+//! The scaffolding that is not about *this* fixture — the workspace, the build,
+//! the record under it, and the two readers of it — lives in `support`, which
+//! `record_guard.rs` shares, so neither harness can drift from the other's
+//! mechanics.
+//!
 //! [`build_stamp`]: symbiote_source_stamp::build_stamp
+
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use symbiote_source_stamp::{Input, RECORD_FILE, changed_sources};
+use support::{Workspace, wire_mark, wire_scalar};
+use symbiote_source_stamp::{Input, changed_sources};
 
 /// The fixture the cases build from.
 ///
@@ -38,22 +46,16 @@ use symbiote_source_stamp::{Input, RECORD_FILE, changed_sources};
 ///                 by path, with a fork its own `[patch]` table names
 /// ```
 struct Fixture {
-    root: PathBuf,
+    workspace: Workspace,
 }
 
 impl Fixture {
-    /// The fixture under a fresh temporary directory named after `case`.
+    /// The fixture: its cases' workspace under a fresh temporary directory named
+    /// after `case`, and the files below.
     fn new(case: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "symbiote-source-stamp-{case}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("the fixture directory");
-        // Canonical, because a record spells a path outside the package's own
-        // workspace absolutely and the walk canonicalizes what it records.
-        let root = std::fs::canonicalize(&root).expect("a canonical fixture directory");
-        let fixture = Self { root };
+        let fixture = Self {
+            workspace: Workspace::new(case),
+        };
         // The package the cases stamp, and the workspace it names. Its fork is
         // the one its own build compiles.
         fixture.write(
@@ -156,13 +158,11 @@ impl Fixture {
     }
 
     fn write(&self, relative: &str, contents: &str) {
-        let path = self.path(relative);
-        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
-        std::fs::write(path, contents).expect("the fixture file");
+        self.workspace.write(relative, contents);
     }
 
     fn path(&self, relative: &str) -> PathBuf {
-        self.root.join(relative)
+        self.workspace.path(relative)
     }
 
     /// Cargo's build of the fixture, `args` beside `build --offline`, run in
@@ -211,14 +211,7 @@ impl Fixture {
     }
 
     fn cargo(&self, run_from: &str, target: &str, args: &[&str]) -> Command {
-        let cargo = std::env::var_os("CARGO").expect("these tests run under cargo");
-        let mut command = Command::new(cargo);
-        command
-            .args(["build", "--offline"])
-            .args(args)
-            .current_dir(self.path(run_from))
-            .env("CARGO_TARGET_DIR", self.path(target));
-        command
+        self.workspace.cargo(run_from, target, args)
     }
 
     /// The package's library as cargo built it: the artifact that carries the
@@ -260,14 +253,13 @@ impl Fixture {
     /// The guard's verdict for `artifact`: the inputs whose recorded content no
     /// longer matches the tree, or the reason the record cannot be checked.
     fn verdict(&self, artifact: &Path) -> Result<Vec<Input>, String> {
-        changed_sources(artifact, &self.path("pkg"))
+        self.workspace.verdict(artifact, "pkg")
     }
 
     /// The verdict for an artifact whose record must stand behind the tree, so
     /// a refusal is a failure of the fixture rather than a verdict.
     fn differences(&self, artifact: &Path) -> Vec<Input> {
-        self.verdict(artifact)
-            .unwrap_or_else(|problem| panic!("the fixture's record is readable: {problem}"))
+        self.workspace.differences(artifact, "pkg")
     }
 
     /// The repository's own checker, run on `artifacts` the way CI runs it.
@@ -278,12 +270,11 @@ impl Fixture {
     /// bytes rather than only this crate. Several artifacts go to one run, since
     /// the checker takes any number of them.
     fn checker(&self, workspace: &str, artifacts: &[&Path]) -> std::process::Output {
-        let checker =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../planning/integrity/source_record.py");
         let first = artifacts.first().expect("at least one artifact");
         let deps = first.parent().expect("the deps directory");
-        let mut command = Command::new("python3");
-        command.arg(&checker);
+        let mut command = self
+            .workspace
+            .checker(workspace, deps.parent().expect("the profile directory"));
         for artifact in artifacts {
             let name = artifact.file_name().expect("an artifact name");
             command
@@ -291,12 +282,6 @@ impl Fixture {
                 .arg(format!("pkg:deps/{}", name.to_string_lossy()));
         }
         command
-            .arg("--workspace")
-            .arg(self.path(workspace))
-            .arg("--target-dir")
-            .arg(deps.parent().expect("the profile directory"))
-            // The fixture builds offline, so its metadata resolves offline too.
-            .env("CARGO_NET_OFFLINE", "true")
             .output()
             .expect("the integrity checker runs (it needs python3)")
     }
@@ -305,34 +290,7 @@ impl Fixture {
     /// generated file under the build directory the way `artifact` finds the
     /// library beside it.
     fn record(&self, target: &str) -> String {
-        let root = self.path(target);
-        let mut builds = vec![root.join("debug/build")];
-        builds.extend(
-            std::fs::read_dir(&root)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|entry| entry.path().join("debug/build")),
-        );
-        let mut records: Vec<PathBuf> = builds
-            .iter()
-            .flat_map(|build| std::fs::read_dir(build).into_iter().flatten().flatten())
-            .map(|entry| entry.path().join("out").join(RECORD_FILE))
-            .filter(|path| path.is_file())
-            .collect();
-        records.sort();
-        assert_eq!(records.len(), 1, "one record for the package: {records:?}");
-        std::fs::read_to_string(records.pop().expect("the package's record"))
-            .expect("the record is readable")
-    }
-}
-
-/// Nothing the fixture built outlives the test that built it: a build directory
-/// per case, passed and failed alike, is otherwise left in the temporary
-/// directory.
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        self.workspace.record(target)
     }
 }
 
@@ -767,38 +725,6 @@ fn a_build_whose_cargo_cannot_be_run_marks_the_record_rather_than_guessing() {
         problem.contains("cargo-not-asked") && problem.contains("a cargo that can be started"),
         "the refusal names the mark and the rebuild that clears it: {problem}"
     );
-}
-
-/// The fields of the wire file's lines with `keyword`, in the order the file
-/// spells them: a test takes a value from the one copy of the wire rather than
-/// from a copy of it that could drift. A `mark` line is a role, a locator and the
-/// remedy both readers print.
-fn wire_lines(keyword: &str) -> Vec<Vec<String>> {
-    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire.txt"))
-        .expect("the wire file")
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            (fields.next() == Some(keyword)).then(|| fields.map(str::to_owned).collect())
-        })
-        .collect()
-}
-
-/// The wire file's line for a mark: its locator and the remedy both readers print.
-fn wire_mark(role: &str) -> (String, String) {
-    let fields = wire_lines("mark")
-        .into_iter()
-        .find(|fields| fields[0] == role)
-        .expect("the wire file names that mark");
-    (fields[1].clone(), fields[2].clone())
-}
-
-/// The one value a scalar keyword holds.
-fn wire_scalar(keyword: &str) -> String {
-    wire_lines(keyword)
-        .first()
-        .expect("the wire file names that keyword")[0]
-        .clone()
 }
 
 /// A record can carry both marks, and the check reports the one a rebuild has to
