@@ -121,51 +121,140 @@ fn a_forbidden_authorization_is_refused() {
     );
 }
 
-/// A ledger entry that no longer points at a real, running test is drift, not
-/// evidence. The fixture supplies the two ways that happens.
+/// A ledger entry that points at a check the harness does not run is drift, not
+/// evidence. The fixture supplies every way that happens, and the load-bearing
+/// regression is the first case: a plain `#[test]` in a file cargo never
+/// compiles. Before the harness was consulted it passed, because nothing but
+/// `#[ignore]` stood between a test-shaped file and an invariant.
 #[test]
-fn a_missing_skipped_or_non_test_binding_is_refused() {
+fn a_binding_the_harness_does_not_run_is_refused() {
     let root = workspace_root();
+    let harness = Harness::discover(&root).expect("the workspace harness");
     let fixture = "crates/symbiote-constitution/tests/fixtures/not_evidence.rs";
     for binding in [
+        format!("{fixture}::a_test_the_harness_never_compiles"),
         format!("{fixture}::a_skipped_check"),
         format!("{fixture}::a_helper_mistaken_for_a_test"),
         "crates/symbiote-domain/tests/contracts.rs::no_such_test".to_string(),
         "crates/symbiote-constitution/src/nowhere.rs::a_test".to_string(),
+        "planning/integrity/validate.py::main".to_string(),
         "not_a_binding".to_string(),
     ] {
         assert!(
-            !binding_outcome(&root, &binding).ok,
+            !harness.outcome(&binding).ok,
             "{binding} should have been refused"
         );
     }
-    assert!(
-        binding_outcome(
-            &root,
-            "crates/symbiote-domain/tests/contracts.rs::compilation_is_deterministic_and_role_survives_restaffing"
-        )
-        .ok
-    );
-}
-
-/// Every invariant's requirement is accounted for by something that runs: a
-/// document clause checked by this suite, a repository fact, or a named test.
-#[test]
-fn every_invariant_is_machine_checked() {
-    let report = evaluate(&workspace_root());
-    for coverage in &report.invariants {
+    // A test target of a member, a unit test reached through a `mod`, and a
+    // test the roadmap-integrity job discovers are all real checks.
+    for binding in [
+        "crates/symbiote-constitution/tests/conformance.rs::the_coverage_map_names_every_invariant_and_owner",
+        "crates/symbiote-domain/src/lease.rs::lease_expiry_bounds_are_enforced",
+        "planning/integrity/test_closing_keywords.py::test_a_landed_title_citing_an_issue_number_passes",
+    ] {
         assert!(
-            !coverage.outcomes.is_empty(),
-            "{} is checked by nothing",
-            coverage.id
+            harness.outcome(binding).ok,
+            "{binding} should have been accepted"
         );
     }
-    let behavioural: usize = INVARIANTS
+}
+
+/// #170 routes the goal/delegation, learning and roadmap work to named owners.
+/// The check this layer can make is that the record routes to them; whether
+/// their integrations exist is theirs to prove, not this record's to claim.
+#[test]
+fn the_routed_owners_are_named_by_the_record() {
+    const ROUTED: [u64; 6] = [464, 447, 460, 449, 454, 470];
+    let routed: BTreeSet<u64> = INVARIANTS
+        .iter()
+        .flat_map(|invariant| invariant.owners.iter().copied())
+        .collect();
+    for issue in ROUTED {
+        assert!(
+            routed.contains(&issue),
+            "#{issue} is named by the criterion but routed by no invariant"
+        );
+    }
+    let owners = INVARIANTS
+        .iter()
+        .find(|invariant| invariant.id == "CN-23")
+        .expect("the routing entry");
+    assert_eq!(owners.owners, ROUTED.to_vec());
+}
+
+/// Every invariant is machine-checked by something that runs, and an invariant
+/// with no executable check has to say why rather than simply having none. The
+/// two directions are checked together, so an explanation cannot become a crutch
+/// for an entry that does have a check, and a check cannot quietly disappear
+/// behind a silence.
+#[test]
+fn an_invariant_with_no_executable_check_states_why() {
+    let executable: BTreeSet<&str> = INVARIANTS
         .iter()
         .filter(|invariant| !invariant.tests.is_empty() || !invariant.facts.is_empty())
-        .count();
+        .map(|invariant| invariant.id)
+        .collect();
+    let explained: BTreeSet<&str> = EXPLANATIONS.iter().map(|(id, _)| *id).collect();
+    for invariant in INVARIANTS {
+        assert!(
+            !invariant.document.is_empty()
+                || !invariant.forbidden.is_empty()
+                || executable.contains(invariant.id),
+            "{} is checked by nothing at all",
+            invariant.id
+        );
+        if executable.contains(invariant.id) {
+            assert!(
+                !explained.contains(invariant.id),
+                "{} has an executable check and an explanation for having none",
+                invariant.id
+            );
+        } else {
+            assert!(
+                explained.contains(invariant.id),
+                "{} has no executable check and no stated reason",
+                invariant.id
+            );
+        }
+    }
+    for (id, why) in EXPLANATIONS {
+        assert!(
+            INVARIANTS.iter().any(|invariant| invariant.id == *id),
+            "EXPLANATIONS names an unknown invariant: {id}"
+        );
+        assert!(!why.trim().is_empty(), "{id} explains nothing");
+    }
+}
+
+/// The evidence recorded against the issue is a generated artifact, so it is
+/// guarded the way this repository guards its other generated artifacts: the
+/// committed encoding must be exactly what the tree emits.
+#[test]
+fn the_committed_report_is_what_the_tree_emits() {
+    let root = workspace_root();
+    let committed = std::fs::read_to_string(root.join(REPORT_PATH))
+        .unwrap_or_else(|error| panic!("the committed report at {REPORT_PATH}: {error}"));
+    let current = report_json(&root);
+    if committed != current {
+        let drift = committed
+            .lines()
+            .zip(current.lines())
+            .enumerate()
+            .find(|(_, (committed, current))| committed != current)
+            .map(|(line, (committed, current))| {
+                format!(
+                    "\n  line {}:\n  committed: {committed}\n  current:   {current}",
+                    line + 1
+                )
+            })
+            .unwrap_or_default();
+        panic!(
+            "the committed report drifted from the tree{drift}\n  regenerate with `cargo run -p symbiote-constitution --example constitution_report -- --write`"
+        );
+    }
+    // A record that records nothing is not a record.
     assert!(
-        behavioural * 2 >= INVARIANTS.len(),
-        "fewer than half the invariants have an executable check: {behavioural}"
+        current.len() > 1024,
+        "the report is too small to be the ledger"
     );
 }

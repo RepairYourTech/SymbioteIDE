@@ -62,11 +62,13 @@ Global/Project/task analytics account for roots, children, reviews, failed attem
 
 Accepted constitutional changes require a superseding ADR with authority, constraints, alternatives, dated/versioned evidence, reversibility, consequences and downstream impact propagation. Runtime/provider/platform facts expire independently and require refreshed official evidence. No proprietary required model, forced inference reseller, editor-fork dependency, transcript authority, generated-doc circular authority or provider-local completion authority is permitted.
 
+Every specification, issue, adapter, workforce binding, documentation subsystem and implementation obeys this constitution and the applicable Project, Role and Host policies.
+
 This document establishes the prerequisite contract, not a production capability. This section accounts for every coverage item #170 named as open, each by the machine check that executes it or by the canonical issue that owns the integration this contract does not implement. `cargo test -p symbiote-constitution` runs the ledger, and `cargo run -p symbiote-constitution --example constitution_report` emits the per-invariant evidence quoted against #170.
 
 | Named coverage item | Machine check or canonical owner |
 | --- | --- |
-| Constitution invariants | `CN-01`–`CN-22`; `crates/symbiote-constitution/tests/conformance.rs` |
+| Constitution invariants | `CN-01`–`CN-24`; `crates/symbiote-constitution/tests/conformance.rs` |
 | Schemas and schema migration | #36, #179; `typed_schemas_roundtrip_dispatch_and_reject_unknown_fields_and_versions`, `v1_migration_preserves_existing_records_and_journal` |
 | Deterministic compilation and provenance | `CN-03`; `compilation_is_deterministic_and_role_survives_restaffing` |
 | External/native/hybrid conformance | `CN-18`; `native_and_external_paths_share_canonical_completion_contract`, `two_harness_demo_native_and_external_workers_on_one_project_without_leakage` |
@@ -77,6 +79,9 @@ This document establishes the prerequisite contract, not a production capability
 | Applicability review | `CN-15`; `unsupported_platform_never_claims_operating_system_probe_success` |
 | Exact implementation, PR and current-head evidence | the containing issue-linked pull request and its checks |
 | Required review | separate reviewer evidence recorded against #170 |
+| Concrete implementation owners | `CN-23`; #464, #447, #460, #449, #454 and #470 |
+
+These owners are integration obligations, not circular prerequisites of this record.
 
 Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance. #170's constitutional deliverable is this recorded, machine-checked coverage; the production capability the contract enables remains owned by the issues named above and by #38.
 
