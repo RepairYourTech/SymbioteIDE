@@ -1,5 +1,6 @@
-//! What one source pulls in: the include macros that name a path, and the
-//! `#[path]` module attributes that move one — read from code rather than from
+//! What one source pulls in: the include macros that name a path, the `#[path]`
+//! module attributes that move one, and the plain module declarations the
+//! compiler resolves by the module's own name — read from code rather than from
 //! text, and followed to the file the compiler would compile.
 
 use super::*;
@@ -26,8 +27,12 @@ fn the_scan_reads_code_and_not_comments_or_strings() {
         "let example = r#\"#[path = \"doc.rs\"] mod m;\"#;",
     ] {
         assert_eq!(
-            (include_arguments(text).len(), module_paths(text).len()),
-            (0, 0),
+            (
+                include_arguments(text).len(),
+                module_paths(text).len(),
+                declared_modules(text).len()
+            ),
+            (0, 0, 0),
             "{text} names no input: recording one would refuse a current binary for a change \
                  to a file the build never reads"
         );
@@ -206,6 +211,109 @@ fn a_module_attribute_inside_an_inline_module_records_both_directories() {
             "the record must not be short of {path}; the walk found {sources:?}"
         );
     }
+}
+
+#[test]
+fn a_module_declaration_names_a_file_the_walk_skips() {
+    let root = fixture("declared-module");
+    let package = root.join("crates/app");
+    std::fs::create_dir_all(package.join("src/target")).expect("the package");
+    std::fs::create_dir_all(package.join("tests")).expect("the tests directory");
+    std::fs::write(package.join("Cargo.toml"), "[package]\nname = \"app\"\n")
+        .expect("the package manifest");
+    // The compiler finds `src/target/mod.rs` by `mod target;` and a package-root
+    // `tests/mod.rs` by `mod tests;`, so neither file is outside the build
+    // however the wire file names the directory it sits in — measured, the first
+    // of them was left out of a record whose walk skipped `src/target`, and both
+    // readers then reported the binary current after that module changed.
+    std::fs::write(package.join("src/main.rs"), "mod target;\n\nfn main() {}\n")
+        .expect("the crate root");
+    std::fs::write(
+        package.join("src/target/mod.rs"),
+        "pub const TARGET: u8 = 1;\n",
+    )
+    .expect("the compiled module");
+    std::fs::write(package.join("build.rs"), "mod tests;\n\nfn main() {}\n")
+        .expect("the build script");
+    std::fs::write(package.join("tests/mod.rs"), "pub const TESTS: u8 = 1;\n")
+        .expect("the module the build script declares");
+
+    let (sources, unfollowed, _) = recorded_sources(&package, &root, &[]);
+    assert!(unfollowed.is_empty(), "{unfollowed:?}");
+    for path in ["src/target/mod.rs", "tests/mod.rs"] {
+        assert!(
+            sources.contains(&package.join(path)),
+            "a file the compiler finds by a module's own name must be recorded; the walk found \
+             {sources:?}"
+        );
+    }
+}
+
+#[test]
+fn a_plain_module_resolves_where_the_compiler_looks_for_it() {
+    let root = PathBuf::from("example");
+    let declared = |name: &str, inline: &[&str]| Declared {
+        name: name.to_owned(),
+        inline: inline.iter().map(|name| (*name).to_owned()).collect(),
+    };
+    assert_eq!(
+        declared_inputs(&root.join("src/lib.rs"), &declared("target", &[])),
+        [root.join("src/target.rs"), root.join("src/target/mod.rs")]
+    );
+    // The file itself does not say whether the compiler found it as `mod leaf;`,
+    // which puts its modules under `src/leaf/`, or as a crate root or through a
+    // `#[path]`, which put them under `src/` — so a record that is never short
+    // names both.
+    assert_eq!(
+        declared_inputs(&root.join("src/leaf.rs"), &declared("target", &[])),
+        [
+            root.join("src/target.rs"),
+            root.join("src/target/mod.rs"),
+            root.join("src/leaf/target.rs"),
+            root.join("src/leaf/target/mod.rs"),
+        ]
+    );
+    assert_eq!(
+        declared_inputs(&root.join("src/leaf/mod.rs"), &declared("deep", &["inner"])),
+        [
+            root.join("src/leaf/inner/deep.rs"),
+            root.join("src/leaf/inner/deep/mod.rs"),
+        ]
+    );
+}
+
+#[test]
+fn a_declaration_names_a_module_unless_an_attribute_names_its_file() {
+    let names = |text: &str| {
+        declared_modules(text)
+            .into_iter()
+            .map(|declared| (declared.name, declared.inline))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names("mod plain;\n"), [("plain".to_owned(), Vec::new())]);
+    assert_eq!(
+        names("pub mod r#type;\n"),
+        [("type".to_owned(), Vec::new())]
+    );
+    assert_eq!(
+        names("mod inline {\n    mod deep;\n}\n"),
+        [("deep".to_owned(), ["inline".to_owned()].to_vec())]
+    );
+    // An inline module declares its body where it stands and compiles no file
+    // the compiler finds by its name.
+    assert_eq!(names("mod inline {\n}\n"), []);
+    // A `#[path]` names the file, which `module_paths` carries instead.
+    assert_eq!(names("#[path = \"../shared.rs\"]\nmod shared;\n"), []);
+    assert_eq!(
+        names("#[cfg(test)]\n#[path = \"../shared.rs\"]\nmod shared;\n"),
+        []
+    );
+    // A condition on a declaration is not a path: the module still compiles from
+    // a file of its own name wherever the condition holds.
+    assert_eq!(
+        names("#[cfg(test)]\nmod cfg_only;\n"),
+        [("cfg_only".to_owned(), Vec::new())]
+    );
 }
 
 #[test]

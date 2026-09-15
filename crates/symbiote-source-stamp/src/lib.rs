@@ -26,8 +26,12 @@
 //!   workspace bringing that workspace's root manifest as well, and every file
 //!   those sources pull
 //!   in through an `include!`, `include_bytes!` or `include_str!` or a
-//!   `#[path = "…"]` module attribute, wherever it lives:
-//!   `symbiote-workflow` compiles fixtures kept at the workspace root.
+//!   `#[path = "…"]` module attribute, wherever it lives, and every module
+//!   source a plain `mod name;` compiles, which is the file the compiler finds
+//!   by the module's own name: `symbiote-workflow` compiles fixtures kept at the
+//!   workspace root, and a declaration is what keeps a directory the walk skips
+//!   — a name the wire file excludes — from hiding a compiled file, since the
+//!   compiler searches there whatever the directory is called.
 //!   It hashes the content of all of them, tells cargo to rerun the build
 //!   script when any of them changes, and writes the record into `OUT_DIR` as
 //!   a `static`, which the binary includes so the record travels inside the

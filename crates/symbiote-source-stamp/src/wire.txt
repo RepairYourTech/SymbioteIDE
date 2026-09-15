@@ -37,7 +37,11 @@
 #                  the markers it is framed with
 #   mark           role, locator, remedy — in the order a rebuild clears them
 #   exclusion      scope, names — which directory names a walk skips, at the
-#                  package root (`root`) alone or at every depth (`anywhere`)
+#                  package root (`root`) alone or at every depth (`anywhere`).
+#                  What a walk skips and not what a build reads: the compiler
+#                  finds a module source by the module's own name, so a file
+#                  under such a name still compiles, and the record names it
+#                  through the `mod name;` declaration that reaches it
 #
 # A record is the bytes of a binary between `start` and the `end` that ends it,
 # and `encoding` is what those bytes are spelled in: both readers take the record
