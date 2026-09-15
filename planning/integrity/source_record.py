@@ -24,18 +24,20 @@ clear. A check that runs after the build has neither problem.
 Three things are compared:
 
 * **Completeness (rustc).** Every workspace file the units of the driven
-  binary's closure read must be named by the record. Registry sources and
-  generated files under the target directory are excluded, as the record's own
-  documentation excludes them, and so are the directories the wire file's
-  `exclusion` lines name, which the record excludes on purpose and whose own units
-  read them. Which names those are, and where each is skipped, is the file's: the
-  target directories cargo looks for at a package root alone are skipped there
-  alone, so `src/tests/mod.rs` compiles into the binary and the record must name
-  it, while generated, installed and version-control state is skipped wherever it
-  sits and a name the file does not list — `dist` among them — is walked. A
-  skipped directory bounds the walk and not the build, so a file the compiler
-  finds in one by a module's own name is inside the record too, through the
-  declaration that names it.
+  binary's closure read must be named by the record. Registry sources are outside
+  the workspace and so outside what the record can name, and so are the files the
+  build itself wrote, under the build's own output directory — the directory this
+  check is *given*, which is the only set of reads it excuses. The directory names
+  the wire file's `exclusion` lines hold are the *walk's* rule and not a check's,
+  so a check skips nothing by name: it requires the record to name every other
+  file a unit read, a `tests`, `examples`, `benches`, `node_modules` or `.git`
+  path among them. A skipped directory bounds the walk and not the build, so a
+  file the compiler finds in one by a module's own name is in the record through
+  the declaration that names it — measured, a build script's `mod tests;` puts
+  `tests/mod.rs` in the record, and a check that excused that name reported the
+  record clean with the line removed, while refusing it names `tests/mod.rs` as
+  read by the build script's unit. The walk's names, and where each applies, are
+  still the file's.
 
   The comparison rests on the dep-info of those closure units, so it is only as
   good as finding them, and as good as knowing which unit each one is: a unit is
@@ -150,10 +152,14 @@ WIRE_FILE = (
 )
 
 
-# The scopes the wire file's `exclusion` lines name: the directory names a walk
+# The scopes the wire file's `exclusion` lines name: the directory names a *walk*
 # skips at a package root alone (`root`, where cargo looks for a target directory
-# of that name) and the ones it skips at every depth (`anywhere`). Both are the
-# file's, so this checker skips exactly what the walk skips.
+# of that name) and the ones it skips at every depth (`anywhere`). They are the
+# walk's rule and not a check's — a check is handed the evidence of what each unit
+# read and requires the record to name it, excusing only what the build itself
+# wrote (see `workspace_reads`) — and the scopes are read here anyway, because the
+# file is one copy and a check must accept it whole: a scope this tool did not
+# know is a file the crate could skip differently.
 EXCLUSION_SCOPES = ("root", "anywhere")
 
 
@@ -243,6 +249,12 @@ def read_wire(path):
     return scalars, marks, exclusions
 
 
+# The file's own data, parsed: the values both readers spell a record with, the
+# marks in order, and the names a walk skips. The names are the *walk's* rule and
+# not a check's — a check requires what a unit read rather than excusing a name
+# (see `workspace_reads`) — and they are parsed anyway because the file is one copy
+# that has to be accepted whole: a scope, or a name list, this tool did not read
+# is a file the crate could skip differently.
 WIRE, WIRE_MARKS, EXCLUSIONS = read_wire(WIRE_FILE)
 
 # The encoding the wire states the bytes between the framing markers are in: both
@@ -313,28 +325,12 @@ def undecodable_text(offset):
 # is recorded as: a line whose content is not one names no input. See `classify`.
 HASH_LENGTH, HASH_ALPHABET = WIRE["hash"]
 
-# The directory cargo writes a build's artifacts into, whose files are outside
-# the record for the reason the record documents: their content comes from the
-# build script, which the record does name.
-GENERATED_DIRECTORY = "target"
-
 # The directory cargo keeps its own bookkeeping of a build in, inside the profile
 # directory: one directory per unit, named after the package that compiles it and
 # the unit's metadata hash — the hash a unit's dep-info file carries too. It is
 # where this check reads *which package* a unit is, since the crate name cannot
 # say it.
 FINGERPRINT_DIRECTORY = ".fingerprint"
-
-# The directory names a walk skips, from the wire file's own `exclusion` lines:
-# `root` names at a package root alone (where cargo looks for a target directory of
-# that name) and `anywhere` names at every depth (state a build writes, installs or
-# keeps rather than compiles a source from). The rule is the file's, so this
-# checker excuses exactly the reads the walk does not name — and a name in neither
-# list, `dist` among them, is walked: measured, a `mod dist;` compiling
-# `src/dist/mod.rs` was dropped from the record with both readers reporting the
-# binary current.
-EXCLUDED_AT_ROOT = set(EXCLUSIONS["root"])
-EXCLUDED_ANYWHERE = set(EXCLUSIONS["anywhere"])
 
 # The configuration files cargo reads for a build of a package, relative to a
 # directory it looks in for them.
@@ -766,23 +762,35 @@ def unit_dep_info(target_dir, metadata, package_ids):
     return found
 
 
-def workspace_reads(dep_info_files, workspace):
+def workspace_reads(dep_info_files, workspace, target_dir):
     """Every workspace file those units read, and which dep-info named it.
 
-    A registry or sysroot source is outside the workspace and so outside what
-    the record can name; a file the build generates under the target directory
-    is outside it for the reason the record documents (the build script that
-    writes it is inside it).
+    A registry or sysroot source is outside the workspace and so outside what the
+    record can name, and so is everything under the build's own output directory:
+    cargo wrote it, the build script that wrote it is named by the record, and the
+    wire file states those are the files a check excuses. That directory is the one
+    this check was *given* — cargo's target directory, or the profile directory
+    under it, whatever it is called — rather than a name: measured, a build driven
+    into `<workspace>/build-output` left 353 inputs under it that no record can
+    name, and a rule reading the name `target` refused the binary for every one of
+    them.
+
+    Everything else a unit read is what the record owes, whatever it is called and
+    wherever it sits: the names a walk skips are the walk's rule, and a check that
+    excused them would excuse a file the build read (see the module docstring).
     """
     reads = {}
-    target_prefix = Path(workspace).resolve() / GENERATED_DIRECTORY
+    generated = Path(target_dir)
+    if not generated.is_absolute():
+        generated = Path(workspace) / generated
+    generated = Path(os.path.normpath(generated))
     for dep_info, _ in dep_info_files.items():
         for path in parse_dep_info(dep_info.read_text(errors="replace")):
             resolved = Path(path)
             if not resolved.is_absolute():
                 resolved = Path(workspace) / resolved
             resolved = Path(os.path.normpath(resolved))
-            if target_prefix in resolved.parents or resolved == target_prefix:
+            if generated in resolved.parents or resolved == generated:
                 continue
             if Path(workspace) not in resolved.parents:
                 continue
@@ -988,33 +996,6 @@ def cargo_inputs(metadata, package_ids):
     return sorted(inputs)
 
 
-def excluded(path, package_dirs):
-    """Whether the record excludes this path by the wire file's own rule.
-
-    Under a closure package, the names the file skips at every depth are outside
-    the walk wherever they sit and the names it skips at a package root alone are
-    outside it there alone, which is the only place cargo looks for a target
-    directory of that name. Those units read files the record does not name on
-    purpose, so a comparison that ignored the rule would fail on them; a directory
-    that merely carries one of those names deeper in the package is not one of
-    them, and a record that left it out is short rather than excused.
-
-    A skipped directory bounds the walk rather than the build, so this excuses
-    only what no declaration names: a file the compiler finds in one by a module's
-    own name — measured, `mod target;` compiles `src/target/mod.rs` — is recorded
-    through the declaration that reaches it, and where a record leaves one out the
-    refusal is the one above rather than a silence here.
-    """
-    for directory in package_dirs:
-        if directory in path.parents:
-            relative = path.relative_to(directory)
-            if any(part in EXCLUDED_ANYWHERE for part in relative.parts):
-                return True
-            if relative.parts and relative.parts[0] in EXCLUDED_AT_ROOT:
-                return True
-    return False
-
-
 def configuration_candidates(workspace, package_dirs):
     """Every configuration file a build of a closure package could read."""
     directories = set()
@@ -1125,15 +1106,13 @@ def check(workspace, target_dir, binaries, metadata):
                 f"before checking its record"
             )
             continue
-        reads = workspace_reads(dep_info, workspace)
+        reads = workspace_reads(dep_info, workspace, target_dir)
         base = workspace
         if driven is not None:
             base = nearest_workspace_root(Path(driven["manifest_path"]).parent) or workspace
         recorded = recorded_files(record, base)
         missing = sorted(
-            (path, source)
-            for path, source in reads.items()
-            if path not in recorded and not excluded(path, package_dirs)
+            (path, source) for path, source in reads.items() if path not in recorded
         )
         for path, source in missing:
             problems.append(
