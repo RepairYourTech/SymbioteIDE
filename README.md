@@ -1,6 +1,6 @@
 # Symbiote
 
-Symbiote is an open-source AI software-development firm with a human client. The canonical executable roadmap is [#154](https://github.com/RepairYourTech/SymbioteIDE/issues/154); accepted product direction is in [the constitution](docs/architecture/product-constitution.md).
+Symbiote is an open-source AI software-development firm with a human client. The canonical executable roadmap is [#154](https://github.com/RepairYourTech/SymbioteIDE/issues/154); accepted product direction is in [the constitution](docs/architecture/product-constitution.md). The constitution's non-negotiable invariants are machine-checked: [`symbiote-constitution`](docs/contracts/constitution.md) binds each one to a document clause, a repository fact and a named test, and reports the per-invariant evidence.
 
 ## Current implementation
 
@@ -38,11 +38,12 @@ cargo run -p symbiote-config --example config_schema
 cargo run -p symbiote-architecture --example architecture_schema
 cargo run -p symbiote-protocol --example protocol_schema
 cargo run -p symbiote-runtime-sdk --example runtime_schema
+cargo run -p symbiote-constitution --example constitution_report
 ```
 
 Schema examples emit JSON to stdout. The generated structural schemas do not replace runtime cross-field checks. The `symbiote` CLI's `--json` envelope and its authorization policy are published as committed JSON Schema fixtures in [docs/contracts/schemas](docs/contracts/schemas); `symbiote schema` emits them from the binary (`schema envelope|policy` prints one document, `--write DIR` regenerates the committed fixtures as generated artifacts, `--check DIR` reports drift without writing), and a test diffs the emitted documents against them. Rust 1.85 is the declared minimum; Cargo.lock pins dependencies. CI tests the minimum and current stable toolchain. Workspace code forbids unsafe Rust.
 
-Contract documentation: [domain](docs/contracts/domain.md), [configuration](docs/contracts/configuration.md), [architecture governance](docs/contracts/architecture.md), [storage](docs/contracts/storage.md), [protocol](docs/contracts/protocol.md), [Host](docs/contracts/host.md), [CLI](docs/contracts/cli.md). Each records implemented behavior and pending integration acceptance. [Engineering handoff](docs/engineering-handoff.md) tracks the current Change Stream and next gates.
+Contract documentation: [constitution](docs/contracts/constitution.md), [domain](docs/contracts/domain.md), [configuration](docs/contracts/configuration.md), [architecture governance](docs/contracts/architecture.md), [storage](docs/contracts/storage.md), [protocol](docs/contracts/protocol.md), [Host](docs/contracts/host.md), [CLI](docs/contracts/cli.md). Each records implemented behavior and pending integration acceptance. [Engineering handoff](docs/engineering-handoff.md) tracks the current Change Stream and next gates.
 
 ## Architecture
 

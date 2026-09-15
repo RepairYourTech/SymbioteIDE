@@ -1,5 +1,13 @@
 # Engineering handoff
 
+## Constitution conformance — 2026-09-15 UTC
+
+Change Stream `issue-170-invariant-conformance`. Owner #170 records the constitution's non-negotiable invariants as a machine-checked ledger: `symbiote-constitution` carries `CN-01`–`CN-22`, each bound to an exact document clause, a repository fact or a named workspace test, and emits the per-criterion report published against the issue. See [constitution conformance](contracts/constitution.md).
+
+Two real gaps were fixed while making the ledger pass rather than by weakening the ledger. The constitution did not carry the methodology-boundary sentence #170 requires ("Core methodology and control cannot depend on a giant skill/prompt bundle; skills carry specialist expertise."), and three crates (`symbiote-client-sdk`, `symbiote-external-agent`, `symbiote-repo`) did not inherit the workspace's `unsafe_code = "forbid"` lint, so the workspace-wide claim was not enforced everywhere. The constitution's open-acceptance paragraph now maps every coverage item it named to the check that runs it or the issue that owns it; the production capability and the executable schemas remain owned by #36/#173/#38/#29-#34/#460/#449, and #170's own deliverable is the recorded coverage.
+
+Verification at the pull request's head: `cargo test -p symbiote-constitution` (7 tests, 22 invariants, 112 channels), `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked`. CI, current-head checks, current-head evidence and independent review remain separate gates recorded on the pull request; this section is not an approval.
+
 ## Durable workforce bindings — 2026-09-08 UTC
 
 Change Stream `issue-203-workforce-bindings` starts from merged #485 at `7dadbefe`.
