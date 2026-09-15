@@ -79,7 +79,7 @@ fn the_repository_keeps_the_locked_technology_choices() {
         Fact::ForbidUnsafeRust,
         Fact::StrictTypeScript,
     ] {
-        let outcome = fact_outcome(fact, &root);
+        let outcome = repository::fact_outcome(fact, &root);
         assert!(outcome.ok, "{}: {}", outcome.subject, outcome.detail);
     }
 }
@@ -92,11 +92,11 @@ fn a_weakened_constitution_is_refused() {
     assert_ne!(weakened, CONSTITUTION, "the clause was not there to remove");
     let process = INVARIANTS.iter().find(|i| i.id == "CN-06").unwrap();
     assert!(
-        document_outcomes(process, &weakened).iter().any(|o| !o.ok),
+        document::outcomes(process, &weakened).iter().any(|o| !o.ok),
         "removing the clause did not fail CN-06"
     );
     assert!(
-        document_outcomes(process, CONSTITUTION)
+        document::outcomes(process, CONSTITUTION)
             .iter()
             .all(|o| o.ok)
     );
@@ -109,13 +109,13 @@ fn a_forbidden_authorization_is_refused() {
     let permissive = format!("{CONSTITUTION}\nElectron is eligible for the desktop.\n");
     let non_goals = INVARIANTS.iter().find(|i| i.id == "CN-10").unwrap();
     assert!(
-        document_outcomes(non_goals, &permissive)
+        document::outcomes(non_goals, &permissive)
             .iter()
             .any(|o| !o.ok),
         "permitting Electron did not fail the non-goals"
     );
     assert!(
-        document_outcomes(non_goals, CONSTITUTION)
+        document::outcomes(non_goals, CONSTITUTION)
             .iter()
             .all(|o| o.ok)
     );

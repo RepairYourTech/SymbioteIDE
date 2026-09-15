@@ -4,6 +4,19 @@ Canonical owner: [#170](https://github.com/RepairYourTech/SymbioteIDE/issues/170
 
 The invariant catalog is `INVARIANTS` in `crates/symbiote-constitution/src/catalog.rs`: `CN-01`–`CN-24`, each naming its `#170` requirement. An entry is a compile-time constant of `&'static` data, so no runtime input can weaken, add or skip an invariant.
 
+## Structure
+
+Each concern has one owner, and a channel never depends on another channel:
+
+- `catalog.rs` — the inventory and nothing else: `Fact`, `Invariant`, `INVARIANTS` and `EXPLANATIONS`, plus the normative sentences the constitution states once and more than one invariant depends on, held in one constant each so no clause has two owners.
+- `document.rs` — the document channel, and the embedded constitution it reads.
+- `repository.rs` — the repository channel: the tree walk, the manifest key heuristics, and the four facts.
+- `harness.rs` — the test channel: what cargo and the maintenance suites actually compile and run.
+- `report.rs` — the verdict vocabulary (`Outcome`, `Coverage`, `Report`), the assembly of the three channels in `evaluate`, and the committed encoding.
+- `lib.rs` — the crate documentation, the module map, the re-exports, and the workspace root the tests and example locate from.
+
+The channels depend on `report` for `Outcome` and never on one another, so a change to one channel's rules lands in that channel's file. This is a structure change only: the report's invariants, channels, verdicts, failures and committed bytes are identical, and `--write` is idempotent against the committed artifact.
+
 ## Three channels, and why each can fail
 
 `evaluate(root)` checks every invariant through three channels and reports one verdict per channel. A channel that finds nothing to check is a failure rather than a pass, so an invariant cannot be satisfied by silence.
