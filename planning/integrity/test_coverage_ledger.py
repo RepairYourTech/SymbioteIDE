@@ -211,6 +211,19 @@ class CommittedLedgerTests(unittest.TestCase):
             self.assertEqual(int(found.group(1)), expected[label],
                              f"the README claims {found.group(0)!r} where the ledger records {expected[label]}")
 
+    def test_the_readmes_sentence_about_this_check_states_the_guarantee_behind_it(self):
+        """The sentence the README makes about this check is pinned as the guarantee.
+
+        A test cannot prove the absence of an overclaim anywhere in a document, and this
+        one does not try: it pins the sentence that states the guarantee, where an
+        earlier wording credited the check with a discovery it did not make. The
+        behaviour the sentence claims is held by
+        test_the_ledger_counts_the_entries_rather_than_the_registrys_description_of_them
+        and test_a_class_moved_between_the_counts_without_moving_an_entry_is_refused.
+        """
+        readme = (self.root / "README.md").read_text()
+        self.assertIn("counted from those entries rather than from the registry's declaration of them", readme)
+
     def test_the_provenance_records_the_artifacts_expiry(self):
         """After it the archive hash cannot be recomputed by anyone, so the window is stated."""
         self.assertEqual(self.ledger["provenance"]["artifact_expires_at"], "2026-10-07T19:29:47Z")
