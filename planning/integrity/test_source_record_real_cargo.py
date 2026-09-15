@@ -24,6 +24,15 @@ is exactly what drifts:
   into ``<workspace>/build-output`` leaves real reads under it — the generated
   file the binary includes among them — and they are excused by the directory the
   check was *given*, which a rule reading the name ``target`` cannot do.
+* **the spellings the hand-built fixtures decide for themselves.**
+  `test_source_record.py` writes each unit's dep-info and fingerprint by hand, so a
+  spelling cargo does not write is invisible from that suite alone. Measured, its
+  fixture wrote every input absolute while rustc writes a package's own sources
+  relative to the directory cargo ran in — so dropping the checker's relative
+  resolution failed none of that suite's tests then, and five of them now.
+  `HandFixtureAgreementTests` puts the same shapes in front of the build below and
+  asserts the fixture's letters are cargo's, so a drift is a failure here rather
+  than a rule nobody measured.
 
 Nothing here reads a record: what is asserted is what cargo wrote, which the
 crate's real-build harness (`crates/symbiote-source-stamp/tests/record_guard.rs`)
@@ -43,19 +52,27 @@ from source_record import (
     cargo_metadata,
     closure_package_ids,
     driven_unit,
+    parse_dep_info,
     unit_dep_info,
     unit_fingerprints,
     unit_hash,
     workspace_reads,
 )
+from test_source_record import Fixture
 
 # The workspace the cases build: a package whose binary includes a file its own
 # build script generates (so the build reads under its target directory), a
 # library of the same package (a second unit of the same crate name), and a
 # package whose library carries the driven binary's crate name (a unit another
-# package compiles, spelled the same way).
+# package compiles, spelled the same way). A fourth package carries a hyphenated
+# binary target and a source whose name holds a space, which is what the hand
+# fixtures decide for themselves: the dep-info file underscored from the crate
+# name, the fingerprint and artifact under the target's own hyphens, and the
+# space escaped in the dep-info's bytes.
 WORKSPACE = {
-    "Cargo.toml": '[workspace]\nmembers = ["probe", "other"]\nresolver = "2"\n',
+    "Cargo.toml": (
+        '[workspace]\nmembers = ["probe", "other", "hyphen-demo"]\nresolver = "2"\n'
+    ),
     "probe/Cargo.toml": (
         '[package]\nname = "probe"\nversion = "0.0.0"\nedition = "2021"\n'
     ),
@@ -82,6 +99,14 @@ WORKSPACE = {
         '[lib]\nname = "probe"\npath = "src/lib.rs"\n'
     ),
     "other/src/lib.rs": 'pub const OTHER: &str = "other";\n',
+    "hyphen-demo/Cargo.toml": (
+        '[package]\nname = "hyphen-demo"\nversion = "0.0.0"\nedition = "2021"\n'
+    ),
+    "hyphen-demo/src/main.rs": (
+        '#[path = "a b.rs"]\nmod part;\n\nfn main() {\n'
+        '    println!("{}", part::VALUE);\n}\n'
+    ),
+    "hyphen-demo/src/a b.rs": 'pub const VALUE: &str = "part";\n',
 }
 
 
@@ -94,15 +119,7 @@ def write_workspace(root):
 
 
 def runnable_cargo():
-    """A cargo that can be run — `CARGO` first, then PATH — or `None`.
-
-    `CARGO` is what a test run through cargo sets, and it is not proof that the
-    binary it names is there: measured, `CARGO=/nonexistent` with a cargo on PATH
-    made these cases fail with `FileNotFoundError` out of `setUpClass` rather than
-    skip, which is the one thing a case that needs a real build must not do where
-    there is none to be had. So the cargo is asked for its version before
-    anything is built, and a candidate that cannot answer is passed over.
-    """
+    """The first of `CARGO` and PATH that answers `cargo --version`, or `None`."""
     for candidate in (os.environ.get("CARGO"), shutil.which("cargo")):
         if not candidate:
             continue
@@ -117,6 +134,46 @@ def runnable_cargo():
     return None
 
 
+def cargo_or_skip():
+    """A cargo that can be run, reachable by name, or a skip with the reason.
+
+    `CARGO` is what a test run through cargo sets, and it is not proof that the
+    binary it names is there: measured, `CARGO=/nonexistent` with a cargo on PATH
+    made these cases fail with `FileNotFoundError` out of `setUpClass` rather than
+    skip, which is the one thing a case that needs a real build must not do where
+    there is none to be had. So the cargo is asked for its version before
+    anything is built, and a candidate that cannot answer is passed over.
+
+    `cargo_metadata` runs `cargo` by name, so a cargo reached only through the
+    variable that names it has to be on PATH for it.
+    """
+    cargo = runnable_cargo()
+    if cargo is None:
+        raise unittest.SkipTest(
+            "no cargo that can be run, from CARGO or from PATH, so no real "
+            "build can be made and these cases would prove nothing"
+        )
+    if shutil.which("cargo") is None:
+        os.environ["PATH"] = (
+            str(Path(cargo).parent) + os.pathsep + os.environ.get("PATH", "")
+        )
+    return cargo
+
+
+def offline_environment():
+    """`CARGO_NET_OFFLINE` set for the build, and the value to put back."""
+    previous = os.environ.get("CARGO_NET_OFFLINE")
+    os.environ["CARGO_NET_OFFLINE"] = "true"
+    return previous
+
+
+def restore_offline(previous):
+    if previous is None:
+        os.environ.pop("CARGO_NET_OFFLINE", None)
+    else:
+        os.environ["CARGO_NET_OFFLINE"] = previous
+
+
 def build(cargo, workspace, target):
     """Cargo's build of the workspace into `target`, offline.
 
@@ -127,7 +184,17 @@ def build(cargo, workspace, target):
     reads.
     """
     completed = subprocess.run(
-        [cargo, "build", "--offline", "-p", "probe", "-p", "other"],
+        [
+            cargo,
+            "build",
+            "--offline",
+            "-p",
+            "probe",
+            "-p",
+            "other",
+            "-p",
+            "hyphen-demo",
+        ],
         cwd=workspace,
         env={**os.environ, "CARGO_TARGET_DIR": str(workspace / target)},
         capture_output=True,
@@ -142,25 +209,13 @@ class RealCargoOutputTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cargo = runnable_cargo()
-        if cargo is None:
-            raise unittest.SkipTest(
-                "no cargo that can be run, from CARGO or from PATH, so no real "
-                "build can be made and these cases would prove nothing"
-            )
-        if shutil.which("cargo") is None:
-            # `cargo_metadata` runs `cargo` by name, so a cargo reached only
-            # through the variable that names it has to be on PATH for it.
-            os.environ["PATH"] = (
-                str(Path(cargo).parent) + os.pathsep + os.environ.get("PATH", "")
-            )
+        cargo = cargo_or_skip()
         cls.directory = tempfile.TemporaryDirectory(
             prefix="symbiote-source-record-cargo-"
         )
         cls.workspace = Path(cls.directory.name) / "ws"
         write_workspace(cls.workspace)
-        cls.offline = os.environ.get("CARGO_NET_OFFLINE")
-        os.environ["CARGO_NET_OFFLINE"] = "true"
+        cls.offline = offline_environment()
         build(cargo, cls.workspace, "target")
         # The same build into a directory of its own inside the workspace, so the
         # excusal has something to excuse that is not called `target`.
@@ -170,10 +225,7 @@ class RealCargoOutputTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        if cls.offline is None:
-            os.environ.pop("CARGO_NET_OFFLINE", None)
-        else:
-            os.environ["CARGO_NET_OFFLINE"] = cls.offline
+        restore_offline(cls.offline)
         cls.directory.cleanup()
 
     def profile(self, target):
@@ -334,6 +386,207 @@ class RealCargoOutputTests(unittest.TestCase):
             any(path.endswith("out/generated.rs") for path in under),
             f"the file the binary includes is one of them: {under}",
         )
+
+
+class HandFixtureAgreementTests(unittest.TestCase):
+    """The hand-built fixture's own letters, against the ones cargo wrote.
+
+    `test_source_record.py` decides for itself how a unit's dep-info is spelled,
+    where its fingerprint sits, what it is called and which file is the unit's
+    artifact. A fixture that decides wrongly pins a layout the real cargo does not
+    write, and the suite it lives in cannot notice, because the fixture is the
+    thing being trusted: one such drift already happened (a fingerprint's
+    extensionless file with no ``.json``), and another was found this way and
+    fixed (`Fixture.unit` wrote every input absolute, where rustc writes a
+    package's own sources relative to the directory cargo ran in).
+
+    What is compared is the *spelling* of the same shapes, not the names — cargo's
+    own names differ and are pinned in `RealCargoOutputTests` — and the two rows of
+    each comparison are asserted to have the same shape rather than described as
+    agreeing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cargo = cargo_or_skip()
+        cls.directory = tempfile.TemporaryDirectory(
+            prefix="symbiote-source-record-fixture-"
+        )
+        cls.workspace = Path(cls.directory.name) / "ws"
+        write_workspace(cls.workspace)
+        cls.offline = offline_environment()
+        build(cargo, cls.workspace, "target")
+        cls.target = cls.workspace / "target" / "debug"
+
+    @classmethod
+    def tearDownClass(cls):
+        restore_offline(cls.offline)
+        cls.directory.cleanup()
+
+    def test_the_hand_fixtures_dep_info_is_spelled_the_way_cargo_spells_one(self):
+        """A source relative to the build's directory, cargo's own paths absolute.
+
+        The fixture spells both kinds itself, and it spelled both absolute: the
+        branch every real build's sources take (a relative token, resolved against
+        the workspace) was reached by none of the hand suite's tests, which is
+        measured — dropping that branch from the checker failed no test of it, and
+        five with the fixture spelling them as cargo does.
+        """
+        # Cargo's own letters, from the unit whose source includes a generated
+        # file: the one dep-info here that names a build output.
+        generating = [
+            entry
+            for entry in sorted((self.target / "deps").glob("probe-*.d"))
+            if "out/generated.rs" in entry.read_text()
+        ]
+        self.assertEqual(
+            len(generating),
+            1,
+            f"one unit of the driven package reads a generated file: {generating}",
+        )
+        real_text = generating[0].read_text()
+        real = parse_dep_info(real_text)
+        # Both of cargo's spellings, read out of its own bytes rather than written
+        # here: the package's own source, and the file its build script generated.
+        # Each appears in several of the dep-info's rules and is spelled one way.
+        sources = {token for token in real if token.endswith("main.rs")}
+        outputs = {token for token in real if token.endswith("out/generated.rs")}
+        self.assertEqual(len(sources), 1, f"rustc spells a source one way: {real}")
+        self.assertEqual(len(outputs), 1, f"and a generated file one way: {real}")
+        source, output = sources.pop(), outputs.pop()
+        self.assertEqual(
+            source,
+            "probe/src/main.rs",
+            "the path cargo was given the source by, in cargo's own bytes",
+        )
+        self.assertFalse(source.startswith("/"), f"a source, relative: {real}")
+        self.assertTrue(output.startswith("/"), f"cargo's own output, absolute: {real}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            generated = fixture.write(
+                "target/debug/build/demo-9a/out/generated.rs", "// generated\n"
+            )
+            dep_info = fixture.unit(
+                "demo-9a", ["crates/demo/src/main.rs", str(generated)]
+            )
+            written = parse_dep_info(dep_info.read_text())
+            # The two rows: how far each of the fixture's two inputs is from being
+            # absolute, against how far cargo's two are. The names differ and are
+            # each their own; the shape is what has to agree.
+            self.assertEqual(
+                [token.startswith("/") for token in written[1:]],
+                [source.startswith("/"), output.startswith("/")],
+                f"the fixture spells {written[1:]} the way cargo spells "
+                f"{[source, output]}",
+            )
+            self.assertEqual(
+                written[1],
+                "crates/demo/src/main.rs",
+                "the fixture writes a source the way the test names it, which is how "
+                "a build is given it",
+            )
+            self.assertEqual(
+                written[2],
+                str(generated),
+                "and a file under its own output directory absolutely, as cargo "
+                "passes one",
+            )
+
+        # And the shapes the hand parser's own fixtures feed it, in cargo's bytes:
+        # the env-dep comment, a bare rule line, and a path with a space escaped.
+        self.assertIn("# env-dep:OUT_DIR=", real_text)
+        self.assertIn(f"{source}:", real_text)
+        spaced = sorted((self.target / "deps").glob("hyphen_demo-*.d"))
+        self.assertEqual(len(spaced), 1, f"the hyphenated unit's dep-info: {spaced}")
+        self.assertIn(
+            "hyphen-demo/src/a\\ b.rs",
+            spaced[0].read_text(),
+            "rustc escapes a space in a path the hand parser is tested on",
+        )
+        self.assertIn(
+            "hyphen-demo/src/a b.rs",
+            parse_dep_info(spaced[0].read_text()),
+            "and the parser's own escaping rule is what recovers it",
+        )
+
+    def test_the_hand_fixtures_fingerprint_and_identity_spellings_are_cargos(self):
+        """An underscored dep-info file name, hyphens in the fingerprint and artifact.
+
+        One target, three names, and cargo spells them two ways: the dep-info file
+        with the crate name's underscores (``hyphen_demo-<hash>.d``), the artifact
+        and the fingerprint's file with the target's own hyphens
+        (``bin-hyphen-demo``). The hand fixture encodes that relation in
+        `test_a_hyphenated_unit_is_matched_by_its_file_name` and writes it here, so
+        this is where the two are compared.
+        """
+        dep_infos = sorted((self.target / "deps").glob("hyphen_demo-*.d"))
+        self.assertEqual(len(dep_infos), 1, f"the hyphenated unit: {dep_infos}")
+        cargo_dep_info = dep_infos[0]
+        fingerprint = self.target / ".fingerprint" / (
+            f"hyphen-demo-{unit_hash(cargo_dep_info)}"
+        )
+        self.assertTrue(
+            fingerprint.is_dir(),
+            "cargo places a unit under the package that compiles it and the hash "
+            f"its dep-info is spelled with: {fingerprint}",
+        )
+        cargo_names = sorted(entry.name for entry in fingerprint.iterdir())
+        self.assertIn("bin-hyphen-demo", cargo_names)
+        self.assertIn(
+            "bin-hyphen-demo.json",
+            cargo_names,
+            f"the fingerprint's JSON is named after the target: {cargo_names}",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory, target="demo-launch")
+            written = fixture.unit(
+                "demo_launch-9a", ["crates/demo/src/main.rs"], artifact="demo-launch-9a"
+            )
+            placed = fixture.fingerprint("other", "25d0")
+            names = sorted(entry.name for entry in placed.iterdir())
+            # The two rows, each three names of one unit: cargo's and the
+            # fixture's, spelled the same way.
+            self.assertEqual(
+                [
+                    (
+                        cargo_dep_info.name.split("-")[0],
+                        "bin-hyphen-demo",
+                        "hyphen-demo",
+                    ),
+                    (written.name.split("-")[0], names[0], "demo-launch"),
+                ],
+                [
+                    ("hyphen_demo", "bin-hyphen-demo", "hyphen-demo"),
+                    ("demo_launch", "bin-demo-launch", "demo-launch"),
+                ],
+                f"the fixture writes {[written.name, names]}; cargo wrote "
+                f"{[cargo_dep_info.name, cargo_names]}",
+            )
+            self.assertEqual(
+                names,
+                ["bin-demo-launch", "bin-demo-launch.json"],
+                "the fingerprint is the pair cargo writes, JSON included — the "
+                "file an earlier fixture left out",
+            )
+            self.assertEqual(
+                placed.name,
+                "other-25d0",
+                "and a unit of a same-named target in another package is placed "
+                "under that package, as cargo places it",
+            )
+            # The uplift relation, the fixture's half of what `RealCargoOutputTests`
+            # measures on cargo's output: the artifact and the binary are one file.
+            linked = fixture.unit("demo-9a", ["crates/demo/src/main.rs"], link=True)
+            self.assertTrue(
+                os.path.samefile(
+                    fixture.target / "deps" / "demo-9a",
+                    fixture.target / fixture.target_name,
+                ),
+                f"the fixture links the unit's output into the profile directory as "
+                f"cargo does: {linked}",
+            )
 
 
 if __name__ == "__main__":

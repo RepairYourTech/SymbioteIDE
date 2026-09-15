@@ -105,10 +105,18 @@ class Fixture:
         one file. That relation is how the check knows which unit produced the
         binary — see `driven_unit` — so a test that is about *that* passes it, and
         one that is about the identity cargo's relation cannot give leaves it out.
-        Returns the unit's own dep-info file.
+
+        Each read is written the way the test names it, which is the way the build
+        was given it: measured on real builds, rustc spells a package's own sources
+        relative to the directory cargo ran in (`probe/src/main.rs`) and cargo's own
+        generated paths absolute, however the directory holding them is named. So a
+        test that means a source names it as the workspace spells it, and one that
+        means a file under the target directory names it absolutely — which is what
+        `test_source_record_real_cargo` compares these spellings against, on dep-info
+        cargo wrote. Returns the unit's own dep-info file.
         """
         output = self.target / "deps" / (artifact or stem)
-        body = f"{output}: " + " ".join(str(self.root / read) for read in reads) + "\n"
+        body = f"{output}: " + " ".join(reads) + "\n"
         dep_info = self.target / "deps" / f"{stem}.d"
         dep_info.write_text(body)
         self.fingerprint(package, stem.rsplit("-", 1)[-1], kind, target)
@@ -498,10 +506,9 @@ class CompletenessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory, target_dir="build-output/debug")
             other = fixture.write("target/debug/build/demo-9a/out/other.rs", "// elsewhere\n")
-            fixture.unit(
-                "demo-9a",
-                ["crates/demo/src/main.rs", "target/debug/build/demo-9a/out/other.rs"],
-            )
+            # The read under that other output directory is named absolutely, the
+            # way cargo passes a generated path (`unit` above).
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs", str(other)])
             self.assertEqual(
                 fixture.problems(complete(fixture)),
                 [
