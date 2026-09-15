@@ -45,7 +45,12 @@ macro_rules! ids {
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
         }
-    )+};
+    )+
+
+    /// Every identity this crate declares, in declaration order. The vocabulary
+    /// owns each of them, so an identity cannot arrive without an owner.
+    pub const IDENTITY_NAMES: &[&str] = &[$(stringify!($name)),+];
+    };
 }
 
 ids!(
@@ -106,6 +111,7 @@ ids!(
     CommandId,
     SecretLeaseId,
     ProjectionId,
+    ConfigProjectionId,
     PairingId
 );
 

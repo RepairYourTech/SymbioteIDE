@@ -1,0 +1,4570 @@
+{
+  "$defs": {
+    "AccessSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "grants": {
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "policy_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "roots": {
+          "items": {
+            "$ref": "#/$defs/RootId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "project_id",
+        "roots",
+        "grants",
+        "policy_revision"
+      ],
+      "type": "object"
+    },
+    "Actor": {
+      "oneOf": [
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/UserId"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/HostId"
+            },
+            "kind": {
+              "const": "host",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/DispatchId"
+            },
+            "kind": {
+              "const": "worker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AgentRuntimeAdapterId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "AgentRuntimeAdapterId",
+      "type": "string"
+    },
+    "Ambiguity": {
+      "additionalProperties": false,
+      "description": "An unresolved question. An implementation worker may not quietly convert one\nof these into code, which is why it is a record with an owner and a state.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/AmbiguityId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "question": {
+          "type": "string"
+        },
+        "resolved_by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/AmbiguityState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "question",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Ambiguity",
+      "type": "object"
+    },
+    "AmbiguityId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "AmbiguityState": {
+      "enum": [
+        "open",
+        "escalated",
+        "resolved"
+      ],
+      "type": "string"
+    },
+    "Annotation": {
+      "additionalProperties": false,
+      "description": "A human or worker note attached to another record. The target is typed, so an\nannotation cannot float free of what it annotates.",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Actor"
+        },
+        "body": {
+          "type": "string"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/AnnotationId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/AnnotationState"
+        },
+        "target": {
+          "$ref": "#/$defs/AnnotationTarget"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "target",
+        "body",
+        "author",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Annotation",
+      "type": "object"
+    },
+    "AnnotationId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "AnnotationState": {
+      "enum": [
+        "open",
+        "resolved"
+      ],
+      "type": "string"
+    },
+    "AnnotationTarget": {
+      "oneOf": [
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            "kind": {
+              "const": "artifact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/EvidenceId"
+            },
+            "kind": {
+              "const": "evidence",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/KnowledgeId"
+            },
+            "kind": {
+              "const": "knowledge",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/RequirementId"
+            },
+            "kind": {
+              "const": "requirement",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/DecisionId"
+            },
+            "kind": {
+              "const": "decision",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "content_digest": {
+          "type": "string"
+        },
+        "dispatch_id": {
+          "$ref": "#/$defs/DispatchId"
+        },
+        "head": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/ChangeStreamId"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "task_id",
+        "dispatch_id",
+        "stream_id",
+        "head",
+        "media_type",
+        "content_digest",
+        "provenance"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "ArtifactId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "AuthenticationKind": {
+      "enum": [
+        "api_credential",
+        "harness_managed",
+        "local_unauthenticated"
+      ],
+      "type": "string"
+    },
+    "BillingEntitlement": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "id": {
+          "$ref": "#/$defs/BillingEntitlementId"
+        },
+        "kind": {
+          "$ref": "#/$defs/BillingKind"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderConnectionId"
+        },
+        "verification_evidence": {
+          "$ref": "#/$defs/EvidenceId"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "kind",
+        "verification_evidence",
+        "expires_at"
+      ],
+      "title": "BillingEntitlement",
+      "type": "object"
+    },
+    "BillingEntitlementId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "BillingKind": {
+      "enum": [
+        "metered_api",
+        "harness_subscription",
+        "local"
+      ],
+      "type": "string"
+    },
+    "BindingId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Capability": {
+      "additionalProperties": false,
+      "description": "A capability the product claims, and whether it is qualified. Capability\nClosure is assessed against these records rather than against prose.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "required_controls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/CapabilityState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "name",
+        "required_controls",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Capability",
+      "type": "object"
+    },
+    "CapabilityId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "CapabilityState": {
+      "enum": [
+        "proposed",
+        "qualified",
+        "unavailable",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "ChangeStream": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "head": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "history": {
+          "items": {
+            "$ref": "#/$defs/StreamEvent"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/ChangeStreamId"
+        },
+        "initial_target": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "last_validated_head": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_validated_target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lineage": {
+          "$ref": "#/$defs/StreamLineage"
+        },
+        "objective": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectiveId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "originating_chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root_id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "state": {
+          "$ref": "#/$defs/StreamState"
+        },
+        "target": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "worktree": {
+          "$ref": "#/$defs/WorktreeId"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "root_id",
+        "tasks",
+        "originating_chat",
+        "sessions",
+        "worktree",
+        "branch",
+        "lineage",
+        "base",
+        "head",
+        "target",
+        "initial_target",
+        "state",
+        "revision",
+        "history"
+      ],
+      "title": "ChangeStream",
+      "type": "object"
+    },
+    "ChangeStreamId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Chat": {
+      "additionalProperties": false,
+      "description": "A conversation. Distinct from Session (a runtime session), from ChangeStream\n(the durable unit of mutation) and from Worktree: a chat may create a stream,\nand a stream may outlive any chat that wrote to it.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "mutating": {
+          "type": "boolean"
+        },
+        "origin": {
+          "$ref": "#/$defs/ChatOrigin"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ChatState"
+        },
+        "stream_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeStreamId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "origin",
+        "mutating",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Chat",
+      "type": "object"
+    },
+    "ChatId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ChatOrigin": {
+      "enum": [
+        "human",
+        "orchestrator"
+      ],
+      "type": "string"
+    },
+    "ChatState": {
+      "enum": [
+        "open",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "Checkpoint": {
+      "additionalProperties": false,
+      "description": "A checkpoint within a plan: a point a plan may be paused or resumed from.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/CheckpointId"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/PlanId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sequence": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/CheckpointState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "plan_id",
+        "sequence",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Checkpoint",
+      "type": "object"
+    },
+    "CheckpointId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "CheckpointState": {
+      "enum": [
+        "pending",
+        "reached",
+        "skipped"
+      ],
+      "type": "string"
+    },
+    "Client": {
+      "additionalProperties": false,
+      "description": "A client installation. Capability advertisement is recorded here so a client\ncan be refused rather than assumed capable; the advertisement is a claim the\nHost qualifies, never an authorization.",
+      "properties": {
+        "advertised_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "device_id": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ClientId"
+        },
+        "kind": {
+          "$ref": "#/$defs/ClientKind"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ClientState"
+        },
+        "user_id": {
+          "$ref": "#/$defs/UserId"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "user_id",
+        "device_id",
+        "kind",
+        "advertised_capabilities",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Client",
+      "type": "object"
+    },
+    "ClientId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ClientKind": {
+      "enum": [
+        "desktop",
+        "cli",
+        "mobile",
+        "plugin"
+      ],
+      "type": "string"
+    },
+    "ClientState": {
+      "enum": [
+        "connected",
+        "disconnected",
+        "superseded"
+      ],
+      "type": "string"
+    },
+    "CommandId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "CommandId",
+      "type": "string"
+    },
+    "CommitSha": {
+      "pattern": "^([A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$",
+      "type": "string"
+    },
+    "Confidence": {
+      "description": "basis points of certainty; 10000 is certain",
+      "maximum": 10000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ConfigProjection": {
+      "additionalProperties": false,
+      "description": "The projection of canonical configuration into a runtime's own config home.\nOwnership is recorded so a runtime's own config file is never mistaken for\nthe canonical record it was derived from.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ConfigProjectionId"
+        },
+        "locator": {
+          "type": "string"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runtime_profile_id": {
+          "$ref": "#/$defs/RuntimeProfileId"
+        },
+        "state": {
+          "$ref": "#/$defs/ConfigState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "runtime_profile_id",
+        "locator",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "ConfigProjection",
+      "type": "object"
+    },
+    "ConfigProjectionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ConfigState": {
+      "enum": [
+        "projected",
+        "stale",
+        "withdrawn"
+      ],
+      "type": "string"
+    },
+    "ContextBundleId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "ContextBundleId",
+      "type": "string"
+    },
+    "ContextPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "bundle": {
+          "$ref": "#/$defs/ContextBundleId"
+        },
+        "max_input_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reserved_output_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bundle",
+        "revision",
+        "max_input_tokens",
+        "reserved_output_tokens"
+      ],
+      "type": "object"
+    },
+    "Control": {
+      "enum": [
+        "filesystem",
+        "process",
+        "network",
+        "credentials",
+        "cancellation",
+        "completion_authority"
+      ],
+      "type": "string"
+    },
+    "ControllerSession": {
+      "additionalProperties": false,
+      "description": "A client's control session over a Project. Closing one releases control\nwithout ending the Project, its Team or any authorized headless work.",
+      "properties": {
+        "client_id": {
+          "$ref": "#/$defs/ClientId"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ControllerSessionId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ControllerSessionState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "client_id",
+        "project_id",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "ControllerSession",
+      "type": "object"
+    },
+    "ControllerSessionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ControllerSessionState": {
+      "enum": [
+        "open",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "CredentialReference": {
+      "additionalProperties": false,
+      "description": "Contains only a vault reference. Credentials never belong in the contract.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/CredentialReferenceId"
+        },
+        "vault_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vault_key"
+      ],
+      "title": "CredentialReference",
+      "type": "object"
+    },
+    "CredentialReferenceId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "CredentialReferenceId",
+      "type": "string"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "description": "An architecture decision. The state set is the one #173 owns, expressed here\nas the domain shape so downstream issues do not each invent their own.",
+      "properties": {
+        "alternatives": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/DecisionId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/DecisionState"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "statement",
+        "alternatives",
+        "evidence",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Decision",
+      "type": "object"
+    },
+    "DecisionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "DecisionState": {
+      "enum": [
+        "proposed",
+        "investigating",
+        "accepted",
+        "superseded",
+        "rejected",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "Device": {
+      "additionalProperties": false,
+      "description": "A physical or virtual machine a client runs on. It is not a Host: a Device\nmay be paired to a Host, and revocation is a state rather than a deletion.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "host_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HostId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "kind": {
+          "$ref": "#/$defs/DeviceKind"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/DeviceState"
+        },
+        "user_id": {
+          "$ref": "#/$defs/UserId"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "user_id",
+        "kind",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Device",
+      "type": "object"
+    },
+    "DeviceId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "DeviceKind": {
+      "enum": [
+        "desktop",
+        "mobile",
+        "headless"
+      ],
+      "type": "string"
+    },
+    "DeviceState": {
+      "enum": [
+        "unpaired",
+        "paired",
+        "revoked"
+      ],
+      "type": "string"
+    },
+    "Diagnostic": {
+      "additionalProperties": false,
+      "description": "An observable finding. A degraded or unknown state is emitted here rather\nthan swallowed, so \"an unknown is not a zero\" has somewhere to live.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/DiagnosticId"
+        },
+        "message": {
+          "type": "string"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "state": {
+          "$ref": "#/$defs/DiagnosticState"
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "severity",
+        "message",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Diagnostic",
+      "type": "object"
+    },
+    "DiagnosticId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "DiagnosticState": {
+      "enum": [
+        "emitted",
+        "acknowledged",
+        "resolved"
+      ],
+      "type": "string"
+    },
+    "DiscoverySource": {
+      "enum": [
+        "configured",
+        "path_scan",
+        "user_declared",
+        "package_manager"
+      ],
+      "type": "string"
+    },
+    "Dispatch": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/WorkforceRuntimeContract"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/RuntimeContractId"
+        },
+        "id": {
+          "$ref": "#/$defs/DispatchId"
+        }
+      },
+      "required": [
+        "id",
+        "contract_id",
+        "contract"
+      ],
+      "title": "Dispatch",
+      "type": "object"
+    },
+    "DispatchId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "DriverState": {
+      "enum": [
+        "registered",
+        "deprecated",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "EnforcementClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "strength": {
+          "$ref": "#/$defs/EnforcementStrength"
+        },
+        "verified_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "strength",
+        "evidence",
+        "verified_at",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "EnforcementStrength": {
+      "enum": [
+        "native",
+        "host_enforced",
+        "externally_observed",
+        "emulated",
+        "unsupported"
+      ],
+      "type": "string"
+    },
+    "Environment": {
+      "additionalProperties": false,
+      "description": "An execution environment: the machine plus the installed harness set a\ndispatch may resolve against. Ownership sits with the Root it executes in.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "harness_drivers": {
+          "items": {
+            "$ref": "#/$defs/HarnessDriverId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "host_id": {
+          "$ref": "#/$defs/HostId"
+        },
+        "id": {
+          "$ref": "#/$defs/EnvironmentId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root_id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "state": {
+          "$ref": "#/$defs/EnvironmentState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "root_id",
+        "host_id",
+        "harness_drivers",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Environment",
+      "type": "object"
+    },
+    "EnvironmentId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "EnvironmentState": {
+      "enum": [
+        "discovered",
+        "verified",
+        "unavailable",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "EpistemicStatus": {
+      "enum": [
+        "CONFIRMED",
+        "DERIVED",
+        "INFERRED",
+        "UNRESOLVED"
+      ],
+      "type": "string"
+    },
+    "EscalationPolicy": {
+      "enum": [
+        "stop_and_request_human",
+        "return_to_lead"
+      ],
+      "type": "string"
+    },
+    "EvidenceId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ExecutionEpisode": {
+      "additionalProperties": false,
+      "properties": {
+        "dispatch": {
+          "$ref": "#/$defs/DispatchId"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/ExecutionEpisodeId"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "started_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "id",
+        "dispatch",
+        "session",
+        "started_at"
+      ],
+      "title": "ExecutionEpisode",
+      "type": "object"
+    },
+    "ExecutionEpisodeId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Experiment": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "items": {
+            "$ref": "#/$defs/EvidenceId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "candidate": {
+          "items": {
+            "$ref": "#/$defs/EvidenceId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/ExperimentId"
+        },
+        "method": {
+          "$ref": "#/$defs/LearnedMethodId"
+        },
+        "missing_samples": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "sample_size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "method",
+        "baseline",
+        "candidate",
+        "sample_size",
+        "missing_samples"
+      ],
+      "title": "Experiment",
+      "type": "object"
+    },
+    "ExperimentId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ExternalReference": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "type": "string"
+        },
+        "system": {
+          "$ref": "#/$defs/ExternalSystem"
+        }
+      },
+      "required": [
+        "system",
+        "locator"
+      ],
+      "title": "ExternalReference",
+      "type": "object"
+    },
+    "ExternalSystem": {
+      "enum": [
+        "github",
+        "harness",
+        "ci",
+        "deployment",
+        "source_symbol",
+        "publication",
+        "remote_host"
+      ],
+      "type": "string"
+    },
+    "Fabric": {
+      "additionalProperties": false,
+      "description": "The set of Hosts one User operates. A Fabric owns Hosts; a Host belongs to at\nmost one Fabric, which is what makes single-machine and multi-Host use the\nsame semantics rather than two models.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "hosts": {
+          "items": {
+            "$ref": "#/$defs/HostId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/FabricId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/FabricState"
+        },
+        "user_id": {
+          "$ref": "#/$defs/UserId"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "user_id",
+        "hosts",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Fabric",
+      "type": "object"
+    },
+    "FabricId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "FabricState": {
+      "enum": [
+        "enrolled",
+        "degraded",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "FollowUp": {
+      "additionalProperties": false,
+      "description": "Work discovered while doing other work. It is a record rather than a note so\nnewly discovered scope is linked canonical work and not silently dropped.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/FollowUpId"
+        },
+        "origin": {
+          "$ref": "#/$defs/ExternalReference"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/FollowUpState"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "origin",
+        "statement",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "FollowUp",
+      "type": "object"
+    },
+    "FollowUpId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "FollowUpState": {
+      "enum": [
+        "open",
+        "accepted",
+        "declined",
+        "done"
+      ],
+      "type": "string"
+    },
+    "Freshness": {
+      "enum": [
+        "current",
+        "stale",
+        "contradicted",
+        "debt",
+        "unresolved"
+      ],
+      "type": "string"
+    },
+    "Gate": {
+      "enum": [
+        "tests",
+        "security",
+        "impact",
+        "documentation",
+        "independent_review",
+        "delivery",
+        "capability_closure"
+      ],
+      "type": "string"
+    },
+    "GoalRun": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "executions": {
+          "items": {
+            "$ref": "#/$defs/NativeExecutionId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/GoalRunId"
+        },
+        "max_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "objective": {
+          "$ref": "#/$defs/ObjectiveId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "objective",
+        "max_tokens",
+        "deadline",
+        "executions"
+      ],
+      "title": "GoalRun",
+      "type": "object"
+    },
+    "GoalRunId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "HarnessDriver": {
+      "additionalProperties": false,
+      "description": "A harness driver: the software family a Harness Pack integrates with. This is\na value object for the domain — integration depth and truthful degradation\nbelong to the adapter SDK, which owns that claim.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/HarnessDriverId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/DriverState"
+        },
+        "vendor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "name",
+        "vendor",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "HarnessDriver",
+      "type": "object"
+    },
+    "HarnessDriverId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Host": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "additionalProperties": false,
+          "properties": {
+            "cancellation": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "completion_authority": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "credentials": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "filesystem": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "network": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "process": {
+              "$ref": "#/$defs/EnforcementClaim"
+            }
+          },
+          "type": "object"
+        },
+        "device": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "fabric": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FabricId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/HostId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "supported_runtimes": {
+          "items": {
+            "$ref": "#/$defs/RuntimeKind"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "device",
+        "supported_runtimes",
+        "controls"
+      ],
+      "title": "Host",
+      "type": "object"
+    },
+    "HostId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "HostId",
+      "type": "string"
+    },
+    "InferenceProviderAdapterId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "InferenceProviderAdapterId",
+      "type": "string"
+    },
+    "Installation": {
+      "additionalProperties": false,
+      "description": "One installed driver on one Environment. Version and discovery source are\nobservations with a date, not standing facts about the machine.",
+      "properties": {
+        "discovered_by": {
+          "$ref": "#/$defs/DiscoverySource"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/EnvironmentId"
+        },
+        "harness_driver_id": {
+          "$ref": "#/$defs/HarnessDriverId"
+        },
+        "id": {
+          "$ref": "#/$defs/InstallationId"
+        },
+        "path": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "environment_id",
+        "harness_driver_id",
+        "version",
+        "path",
+        "discovered_by",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Installation",
+      "type": "object"
+    },
+    "InstallationId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "KnowledgeClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "ancestry": {
+          "items": {
+            "$ref": "#/$defs/KnowledgeId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "audience": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence",
+          "description": "How strongly this claim is held, recorded with the claim rather than\ninferred from how confidently a projection renders it."
+        },
+        "epistemic_status": {
+          "$ref": "#/$defs/EpistemicStatus"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "freshness": {
+          "$ref": "#/$defs/Freshness"
+        },
+        "id": {
+          "$ref": "#/$defs/KnowledgeId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "projections": {
+          "items": {
+            "$ref": "#/$defs/ProjectionId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_anchors": {
+          "items": {
+            "$ref": "#/$defs/ExternalReference"
+          },
+          "type": "array"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "revision",
+        "statement",
+        "audience",
+        "epistemic_status",
+        "freshness",
+        "confidence",
+        "evidence",
+        "ancestry",
+        "source_anchors",
+        "projections",
+        "provenance"
+      ],
+      "title": "KnowledgeClaim",
+      "type": "object"
+    },
+    "KnowledgeId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "LearnedMethod": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactId",
+          "description": "Content is a proposal; it has no permission or completion-policy authority."
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/LearnedMethodId"
+        },
+        "opted_in_by": {
+          "$ref": "#/$defs/UserId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "revision",
+        "opted_in_by",
+        "evidence",
+        "artifact"
+      ],
+      "title": "LearnedMethod",
+      "type": "object"
+    },
+    "LearnedMethodId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Milestone": {
+      "additionalProperties": false,
+      "description": "A milestone within a plan. Reaching one is recorded, not inferred from task\ncompletion, so a plan's progress is auditable rather than narrated.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/MilestoneId"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/PlanId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MilestoneState"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "plan_id",
+        "statement",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Milestone",
+      "type": "object"
+    },
+    "MilestoneId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "MilestoneState": {
+      "enum": [
+        "planned",
+        "reached",
+        "missed",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "Model": {
+      "additionalProperties": false,
+      "description": "A model offered through a provider connection. Models are records because\navailability moves independently of the connection that offers them.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ModelId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "provider_connection_id": {
+          "$ref": "#/$defs/ProviderConnectionId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ModelState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "provider_connection_id",
+        "name",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Model",
+      "type": "object"
+    },
+    "ModelId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ModelState": {
+      "enum": [
+        "available",
+        "degraded",
+        "unavailable",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "NativeExecution": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/AccessSnapshot"
+        },
+        "dispatch": {
+          "$ref": "#/$defs/DispatchId"
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalRunId"
+        },
+        "id": {
+          "$ref": "#/$defs/NativeExecutionId"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelId"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeExecutionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "token_limit": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "dispatch",
+        "goal",
+        "model",
+        "access",
+        "token_limit"
+      ],
+      "title": "NativeExecution",
+      "type": "object"
+    },
+    "NativeExecutionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Objective": {
+      "additionalProperties": false,
+      "description": "An accepted objective. It is deliberate that this is not a Task: an objective\nmay be reached by no task at all, and the objective outlives the dispatch of\nany single one.",
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/ObjectiveClass"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ObjectiveId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/ObjectiveState"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "class",
+        "statement",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Objective",
+      "type": "object"
+    },
+    "ObjectiveClass": {
+      "enum": [
+        "outcome",
+        "maintenance",
+        "operational"
+      ],
+      "type": "string"
+    },
+    "ObjectiveId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ObjectiveState": {
+      "enum": [
+        "proposed",
+        "active",
+        "achieved",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "Pairing": {
+      "additionalProperties": false,
+      "description": "A device-to-Host pairing. Expiry and revocation are terminal for the pairing\nidentity: re-pairing is a new Pairing, never a resurrected one.",
+      "properties": {
+        "device_id": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "host_id": {
+          "$ref": "#/$defs/HostId"
+        },
+        "id": {
+          "$ref": "#/$defs/PairingId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/PairingState"
+        },
+        "transport": {
+          "$ref": "#/$defs/PairingTransport"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "device_id",
+        "host_id",
+        "transport",
+        "state",
+        "expires_at",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Pairing",
+      "type": "object"
+    },
+    "PairingId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "PairingState": {
+      "enum": [
+        "proposed",
+        "confirmed",
+        "revoked",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "PairingTransport": {
+      "enum": [
+        "local",
+        "loopback_relay",
+        "remote_relay"
+      ],
+      "type": "string"
+    },
+    "Permission": {
+      "enum": [
+        "read_root",
+        "mutate_stream",
+        "execute_process",
+        "network",
+        "use_credential"
+      ],
+      "type": "string"
+    },
+    "Plan": {
+      "additionalProperties": false,
+      "description": "A plan for reaching an Objective. It is not a Task and owns no dispatch: a\nplan is the intention, and tasks are what carries it out.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/PlanId"
+        },
+        "objective_id": {
+          "$ref": "#/$defs/ObjectiveId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/PlanState"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "objective_id",
+        "statement",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Plan",
+      "type": "object"
+    },
+    "PlanId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "PlanState": {
+      "enum": [
+        "draft",
+        "active",
+        "achieved",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "Plugin": {
+      "additionalProperties": false,
+      "description": "A plugin identity. Enabling grants no authority by itself: trust and the data\nownership policy are owned elsewhere, and this record only says which plugin\nis enabled where.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/PluginId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/PluginState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "name",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Plugin",
+      "type": "object"
+    },
+    "PluginId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "PluginState": {
+      "enum": [
+        "available",
+        "enabled",
+        "disabled",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "Project": {
+      "additionalProperties": false,
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "lead": {
+          "$ref": "#/$defs/RoleId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/$defs/UserId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "roots": {
+          "items": {
+            "$ref": "#/$defs/RootId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "name",
+        "owner",
+        "roots",
+        "lead",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Project",
+      "type": "object"
+    },
+    "ProjectId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Projection": {
+      "additionalProperties": false,
+      "description": "A published projection of knowledge. Human documentation and compact agent\ncontext are projections of the same claims, so neither is an independent\nauthority: both point back at the `KnowledgeClaim` they render.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ProjectionId"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProjectionKind"
+        },
+        "knowledge_id": {
+          "$ref": "#/$defs/KnowledgeId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ProjectionState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "knowledge_id",
+        "kind",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Projection",
+      "type": "object"
+    },
+    "ProjectionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ProjectionKind": {
+      "enum": [
+        "human_documentation",
+        "agent_context"
+      ],
+      "type": "string"
+    },
+    "ProjectionState": {
+      "enum": [
+        "draft",
+        "published",
+        "retracted"
+      ],
+      "type": "string"
+    },
+    "ProtocolId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "external_references": {
+          "items": {
+            "$ref": "#/$defs/ExternalReference"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "created_at",
+        "updated_at",
+        "actor",
+        "external_references"
+      ],
+      "type": "object"
+    },
+    "ProviderConnection": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/InferenceProviderAdapterId"
+        },
+        "authentication": {
+          "$ref": "#/$defs/AuthenticationKind"
+        },
+        "endpoint_reference": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/ProviderConnectionId"
+        }
+      },
+      "required": [
+        "id",
+        "adapter",
+        "endpoint_reference",
+        "authentication"
+      ],
+      "title": "ProviderConnection",
+      "type": "object"
+    },
+    "ProviderConnectionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "RecordDisposition": {
+      "oneOf": [
+        {
+          "enum": [
+            "active"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "archived": {
+              "properties": {
+                "at": {
+                  "$ref": "#/$defs/Timestamp"
+                }
+              },
+              "required": [
+                "at"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "archived"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "tombstoned": {
+              "properties": {
+                "at": {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "at",
+                "reason"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "tombstoned"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ReleaseTarget": {
+      "additionalProperties": false,
+      "description": "A release target. Frozen is a state rather than a lock, so an unplanned\nmutation is a state conflict rather than a silent edit.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/ReleaseTargetId"
+        },
+        "label": {
+          "type": "string"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ReleaseTargetState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "label",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "ReleaseTarget",
+      "type": "object"
+    },
+    "ReleaseTargetId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "ReleaseTargetState": {
+      "enum": [
+        "planned",
+        "frozen",
+        "released",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "Request": {
+      "additionalProperties": false,
+      "description": "A client request as received, before any interpretation. Preserving the\nrequest separately from the objective it produces is what makes \"the\ntranscript is not the source of truth\" checkable: the accepted intent is a\nrecord with its own identity.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "requested_by": {
+          "$ref": "#/$defs/UserId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/RequestState"
+        },
+        "utterance": {
+          "$ref": "#/$defs/RequestUtterance"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "requested_by",
+        "utterance",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Request",
+      "type": "object"
+    },
+    "RequestId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "RequestState": {
+      "enum": [
+        "received",
+        "accepted",
+        "rejected",
+        "fulfilled",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "RequestUtterance": {
+      "enum": [
+        "idea",
+        "question",
+        "constraint",
+        "decision",
+        "approval",
+        "feedback",
+        "requested_work"
+      ],
+      "type": "string"
+    },
+    "Requirement": {
+      "additionalProperties": false,
+      "description": "An approved requirement. Supersession is lineage, not deletion: an accepted\nrequirement is immutable and a change arrives as a new record naming it.",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/RequirementId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/RequirementState"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequirementId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "statement",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Requirement",
+      "type": "object"
+    },
+    "RequirementId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "RequirementState": {
+      "enum": [
+        "draft",
+        "accepted",
+        "superseded",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "ResourceLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_concurrency": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_cpu_millicores": {
+          "description": "The CPU the candidate's dispatch needs, in millicores. Absent means the\ncandidate declares no CPU demand and the readiness report asks the Host\nfor none: concurrency is not a CPU reservation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_memory_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_wall_time_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_total_tokens",
+        "max_wall_time_ms",
+        "max_concurrency",
+        "max_memory_bytes"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RoleId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "operating_contract": {
+          "$ref": "#/$defs/VersionedRoleContract"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "revision",
+        "name",
+        "operating_contract"
+      ],
+      "title": "Role",
+      "type": "object"
+    },
+    "RoleContractId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "RoleId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Root": {
+      "additionalProperties": false,
+      "properties": {
+        "host_paths": {
+          "additionalProperties": false,
+          "description": "An observed placement, not identity or filesystem authorization.",
+          "patternProperties": {
+            "^[A-Za-z0-9_-]+$": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "repository": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExternalReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "revision",
+        "host_paths"
+      ],
+      "title": "Root",
+      "type": "object"
+    },
+    "RootId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "RuntimeContractId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "RuntimeKind": {
+      "enum": [
+        "NATIVE_SYMBIOTE",
+        "EXTERNAL_HARNESS"
+      ],
+      "type": "string"
+    },
+    "RuntimeProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/AgentRuntimeAdapterId"
+        },
+        "billing_entitlement": {
+          "$ref": "#/$defs/BillingEntitlementId"
+        },
+        "credential": {
+          "$ref": "#/$defs/CredentialReferenceId"
+        },
+        "eligible_hosts": {
+          "items": {
+            "$ref": "#/$defs/HostId"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/RuntimeProfileId"
+        },
+        "installation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstallationId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "$ref": "#/$defs/ModelId"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderConnectionId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeKind"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "runtime",
+        "adapter",
+        "provider",
+        "credential",
+        "billing_entitlement",
+        "model",
+        "eligible_hosts"
+      ],
+      "title": "RuntimeProfile",
+      "type": "object"
+    },
+    "RuntimeProfileId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "SecretLease": {
+      "additionalProperties": false,
+      "description": "A lease over a credential reference. The record holds a reference and an\nexpiry, never a secret value; expiry and revocation are states so a lease is\nnever silently reusable.",
+      "properties": {
+        "credential_reference_id": {
+          "$ref": "#/$defs/CredentialReferenceId"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "id": {
+          "$ref": "#/$defs/SecretLeaseId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/SecretLeaseState"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "credential_reference_id",
+        "expires_at",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "SecretLease",
+      "type": "object"
+    },
+    "SecretLeaseId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "SecretLeaseState": {
+      "enum": [
+        "active",
+        "expired",
+        "revoked"
+      ],
+      "type": "string"
+    },
+    "Session": {
+      "additionalProperties": false,
+      "properties": {
+        "dispatch_id": {
+          "$ref": "#/$defs/DispatchId"
+        },
+        "foreign_reference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExternalReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "kind": {
+          "$ref": "#/$defs/RuntimeKind"
+        }
+      },
+      "required": [
+        "id",
+        "dispatch_id",
+        "kind"
+      ],
+      "title": "Session",
+      "type": "object"
+    },
+    "SessionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "Severity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "type": "string"
+    },
+    "StreamAction": {
+      "oneOf": [
+        {
+          "properties": {
+            "head": {
+              "$ref": "#/$defs/CommitSha"
+            },
+            "kind": {
+              "const": "advance",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/CommitSha"
+            }
+          },
+          "required": [
+            "kind",
+            "head",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "collision",
+              "type": "string"
+            },
+            "other": {
+              "$ref": "#/$defs/ChangeStreamId"
+            }
+          },
+          "required": [
+            "kind",
+            "other"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "head": {
+              "$ref": "#/$defs/CommitSha"
+            },
+            "kind": {
+              "const": "reconcile",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/CommitSha"
+            }
+          },
+          "required": [
+            "kind",
+            "head",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "head": {
+              "$ref": "#/$defs/CommitSha"
+            },
+            "kind": {
+              "const": "validate",
+              "type": "string"
+            },
+            "run": {
+              "$ref": "#/$defs/VerificationRunId"
+            },
+            "target": {
+              "$ref": "#/$defs/CommitSha"
+            }
+          },
+          "required": [
+            "kind",
+            "head",
+            "target",
+            "run"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "head": {
+              "$ref": "#/$defs/CommitSha"
+            },
+            "kind": {
+              "const": "integrate",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/CommitSha"
+            }
+          },
+          "required": [
+            "kind",
+            "head",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "cancel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "StreamCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/StreamAction"
+        },
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "expected_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "host_id": {
+          "$ref": "#/$defs/HostId"
+        },
+        "id": {
+          "$ref": "#/$defs/CommandId"
+        }
+      },
+      "required": [
+        "id",
+        "expected_revision",
+        "host_id",
+        "at",
+        "action"
+      ],
+      "type": "object"
+    },
+    "StreamEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/StreamCommand"
+        },
+        "resulting_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command",
+        "resulting_revision"
+      ],
+      "type": "object"
+    },
+    "StreamLineage": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "independent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "stacked",
+              "type": "string"
+            },
+            "parent": {
+              "$ref": "#/$defs/ChangeStreamId"
+            },
+            "parent_head": {
+              "$ref": "#/$defs/CommitSha"
+            }
+          },
+          "required": [
+            "kind",
+            "parent",
+            "parent_head"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "StreamState": {
+      "enum": [
+        "active",
+        "needs_revalidation",
+        "collided",
+        "validated",
+        "integrated",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "Task": {
+      "additionalProperties": false,
+      "properties": {
+        "dispatch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dispatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "history": {
+          "items": {
+            "$ref": "#/$defs/TaskEvent"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role_id": {
+          "$ref": "#/$defs/RoleId"
+        },
+        "root_id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "state": {
+          "$ref": "#/$defs/TaskState"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/ChangeStreamId"
+        },
+        "task_contract": {
+          "$ref": "#/$defs/VersionedTaskContract"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "root_id",
+        "role_id",
+        "stream_id",
+        "task_contract",
+        "revision",
+        "state",
+        "history"
+      ],
+      "title": "Task",
+      "type": "object"
+    },
+    "TaskAction": {
+      "oneOf": [
+        {
+          "properties": {
+            "dispatch": {
+              "$ref": "#/$defs/Dispatch"
+            },
+            "kind": {
+              "const": "start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "dispatch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "dispatch_id": {
+              "$ref": "#/$defs/DispatchId"
+            },
+            "kind": {
+              "const": "request_completion",
+              "type": "string"
+            },
+            "report": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "dispatch_id",
+            "report"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "begin_verification",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/VerificationEvidence"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "complete",
+              "type": "string"
+            },
+            "stream": {
+              "$ref": "#/$defs/ChangeStream"
+            }
+          },
+          "required": [
+            "kind",
+            "stream",
+            "evidence"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "fail",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "cancel",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "interrupt",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "recover",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/TaskAction"
+        },
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "expected_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/CommandId"
+        }
+      },
+      "required": [
+        "id",
+        "expected_revision",
+        "actor",
+        "at",
+        "action"
+      ],
+      "type": "object"
+    },
+    "TaskContractId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "TaskDependencyEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TaskDependencyKind"
+        },
+        "target": {
+          "$ref": "#/$defs/TaskDependencyTarget"
+        }
+      },
+      "required": [
+        "kind",
+        "target"
+      ],
+      "title": "TaskDependencyEdge",
+      "type": "object"
+    },
+    "TaskDependencyKind": {
+      "oneOf": [
+        {
+          "const": "requires",
+          "description": "This task cannot start until the target completes.",
+          "type": "string"
+        },
+        {
+          "const": "consumes_contract_from",
+          "description": "This task consumes a versioned contract produced by the target.",
+          "type": "string"
+        },
+        {
+          "const": "blocks",
+          "description": "This task blocks the target (stored on the blocking task).",
+          "type": "string"
+        },
+        {
+          "const": "reviews",
+          "description": "This task independently reviews the target. Recorded, not yet enforced.",
+          "type": "string"
+        },
+        {
+          "const": "verifies",
+          "description": "This task independently verifies the target. Recorded, not yet enforced.",
+          "type": "string"
+        },
+        {
+          "const": "supersedes",
+          "description": "This task supersedes the target. Recorded, not yet enforced.",
+          "type": "string"
+        },
+        {
+          "const": "conflicts_with",
+          "description": "This task conflicts with the target. Recorded, not yet enforced.",
+          "type": "string"
+        },
+        {
+          "const": "follow_up_to",
+          "description": "This task follows up on the target. Recorded, not yet enforced.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskDependencyTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "project_id",
+        "task_id"
+      ],
+      "type": "object"
+    },
+    "TaskEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/TaskCommand"
+        },
+        "from": {
+          "$ref": "#/$defs/TaskState"
+        },
+        "resulting_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "$ref": "#/$defs/TaskState"
+        }
+      },
+      "required": [
+        "command",
+        "resulting_revision",
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "TaskId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "TaskState": {
+      "enum": [
+        "ready",
+        "running",
+        "completion_requested",
+        "verifying",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "UTC milliseconds from Unix epoch, assigned by the authority, not a worker clock.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "User": {
+      "additionalProperties": false,
+      "description": "A principal that can hold authority. Owns Projects, Devices and Fabric planes.",
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/UserId"
+        },
+        "kind": {
+          "$ref": "#/$defs/UserKind"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "kind",
+        "display_name",
+        "disposition",
+        "provenance"
+      ],
+      "title": "User",
+      "type": "object"
+    },
+    "UserId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "UserKind": {
+      "enum": [
+        "human",
+        "service"
+      ],
+      "type": "string"
+    },
+    "VerificationEvidence": {
+      "additionalProperties": false,
+      "description": "A verifier-produced claim whose authenticity must be checked by the Host. This\nvalue alone grants no authority. Each gate binds to a run, artifact, dispatch and\nexact source/target pair; a runtime-local success flag is not evidence.",
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "dispatch_id": {
+          "$ref": "#/$defs/DispatchId"
+        },
+        "gate": {
+          "$ref": "#/$defs/Gate"
+        },
+        "head": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "id": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "outcome": {
+          "$ref": "#/$defs/VerificationOutcome"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "reviewer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RoleId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "$ref": "#/$defs/VerificationRunId"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/ChangeStreamId"
+        },
+        "target": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "verified_by": {
+          "$ref": "#/$defs/HostId"
+        }
+      },
+      "required": [
+        "id",
+        "run_id",
+        "artifact_id",
+        "project_id",
+        "task_id",
+        "dispatch_id",
+        "stream_id",
+        "gate",
+        "outcome",
+        "head",
+        "target",
+        "verified_by",
+        "recorded_at"
+      ],
+      "title": "VerificationEvidence",
+      "type": "object"
+    },
+    "VerificationOutcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ],
+      "type": "string"
+    },
+    "VerificationRun": {
+      "additionalProperties": false,
+      "description": "A recorded verification run. This is the record that makes the completion\ngates auditable: `VerificationEvidence` cites a run, and the run carries the\nexact source and target pair it was produced against. Recording a run is not\nasserting that it passed — `outcome` carries what the run reported.",
+      "properties": {
+        "dispatch_id": {
+          "$ref": "#/$defs/DispatchId"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/VerificationRunId"
+        },
+        "outcome": {
+          "$ref": "#/$defs/VerificationOutcome"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "started_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "state": {
+          "$ref": "#/$defs/VerificationRunState"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/ChangeStreamId"
+        },
+        "target": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "task_id",
+        "dispatch_id",
+        "stream_id",
+        "source",
+        "target",
+        "outcome",
+        "state",
+        "started_at",
+        "disposition",
+        "provenance"
+      ],
+      "title": "VerificationRun",
+      "type": "object"
+    },
+    "VerificationRunId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "VerificationRunState": {
+      "enum": [
+        "started",
+        "finished"
+      ],
+      "type": "string"
+    },
+    "VersionedProtocol": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ProtocolId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "revision"
+      ],
+      "title": "VersionedProtocol",
+      "type": "object"
+    },
+    "VersionedRoleContract": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RoleContractId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "revision"
+      ],
+      "title": "VersionedRoleContract",
+      "type": "object"
+    },
+    "VersionedTaskContract": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/TaskContractId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "revision"
+      ],
+      "title": "VersionedTaskContract",
+      "type": "object"
+    },
+    "WorkforceBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/AccessSnapshot"
+        },
+        "context": {
+          "$ref": "#/$defs/ContextPolicy"
+        },
+        "escalation": {
+          "$ref": "#/$defs/EscalationPolicy"
+        },
+        "id": {
+          "$ref": "#/$defs/BindingId"
+        },
+        "profile_id": {
+          "$ref": "#/$defs/RuntimeProfileId"
+        },
+        "profile_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "protocol": {
+          "$ref": "#/$defs/VersionedProtocol"
+        },
+        "required_controls": {
+          "items": {
+            "$ref": "#/$defs/Control"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "required_skills": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "required_tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role_id": {
+          "$ref": "#/$defs/RoleId"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "role_id",
+        "profile_id",
+        "profile_revision",
+        "protocol",
+        "access",
+        "required_controls",
+        "context",
+        "required_tools",
+        "required_skills",
+        "escalation"
+      ],
+      "title": "WorkforceBinding",
+      "type": "object"
+    },
+    "WorkforceRuntimeContract": {
+      "additionalProperties": false,
+      "description": "Historical dispatch contract. Fields have no setters: re-staffing produces a\nnew binding revision and a new Dispatch, never an in-place contract rewrite.",
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/WorkforceBinding"
+        },
+        "compiled_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "effective_access": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The least-privilege access this dispatch operates under: the binding's\nauthorized access narrowed to exactly this Task's Root. `None` only on\ncontracts journaled before narrowing existed (they fall back to the\nfull binding snapshot they were compiled with)."
+        },
+        "enforcement": {
+          "additionalProperties": false,
+          "properties": {
+            "cancellation": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "completion_authority": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "credentials": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "filesystem": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "network": {
+              "$ref": "#/$defs/EnforcementClaim"
+            },
+            "process": {
+              "$ref": "#/$defs/EnforcementClaim"
+            }
+          },
+          "type": "object"
+        },
+        "gates": {
+          "items": {
+            "$ref": "#/$defs/Gate"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "host_id": {
+          "$ref": "#/$defs/HostId"
+        },
+        "host_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceLimits"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The resource limits this dispatch was staffed with. They are recorded,\nnot merely referenced: the Host binds the execution it produces to\nexactly these, and a limit it cannot bind refuses that execution.\n`None` only on contracts journaled before limits were recorded: they\ndeserialize rather than break replay, and activation refuses them for\nhaving no bound to apply instead of running unbounded."
+        },
+        "profile": {
+          "$ref": "#/$defs/RuntimeProfile"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        },
+        "root_id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/ChangeStreamId"
+        },
+        "task_contract": {
+          "$ref": "#/$defs/VersionedTaskContract"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "binding",
+        "role",
+        "profile",
+        "host_id",
+        "host_revision",
+        "task_id",
+        "root_id",
+        "stream_id",
+        "task_revision",
+        "task_contract",
+        "gates",
+        "enforcement",
+        "compiled_at"
+      ],
+      "title": "WorkforceRuntimeContract",
+      "type": "object"
+    },
+    "Worktree": {
+      "additionalProperties": false,
+      "description": "A Git worktree allocated to a Root. Worktrees isolate Git mutation, not\nnetwork, secrets, production services or the filesystem; this record is the\nallocation, and the enforcing boundary is owned by the sandbox.",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "disposition": {
+          "$ref": "#/$defs/RecordDisposition"
+        },
+        "id": {
+          "$ref": "#/$defs/WorktreeId"
+        },
+        "path": {
+          "type": "string"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root_id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "state": {
+          "$ref": "#/$defs/WorktreeState"
+        },
+        "stream_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeStreamId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "project_id",
+        "root_id",
+        "branch",
+        "path",
+        "state",
+        "disposition",
+        "provenance"
+      ],
+      "title": "Worktree",
+      "type": "object"
+    },
+    "WorktreeId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "WorktreeState": {
+      "enum": [
+        "allocated",
+        "released",
+        "reclaimed"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://symbiote.dev/schemas/symbiote.domain-ontology.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Every canonical domain type (#36), one definition each, plus the records DomainEnvelope carries.",
+  "entities": {
+    "AgentRuntimeAdapterId": {
+      "$ref": "#/$defs/AgentRuntimeAdapterId"
+    },
+    "Ambiguity": {
+      "$ref": "#/$defs/Ambiguity"
+    },
+    "Annotation": {
+      "$ref": "#/$defs/Annotation"
+    },
+    "Artifact": {
+      "$ref": "#/$defs/Artifact"
+    },
+    "BillingEntitlement": {
+      "$ref": "#/$defs/BillingEntitlement"
+    },
+    "Capability": {
+      "$ref": "#/$defs/Capability"
+    },
+    "ChangeStream": {
+      "$ref": "#/$defs/ChangeStream"
+    },
+    "Chat": {
+      "$ref": "#/$defs/Chat"
+    },
+    "Checkpoint": {
+      "$ref": "#/$defs/Checkpoint"
+    },
+    "Client": {
+      "$ref": "#/$defs/Client"
+    },
+    "CommandId": {
+      "$ref": "#/$defs/CommandId"
+    },
+    "ConfigProjection": {
+      "$ref": "#/$defs/ConfigProjection"
+    },
+    "ContextBundleId": {
+      "$ref": "#/$defs/ContextBundleId"
+    },
+    "ControllerSession": {
+      "$ref": "#/$defs/ControllerSession"
+    },
+    "CredentialReference": {
+      "$ref": "#/$defs/CredentialReference"
+    },
+    "CredentialReferenceId": {
+      "$ref": "#/$defs/CredentialReferenceId"
+    },
+    "Decision": {
+      "$ref": "#/$defs/Decision"
+    },
+    "Device": {
+      "$ref": "#/$defs/Device"
+    },
+    "Diagnostic": {
+      "$ref": "#/$defs/Diagnostic"
+    },
+    "Dispatch": {
+      "$ref": "#/$defs/Dispatch"
+    },
+    "Environment": {
+      "$ref": "#/$defs/Environment"
+    },
+    "ExecutionEpisode": {
+      "$ref": "#/$defs/ExecutionEpisode"
+    },
+    "Experiment": {
+      "$ref": "#/$defs/Experiment"
+    },
+    "ExternalReference": {
+      "$ref": "#/$defs/ExternalReference"
+    },
+    "Fabric": {
+      "$ref": "#/$defs/Fabric"
+    },
+    "FollowUp": {
+      "$ref": "#/$defs/FollowUp"
+    },
+    "GoalRun": {
+      "$ref": "#/$defs/GoalRun"
+    },
+    "HarnessDriver": {
+      "$ref": "#/$defs/HarnessDriver"
+    },
+    "Host": {
+      "$ref": "#/$defs/Host"
+    },
+    "HostId": {
+      "$ref": "#/$defs/HostId"
+    },
+    "InferenceProviderAdapterId": {
+      "$ref": "#/$defs/InferenceProviderAdapterId"
+    },
+    "Installation": {
+      "$ref": "#/$defs/Installation"
+    },
+    "KnowledgeClaim": {
+      "$ref": "#/$defs/KnowledgeClaim"
+    },
+    "LearnedMethod": {
+      "$ref": "#/$defs/LearnedMethod"
+    },
+    "Milestone": {
+      "$ref": "#/$defs/Milestone"
+    },
+    "Model": {
+      "$ref": "#/$defs/Model"
+    },
+    "NativeExecution": {
+      "$ref": "#/$defs/NativeExecution"
+    },
+    "Objective": {
+      "$ref": "#/$defs/Objective"
+    },
+    "Pairing": {
+      "$ref": "#/$defs/Pairing"
+    },
+    "Plan": {
+      "$ref": "#/$defs/Plan"
+    },
+    "Plugin": {
+      "$ref": "#/$defs/Plugin"
+    },
+    "Project": {
+      "$ref": "#/$defs/Project"
+    },
+    "Projection": {
+      "$ref": "#/$defs/Projection"
+    },
+    "ProviderConnection": {
+      "$ref": "#/$defs/ProviderConnection"
+    },
+    "ReleaseTarget": {
+      "$ref": "#/$defs/ReleaseTarget"
+    },
+    "Request": {
+      "$ref": "#/$defs/Request"
+    },
+    "Requirement": {
+      "$ref": "#/$defs/Requirement"
+    },
+    "Role": {
+      "$ref": "#/$defs/Role"
+    },
+    "Root": {
+      "$ref": "#/$defs/Root"
+    },
+    "RuntimeProfile": {
+      "$ref": "#/$defs/RuntimeProfile"
+    },
+    "SecretLease": {
+      "$ref": "#/$defs/SecretLease"
+    },
+    "Session": {
+      "$ref": "#/$defs/Session"
+    },
+    "Task": {
+      "$ref": "#/$defs/Task"
+    },
+    "TaskDependencyEdge": {
+      "$ref": "#/$defs/TaskDependencyEdge"
+    },
+    "User": {
+      "$ref": "#/$defs/User"
+    },
+    "VerificationEvidence": {
+      "$ref": "#/$defs/VerificationEvidence"
+    },
+    "VerificationRun": {
+      "$ref": "#/$defs/VerificationRun"
+    },
+    "VersionedProtocol": {
+      "$ref": "#/$defs/VersionedProtocol"
+    },
+    "VersionedRoleContract": {
+      "$ref": "#/$defs/VersionedRoleContract"
+    },
+    "VersionedTaskContract": {
+      "$ref": "#/$defs/VersionedTaskContract"
+    },
+    "WorkforceBinding": {
+      "$ref": "#/$defs/WorkforceBinding"
+    },
+    "WorkforceRuntimeContract": {
+      "$ref": "#/$defs/WorkforceRuntimeContract"
+    },
+    "Worktree": {
+      "$ref": "#/$defs/Worktree"
+    }
+  },
+  "envelope_records": [
+    "Ambiguity",
+    "Annotation",
+    "Artifact",
+    "BillingEntitlement",
+    "Capability",
+    "ChangeStream",
+    "Chat",
+    "Checkpoint",
+    "Client",
+    "ConfigProjection",
+    "ControllerSession",
+    "CredentialReference",
+    "Decision",
+    "Device",
+    "Diagnostic",
+    "Dispatch",
+    "Environment",
+    "ExecutionEpisode",
+    "Experiment",
+    "Fabric",
+    "FollowUp",
+    "GoalRun",
+    "HarnessDriver",
+    "Host",
+    "Installation",
+    "KnowledgeClaim",
+    "LearnedMethod",
+    "Milestone",
+    "Model",
+    "NativeExecution",
+    "Objective",
+    "Pairing",
+    "Plan",
+    "Plugin",
+    "Project",
+    "Projection",
+    "ProviderConnection",
+    "ReleaseTarget",
+    "Request",
+    "Requirement",
+    "Role",
+    "Root",
+    "RuntimeProfile",
+    "SecretLease",
+    "Session",
+    "Task",
+    "User",
+    "VerificationEvidence",
+    "VerificationRun",
+    "WorkforceBinding",
+    "WorkforceRuntimeContract",
+    "Worktree"
+  ],
+  "schema_version": 1
+}

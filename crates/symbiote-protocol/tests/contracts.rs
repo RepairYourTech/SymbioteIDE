@@ -1,6 +1,9 @@
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use symbiote_domain::*;
+// `symbiote_domain` names a canonical `Request` record of its own (#36); this
+// test means the protocol's wire request.
+use symbiote_protocol::Request;
 use symbiote_protocol::*;
 
 fn project_id() -> ProjectId {

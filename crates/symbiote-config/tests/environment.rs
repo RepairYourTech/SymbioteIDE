@@ -1,5 +1,8 @@
 use std::collections::BTreeSet;
 use symbiote_config::environment::*;
+// `symbiote_domain` names a canonical `Requirement` record of its own (#36);
+// this test means the config environment's requirement kind.
+use symbiote_config::environment::Requirement;
 use symbiote_domain::*;
 
 fn reference(s: &str) -> ResourceRef {
