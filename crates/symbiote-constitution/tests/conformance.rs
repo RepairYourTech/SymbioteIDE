@@ -328,6 +328,48 @@ fn a_coverage_row_that_names_neither_is_refused() {
     assert!(document::coverage_rows("# no coverage map here\n").is_none());
 }
 
+/// The contract doc's claims about the report are checked rather than trusted.
+///
+/// The names come from the document itself, so they cannot drift with it here,
+/// and they are resolved against the *committed* report rather than a fresh
+/// evaluation: the sentence may only claim what the artifact shows. Three times
+/// in this record's history the doc asserted a channel that did not exist and
+/// every check stayed green, which is what this closes.
+#[test]
+fn every_channel_the_contract_doc_claims_is_one() {
+    let root = workspace_root();
+    let doc = std::fs::read_to_string(root.join(claims::CONTRACT_PATH))
+        .expect("the conformance contract document");
+    let committed = std::fs::read_to_string(root.join(REPORT_PATH))
+        .unwrap_or_else(|error| panic!("the committed report at {REPORT_PATH}: {error}"));
+    let report: serde_json::Value =
+        serde_json::from_str(&committed).expect("the committed report is JSON");
+    let channels: Vec<&str> = report["invariants"]
+        .as_array()
+        .expect("the report's invariants")
+        .iter()
+        .flat_map(|invariant| invariant["outcomes"].as_array().expect("the outcomes"))
+        .filter(|outcome| outcome["channel"] == "test")
+        .filter_map(|outcome| outcome["subject"].as_str())
+        .collect();
+    let claims = claims::claimed_channels(&doc);
+    assert!(
+        !claims.is_empty(),
+        "the contract doc claims no report channel at all, so this check would pass vacuously"
+    );
+    for claim in &claims {
+        assert!(
+            channels
+                .iter()
+                .any(|subject| subject.ends_with(&format!("::{}", claim.name))),
+            "the contract doc claims a report channel the committed report does not have:\n  \
+             {}\n  {}",
+            claim.name,
+            claim.line
+        );
+    }
+}
+
 /// The evidence recorded against the issue is a generated artifact, so it is
 /// guarded the way this repository guards its other generated artifacts: the
 /// committed encoding must be exactly what the tree emits.

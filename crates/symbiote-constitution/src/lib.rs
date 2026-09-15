@@ -31,14 +31,16 @@
 //!
 //! Each concern has one owner: [`catalog`] holds the inventory and nothing else,
 //! [`document`], [`repository`] and [`harness`] each own one channel's rules,
-//! and [`report`] owns the verdict vocabulary, the assembly of the three
-//! channels and the committed encoding. A channel depends on [`report`] for the
-//! verdict type and never on another channel, so a change to one channel's rules
-//! lands in that channel's file. Where an invariant is an integration obligation
-//! owned by another canonical issue, the catalog names that owner instead of
-//! claiming a behavior this crate does not implement.
+//! [`claims`] owns the contract document's own claims about the report, and
+//! [`report`] owns the verdict vocabulary, the assembly of the three channels
+//! and the committed encoding. A channel depends on [`report`] for the verdict
+//! type and never on another channel, so a change to one channel's rules lands
+//! in that channel's file. Where an invariant is an integration obligation owned
+//! by another canonical issue, the catalog names that owner instead of claiming a
+//! behavior this crate does not implement.
 
 pub mod catalog;
+pub mod claims;
 pub mod document;
 pub mod harness;
 pub mod report;

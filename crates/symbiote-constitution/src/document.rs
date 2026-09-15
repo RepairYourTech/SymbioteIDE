@@ -82,7 +82,8 @@ pub fn coverage_rows(document: &str) -> Option<Vec<CoverageRow<'_>>> {
     Some(rows)
 }
 
-/// The check names a row cites, or `None` when its backticks do not pair.
+/// The backticked spans of a line — the checks a coverage row cites — or `None`
+/// when its backticks do not pair.
 pub fn check_names(accounting: &str) -> Option<Vec<&str>> {
     let mut names = Vec::new();
     let mut rest = accounting;
