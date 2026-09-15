@@ -11,10 +11,14 @@
 //! * **document** — [`document`]: a required clause of the constitution must be
 //!   present, and a forbidden authorization absent. The document is embedded
 //!   with `include_str!`, so the checks read the text compiled into the binary,
-//!   not whatever a later run finds on disk.
+//!   not whatever a later run finds on disk. The same module parses the
+//!   constitution's own coverage map, whose every row must cite a check this
+//!   repository provides or an issue other than the one being accounted for.
 //! * **repository** — [`repository`]: a fact of the tree itself, such as the
 //!   absence of an Electron dependency or the workspace-wide
-//!   `unsafe_code = "forbid"` lint.
+//!   `unsafe_code = "forbid"` lint. The same reading answers [`repository::Checks`],
+//!   the checks this tree actually runs, which a coverage row's check names
+//!   resolve against rather than being taken at their word.
 //! * **test** — [`harness`]: a named test that must be a check the harness
 //!   actually compiles and runs, carry `#[test]` (or `def` for the Python
 //!   maintenance suites), and not be `#[ignore]`d. [`Harness`] reads cargo's own

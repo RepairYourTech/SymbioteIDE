@@ -82,33 +82,40 @@ pub fn coverage_rows(document: &str) -> Option<Vec<CoverageRow<'_>>> {
     Some(rows)
 }
 
-/// Whether a coverage row names the check that runs it or a canonical owner.
-///
-/// A check is a backticked name — a span with no whitespace, so prose merely
-/// wrapped in backticks is not mistaken for one. An owner is an issue reference
-/// other than [`RECORDED_ISSUE`]: naming the issue this record accounts for is
-/// the claim itself, not an owner of it. A row that names neither is the
-/// unaccounted claim the map exists to prevent, so it is refused rather than
-/// passed.
-pub fn accounts_for(accounting: &str) -> bool {
-    names_a_check(accounting) || owners(accounting).any(|issue| issue != RECORDED_ISSUE)
-}
-
-/// Whether the row names a backticked check.
-fn names_a_check(accounting: &str) -> bool {
+/// The check names a row cites, or `None` when its backticks do not pair.
+pub fn check_names(accounting: &str) -> Option<Vec<&str>> {
+    let mut names = Vec::new();
     let mut rest = accounting;
     while let Some(opening) = rest.find('`') {
         let after_opening = &rest[opening + 1..];
-        let Some(closing) = after_opening.find('`') else {
-            return false;
-        };
-        let name = &after_opening[..closing];
-        if name.chars().any(|c| c.is_alphanumeric()) && !name.chars().any(char::is_whitespace) {
-            return true;
-        }
+        let closing = after_opening.find('`')?;
+        names.push(&after_opening[..closing]);
         rest = &after_opening[closing + 1..];
     }
-    false
+    Some(names)
+}
+
+/// Whether a coverage row accounts for itself.
+///
+/// `is_known_check` is the repository's own answer to whether a named check is
+/// one this tree provides, so a row cannot cite a job or a test that does not
+/// exist here. Naming is resolved rather than merely shaped: every check a row
+/// names must resolve, because citing one real check beside an invented one is
+/// not accounting for the row. An owner is an issue reference other than
+/// [`RECORDED_ISSUE`] — naming the issue this record accounts for is the claim
+/// itself, not an owner of it — so a row must name a resolving check or such an
+/// owner.
+///
+/// What this does not verify: an issue number cannot be resolved offline, so the
+/// owner half proves only that the row names some issue other than the one being
+/// accounted for. Whether that issue actually owns the work is a human judgement
+/// recorded in the map, not something this ledger checks.
+pub fn accounts_for(accounting: &str, is_known_check: impl Fn(&str) -> bool) -> bool {
+    let Some(names) = check_names(accounting) else {
+        return false;
+    };
+    names.iter().all(|name| is_known_check(name))
+        && (!names.is_empty() || owners(accounting).any(|issue| issue != RECORDED_ISSUE))
 }
 
 /// Every `#N` issue reference in a row.

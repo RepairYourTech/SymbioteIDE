@@ -226,44 +226,101 @@ fn an_invariant_with_no_executable_check_states_why() {
     }
 }
 
+/// The checks a coverage row may cite, as this tree answers.
+fn checks() -> repository::Checks {
+    repository::Checks::read(&workspace_root()).expect("the checks this tree provides")
+}
+
 /// The coverage map is the record's own account of what it covers, so a row
 /// that names neither the check that runs it nor an issue that owns it is an
 /// unaccounted claim — the exact defect the map exists to prevent. The map must
-/// be there, and every row must account for itself. Naming the issue this record
-/// accounts for is not an owner: that is the claim, not evidence for it.
+/// be there, and every row must account for itself, against checks this
+/// repository actually provides.
 #[test]
 fn every_coverage_row_names_a_check_or_an_owner() {
+    let checks = checks();
     let rows = document::coverage_rows(CONSTITUTION).expect("the coverage map");
     assert!(!rows.is_empty(), "the coverage map has no rows");
     for row in &rows {
         assert!(
-            document::accounts_for(row.accounting),
-            "the coverage row {:?} names neither a check nor an owner: {:?}",
+            document::accounts_for(row.accounting, |name| checks.knows(name)),
+            "the coverage row {:?} names neither a check this repository runs nor an owner: {:?}",
             row.item,
             row.accounting
         );
     }
 }
 
+/// The resolution is the point: a row may only cite a check this repository
+/// actually runs. A name shaped like a check is not a check, and naming one real
+/// job beside an invented one is still not accounting for the row.
+#[test]
+fn a_row_citing_a_check_this_repository_does_not_run_is_refused() {
+    let checks = checks();
+    // The names the map does cite resolve, so this is not refusing everything.
+    for known in [
+        "closing-keywords",
+        "CN-22",
+        "crates/symbiote-constitution/tests/conformance.rs",
+        "every_coverage_row_names_a_check_or_an_owner",
+    ] {
+        assert!(checks.knows(known), "{known} should resolve");
+    }
+    for invented in [
+        "contracts-typo",
+        "not-a-check-this-repository-runs",
+        "review_it",
+        "CN-99",
+    ] {
+        assert!(!checks.knows(invented), "{invented} should not resolve");
+        assert!(
+            !document::accounts_for(&format!("`{invented}`"), |name| checks.knows(name)),
+            "{invented} should not have accounted for a row"
+        );
+    }
+    assert!(
+        !document::accounts_for(
+            "`closing-keywords`, `not-a-check-this-repository-runs`",
+            |name| checks.knows(name)
+        ),
+        "one real check beside an invented one is not accounting for the row"
+    );
+    assert!(document::accounts_for(
+        "`closing-keywords`, `contracts`",
+        |name| checks.knows(name)
+    ));
+    // The row as the map really spells it, doctored to cite a job that does not run.
+    let doctored = CONSTITUTION.replace("`closing-keywords`", "`closing-keywords-typo`");
+    assert_ne!(doctored, CONSTITUTION, "the job was not there to rename");
+    let rows = document::coverage_rows(&doctored).expect("the coverage map");
+    assert!(
+        rows.iter()
+            .any(|row| !document::accounts_for(row.accounting, |name| checks.knows(name))),
+        "a row citing a job this repository does not run must be refused"
+    );
+}
+
 /// The rule above is evidence only if it refuses something, so the ways a row
 /// fails to account for itself are handed to it: prose, an empty cell, prose in
-/// backticks, and a reference to the issue this record is accounting for.
+/// backticks, unpaired backticks, and a reference to the issue this record is
+/// accounting for.
 #[test]
 fn a_coverage_row_that_names_neither_is_refused() {
+    let checks = checks();
     for unaccounted in [
         "separate reviewer evidence recorded against #170",
         "it is reviewed",
         "",
-        "`we review it`",
+        "`closing-keywords` and `unpaired",
     ] {
         assert!(
-            !document::accounts_for(unaccounted),
+            !document::accounts_for(unaccounted, |name| checks.knows(name)),
             "{unaccounted:?} should not have accounted for a row"
         );
     }
     for accounted in ["`closing-keywords`", "#387 and #394", "\n`CN-22`; #38\n"] {
         assert!(
-            document::accounts_for(accounted),
+            document::accounts_for(accounted, |name| checks.knows(name)),
             "{accounted:?} should have accounted for a row"
         );
     }
