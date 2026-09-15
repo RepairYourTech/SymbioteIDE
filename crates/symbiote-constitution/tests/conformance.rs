@@ -226,6 +226,51 @@ fn an_invariant_with_no_executable_check_states_why() {
     }
 }
 
+/// The coverage map is the record's own account of what it covers, so a row
+/// that names neither the check that runs it nor an issue that owns it is an
+/// unaccounted claim — the exact defect the map exists to prevent. The map must
+/// be there, and every row must account for itself. Naming the issue this record
+/// accounts for is not an owner: that is the claim, not evidence for it.
+#[test]
+fn every_coverage_row_names_a_check_or_an_owner() {
+    let rows = document::coverage_rows(CONSTITUTION).expect("the coverage map");
+    assert!(!rows.is_empty(), "the coverage map has no rows");
+    for row in &rows {
+        assert!(
+            document::accounts_for(row.accounting),
+            "the coverage row {:?} names neither a check nor an owner: {:?}",
+            row.item,
+            row.accounting
+        );
+    }
+}
+
+/// The rule above is evidence only if it refuses something, so the ways a row
+/// fails to account for itself are handed to it: prose, an empty cell, prose in
+/// backticks, and a reference to the issue this record is accounting for.
+#[test]
+fn a_coverage_row_that_names_neither_is_refused() {
+    for unaccounted in [
+        "separate reviewer evidence recorded against #170",
+        "it is reviewed",
+        "",
+        "`we review it`",
+    ] {
+        assert!(
+            !document::accounts_for(unaccounted),
+            "{unaccounted:?} should not have accounted for a row"
+        );
+    }
+    for accounted in ["`closing-keywords`", "#387 and #394", "\n`CN-22`; #38\n"] {
+        assert!(
+            document::accounts_for(accounted),
+            "{accounted:?} should have accounted for a row"
+        );
+    }
+    // A map that is missing is not a map whose rows all pass.
+    assert!(document::coverage_rows("# no coverage map here\n").is_none());
+}
+
 /// The evidence recorded against the issue is a generated artifact, so it is
 /// guarded the way this repository guards its other generated artifacts: the
 /// committed encoding must be exactly what the tree emits.
