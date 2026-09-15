@@ -5,13 +5,36 @@ import unittest
 from pathlib import Path
 
 from source_record import (
+    ENVIRONMENT_PREFIX,
+    HASH_LENGTH,
+    MALFORMED_REMEDY,
+    MARKS,
+    RECORD_ENCODING,
     RECORD_END,
     RECORD_START,
+    TOOLCHAIN_VARIABLE,
+    UNASKED_CARGO,
+    UNDECODABLE_REMEDY,
+    UNFRAMED_REMEDY,
+    UNKNOWN_REMEDY,
+    UNNAMED_RESOLUTION,
+    UNSET,
+    WIRE,
+    WIRE_FILE,
+    UndecodableRecord,
+    UnframedRecord,
     check,
+    classify,
     declares_workspace,
+    embedded_record,
+    is_hash,
+    mark_locator,
+    nearest_workspace_root,
     package_workspace,
     parse_dep_info,
     read_record,
+    read_wire,
+    undecodable_text,
     workspace_roots,
 )
 
@@ -49,11 +72,19 @@ class Fixture:
 
     def binary(self, record, name=None):
         """A binary carrying `record`, as `locator -> hash`."""
-        lines = "".join(f"{hash}\t{locator}\n" for locator, hash in record.items())
-        path = self.target / (name or self.target_name)
-        path.write_bytes(
-            b"ELF\x00" + RECORD_START + b"\n" + lines.encode() + RECORD_END
+        return self.binary_of_lines(
+            [f"{hash}\t{locator}" for locator, hash in record.items()], name
         )
+
+    def binary_of_lines(self, lines, name=None):
+        """A binary carrying a record spelled line by line.
+
+        A test that is about what a *line* is writes the line itself, since the
+        record's own writer would only write the shapes it means to.
+        """
+        path = self.target / (name or self.target_name)
+        body = "".join(f"{line}\n" for line in lines)
+        path.write_bytes(b"ELF\x00" + RECORD_START + body.encode() + RECORD_END)
         return path
 
     def metadata(self):
@@ -74,6 +105,13 @@ class Fixture:
 
     def problems(self, record, metadata=None):
         self.binary(record)
+        return self.judged(metadata)
+
+    def problems_of_lines(self, lines, metadata=None):
+        self.binary_of_lines(lines)
+        return self.judged(metadata)
+
+    def judged(self, metadata=None):
         found, _ = check(
             self.root, self.target, [("demo", self.target_name)], metadata or self.metadata()
         )
@@ -124,10 +162,10 @@ def dependency_below_another_workspace_manifest(fixture, directory):
     """A closure package under a nearer `[workspace]` manifest than its root.
 
     Returns the metadata with the edge added, the dependency's manifest and the
-    two workspace directories above it. Cargo resolves such a package to the
-    workspace the build was invoked in, which can be the outer one; the nearer
-    manifest is never loaded, so the nearest-ancestor rule named it and left the
-    manifest cargo read unrecorded.
+    two workspace directories above it. The package names `../..` as its
+    workspace, so that is the root cargo reads and the nearer `[workspace]`
+    manifest is never loaded; a name settles it, which is why the nearer
+    directory is not a root of this package.
     """
     outer = Path(directory) / "outer"
     nested = outer / "inner"
@@ -166,12 +204,15 @@ def excluded_dependency(fixture, directory):
 def complete(fixture):
     """A record that covers what `fixture`'s unit reads, its cargo inputs, and
     its configuration."""
+    # Hashes the shape a real record holds: 64 hexadecimal characters, which is
+    # also what tells a record's inputs from a line that says the record cannot
+    # be stood behind (`source_record.classify`).
     return {
-        "crates/demo/src/main.rs": "a",
-        "crates/demo/Cargo.toml": "b",
-        "Cargo.toml": "d",
-        "Cargo.lock": "e",
-        "env:CARGO": "c",
+        "crates/demo/src/main.rs": "a" * 64,
+        "crates/demo/Cargo.toml": "b" * 64,
+        "Cargo.toml": "d" * 64,
+        "Cargo.lock": "e" * 64,
+        "env:CARGO": "c" * 64,
     }
 
 
@@ -187,6 +228,122 @@ class RecordReadingTests(unittest.TestCase):
             path = Path(directory) / "cut"
             path.write_bytes(b"ELF\x00" + RECORD_START + b"\nabc\tcrates/x.rs\n")
             self.assertIsNone(read_record(path))
+
+    def test_a_record_whose_bytes_are_not_the_encoding_is_named_not_raised(self):
+        """The wire states the encoding of the bytes it frames.
+
+        A record whose bytes are not it is a refusal, not a crash and not a binary
+        without a record: the crate refuses such a binary too, naming where the
+        bytes stop being the encoding, so an artifact neither reader can decode
+        gets the same answer from both. The bytes are inside a line, which is
+        where a build's record puts them: the `end` that ends the record follows
+        the LF the last line ends with.
+        """
+        offset = len(b"0000\tcrates/x.rs\n0000\tcrates/")
+        body = b"0000\tcrates/x.rs\n0000\tcrates/\xff\xfe.rs\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "not-utf8"
+            path.write_bytes(b"ELF\x00" + RECORD_START + body + RECORD_END)
+            with self.assertRaises(UndecodableRecord) as caught:
+                embedded_record(path.read_bytes())
+            self.assertEqual(caught.exception.offset, offset)
+            with self.assertRaises(UndecodableRecord):
+                read_record(path)
+
+    def test_a_record_the_wire_cannot_decode_refuses_the_check(self):
+        """`check` refuses it in the file's own text, offset filled in.
+
+        The same text the crate prints, since neither holds it: the file spells
+        both the encoding and the byte the bytes stop at, and this is the message
+        that comes back when an artifact either reader cannot decode is put to it.
+        """
+        body = b"0000\tcrates/x.rs\n0000\tcrates/\xff\xfe.rs\n"
+        offset = len(b"0000\tcrates/x.rs\n0000\tcrates/")
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            (fixture.target / fixture.target_name).write_bytes(
+                b"ELF\x00" + RECORD_START + body + RECORD_END
+            )
+            message = fixture.judged()
+            self.assertEqual(message, [f"demo: {undecodable_text(offset)}"])
+            self.assertIn(f"at byte {offset} of the record", message[0])
+            self.assertIn(RECORD_ENCODING, message[0])
+
+    def test_a_record_that_spells_a_marker_is_refused_rather_than_cut_short(self):
+        """The wire states that a record's own bytes hold neither marker.
+
+        A `end` inside the record's own bytes does not end it — the marker that
+        ends it follows one of its lines — so the record is refused instead of
+        being read up to that marker, which would take a record missing every
+        line after it for the record. Measured, a locator legally named after the
+        end marker made both readers do exactly that, and report a binary as
+        matching a tree it was not built from.
+        """
+        locator = b"crates/x.rs" + RECORD_END
+        body = b"0000\t" + locator + b"\n0000\tcrates/y.rs\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spells-a-marker"
+            path.write_bytes(b"ELF\x00" + RECORD_START + body + RECORD_END)
+            with self.assertRaises(UnframedRecord):
+                embedded_record(path.read_bytes())
+            with self.assertRaises(UnframedRecord):
+                read_record(path)
+
+    def test_a_record_the_wire_cannot_frame_refuses_the_check(self):
+        """`check` refuses it in the file's own remedy for one.
+
+        The same sentence the crate prints, so an artifact whose own bytes spell a
+        marker is refused by both rather than read short by either.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            body = b"0000\tcrates/x.rs" + RECORD_END + b"\n0000\tcrates/y.rs\n"
+            (fixture.target / fixture.target_name).write_bytes(
+                b"ELF\x00" + RECORD_START + body + RECORD_END
+            )
+            self.assertEqual(fixture.judged(), [f"demo: {UNFRAMED_REMEDY}"])
+
+    def test_a_locator_holding_a_line_feed_is_read_as_two_lines(self):
+        """What a record cannot survive in a locator, so no build stamps one.
+
+        A record's lines are divided at each LF, so a locator holding one ends the
+        line it is spelled in and the rest of it is read as a line of its own —
+        here refused as malformed, since it holds no TAB. Measured, a package
+        holding such a path built successfully and stamped a record both readers
+        then refused, in a remedy asking for a rebuild that reproduces the same
+        bytes; `build_stamp` now refuses to stamp one, and this is the reader half
+        that makes that refusal necessary.
+        """
+        body = b"0" * 64 + b"\tcrates/a\nb.rs\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "line-feed-in-a-locator"
+            path.write_bytes(b"ELF\x00" + RECORD_START + body + RECORD_END)
+            record = read_record(path)
+            self.assertEqual(record.inputs, {"crates/a": "0" * 64})
+            self.assertEqual(
+                record.malformed,
+                "b.rs",
+                "the rest of the locator is a line of its own, which the wire cannot read",
+            )
+
+    def test_an_end_marker_that_ends_no_line_frames_no_record(self):
+        """A record holds lines, so bytes no `end` closes one of hold none.
+
+        The refusal is a binary carrying no record rather than an empty record,
+        which a reader would compare and call clean.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            (fixture.target / fixture.target_name).write_bytes(
+                b"ELF\x00" + RECORD_START + b"0000\tcrates/x.rs" + RECORD_END
+            )
+            self.assertIsNone(read_record(fixture.target / fixture.target_name))
+            problems = fixture.judged()
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("carries no record", problems[0])
 
 
 class DepInfoParsingTests(unittest.TestCase):
@@ -274,6 +431,308 @@ class CompletenessTests(unittest.TestCase):
             self.assertEqual(
                 found, [f"{fixture.target / 'demo'} does not exist: build it before checking its record"]
             )
+
+
+class MarkedRecordTests(unittest.TestCase):
+    """A record whose build could not stand behind it.
+
+    Each mark names the fact the build could not establish: the workspace the
+    resolution was read in, where the readings did not establish it, or the
+    questions cargo alone answers, where the cargo that ran the build could not
+    be run to be asked. Either way the record may be missing the `[patch]` fork
+    the binary compiled and only that build could have said which workspace to
+    look in, so it is refused rather than compared, as `changed_sources` refuses
+    it, and the refusal names what to do about it.
+    """
+
+    def test_a_marked_record_is_refused_rather_than_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            record[UNNAMED_RESOLUTION] = "unset"
+            self.assertEqual(
+                fixture.problems(record),
+                [f"demo: {MARKS[UNNAMED_RESOLUTION]} (mark: {UNNAMED_RESOLUTION})"],
+            )
+
+    def test_a_record_marked_where_cargo_could_not_be_asked_is_refused(self):
+        """`CARGO` named a program that could not be run.
+
+        The two things only cargo answers — the workspace a run directory names
+        and the closure it resolves for the package there — were never asked, so
+        the record's roots and its closure are unchecked, and the refusal asks
+        for a cargo that can be started rather than for a rebuild under a stale
+        `PWD`.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            record[UNASKED_CARGO] = "unset"
+            self.assertEqual(
+                fixture.problems(record),
+                [f"demo: {MARKS[UNASKED_CARGO]} (mark: {UNASKED_CARGO})"],
+            )
+            self.assertIn("a cargo that can be started", fixture.problems(record)[0])
+
+    def test_the_blocking_mark_is_reported_where_a_record_carries_more_than_one(self):
+        """A record can hold both marks, and they are not equally blocking.
+
+        The cargo that ran the build is one of the readings that can name the
+        workspace its resolution was read in, so losing it can lose the
+        resolution with it. Reporting the resolution would send the rebuild down
+        the remedy that leaves the cargo unaskable, and the rebuild would be
+        refused again; the cargo is the fact that has to be cleared first. The
+        two lines are written in the record's own order, resolution first, so the
+        choice is the marks' and not the lines'.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            record[UNNAMED_RESOLUTION] = "unset"
+            record[UNASKED_CARGO] = "unset"
+            self.assertEqual(
+                fixture.problems(record),
+                [f"demo: {MARKS[UNASKED_CARGO]} (mark: {UNASKED_CARGO})"],
+            )
+
+    def test_a_mark_an_earlier_version_wrote_is_refused_by_its_shape(self):
+        """The mark is recognised by its line's shape, not by its name.
+
+        Measured, a record carrying the previous locator compared that line
+        against a missing file — whose content is `unset` too — matched it, and
+        was reported clean, so a build that could not stand behind its record
+        passed whenever the crate renamed the mark. A mark this version does not
+        know is still refused, and the refusal names it.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            record["run-directory-not-named"] = "unset"
+            self.assertEqual(
+                fixture.problems(record),
+                [f"demo: {UNKNOWN_REMEDY} (mark: run-directory-not-named)"],
+            )
+
+    def test_the_first_mark_the_record_spells_is_the_one_reported(self):
+        """Where the wire names none of the marks a record carries, its own order
+        decides.
+
+        Each reader used to pick its own — measured, the crate the alphabetically
+        first and this checker the first in the record — so one record could be
+        described two ways. The alphabetically first mark is written *second*
+        here, so the answer cannot be an ordering by name, and the crate's own
+        test pins the same rule under the same two names.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            record["zzz-old"] = "unset"
+            record["aaa-old"] = "unset"
+            self.assertEqual(
+                fixture.problems(record),
+                [f"demo: {UNKNOWN_REMEDY} (mark: zzz-old)"],
+            )
+
+
+class RecordLineRuleTests(unittest.TestCase):
+    """What one record line is, by the rule the wire file states.
+
+    The crate implements the same text (`Wire::line`, from the same file), so a
+    shape cannot be a mark to one reader and an input, or an unread line, to the
+    other. The rule itself, and what each reader used to decide for itself, is
+    stated in the file rather than here.
+    """
+
+    def test_the_rule_reads_every_shape_the_way_the_wire_states(self):
+        """The whole rule, shape by shape — the crate's own test pins the same
+        table under the same name."""
+        source = "crates/demo/src/main.rs"
+        hash = "0" * 64
+        for line, expected in [
+            (f"{hash}\t{source}", ("input", source, hash)),
+            (f"{hash}\tenv:CARGO", ("input", "env:CARGO", hash)),
+            (f"{UNSET}\tenv:CARGO", ("input", "env:CARGO", UNSET)),
+            (f"{hash}\t{UNASKED_CARGO}", ("named", UNASKED_CARGO, None)),
+            (f"{UNSET}\t{UNASKED_CARGO}", ("named", UNASKED_CARGO, None)),
+            (f"{UNSET}\trun-directory-not-named", ("unknown", "run-directory-not-named", None)),
+            ("no tab at all", ("malformed", None, None)),
+            ("", ("malformed", None, None)),
+            (f"{hash}\t{source}\r", ("malformed", None, None)),
+            ("\r", ("malformed", None, None)),
+            (f"{hash}\t", ("malformed", None, None)),
+            (f"abc\t{source}", ("malformed", None, None)),
+            (f"{'g' * HASH_LENGTH}\t{source}", ("malformed", None, None)),
+            (f"{'0' * (HASH_LENGTH - 1)}\t{source}", ("malformed", None, None)),
+        ]:
+            with self.subTest(line=line):
+                self.assertEqual(classify(line), expected)
+
+    def test_a_hash_is_the_shape_the_wire_spells(self):
+        self.assertTrue(is_hash("0" * HASH_LENGTH))
+        self.assertFalse(is_hash("0" * (HASH_LENGTH - 1)))
+        self.assertFalse(
+            is_hash("A" * HASH_LENGTH),
+            "measured, the same digits in upper case were an input to one reader and a mark "
+            "to the other, so the alphabet the file spells is the one both read",
+        )
+
+    def test_a_mark_whose_content_is_a_hash_is_read_as_that_mark(self):
+        """The fail-open: this checker took such a line for a recorded file.
+
+        The locator names a mark the wire knows, so the record cannot be stood
+        behind whatever the content says — and measured, reading the content alone
+        left this checker reporting the record clean while the crate refused it.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            record = complete(fixture)
+            record[UNASKED_CARGO] = "0" * HASH_LENGTH
+            self.assertEqual(
+                fixture.problems(record),
+                [f"demo: {MARKS[UNASKED_CARGO]} (mark: {UNASKED_CARGO})"],
+            )
+
+    def test_a_line_the_wire_does_not_read_refuses_the_record(self):
+        """A line that is neither an input nor a mark is not guessed at.
+
+        The refusal is the wire's own remedy for a line it cannot read, with the
+        line named, so a record that lost a line — a blank one included, which
+        both readers used to pass over — is refused rather than read short.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            named = [f"{hash}\t{locator}" for locator, hash in complete(fixture).items()]
+            for line in ["no tab at all", "", "abc\tcrates/demo/src/main.rs"]:
+                with self.subTest(line=line):
+                    self.assertEqual(
+                        fixture.problems_of_lines(named + [line]),
+                        [f"demo: {MALFORMED_REMEDY} The line is {line!r}."],
+                    )
+
+
+# The crate that writes the record this tool refuses. The wire the two share —
+# the framing, the variable it pins, the content of an unset input, and each
+# mark's locator, order and remedy — is one file both read, so the values cannot
+# drift apart. What still needs pinning is that the file is whole, that this
+# tool's values are its, and that the crate reads it rather than spelling the
+# wire itself.
+STAMP_CRATE = Path(__file__).resolve().parents[2] / "crates" / "symbiote-source-stamp"
+
+
+class WireTests(unittest.TestCase):
+    """The wire has one copy, and both readers take their values from it."""
+
+    def test_the_checker_spells_the_wire_the_file_holds(self):
+        scalars, marks = read_wire(WIRE_FILE)
+        self.assertEqual(RECORD_START.decode(), scalars["start"])
+        self.assertEqual(RECORD_END.decode(), scalars["end"])
+        self.assertEqual(ENVIRONMENT_PREFIX, scalars["prefix"])
+        self.assertEqual(TOOLCHAIN_VARIABLE, scalars["environment"])
+        self.assertEqual(UNSET, scalars["unset"])
+        self.assertEqual(UNKNOWN_REMEDY, scalars["unknown"])
+        self.assertEqual(MALFORMED_REMEDY, scalars["malformed"])
+        self.assertEqual(UNDECODABLE_REMEDY, scalars["undecodable"])
+        self.assertEqual(UNFRAMED_REMEDY, scalars["unframed"])
+        self.assertIn(
+            "{byte}",
+            UNDECODABLE_REMEDY,
+            "the file states where the offset it refuses a record for is spelled",
+        )
+        self.assertIn(
+            "{encoding}",
+            UNDECODABLE_REMEDY,
+            "and where the encoding it names is, so no reader holds that sentence",
+        )
+        self.assertEqual(
+            RECORD_ENCODING,
+            "UTF-8",
+            "the file states what a record's bytes are, so both readers decode them the "
+            "same way",
+        )
+        self.assertEqual(
+            WIRE["hash"],
+            (64, "0123456789abcdef"),
+            "a record gives an input a sha256, and what tells one from a mark is the "
+            "file's to say rather than each reader's to decide",
+        )
+        self.assertEqual(
+            list(MARKS.items()), [(locator, remedy) for _, locator, remedy in marks]
+        )
+
+    def test_the_marks_are_distinct_and_the_cargo_is_reported_first(self):
+        _, marks = read_wire(WIRE_FILE)
+        roles = [role for role, _, _ in marks]
+        locators = [locator for _, locator, _ in marks]
+        self.assertEqual(len(roles), len(set(roles)), "a role is how the crate asks for a mark")
+        self.assertEqual(len(locators), len(set(locators)))
+        self.assertEqual(mark_locator("unasked-cargo"), UNASKED_CARGO)
+        self.assertEqual(mark_locator("unnamed-resolution"), UNNAMED_RESOLUTION)
+        self.assertEqual(
+            list(MARKS)[0],
+            UNASKED_CARGO,
+            "the cargo is reported first: losing it can lose the resolution with it",
+        )
+
+    def test_a_wire_file_that_is_not_whole_is_refused_rather_than_defaulted(self):
+        """Every value is one the crate spells the same record with.
+
+        A framing this tool got wrong would make it read a record the crate did
+        not write, so a missing keyword is an error rather than a fallback.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "wire.txt"
+            file.write_text("start\tone\nmark\trole\tlocator\tremedy\n")
+            with self.assertRaises(ValueError):
+                read_wire(file)
+
+    def test_a_wire_file_naming_an_unknown_mark_order_this_checker_lacks_is_refused(self):
+        """The order is the wire's, not a reader's own.
+
+        Each reader used to order the marks the file does not name by itself —
+        measured, the crate alphabetically and this checker by the record — so
+        one record could be described two ways. A file that names an order this
+        checker does not implement is refused rather than silently read the old
+        way, and the file is the real one with only that word changed, so the
+        refusal is the order's and nothing else's.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "wire.txt"
+            file.write_text(WIRE_FILE.read_text().replace("first-in-record", "last-in-record"))
+            with self.assertRaises(ValueError):
+                read_wire(file)
+
+    def test_a_wire_file_naming_an_encoding_this_checker_lacks_is_refused(self):
+        """The encoding is the wire's, not a reader's assumption.
+
+        A file naming one this checker cannot decode a record by is refused rather
+        than read as the default — the two readers have to decode the same bytes
+        the same way — and the file is the real one with only that word changed, so
+        the refusal is the encoding's and nothing else's.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "wire.txt"
+            file.write_text(WIRE_FILE.read_text().replace("encoding\tUTF-8", "encoding\tUTF-16"))
+            with self.assertRaises(ValueError):
+                read_wire(file)
+
+    def test_the_crate_reads_the_wire_file_rather_than_spelling_it_itself(self):
+        self.assertIn(
+            'include_str!("wire.txt")',
+            (STAMP_CRATE / "src" / "wire.rs").read_text(),
+            "the crate embeds the one copy of the wire",
+        )
+        self.assertNotIn(
+            RECORD_START.decode(),
+            (STAMP_CRATE / "src" / "lib.rs").read_text(),
+            "a copy of the wire in the library would be a second owner",
+        )
 
 
 class CargoInputTests(unittest.TestCase):
@@ -372,9 +831,9 @@ class CargoInputTests(unittest.TestCase):
             fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
             metadata, manifest, second = dependency_in_its_own_workspace(fixture, other)
             record = complete(fixture)
-            record[str(manifest)] = "f"
-            record[str(second / "Cargo.toml")] = "g"
-            record[str(second / "Cargo.lock")] = "h"
+            record[str(manifest)] = "f" * 64
+            record[str(second / "Cargo.toml")] = "1" * 64
+            record[str(second / "Cargo.lock")] = "2" * 64
             self.assertEqual(fixture.problems(record, metadata), [])
             del record[str(second / "Cargo.toml")]
             self.assertEqual(
@@ -391,9 +850,9 @@ class CargoInputTests(unittest.TestCase):
             fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
             metadata, manifest, second = dependency_in_its_own_workspace(fixture, other)
             record = complete(fixture)
-            record[str(manifest)] = "f"
-            record[str(second / "Cargo.toml")] = "g"
-            record[str(second / "Cargo.lock")] = "h"
+            record[str(manifest)] = "f" * 64
+            record[str(second / "Cargo.toml")] = "1" * 64
+            record[str(second / "Cargo.lock")] = "2" * 64
             del record[str(second / "Cargo.lock")]
             self.assertEqual(
                 fixture.problems(record, metadata),
@@ -412,7 +871,7 @@ class CargoInputTests(unittest.TestCase):
             metadata, manifest, _ = dependency_in_its_own_workspace(fixture, other)
             (Path(other) / "Cargo.toml").write_text("[package]\nname = \"loose\"\n")
             record = complete(fixture)
-            record[str(manifest)] = "f"
+            record[str(manifest)] = "f" * 64
             self.assertEqual(fixture.problems(record, metadata), [])
 
     def test_every_ancestor_workspace_manifest_is_required(self):
@@ -429,9 +888,9 @@ class CargoInputTests(unittest.TestCase):
                 fixture, other
             )
             record = complete(fixture)
-            record[str(manifest)] = "f"
-            record[str(outer / "Cargo.toml")] = "g"
-            record[str(nested / "Cargo.toml")] = "h"
+            record[str(manifest)] = "f" * 64
+            record[str(outer / "Cargo.toml")] = "1" * 64
+            record[str(nested / "Cargo.toml")] = "2" * 64
             self.assertEqual(fixture.problems(record, metadata), [])
             del record[str(outer / "Cargo.toml")]
             self.assertEqual(
@@ -452,9 +911,9 @@ class CargoInputTests(unittest.TestCase):
             fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
             metadata, manifest, workspace = excluded_dependency(fixture, other)
             record = complete(fixture)
-            record[str(manifest)] = "f"
-            record[str(manifest.parent / "Cargo.lock")] = "g"
-            record[str(workspace / "Cargo.toml")] = "h"
+            record[str(manifest)] = "f" * 64
+            record[str(manifest.parent / "Cargo.lock")] = "1" * 64
+            record[str(workspace / "Cargo.toml")] = "2" * 64
             self.assertEqual(fixture.problems(record, metadata), [])
             del record[str(manifest.parent / "Cargo.lock")]
             self.assertEqual(
@@ -473,7 +932,13 @@ class CargoInputTests(unittest.TestCase):
             )
             self.assertEqual(
                 workspace_roots(manifest.parent),
-                sorted({outer.resolve(), nested.resolve(), manifest.parent.resolve()}),
+                [outer.resolve()],
+                "the named root is the only root a build of this package can read",
+            )
+            self.assertNotIn(
+                nested.resolve(),
+                workspace_roots(manifest.parent),
+                "the nearer manifest the name settles past is not a root",
             )
             _, excluded, workspace = excluded_dependency(fixture, other)
             self.assertEqual(
@@ -505,8 +970,13 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(package_workspace(manifest), "../other")
             self.assertEqual(
                 workspace_roots(package),
-                sorted({package.resolve(), target.resolve()}),
-                "the workspace the package names is a root even where no ancestor is one",
+                [target.resolve()],
+                "the named root is the only root a build of this package can read",
+            )
+            self.assertEqual(
+                nearest_workspace_root(package),
+                target.resolve(),
+                "and the base the record's locators are spelled against",
             )
 
     def test_a_workspace_key_that_is_not_a_string_or_not_the_packages_is_not_followed(self):

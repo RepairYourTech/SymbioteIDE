@@ -31,9 +31,9 @@ Three things are compared:
   them.
 * **Completeness (cargo).** The record must also name, for every closure
   package, its own manifest and every workspace root cargo can resolve for it —
-  each ancestor manifest declaring `[workspace]`, the root a `package.workspace`
-  names, and the package's own directory, which is the root of one its workspace
-  `exclude`s — together with each root's lockfile. These are read by cargo rather
+  the root a `package.workspace` names, or else each ancestor manifest declaring
+  `[workspace]` and the package's own directory, which is the root of one its
+  workspace `exclude`s — together with each root's lockfile. These are read by cargo rather
   than compiled by rustc, so no per-unit dep-info names them — on a build-only checkout the
   oracle above names none of them, and a record that silently stopped covering
   them would pass everything else. One of them is not a technicality: a
@@ -43,7 +43,10 @@ Three things are compared:
   class of stale binary the record exists to refuse. The nearest ancestor alone
   is not enough, which is what this half used to require: an invoked workspace
   can list a member that sits below another `[workspace]` manifest, and then the
-  invoked root — not the nearer one — is what the member inherits from.
+  invoked root — not the nearer one — is what the member inherits from. A name
+  settles it, so a package that names its root resolves to that root alone:
+  measured, cargo reads an inherited path from the named root, and a build that
+  both nests the package and claims it as a member is refused.
 * **Effective configuration.** The record holds `env:CARGO` and every
   configuration file cargo reads for a build of a closure package
   (`.cargo/config.toml`, `.cargo/config`, `rust-toolchain.toml`,
@@ -51,6 +54,22 @@ Three things are compared:
   a named one whose content moved, is a failure — the class that cannot be
   recorded at build time without making cargo relink the stamped crates on
   every build.
+
+A record is refused rather than compared when it says a build could not stand
+behind it, and when it cannot be read at all. `MARKS` holds what each mark the
+wire names means and what clears it, and a mark the wire does not name, a line
+the wire cannot read, or a record the wire cannot read at all — bytes that are not
+its encoding, or a marker of its own framing among them — is refused through the
+one remedy the wire holds for each. Every value of that rule — the framing, the
+encoding of the bytes it frames, the division into lines, the contents, the marks
+and the remedies — comes from `wire.txt`, the one copy of it, which the crate
+that writes a record embeds too, so the two readers cannot disagree about what a
+record says; `embedded_record` and `classify` below are this checker's half of
+it. A record
+can carry both marks at once; the refusal then reports the one a rebuild clears
+first, as `changed_sources` reports it too. `symbiote-source-stamp`'s module
+documentation measures the arrangements, and `changed_sources` refuses those
+records for the same reason.
 
 It reads, and writes nothing:
 
@@ -71,13 +90,170 @@ import subprocess
 import sys
 from pathlib import Path
 
-RECORD_START = b"symbiote-source-record:["
-RECORD_END = b"]symbiote-source-record"
+# The scalar keywords the wire file spells, which is what the crate's own parser
+# reads too: the framing and the encoding of the bytes it frames, the variable a
+# record pins, the locators and contents, and what a refusal says about a mark the
+# file does not name, a line it cannot read, or a record it cannot read at all.
+# The marks come from its `mark` lines, and `unknown-order` and `encoding` are read
+# beside them in `read_wire`.
+WIRE_KEYWORDS = {
+    "start",
+    "end",
+    "encoding",
+    "environment",
+    "prefix",
+    "unset",
+    "hash",
+    "unknown",
+    "malformed",
+    "undecodable",
+    "unframed",
+}
 
-# The environment variable a record holds, spelled `env:NAME`, which names the
-# toolchain that ran the build.
-ENVIRONMENT_PREFIX = "env:"
-TOOLCHAIN_VARIABLE = "CARGO"
+# The wire file: the one copy of the wire, which the crate that writes a record
+# embeds with `include_str!` (`symbiote-source-stamp/src/wire.rs`) and this tool
+# reads to refuse one. The path is the repository's own layout, because the wire
+# is the contract between two tools that live in one repository.
+WIRE_FILE = (
+    Path(__file__).resolve().parents[2]
+    / "crates"
+    / "symbiote-source-stamp"
+    / "src"
+    / "wire.txt"
+)
+
+
+def read_wire(path):
+    """The wire file, parsed: its scalar keywords and its marks in order.
+
+    A line is a keyword and its tab-separated fields, and ``#`` starts a comment.
+    A malformed file raises rather than falling back to a default, because every
+    value here is one the crate spells the same record with: a framing this tool
+    got wrong would make it read a record the crate did not write.
+    """
+    scalars = {}
+    marks = []
+    for line in Path(path).read_text().splitlines():
+        line = line.rstrip()
+        if not line or line.startswith("#"):
+            continue
+        keyword, _, fields = line.partition("\t")
+        if keyword == "mark":
+            role, _, rest = fields.partition("\t")
+            locator, _, remedy = rest.partition("\t")
+            if not role or not locator or not remedy:
+                raise ValueError(f"the wire file mark {fields!r} is incomplete")
+            marks.append((role, locator, remedy))
+        elif keyword == "hash":
+            # The shape of a hash — the content a record gives an input that is
+            # there — so what tells an input's line from a mark's is the file's to
+            # say rather than each reader's to decide.
+            length, _, alphabet = fields.partition("\t")
+            if not length.isdigit() or int(length) < 1 or not alphabet:
+                raise ValueError(f"the wire file's hash shape {fields!r} is incomplete")
+            scalars["hash"] = (int(length), alphabet)
+        elif keyword == "encoding":
+            # How the bytes between the framing markers are spelled: data, so both
+            # readers decode a record by the file's own word rather than each
+            # assuming one. This checker decodes with Python's codecs, so a file
+            # naming an encoding it does not know is refused here rather than
+            # silently decoded as the default.
+            if fields != "UTF-8":
+                raise ValueError(
+                    f"the wire file names the record encoding {fields!r}, which this "
+                    f"checker does not implement"
+                )
+            scalars["encoding"] = fields
+        elif keyword == "unknown-order":
+            # Which of several marks the file does not name a refusal reports. It
+            # is read as data so a reader cannot invent its own order, which is
+            # how the two readers came to describe the same record differently.
+            if fields != "first-in-record":
+                raise ValueError(
+                    f"the wire file names the unknown-mark order {fields!r}, which this "
+                    f"checker does not implement"
+                )
+        elif keyword in WIRE_KEYWORDS:
+            scalars[keyword] = fields
+        else:
+            raise ValueError(f"the wire file has no keyword {keyword!r}")
+    missing = WIRE_KEYWORDS - scalars.keys()
+    if missing:
+        raise ValueError(f"the wire file names no {sorted(missing)}")
+    if not marks:
+        raise ValueError("the wire file holds no mark")
+    return scalars, marks
+
+
+WIRE, WIRE_MARKS = read_wire(WIRE_FILE)
+
+# The encoding the wire states the bytes between the framing markers are in: both
+# readers decode a record by it, so a record neither can decode is refused the
+# same way rather than raised over by one reader and read as a binary without a
+# record by the other.
+RECORD_ENCODING = WIRE["encoding"]
+RECORD_START = WIRE["start"].encode(RECORD_ENCODING)
+RECORD_END = WIRE["end"].encode(RECORD_ENCODING)
+ENVIRONMENT_PREFIX = WIRE["prefix"]
+TOOLCHAIN_VARIABLE = WIRE["environment"]
+UNSET = WIRE["unset"]
+
+# What each mark means and what clears it, so a refusal names the right remedy
+# rather than a list of differences the record cannot be trusted to hold. The
+# order is the wire's: a record can carry more than one mark, they are not
+# equally blocking, and `blocking_mark` reports the first. `cargo-not-asked`
+# comes before `resolution-not-named` because the cargo that ran a build is one of
+# the readings that can name the workspace its resolution was read in, so losing
+# it can lose the resolution with it — and the resolution's own remedy, a rebuild
+# from the workspace, leaves a cargo that cannot be asked still unaskable.
+MARKS = {locator: remedy for _, locator, remedy in WIRE_MARKS}
+
+
+def mark_locator(role):
+    """The locator the wire file spells for the mark with that `role`.
+
+    A role is how the crate's code asks for a mark; this tool needs the two the
+    crate writes when it cannot stand behind a record, to name them in a test and
+    to set them in a record.
+    """
+    for name, locator, _ in WIRE_MARKS:
+        if name == role:
+            return locator
+    raise ValueError(f"the wire file names no mark with the role {role!r}")
+
+
+UNASKED_CARGO = mark_locator("unasked-cargo")
+UNNAMED_RESOLUTION = mark_locator("unnamed-resolution")
+
+# The remedy a refusal prints for a mark the wire does not name, for a line it
+# cannot read, for a record whose bytes are not its encoding, and for one whose own
+# bytes spell a marker of its framing. The file holds each once, so this checker
+# and the crate cannot say different things about the same record — and the order
+# such a mark is reported in is the file's too (`unknown-order`, which `read_wire`
+# refuses where it names one this checker does not implement). The undecodable
+# text is a template as well as a remedy: it spells its own encoding and the byte
+# the bytes stop at, and `undecodable_text` below is what fills them in.
+UNKNOWN_REMEDY = WIRE["unknown"]
+MALFORMED_REMEDY = WIRE["malformed"]
+UNDECODABLE_REMEDY = WIRE["undecodable"]
+UNFRAMED_REMEDY = WIRE["unframed"]
+
+
+def undecodable_text(offset):
+    """The wire's own text for a record whose bytes are not its encoding.
+
+    The file's remedy with the encoding and the byte the bytes stop being it at
+    filled in, so rewording the refusal — including where its offset stands — is an
+    edit to the file rather than one in each of two readers. The crate fills the
+    same text in the same way (`Wire::undecodable`).
+    """
+    return UNDECODABLE_REMEDY.replace("{encoding}", RECORD_ENCODING).replace(
+        "{byte}", str(offset)
+    )
+
+# The length and the alphabet of a hash, which is what every input that is there
+# is recorded as: a line whose content is not one names no input. See `classify`.
+HASH_LENGTH, HASH_ALPHABET = WIRE["hash"]
 
 # The directory cargo writes a build's artifacts into, whose files are outside
 # the record for the reason the record documents: their content comes from the
@@ -101,35 +277,148 @@ BUILD_EDGES = (None, "build")
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 
 
-def read_record(binary):
-    """The record a binary carries, as ``locator -> hash`` — or None.
+class Record:
+    """What one record says, read by the wire's own rule (`classify`).
 
-    ``None`` for a binary with no record, which is a failure of its own rather
-    than an empty record.
+    ``inputs`` maps an input's locator to the content the record spells for it;
+    ``named`` and ``unknown`` are the marks it carries — the locators the wire
+    names, and the ones it does not — each in the order the wire reports one in;
+    and ``malformed`` is the first line the wire reads as none of them, or None,
+    in which case the record cannot be read at all.
     """
-    content = Path(binary).read_bytes()
-    start = content.find(RECORD_START)
+
+    def __init__(self, inputs, named, unknown, malformed):
+        self.inputs = inputs
+        self.named = named
+        self.unknown = unknown
+        self.malformed = malformed
+
+
+def classify(line):
+    """What one record line is, by the rule the wire file states.
+
+    Returns ``(kind, locator, content)`` with the kind ``"named"`` (a mark the
+    wire names), ``"unknown"`` (a mark it does not), ``"input"`` or
+    ``"malformed"``. The crate implements the same text (`Wire::line`), so a shape
+    cannot be one thing to this checker and another to the crate that wrote the
+    record; what each kind is, and the order the kinds are tried in, is stated in
+    the file rather than here.
+    """
+    if "\r" in line:
+        return ("malformed", None, None)
+    content, separator, locator = line.partition("\t")
+    if not separator or not locator:
+        return ("malformed", None, None)
+    if locator in MARKS:
+        return ("named", locator, None)
+    if locator.startswith(ENVIRONMENT_PREFIX):
+        return ("input", locator, content)
+    if content == UNSET:
+        return ("unknown", locator, None)
+    if is_hash(content):
+        return ("input", locator, content)
+    return ("malformed", None, None)
+
+
+def is_hash(content):
+    """Whether a content is the hash a record gives an input: the length and the
+    alphabet the wire file spells, so neither reader decides that for itself."""
+    return len(content) == HASH_LENGTH and all(c in HASH_ALPHABET for c in content)
+
+
+class UndecodableRecord(Exception):
+    """A binary's framed record bytes are not the encoding the wire states.
+
+    Raised rather than returned as ``None``, because a record that cannot be
+    decoded is not a binary without one: the crate refuses such a binary, and this
+    checker has to refuse it the same way. ``offset`` is where the bytes stop being
+    that encoding, counted from the start of the record, which `undecodable_text`
+    spells into the wire's own text for it.
+    """
+
+    def __init__(self, offset):
+        super().__init__(offset)
+        self.offset = offset
+
+
+class UnframedRecord(Exception):
+    """A binary's framed record bytes spell a marker of their own framing.
+
+    Raised rather than read up to the first marker met, which would take a record
+    missing every line after it for the record: a line a build writes spells
+    neither marker, so where this record ends cannot be read from its bytes, and
+    the crate refuses such a record too.
+    """
+
+
+def embedded_record(blob):
+    """The record a binary carries, decoded by the encoding the wire states.
+
+    ``None`` for a binary carrying no record — no start marker, or no end marker
+    that ends one of the record's lines — `UnframedRecord` where the bytes framed
+    hold a marker of their own, and `UndecodableRecord` where they are not that
+    encoding. Both the framing and the encoding are the file's, so this reader
+    takes a record out of a binary exactly as the crate does and neither decides
+    for itself where a record begins, where it ends, or what its bytes are.
+    """
+    start = blob.find(RECORD_START)
     if start < 0:
         return None
     start += len(RECORD_START)
-    end = content.find(RECORD_END, start)
+    # The end marker ends the record only where it follows one of its lines, with
+    # the LF that line ends with: a marker the record's own bytes spell does not
+    # end it, and is refused below rather than cutting the record short.
+    end = blob.find(b"\n" + RECORD_END, start)
     if end < 0:
         return None
-    record = {}
-    for line in content[start:end].decode().splitlines():
-        if not line:
-            continue
-        hash, _, locator = line.partition("\t")
-        record[locator] = hash
+    framed = blob[start : end + 1]
+    for marker in (RECORD_START, RECORD_END):
+        if marker in framed:
+            raise UnframedRecord()
+    try:
+        return framed.decode(RECORD_ENCODING)
+    except UnicodeDecodeError as error:
+        raise UndecodableRecord(error.start) from None
+
+
+def read_record(binary):
+    """The record a binary carries, as a `Record` — or None.
+
+    ``None`` for a binary with no record — which is a failure of its own rather
+    than an empty record, and what bytes no end marker closes one of a record's
+    lines frame — plus `UnframedRecord` and `UndecodableRecord` for one the wire
+    frames but cannot read. The record is divided into lines the way the wire
+    file states — at each LF, the last line ending with one — and every line is
+    read by its rule, so what the crate reads as a mark this checker reads as a
+    mark too, and a blank line is refused rather than passed over.
+    """
+    text = embedded_record(Path(binary).read_bytes())
+    if text is None:
+        return None
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    record = Record({}, [], [], None)
+    for line in lines:
+        kind, locator, content = classify(line)
+        if kind == "malformed":
+            if record.malformed is None:
+                record.malformed = line
+        elif kind == "input":
+            record.inputs[locator] = content
+        elif kind == "named":
+            record.named.append(locator)
+        else:
+            record.unknown.append(locator)
     return record
 
 
 def content_hash(path):
-    """The sha256 a record spells for a readable file, or ``unset``."""
+    """The sha256 a record spells for a readable file, or the wire's ``unset``."""
     try:
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
     except OSError:
-        return "unset"
+        return UNSET
 
 
 def parse_dep_info(text):
@@ -264,6 +553,22 @@ def workspace_reads(dep_info_files, workspace):
     return reads
 
 
+def blocking_mark(record):
+    """The locator of the mark a rebuild has to clear first, or None.
+
+    A record can carry more than one mark, and the wire file holds the order: a
+    mark `MARKS` knows comes before one it does not, in the order `MARKS` spells
+    them, and where none is known the order is the wire's other one, the record's
+    own — the first line it spells, which ``read_record`` kept. `check` reads the
+    locator this returns against `MARKS`, so a mark whose meaning this version
+    does not know is still refused, with the line's own locator named.
+    """
+    for known in MARKS:
+        if known in record.named:
+            return known
+    return record.unknown[0] if record.unknown else None
+
+
 def recorded_files(record, base):
     """The file inputs a record names, resolved against the record's base.
 
@@ -274,7 +579,7 @@ def recorded_files(record, base):
     manifest than the root its build used.
     """
     files = {}
-    for locator, hash in record.items():
+    for locator, hash in record.inputs.items():
         if locator.startswith(ENVIRONMENT_PREFIX):
             continue
         path = Path(locator)
@@ -355,12 +660,20 @@ def package_workspace(manifest_path):
 
 
 def nearest_workspace_root(directory):
-    """The nearest ancestor manifest declaring `[workspace]`, or None.
+    """The root a record's relative locators are spelled against, or None.
 
-    The base a record spells its relative locators against, which is the same
-    rule the record's own walk uses for that base.
+    The root the package names with `package.workspace`, else the nearest
+    ancestor manifest declaring `[workspace]`. A name first, because that is the
+    root cargo reads: measured, a package whose manifest says
+    `workspace = "../root"` resolves to the named root even where an ancestor
+    manifest declares `[workspace]`, and the ancestor is then not parsed at all.
+    The same rule the record's own walk applies for its base.
     """
-    current = Path(directory).resolve()
+    package = Path(directory).resolve()
+    target = package_workspace(package / "Cargo.toml")
+    if target is not None:
+        return Path(os.path.normpath(package / target))
+    current = package
     while True:
         manifest = current / "Cargo.toml"
         if manifest.is_file() and declares_workspace(manifest_text(manifest)):
@@ -373,10 +686,18 @@ def nearest_workspace_root(directory):
 def workspace_roots(directory):
     """Every workspace root cargo can resolve for the package at `directory`.
 
-    Each ancestor manifest that declares `[workspace]`, the directory a
-    `package.workspace` key names, and the package's own directory.
+    The one root a `package.workspace` key names, or else each ancestor manifest
+    that declares `[workspace]` and the package's own directory.
 
-    Not the nearest ancestor alone, because that is not cargo's rule: an invoked
+    A named root alone, because a name settles it: measured, cargo resolves such
+    a package to the named directory even where an ancestor manifest declares
+    `[workspace]`, the named root is where an inherited `workspace = true` path
+    is read from, and a build whose workspace both nests the package and claims
+    it as a member stops with `member of the wrong workspace`. So no ancestor of
+    a package that names its workspace is a root a build of it can read.
+
+    Without a name, not the nearest ancestor alone, because that is not cargo's
+    rule: an invoked
     workspace lists members that may sit below another `[workspace]` manifest,
     and then *the invoked root* is the one whose `[workspace.package]` values a
     member inherits — the manifest passed on the way down is never loaded. A
@@ -389,6 +710,9 @@ def workspace_roots(directory):
     the guarantee.
     """
     package = Path(directory).resolve()
+    target = package_workspace(package / "Cargo.toml")
+    if target is not None:
+        return [Path(os.path.normpath(package / target))]
     roots = [package]
     current = package
     while True:
@@ -398,11 +722,6 @@ def workspace_roots(directory):
         if current.parent == current:
             break
         current = current.parent
-    target = package_workspace(package / "Cargo.toml")
-    if target is not None:
-        root = Path(os.path.normpath(package / target))
-        if (root / "Cargo.toml").is_file():
-            roots.append(root)
     return sorted(set(roots))
 
 
@@ -473,9 +792,40 @@ def check(workspace, target_dir, binaries, metadata):
         if not binary.is_file():
             problems.append(f"{binary} does not exist: build it before checking its record")
             continue
-        record = read_record(binary)
+        try:
+            record = read_record(binary)
+        except UnframedRecord:
+            # The wire states that a record's own bytes hold neither marker, so a
+            # record spelling one is one no build wrote: where it ends cannot be
+            # read from its bytes, and reading it up to the first marker met would
+            # take a record missing every line after it for the record.
+            problems.append(f"{binary_name}: {UNFRAMED_REMEDY}")
+            continue
+        except UndecodableRecord as unreadable:
+            # The wire frames the record and states its encoding, so a record
+            # whose bytes are not that encoding is refused rather than raised over
+            # — the same refusal the crate reaches, in the file's own text, with
+            # the byte it stops at filled into that text rather than spelled here.
+            problems.append(f"{binary_name}: {undecodable_text(unreadable.offset)}")
+            continue
         if record is None:
             problems.append(f"{binary} carries no record, so it cannot be checked")
+            continue
+        if record.malformed is not None:
+            # The wire reads neither what the record holds nor that it cannot be
+            # stood behind, so there is nothing here to compare: the line is named
+            # rather than taken for a mark or for an input the record did not mean
+            # to hold.
+            problems.append(
+                f"{binary_name}: {MALFORMED_REMEDY} The line is {record.malformed!r}."
+            )
+            continue
+        mark = blocking_mark(record)
+        if mark is not None:
+            # The mark names the fact the build could not establish, so the refusal
+            # says that and what clears it rather than naming differences the record
+            # cannot be trusted to hold.
+            problems.append(f"{binary_name}: {MARKS.get(mark, UNKNOWN_REMEDY)} (mark: {mark})")
             continue
         package_ids = closure_package_ids(metadata, package_name)
         package_dirs = [
@@ -522,7 +872,7 @@ def check(workspace, target_dir, binaries, metadata):
 
         # The effective configuration: what the record holds must be what is
         # there now, and what is there now must be in the record.
-        if record.get(f"{ENVIRONMENT_PREFIX}{TOOLCHAIN_VARIABLE}", "unset") == "unset":
+        if record.inputs.get(f"{ENVIRONMENT_PREFIX}{TOOLCHAIN_VARIABLE}", UNSET) == UNSET:
             problems.append(
                 f"{binary_name}: the record names no {ENVIRONMENT_PREFIX}"
                 f"{TOOLCHAIN_VARIABLE}, so the toolchain that built it is not pinned"
