@@ -301,6 +301,9 @@ pub struct KnowledgeClaim {
     pub audience: BTreeSet<String>,
     pub epistemic_status: EpistemicStatus,
     pub freshness: Freshness,
+    /// How strongly this claim is held, recorded with the claim rather than
+    /// inferred from how confidently a projection renders it.
+    pub confidence: Confidence,
     pub evidence: BTreeSet<EvidenceId>,
     pub ancestry: BTreeSet<KnowledgeId>,
     pub source_anchors: Vec<ExternalReference>,
@@ -373,6 +376,7 @@ pub enum DomainRecord {
     Root(Root),
     Role(Role),
     WorkforceBinding(WorkforceBinding),
+    WorkforceRuntimeContract(WorkforceRuntimeContract),
     RuntimeProfile(RuntimeProfile),
     Host(Host),
     Dispatch(Dispatch),
@@ -390,6 +394,39 @@ pub enum DomainRecord {
     ExecutionEpisode(ExecutionEpisode),
     LearnedMethod(LearnedMethod),
     Experiment(Experiment),
+    // Principals, Fabric and clients (#36)
+    User(crate::entities::User),
+    Fabric(crate::entities::Fabric),
+    Device(crate::entities::Device),
+    Client(crate::entities::Client),
+    ControllerSession(crate::entities::ControllerSession),
+    Pairing(crate::entities::Pairing),
+    // Runtime inventory (#36)
+    Environment(crate::entities::Environment),
+    HarnessDriver(crate::entities::HarnessDriver),
+    Installation(crate::entities::Installation),
+    Model(crate::entities::Model),
+    // Work, knowledge and the records of record (#36)
+    Request(crate::entities::Request),
+    Objective(crate::entities::Objective),
+    Capability(crate::entities::Capability),
+    Chat(crate::entities::Chat),
+    Worktree(crate::entities::Worktree),
+    Plan(crate::entities::Plan),
+    Milestone(crate::entities::Milestone),
+    Checkpoint(crate::entities::Checkpoint),
+    FollowUp(crate::entities::FollowUp),
+    Requirement(crate::entities::Requirement),
+    Decision(crate::entities::Decision),
+    Ambiguity(crate::entities::Ambiguity),
+    Diagnostic(crate::entities::Diagnostic),
+    Annotation(crate::entities::Annotation),
+    Plugin(crate::entities::Plugin),
+    ReleaseTarget(crate::entities::ReleaseTarget),
+    VerificationRun(crate::entities::VerificationRun),
+    SecretLease(crate::entities::SecretLease),
+    Projection(crate::entities::Projection),
+    ConfigProjection(crate::entities::ConfigProjection),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

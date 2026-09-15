@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use symbiote_domain::*;
+// `symbiote_domain` names a canonical `Capability` record of its own (#36); this
+// test means the runtime adapter's declared capability.
+use symbiote_runtime_sdk::Capability;
 use symbiote_runtime_sdk::*;
 
 fn proof(runtime: RuntimeKind) -> ProbeEvidence {
