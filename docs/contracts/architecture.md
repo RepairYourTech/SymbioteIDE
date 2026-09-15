@@ -10,6 +10,30 @@ Implementation artifacts pin exact accepted decision revisions and compatibility
 
 `SpikeContract` requires hypothesis, workload, platform/hardware, method, finite numeric thresholds, stop conditions, result artifact and cleanup. Schema v1 rejects unsupported versions and unknown fixed fields. Generate structural JSON schemas with `cargo run -p symbiote-architecture --example architecture_schema`. The schemas describe serialization; runtime validation additionally checks cross-field policy. No previous persisted schema exists: v1 is the initial version, future versions are rejected rather than guessed or downgraded.
 
+## The repository's own decision ledger
+
+ADR-0001's decisions are also committed as data in [`decisions.json`](../architecture/decisions.json), because a record that exists only as prose cannot refuse anything: before it existed, this crate's registry had no caller in this repository and every pin was a fixture. The ledger holds one record per decision, the compatibility facts they depend on, and one pin record per workspace member.
+
+A decision record holds the `draft` it published from, the `published` state and revision the repository claims, the accepted text it interprets (`record`, with its `record_sha256`), the `acceptance` that made it accepted, the `blocking_issue` that owns whatever decides a choice that is still open, and the `proposed_dependencies` a dependent implementation would express the choice with. An artifact record holds its `pins` and the gate `status` this repository publishes for it. `Ledger::registry` replays the file through the crate's own transitions — propose, accept, draft revision, fact revisions, pins — and then requires every record's published state and revision to be the ones the replay reaches, so the ledger cannot record a lifecycle this crate would refuse.
+
+Refusals, each naming its subject:
+
+| Refusal | Why it exists |
+| --- | --- |
+| a schema version this loader does not replay, an unknown field, or no decision at all | a ledger that cannot be read is not a passing ledger |
+| a record's text is not in the tree, or has changed since the record cited it | an accepted decision is the text it was accepted from |
+| the same for evidence a decision cites | observed evidence is content-addressed; an `https://` reference is recorded, not fetched |
+| a record that is still open — `proposed` or `investigating` — with no `blocking_issue`, or a decided one that still names one | an unresolved choice must have an owner |
+| a `published` state or revision the replay never reaches | Worker authority, missing measured evidence on a high-reversal-cost choice and invented revisions fail here |
+| an artifact `status` that is not the one `gate` reaches, a settled artifact naming a blocking issue, or an unsettled one naming none | the readiness this repository publishes is the one the registry computes |
+| a workspace member cargo reports with no record, or a record for a path cargo does not report | a new member must declare what it depends on, and the ledger cannot pin a crate that does not exist |
+| a member that declares one of a decision's `proposed_dependencies` without pinning it, or pins it while declaring none of them | an unresolved choice may not reach implementation unrecorded |
+| a compatibility fact whose validity has lapsed | vendor facts expire independently |
+
+`cargo test -p symbiote-architecture` runs the ledger suite, and `cargo run -p symbiote-architecture --example decisions` prints the published map — every decision with its state, revision and owners, every artifact with its status, pins, reasons and blocking issue — and exits non-zero while a refusal stands.
+
+What this does not claim: the member list and the dependency names are what cargo reports, so a dependency reached transitively through another member, or under a package name a record does not list, is not seen; a record's `draft` is the machine-readable summary of the text it pins, and the check compares that text's hash rather than the summary against it; an issue reference names the canonical owner without resolving its live state offline; `reviewer` records who stands behind an observation, and no independent review of these records exists in this repository; and the Host does not consult this ledger at run time yet.
+
 ## Trust and applicability
 
 These APIs enforce transitions inside this library, not authentication or filesystem security. The future Host must authenticate the caller before supplying Authority, independently verify evidence contents/hashes/reviewer provenance, validate source authority, persist the audit journal transactionally, and call `require_ready` before dependent execution. Merely presenting a HTTPS source or SHA-256 string is not evidence verification. JSON records and fixtures do not prove framework behavior. Registry state is deliberately not exposed for arbitrary mutation/deserialization into trusted accepted state.
@@ -20,4 +44,6 @@ Pure contract tests cover normal transitions, rejected worker acceptance, high-c
 
 Implemented foundational #173 scope: decision/authority/alternative/constraint/evidence/reversal/supersession schemas; proof contract; fresh version pins; refusal gate; machine-readable affected artifacts; draft and accepted lineage behavior. Source/issue/requirement/graph/deployment links are representable.
 
-Still pending: authenticated Host enforcement, durable accepted-history/audit persistence and recovery, measured #38 workload, automatic research refresh and authoritative source verification, graph/issue-generation integration, immutable content-addressed artifact store and full implementation-time pin enforcement. Existing ADR-0001 remains accepted client direction; its provisional choices cannot pass a fabricated compatibility fact. #173 remains open until these obligations are accounted for through real integrations.
+Now enforced in this repository: ADR-0001's decisions are recorded as data — `ADR-0001/HOST-STACK` accepted on explicit client authority, `ADR-0001/DESKTOP-SHELL` and `ADR-0001/GRAPH-STORAGE` investigating under #38 and #233 — the accepted text and the client instruction that authorized it are content-addressed, every workspace member is recorded and pins the accepted stack constraint, and the one artifact that reaches a choice still under proof (`crates/symbiote-desktop`, through `tauri` and `tauri-build`) publishes `provisional` rather than `settled`. A provisional choice cannot reach a member unrecorded, and a new workspace member cannot be added without a record. No compatibility fact is recorded, because ADR-0001 certifies no version: #38 and #233 own the measurements that would create one, and a fact must be fresh and verified wherever it is pinned.
+
+Still pending: authenticated Host enforcement (`require_ready` has no product caller yet; #180 and #181 own it), durable accepted-history/audit persistence and recovery, a recorded transition history rather than each decision's published state and one replayed draft revision, measured #38 workload, automatic research refresh and authoritative source verification, graph/issue-generation integration and an immutable content-addressed artifact store. Existing ADR-0001 remains accepted client direction; its provisional choices cannot pass a fabricated compatibility fact. #173 remains open until these obligations are accounted for through real integrations.
