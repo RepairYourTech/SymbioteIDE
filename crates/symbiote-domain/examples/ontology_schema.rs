@@ -8,20 +8,14 @@
 
 use std::path::PathBuf;
 use symbiote_domain::{
-    IDENTITY_NAMES, ONTOLOGY_SCHEMA_PATH, OUTSTANDING, VOCABULARY, envelope_record_names,
-    ontology_schema, ontology_text, problems, published_names, workspace_root,
+    IDENTITY_NAMES, ONTOLOGY_SCHEMA_PATH, OUTSTANDING, VOCABULARY, ontology_schema, ontology_text,
+    problems, workspace_root,
 };
 
 fn main() {
     let root = workspace_root();
     let json = ontology_text();
-    let violations = problems(
-        VOCABULARY,
-        OUTSTANDING,
-        IDENTITY_NAMES,
-        &published_names(&ontology_schema()),
-        &envelope_record_names(),
-    );
+    let violations = problems(VOCABULARY, OUTSTANDING, IDENTITY_NAMES, &ontology_schema());
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let target = |index: usize| -> PathBuf {
         arguments

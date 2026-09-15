@@ -2,10 +2,12 @@
 //!
 //! Every check here is a rule over the inventory this crate compiles and the
 //! artifact it publishes, so a noun that gains a second owner, an identity that
-//! arrives with no owner, an entity that is declared but not transportable, or a
-//! published document that no longer matches the tree each fails a named test
-//! rather than a review. The criteria this layer cannot check are asserted to say
-//! so, with the issue that owns them.
+//! arrives with no owner, an entity that is declared but not transportable, a
+//! record no noun owns, a canonical type nobody owns, or a published document
+//! that no longer matches the tree each fails a named test rather than a review.
+//! The rules range over the committed artifact, not over a document assembled in
+//! the test, so what they hold true is what was published. The criteria this
+//! layer cannot check are asserted to say so, with the issue that owns them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use symbiote_domain::*;
@@ -25,22 +27,23 @@ fn provenance() -> Provenance {
     }
 }
 
+/// The committed artifact, as the document the rules are checked against.
+fn artifact() -> serde_json::Value {
+    let text = std::fs::read_to_string(workspace_root().join(ONTOLOGY_SCHEMA_PATH))
+        .expect("the committed ontology");
+    serde_json::from_str(&text).expect("the committed ontology is JSON")
+}
+
 fn published() -> BTreeSet<String> {
-    published_names(&ontology_schema())
+    published_names(&artifact())
 }
 
 fn records() -> BTreeSet<String> {
-    envelope_record_names()
+    recorded_names(&artifact())
 }
 
 fn violations(vocabulary: &[Noun], outstanding: &[Outstanding]) -> Vec<String> {
-    problems(
-        vocabulary,
-        outstanding,
-        IDENTITY_NAMES,
-        &published(),
-        &records(),
-    )
+    problems(vocabulary, outstanding, IDENTITY_NAMES, &artifact())
 }
 
 fn definition(name: &str) -> serde_json::Value {
@@ -87,6 +90,27 @@ fn every_noun_maps_to_one_identity_and_one_published_owner() {
     assert!(IDENTITY_NAMES.len() >= 55, "{}", IDENTITY_NAMES.len());
     assert!(published().len() >= 150, "{}", published().len());
     assert!(records().len() >= 50, "{}", records().len());
+    // The round trip, stated as an equality rather than left to the two rules: the
+    // entity nouns' owners and the records the envelope carries are one set, so a
+    // type added on either side alone fails.
+    let owners: BTreeSet<String> = VOCABULARY
+        .iter()
+        .filter(|entry| entry.shape == Shape::Entity)
+        .map(|entry| entry.owner.to_owned())
+        .collect();
+    assert_eq!(owners, records(), "the entity nouns and the records differ");
+    assert!(owners.len() >= 50, "{}", owners.len());
+    // Each excused name is the identity of exactly one noun and owns none: that is
+    // the only thing the exemption admits, so it cannot become a parking place.
+    let claimed: BTreeSet<&str> = VOCABULARY
+        .iter()
+        .filter_map(|entry| entry.identity)
+        .collect();
+    for (name, why) in IDENTITY_ONLY {
+        assert!(!owners.contains(*name), "{name} owns a noun");
+        assert!(claimed.contains(*name), "{name} is no noun's identity");
+        assert!(!IDENTITY_ONLY.is_empty() && !why.is_empty());
+    }
     // And the artifact is the one committed, so the vocabulary is not checked
     // against a document that differs from the tree.
     let committed = std::fs::read_to_string(workspace_root().join(ONTOLOGY_SCHEMA_PATH))
@@ -99,109 +123,233 @@ fn every_noun_maps_to_one_identity_and_one_published_owner() {
     );
 }
 
-/// Every way the vocabulary can be untrue, each refused by name. These are the
-/// rules the real vocabulary passes, exercised on inputs that fail them.
+/// The vocabulary with one noun removed, so the type it owned is left to the
+/// rules that hold a canonical type to a noun.
+fn without(noun: &str) -> Vec<Noun> {
+    VOCABULARY
+        .iter()
+        .copied()
+        .filter(|entry| entry.noun != noun)
+        .collect()
+}
+
+/// The committed artifact with one indexed name, one record or one definition
+/// changed, so a document that disagrees with the inventory can be refused.
+fn indexed_with(name: &str, document: &serde_json::Value) -> serde_json::Value {
+    let mut changed = document.clone();
+    changed["entities"]
+        .as_object_mut()
+        .expect("an index")
+        .insert(
+            name.to_owned(),
+            serde_json::json!({ "$ref": format!("#/$defs/{name}") }),
+        );
+    changed
+}
+
+fn without_indexed(name: &str) -> serde_json::Value {
+    let mut changed = artifact();
+    changed["entities"]
+        .as_object_mut()
+        .expect("an index")
+        .remove(name);
+    changed
+}
+
+fn carrying(name: &str) -> serde_json::Value {
+    let mut changed = artifact();
+    changed["envelope_records"]
+        .as_array_mut()
+        .expect("a record list")
+        .push(serde_json::json!(name));
+    changed
+}
+
+fn defining(name: &str) -> serde_json::Value {
+    let mut changed = artifact();
+    changed["$defs"]
+        .as_object_mut()
+        .expect("definitions")
+        .insert(name.to_owned(), serde_json::json!({ "type": "string" }));
+    changed
+}
+
+/// Every way the inventory or the artifact can be untrue, each refused by name.
+/// These are the rules the real vocabulary passes, exercised on inputs that fail
+/// them — including the document-level ones, so a record no noun owns is refused
+/// whether it arrives in the vocabulary or in the published artifact.
 #[test]
-fn a_vocabulary_that_breaks_any_rule_is_refused_by_name() {
-    let cases: Vec<(&str, Vec<Noun>, Vec<Outstanding>, &str)> = vec![
+fn a_vocabulary_or_an_artifact_that_breaks_any_rule_is_refused_by_name() {
+    type Run = Box<dyn Fn() -> Vec<String>>;
+    let held = |vocabulary: Vec<Noun>, document: serde_json::Value| -> Run {
+        Box::new(move || problems(&vocabulary, OUTSTANDING, IDENTITY_NAMES, &document))
+    };
+    let plain = |vocabulary: Vec<Noun>, outstanding: Vec<Outstanding>| -> Run {
+        Box::new(move || problems(&vocabulary, &outstanding, IDENTITY_NAMES, &artifact()))
+    };
+    let cases: Vec<(&str, Run, &str)> = vec![
         (
             "two nouns, one owner",
-            vec![
-                entity("user", "UserId", "User"),
-                entity("actor", "ActorId", "User"),
-            ],
-            Vec::new(),
+            plain(
+                vec![
+                    entity("user", "UserId", "User"),
+                    entity("actor", "ActorId", "User"),
+                ],
+                Vec::new(),
+            ),
             "type User owns 2 nouns",
         ),
         (
             "one noun, two owners",
-            vec![
-                entity("user", "UserId", "User"),
-                entity("user", "UserId2", "Fabric"),
-            ],
-            Vec::new(),
+            plain(
+                vec![
+                    entity("user", "UserId", "User"),
+                    entity("user", "UserId2", "Fabric"),
+                ],
+                Vec::new(),
+            ),
             "noun user maps to 2 owners",
         ),
         (
             "one identity, two nouns",
-            vec![
-                entity("user", "UserId", "User"),
-                entity("actor", "UserId", "Fabric"),
-            ],
-            Vec::new(),
+            plain(
+                vec![
+                    entity("user", "UserId", "User"),
+                    entity("actor", "UserId", "Fabric"),
+                ],
+                Vec::new(),
+            ),
             "identity UserId identifies 2 nouns",
         ),
         (
             "an identity this crate does not declare",
-            vec![entity("user", "InventedId", "User")],
-            Vec::new(),
+            plain(vec![entity("user", "InventedId", "User")], Vec::new()),
             "identity InventedId is not declared by this crate",
         ),
         (
             "a declared identity with no noun",
-            vec![entity("user", "UserId", "User")],
-            Vec::new(),
+            plain(vec![entity("user", "UserId", "User")], Vec::new()),
             "identity HostId has no owning noun",
         ),
         (
             "an owner no schema declares",
-            vec![entity("user", "UserId", "NotAType")],
-            Vec::new(),
+            plain(vec![entity("user", "UserId", "NotAType")], Vec::new()),
             "owner NotAType is not in the published schema",
         ),
         (
             "a lifecycle no schema declares",
-            vec![Noun {
-                lifecycle: Some("NotAState"),
-                ..entity("user", "UserId", "User")
-            }],
-            Vec::new(),
+            plain(
+                vec![Noun {
+                    lifecycle: Some("NotAState"),
+                    ..entity("user", "UserId", "User")
+                }],
+                Vec::new(),
+            ),
             "lifecycle NotAState is not in the published schema",
         ),
         (
             "an entity the envelope cannot carry",
-            vec![entity("user", "UserId", "VersionedTaskContract")],
-            Vec::new(),
+            plain(
+                vec![entity("user", "UserId", "VersionedTaskContract")],
+                Vec::new(),
+            ),
             "entity VersionedTaskContract is not a record the envelope can carry",
         ),
         (
             "an entity with no identity",
-            vec![Noun {
-                identity: None,
-                ..entity("user", "UserId", "User")
-            }],
-            Vec::new(),
+            plain(
+                vec![Noun {
+                    identity: None,
+                    ..entity("user", "UserId", "User")
+                }],
+                Vec::new(),
+            ),
             "an entity must have an identity of its own",
         ),
         (
             "an outstanding criterion with no owner",
-            vec![entity("user", "UserId", "User")],
-            vec![Outstanding {
-                criterion: "something",
-                issue: 0,
-                why: "because",
-            }],
+            plain(
+                vec![entity("user", "UserId", "User")],
+                vec![Outstanding {
+                    criterion: "something",
+                    issue: 0,
+                    why: "because",
+                }],
+            ),
             "something: names no owning issue",
         ),
         (
             "an outstanding criterion with no reason",
-            vec![entity("user", "UserId", "User")],
-            vec![Outstanding {
-                criterion: "something",
-                issue: 36,
-                why: "  ",
-            }],
+            plain(
+                vec![entity("user", "UserId", "User")],
+                vec![Outstanding {
+                    criterion: "something",
+                    issue: 36,
+                    why: "  ",
+                }],
+            ),
             "something: states no reason",
         ),
+        (
+            "a canonical type the artifact does not index",
+            held(VOCABULARY.to_vec(), without_indexed("User")),
+            "canonical type User is not indexed in the published artifact",
+        ),
+        (
+            "an indexed name this crate does not publish",
+            held(VOCABULARY.to_vec(), indexed_with("Nope", &artifact())),
+            "the published artifact indexes Nope, which is not a canonical type this crate publishes",
+        ),
+        (
+            "a canonical type owned by no noun",
+            held(without("session"), artifact()),
+            "canonical type Session is owned by no noun and is not listed as identity-only",
+        ),
+        (
+            "an identity-only entry whose name is gone",
+            held(VOCABULARY.to_vec(), without_indexed("HostId")),
+            "the identity-only entry HostId is not a canonical type",
+        ),
+        (
+            "an identity-only entry that owns a noun",
+            held(vec![entity("host", "HostId", "HostId")], artifact()),
+            "the identity-only entry HostId owns the noun host, so it is not identity-only",
+        ),
+        (
+            "an identity-only entry that is no noun's identity",
+            held(without("host"), artifact()),
+            "the identity-only entry HostId is the identity of no noun",
+        ),
+        (
+            "a record whose type is not a canonical type",
+            held(VOCABULARY.to_vec(), carrying("Nope")),
+            "the envelope carries Nope, which is not a canonical type this crate publishes",
+        ),
+        (
+            "a record owned by no noun",
+            held(VOCABULARY.to_vec(), carrying("HostId")),
+            "the record HostId is owned by no noun",
+        ),
+        (
+            "a record whose noun is a value object",
+            held(VOCABULARY.to_vec(), carrying("VersionedTaskContract")),
+            "the record VersionedTaskContract is not an entity: its noun task contract is a value object",
+        ),
+        (
+            "a published name nothing indexes or references",
+            held(VOCABULARY.to_vec(), defining("Nope")),
+            "published name Nope is neither a canonical type nor referenced by one",
+        ),
     ];
-    for (label, vocabulary, outstanding, expected) in cases {
-        let found = violations(&vocabulary, &outstanding);
+    for (label, run, expected) in cases {
+        let found = run();
         assert!(
             found.iter().any(|line| line.contains(expected)),
             "{label}: expected {expected:?} in {found:#?}"
         );
     }
-    // The unscoped check is not vacuous either: the real vocabulary passes.
+    // The unscoped checks are not vacuous either: the real inventory and the
+    // committed artifact both pass.
     assert!(violations(VOCABULARY, OUTSTANDING).is_empty());
 }
 
@@ -428,14 +576,18 @@ fn an_external_locator_changes_identity_nothing() {
     );
 }
 
-/// The records that carry lineage in record-specific fields instead of the shared
-/// `Provenance` value object. This list is the whole of them and is held to be;
-/// unifying them is owned by the persistent store, which decides the record shape
-/// that survives a restart. A record that gains shared lineage must leave this
-/// list, and a new record that has none cannot join it silently.
+/// The records that carry no shared `Provenance`. Most carry the lineage they
+/// have in record-specific fields — a history, a recorded-at and verified-by, a
+/// compilation timestamp — and one, `CredentialReference`, holds an identity and
+/// a vault locator and has no lineage to record. This list is the whole of them
+/// and is held to be; unifying them with one value object is owned by the
+/// persistent store, which decides the record shape that survives a restart. A
+/// record that gains shared lineage must leave this list, and a new record that
+/// has none cannot join it silently.
 const LINEAGE_IN_RECORD_FIELDS: &[&str] = &[
     "BillingEntitlement",
     "ChangeStream",
+    "CredentialReference",
     "Dispatch",
     "ExecutionEpisode",
     "Experiment",

@@ -6,20 +6,31 @@
 //! in prose. Each noun names the identity that identifies it and the one type
 //! that owns its behavior, and the rules in `problems` tie both directions to
 //! what the crate actually declares: the identity side to the identity catalogue
-//! the crate compiles, the owner side to the schema it publishes. A new identity
-//! therefore cannot arrive without an owner, a noun cannot name a type that does
-//! not exist, and no type can exist without exactly one noun owning it.
+//! the crate compiles, the owner side to the schema it publishes.
+//!
+//! The tie is a round trip, so a record cannot arrive ownerless and unnoticed.
+//! Every name the artifact publishes is either a canonical type or a definition
+//! one of them references; every canonical type is owned by exactly one noun, or
+//! is an identity-only type excused with its reason (an identity is named by the
+//! noun that carries it, and is not a noun itself); every record the envelope
+//! carries is a canonical type whose noun is an entity, since a value object is
+//! identified only through its carrier and cannot stand as a record of its own;
+//! and every entity noun's owner is a record the envelope carries. Those two last
+//! rules together are the bijection: the records and the entity nouns are the
+//! same set, so a new type cannot be added on one side only.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Whether a noun's canonical representation carries identity and a lifecycle or
-/// is a value object identified only as part of something else.
+/// Whether a noun's canonical representation carries identity of its own or is a
+/// value object identified only as part of something else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
-    /// Has identity, a revision and a lifecycle or disposition.
+    /// Carries identity of its own, so it can be carried as a record: a revision,
+    /// a disposition and a lifecycle state where the noun has states.
     Entity,
-    /// Immutable, or identified only through the record that carries it.
+    /// No identity of its own — immutable, or identified only through the record
+    /// that carries it — so it cannot stand as a record the envelope carries.
     ValueObject,
 }
 
@@ -231,6 +242,59 @@ pub fn published_names(schema: &serde_json::Value) -> BTreeSet<String> {
     keys("$defs").union(&keys("entities")).cloned().collect()
 }
 
+/// The canonical type names the document indexes — the names a noun must own.
+pub fn indexed_names(schema: &serde_json::Value) -> BTreeSet<String> {
+    schema
+        .get("entities")
+        .and_then(|value| value.as_object())
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The names a published document's definitions refer to. A definition that is
+/// not a canonical type is one of these: a dependency of the shape of a type that
+/// is, rather than a noun of its own.
+pub fn referenced_names(schema: &serde_json::Value) -> BTreeSet<String> {
+    fn walk(value: &serde_json::Value, into: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                for (key, value) in object {
+                    if key == "$ref" {
+                        if let Some(name) = value.as_str().and_then(|r| r.rsplit('/').next()) {
+                            into.insert(name.to_owned());
+                        }
+                    } else {
+                        walk(value, into);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| walk(item, into)),
+            _ => {}
+        }
+    }
+    let mut names = BTreeSet::new();
+    for field in ["$defs", "entities"] {
+        if let Some(value) = schema.get(field) {
+            walk(value, &mut names);
+        }
+    }
+    names
+}
+
+/// The records a published document says the envelope carries.
+pub fn recorded_names(schema: &serde_json::Value) -> BTreeSet<String> {
+    schema
+        .get("envelope_records")
+        .and_then(|value| value.as_array())
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A criterion this layer cannot check, with the work that owns it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Outstanding {
@@ -387,7 +451,7 @@ pub const VOCABULARY: &[Noun] = &[
         "credential reference",
         "CredentialReferenceId",
         "CredentialReference",
-        Shape::ValueObject,
+        Shape::Entity,
         None,
     ),
     noun(
@@ -624,6 +688,29 @@ pub const VOCABULARY: &[Noun] = &[
     value("external reference", "ExternalReference"),
 ];
 
+/// Whether a list of excused names holds this one.
+fn excused(list: &[(&str, &str)], name: &str) -> bool {
+    list.iter().any(|(excused, _)| *excused == name)
+}
+
+/// The canonical types no noun owns, each with its reason. Only an identity-only
+/// type is admissible: it is published because the noun that carries it names it
+/// as its identity, and that noun is already held to exactly one identity by the
+/// rules in `problems`. Every entry is checked in both directions — one whose
+/// name is gone fails, one whose name owns a noun fails, one that is the identity
+/// of no noun fails, and one that states no reason fails — so this cannot become
+/// a place to park a type that should have a noun of its own.
+pub const IDENTITY_ONLY: &[(&str, &str)] = &[
+    (
+        "HostId",
+        "the identity the `host` noun names: a host is identified by it, so it is an identity rather than a noun of its own",
+    ),
+    (
+        "CredentialReferenceId",
+        "the identity the `credential reference` noun names: a credential reference is identified by it, so it is an identity rather than a noun of its own",
+    ),
+];
+
 /// The criteria of #36 that this layer cannot check, each with the canonical
 /// issue that owns it. Nothing here is claimed as delivered.
 pub const OUTSTANDING: &[Outstanding] = &[
@@ -655,14 +742,19 @@ pub const OUTSTANDING: &[Outstanding] = &[
 ];
 
 /// The rules that make the vocabulary true. Returns one line per violation, so
-/// an empty result is the only passing state.
+/// an empty result is the only passing state. Everything except the vocabulary
+/// itself is read from the document, so a caller cannot compare the vocabulary
+/// with a set it assembled and call that agreement.
 pub fn problems(
     vocabulary: &[Noun],
     outstanding: &[Outstanding],
     identities: &[&str],
-    published: &BTreeSet<String>,
-    records: &BTreeSet<String>,
+    schema: &serde_json::Value,
 ) -> Vec<String> {
+    let published = published_names(schema);
+    let indexed = indexed_names(schema);
+    let referenced = referenced_names(schema);
+    let records = recorded_names(schema);
     let mut problems = Vec::new();
     let mut nouns: BTreeMap<&str, usize> = BTreeMap::new();
     let mut owners: BTreeMap<&str, usize> = BTreeMap::new();
@@ -723,11 +815,86 @@ pub fn problems(
             }
         }
     }
+    // Every entity noun's owner is a record, and every record's noun is an
+    // entity. Together these are the round trip between the inventory and the
+    // transport: a record with no noun, and a noun with no record, both fail.
     for entry in vocabulary {
         if entry.shape == Shape::Entity && !records.contains(entry.owner) {
             problems.push(format!(
                 "{}: entity {} is not a record the envelope can carry",
                 entry.noun, entry.owner
+            ));
+        }
+    }
+    for name in &records {
+        if !indexed.contains(name) {
+            problems.push(format!(
+                "the envelope carries {name}, which is not a canonical type this crate publishes"
+            ));
+            continue;
+        }
+        match vocabulary.iter().find(|entry| entry.owner == name) {
+            None => problems.push(format!("the record {name} is owned by no noun")),
+            Some(entry) if entry.shape != Shape::Entity => problems.push(format!(
+                "the record {name} is not an entity: its noun {} is a value object",
+                entry.noun
+            )),
+            Some(_) => {}
+        }
+    }
+    // Every canonical type is indexed under its own name, nothing else is, and
+    // every indexed name is owned by exactly one noun or excused as identity-only.
+    for entry in CANONICAL {
+        let name = canonical_name(entry);
+        if !indexed.contains(name) {
+            problems.push(format!(
+                "canonical type {name} is not indexed in the published artifact"
+            ));
+        }
+    }
+    for name in &indexed {
+        if !canonical_names().contains(&name.as_str()) {
+            problems.push(format!(
+                "the published artifact indexes {name}, which is not a canonical type this crate publishes"
+            ));
+            continue;
+        }
+        if owners.contains_key(name.as_str()) || excused(IDENTITY_ONLY, name) {
+            continue;
+        }
+        problems.push(format!(
+            "canonical type {name} is owned by no noun and is not listed as identity-only"
+        ));
+    }
+    for (name, why) in IDENTITY_ONLY {
+        if !indexed.contains(*name) {
+            problems.push(format!(
+                "the identity-only entry {name} is not a canonical type"
+            ));
+        }
+        if owners.contains_key(name) {
+            let noun = vocabulary
+                .iter()
+                .find(|noun| noun.owner == *name)
+                .map_or("", |noun| noun.noun);
+            problems.push(format!(
+                "the identity-only entry {name} owns the noun {noun}, so it is not identity-only"
+            ));
+        } else if !claimed.contains_key(name) {
+            problems.push(format!(
+                "the identity-only entry {name} is the identity of no noun"
+            ));
+        }
+        if why.trim().len() < 40 {
+            problems.push(format!("the identity-only entry {name} states no reason"));
+        }
+    }
+    // Every published name is accounted for: a canonical type, or a definition a
+    // canonical type refers to. A name that is neither is published by nothing.
+    for name in &published {
+        if !indexed.contains(name) && !referenced.contains(name) {
+            problems.push(format!(
+                "published name {name} is neither a canonical type nor referenced by one"
             ));
         }
     }
