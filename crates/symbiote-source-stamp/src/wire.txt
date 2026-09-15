@@ -1,0 +1,145 @@
+# The wire a record is spelled on: how it is framed inside a binary and decoded
+# out of one, the one environment variable it pins, the content it gives an
+# input that is not there, the content it gives one that is, every mark a build
+# writes when it cannot stand behind its record — in the order a rebuild has to
+# clear them — and what to say about a line it cannot read, a record it cannot
+# frame, or a mark it does not name.
+#
+# One copy, two readers. This crate parses this file (`wire.rs`, embedding it
+# with `include_str!`) to write and read a record, and
+# planning/integrity/source_record.py parses it to refuse one. Neither keeps its
+# own copy of a value or a remedy — and, below, neither keeps its own idea of
+# what a record line is, of how a record is taken out of a binary and decoded, or
+# of which locators a record can hold at all — so the two cannot disagree about
+# what a record says: changing a mark, its remedy, its precedence, the shape of a
+# line or where a line ends is an edit here.
+#
+# A line is a keyword and its fields, tab-separated; `#` starts a comment.
+#
+#   start          how a record begins inside the binary
+#   end            how a record ends inside the binary
+#   encoding       how the bytes between them are spelled: the encoding both
+#                  readers decode a record by
+#   environment    the one environment variable a record pins (see wire.rs)
+#   prefix         how that variable's locator is spelled
+#   unset          the content a record gives an input that is not there
+#   hash           the length and the alphabet of a hash: the content a record
+#                  gives an input that is there
+#   unknown-order  which mark a refusal reports where a record carries one this
+#                  file does not name
+#   unknown        the remedy it prints for one
+#   malformed      the remedy it prints for a line it cannot read at all
+#   undecodable    the whole remedy it prints for a record whose bytes are not
+#                  `encoding`: the text both readers print, with the encoding
+#                  spelled where `{encoding}` stands and the byte the bytes stop
+#                  being it at where `{byte}` does, each reader filling both in
+#   unframed       the remedy it prints for a record whose own bytes spell one of
+#                  the markers it is framed with
+#   mark           role, locator, remedy — in the order a rebuild clears them
+#
+# A record is the bytes of a binary between `start` and the `end` that ends it,
+# and `encoding` is what those bytes are spelled in: both readers take the record
+# out of a binary by that framing and decode it by that encoding, so neither
+# decides either for itself. The `end` that ends a record is the first one after
+# `start` that follows the LF the record's last line ends with — a record's lines
+# each end with one (below) — so a marker the record's own bytes spell does not
+# end it, and the framed bytes hold neither marker. A build writes lines of a
+# content, a TAB and a locator, and no locator it writes holds what a record
+# cannot: a line feed, which would end the line it is spelled in; a carriage
+# return, which the rule below reads as malformed; or either marker. Measured, a
+# locator that spelled `end` — a file legally named `…]symbiote-source-record` —
+# made both readers frame the record at that inner marker, read a record missing
+# every line after it, and report a binary as matching a tree it was not built
+# from; and a locator holding a line feed was stamped by a build that succeeded
+# and then refused by both readers, in a remedy asking for a rebuild that
+# reproduces the same bytes. So `build_stamp` refuses to stamp a locator a record
+# cannot hold, and a reader that finds a marker in the bytes it framed refuses the
+# record through `unframed` below rather than reading it short. The bytes the wire
+# frames always hold at least one line — the environment line, which every build
+# writes — and bytes that no `end` follows a line of hold no record at all, so
+# such a binary reaches a check as one that carries
+# no record rather than as an empty record to be read clean. A record whose bytes
+# are not that encoding is refused through `undecodable`, which is a fact about
+# the record and not the same thing as a binary that carries none — measured, one
+# reader raised on such bytes while the other reported the binary as unstamped, so
+# the two said different things about the same artifact. That text is this file's
+# whole, including where the bytes stop being `{encoding}`: `{byte}`, which each
+# reader fills in with the offset it found, so rewording the refusal is an edit
+# here rather than one in each of two readers.
+#
+# A record is lines of `content` TAB `locator`, divided at each LF and its last
+# line ending with one. That final LF is where the record stops rather than a
+# line of its own; nothing else in a line is trimmed, and no other character
+# divides one — measured, one reader split a record at every character Python's
+# `str.splitlines` knows and the other at LF alone, so a record holding one of
+# the others was a different record to each.
+#
+# Both readers decide what a line is by this one rule, in this order. The order
+# is part of the rule: a reader that decided any of it differently would read a
+# record the other does not, and measured, that is what the two did —
+#
+#   1. a line with no TAB, with no locator, or with a CR in it, is malformed:
+#      neither reader reads the record at all — a blank line included, since a
+#      record that lost a line must be refused rather than read short. Measured,
+#      the crate refused such a line as malformed while the checker read it as a
+#      mark named by an empty locator, and both passed over a blank one; and a
+#      CRLF record was read as a run of inputs whose locators each ended in a CR,
+#      so the line carried the CR rather than being refused for one;
+#   2. a locator a `mark` line names is that mark, whatever its content: a fact
+#      the build could not establish, refused with the remedy beside the mark.
+#      Measured, a line this file named but whose content was a hash was a mark
+#      to the crate and, to the checker, a file the record said it had read —
+#      which reported the record clean;
+#   3. a locator spelled with `prefix` is an input, whether its content is a hash
+#      or `unset`, which is a variable that was not set at all;
+#   4. any other locator whose content is `unset` is a mark this file does not
+#      name, refused with `unknown` below. It is read by its content rather than
+#      by its name because the names change: measured, an older version wrote
+#      `run-directory-not-named`, and a reader that took that line for an input
+#      compared it against a missing file — whose content is `unset` too —
+#      matched it, and reported the record clean;
+#   5. any other locator whose content is a hash is an input;
+#   6. anything else is malformed too: a content that is neither `unset` nor a
+#      hash says neither what the record read nor that it cannot stand behind
+#      itself. Measured, both readers used to call such a line a mark.
+#
+# A line read as malformed refuses the record through `malformed` below, naming
+# the line, the way a mark refuses it through the remedy beside the mark — and a
+# record the readers cannot decode at all refuses it through `undecodable`,
+# which names no line because there is none to name.
+#
+# A malformed line is refused ahead of every mark, wherever the two sit in the
+# record and however many of either it holds: a record the wire cannot read is one
+# whose marks cannot be stood behind either, so the line is what is named rather
+# than a mark the record also spells — the checker reads every line and reports
+# the line first, the crate stops at the line as it reads — and the rebuild the
+# line's remedy asks for is what makes a mark it hid readable again.
+#
+# A mark's *role* is how the crate's code asks for it; a record spells the
+# *locator*, and a refusal prints the *remedy*. The `mark` lines are in the
+# order a rebuild has to clear them, and the order matters because a record can
+# carry more than one: the cargo that ran a build is itself one of the readings
+# that can name the workspace its resolution was read in, so a `CARGO` that
+# cannot be started can lose the resolution with it. The resolution's own remedy
+# — a rebuild from the workspace, where the shell reports `PWD` — leaves a cargo
+# that cannot be asked still unaskable and is refused again, so the cargo comes
+# first and its remedy is the one a refusal prints. Where a record carries marks
+# none of these lines name, `unknown-order` is how the one reported is chosen:
+# the first the record itself spells, which is the only order that does not
+# depend on how a reader happens to key them — measured, the crate reported the
+# alphabetically first while the checker reported the first in the record, so one
+# record could be described two ways.
+start	symbiote-source-record:[
+end	]symbiote-source-record
+encoding	UTF-8
+environment	CARGO
+prefix	env:
+unset	unset
+hash	64	0123456789abcdef
+unknown-order	first-in-record
+unknown	this build marked its record with a locator the wire does not name — an `unset` content under a locator no `mark` line names — so what it could not establish is unknown, and the record may omit the `[patch]` fork that build compiled. Rebuild it from the workspace, where the shell reports `PWD` (sh, bash, zsh and git bash set it), and check that build
+malformed	this record spells a line the wire cannot read — one with no TAB, with no locator, with a CR in it, or with a content that is neither the wire's `unset` nor a hash — so neither what the record holds nor whether the build could stand behind it is known. Rebuild the binary from the workspace and check that build.
+undecodable	this record's bytes are not the {encoding} the wire spells them in, so neither what the record holds nor whether the build could stand behind it is known. Rebuild the binary from the workspace and check that build. The bytes stop being {encoding} at byte {byte} of the record.
+unframed	this record's own bytes spell one of the markers the wire frames it with, which no build writes and which leaves where the record ends unreadable from its bytes, so what the record holds is not known. Rebuild the binary from the workspace and check that build
+mark	unasked-cargo	cargo-not-asked	the cargo that ran that build could not be run to answer the questions the record rests on, so neither the workspace a run directory names nor the closure cargo resolves in it is known, and the record may omit the `[patch]` fork that build compiled. Rebuild it with a cargo that can be started — a cargo replaced or crippled since the build is the arrangement this catches — and check that build
+mark	unnamed-resolution	resolution-not-named	the workspace cargo resolved in could not be established: the readings that can name it — the directory the invoking cargo was started in, the manifest its command line named, the build directory and `PWD` — do not, so the record may omit the `[patch]` fork that build compiled, and a change to one cannot be ruled out. Rebuild it from the workspace, where the shell reports `PWD` (sh, bash, zsh and git bash set it), and check that build

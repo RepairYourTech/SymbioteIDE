@@ -62,16 +62,20 @@ fn binary(package: &str, name: &str, subject: &str) -> PathBuf {
     ) {
         Ok(changed) if changed.is_empty() => None,
         Ok(changed) => Some(format!(
-            "the inputs it was built from are not those of the tree and this run: {}",
+            "the inputs it was built from are not those of the tree and this run: {} — rebuild it \
+             from sources — {rebuild} — so this proof exercises the current {subject} instead of an \
+             old binary",
             listing(&changed)
         )),
+        // A refusal says what is wrong and what clears it, and a rebuild is not
+        // always that: a record written where the workspace the resolution was
+        // read in could not be established is refused however often it is
+        // rebuilt from here.
         Err(problem) => Some(problem),
     };
     if let Some(problem) = problem {
         panic!(
-            "{name} at {} cannot be shown to reflect the sources under test — {problem}. \
-             Rebuild it from sources — {rebuild} — so this proof exercises the current \
-             {subject} instead of an old binary.",
+            "{name} at {} cannot be shown to reflect the sources under test — {problem}.",
             binary.display()
         );
     }
