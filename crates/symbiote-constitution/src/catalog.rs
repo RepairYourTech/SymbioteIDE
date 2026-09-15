@@ -441,6 +441,7 @@ pub const INVARIANTS: &[Invariant] = &[
         tests: &[
             "crates/symbiote-constitution/tests/conformance.rs::the_coverage_map_names_every_invariant_and_owner",
             "crates/symbiote-constitution/tests/conformance.rs::every_coverage_row_names_a_check_or_an_owner",
+            "crates/symbiote-constitution/tests/conformance.rs::a_row_citing_a_check_this_repository_does_not_run_is_refused",
         ],
         facts: &[],
         owners: &[36, 173, 38, 470],

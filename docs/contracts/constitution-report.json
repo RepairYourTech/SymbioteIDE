@@ -907,6 +907,12 @@
           "subject": "crates/symbiote-constitution/tests/conformance.rs::every_coverage_row_names_a_check_or_an_owner",
           "ok": true,
           "detail": "a compiled test the workspace run executes"
+        },
+        {
+          "channel": "test",
+          "subject": "crates/symbiote-constitution/tests/conformance.rs::a_row_citing_a_check_this_repository_does_not_run_is_refused",
+          "ok": true,
+          "detail": "a compiled test the workspace run executes"
         }
       ]
     },
@@ -970,6 +976,6 @@
       ]
     }
   ],
-  "checked": 119,
+  "checked": 120,
   "failures": []
 }

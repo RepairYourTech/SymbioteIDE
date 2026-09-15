@@ -15,7 +15,7 @@ Each concern has one owner, and a channel never depends on another channel:
 - `report.rs` — the verdict vocabulary (`Outcome`, `Coverage`, `Report`), the assembly of the three channels in `evaluate`, and the committed encoding.
 - `lib.rs` — the crate documentation, the module map, the re-exports, and the workspace root the tests and example locate from.
 
-The channels depend on `report` for `Outcome` and never on one another, so a change to one channel's rules lands in that channel's file. This is a structure change only: the report's invariants, channels, verdicts, failures and committed bytes are identical, and `--write` is idempotent against the committed artifact.
+The channels depend on `report` for `Outcome` and never on one another, so a change to one channel's rules lands in that channel's file and surfaces as drift in the committed artifact rather than as an unremarked difference. `--write` regenerates that artifact and is idempotent.
 
 ## Three channels, and why each can fail
 
