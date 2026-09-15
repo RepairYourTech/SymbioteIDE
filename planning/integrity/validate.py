@@ -52,6 +52,28 @@ def marker(body, name):
     return values[0] if values else None
 
 
+def authoritative_text(body, labels):
+    """The part of a body that carries current authority.
+
+    A canonical body is read in full; anywhere else only the text before the
+    first `<details>` block, so retained history cannot contribute metadata.
+    """
+    if "planning:canonical" in labels:
+        return body
+    return re.split(r"<details\b", body, maxsplit=1, flags=re.I)[0]
+
+
+def canonical_owner(text, program_entry=False):
+    """The single canonical issue a reference entry resolves to, or None.
+
+    The owner is stated in the entry itself, so this is the one reader both the
+    registry validation and importer regeneration resolve a reference through.
+    """
+    pattern = r"Execute the canonical roadmap at\s*#(\d+)" if program_entry else r"Canonical owner:\s*#(\d+)"
+    found = re.findall(pattern, text.replace("**", ""))
+    return int(found[0]) if len(found) == 1 else None
+
+
 def validate_snapshot(snapshot):
     """Validate a complete REST issue array and return a deterministic registry.
 
@@ -62,6 +84,7 @@ def validate_snapshot(snapshot):
     if not isinstance(snapshot, list):
         raise IntegrityError("snapshot must be a JSON array of REST issues")
     issues, canonical, aliases, entries = {}, {}, {}, {}
+    unkeyed = 0
     for raw in snapshot:
         if not isinstance(raw, dict):
             raise IntegrityError("each issue must be an object")
@@ -83,7 +106,7 @@ def validate_snapshot(snapshot):
         if any(not isinstance(x, str) for x in labels):
             raise IntegrityError(f"#{number}: invalid labels")
         body = raw["body"] or ""
-        controlling = body if "planning:canonical" in labels else re.split(r"<details\b", body, maxsplit=1, flags=re.I)[0]
+        controlling = authoritative_text(body, labels)
         key = marker(controlling, "plan-key")
         program_entry = marker(controlling, "program-entry")
         reference_key = marker(controlling, "reference-key") or program_entry
@@ -95,6 +118,7 @@ def validate_snapshot(snapshot):
         if not key and not reference_key:
             if "planning:reference" in labels or "planning:canonical" in labels:
                 raise IntegrityError(f"#{number}: planning label without stable key")
+            unkeyed += 1
             continue
         if key and "planning:canonical" not in labels:
             record.update(key=key, revision=revision, kind="unclassified")
@@ -111,10 +135,10 @@ def validate_snapshot(snapshot):
             continue
         plain = controlling.replace("**", "")
         if reference_key:
-            targets = re.findall(r"Execute the canonical roadmap at\s*#(\d+)" if program_entry else r"Canonical owner:\s*#(\d+)", plain)
-            if len(targets) != 1 or "planning:reference" not in labels:
+            owner = canonical_owner(plain, bool(program_entry))
+            if owner is None or "planning:reference" not in labels:
                 raise IntegrityError(f"#{number}: invalid alias mapping or missing reference label")
-            record.update(kind="reference", canonical_issue=int(targets[0]), program_entry=bool(program_entry))
+            record.update(kind="reference", canonical_issue=owner, program_entry=bool(program_entry))
             aliases[number] = record
         else:
             if "planning:reference" in labels:
@@ -186,7 +210,7 @@ def validate_snapshot(snapshot):
     master_body = (next(i for i in snapshot if i.get("number") == masters[0]["number"])["body"] or "").split("<details", 1)[0]
     if sorted(refs(section(master_body, "Canonical epics"))) != sorted(epics):
         raise IntegrityError("master epic membership differs from canonical registry")
-    counts = {"tasks": len(tasks), "epics": len(epics), "references": sum(not r["program_entry"] for r in aliases.values()), "program_entries": sum(r["program_entry"] for r in aliases.values()), "snapshot_issues": len(issues)}
+    counts = {"tasks": len(tasks), "epics": len(epics), "references": sum(not r["program_entry"] for r in aliases.values()), "program_entries": sum(r["program_entry"] for r in aliases.values()), "retired": sum(r["kind"] == "retired" for r in entries.values()), "unclassified": sum(r["kind"] == "unclassified" for r in entries.values()), "unkeyed": unkeyed, "masters": len(masters), "snapshot_issues": len(issues)}
     summary = re.search(r"(\d+) canonical atomic issues across (\d+) epics", master_body)
     if summary and (int(summary[1]), int(summary[2])) != (len(tasks), len(epics)):
         raise IntegrityError("master declared counts differ from generated counts")

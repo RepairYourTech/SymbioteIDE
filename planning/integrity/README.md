@@ -1,12 +1,15 @@
 # Offline roadmap integrity
 
-This Python standard-library maintenance tool validates an immutable GitHub REST issues snapshot and generates a structural registry and topological index. It has no network or issue-mutation path. Python is used for existing planning maintenance; this does not select the product runtime.
+This Python standard-library maintenance tool validates an immutable GitHub REST issues snapshot and generates a structural registry and topological index. `validate.py` reads a file and writes a directory and reaches no network at all; the only issue-mutation path here is `regenerate.py`'s `apply`, and it mutates only through a runner it is handed — `CliRunner` for an operator, a recording fake in every test. Python is used for existing planning maintenance; this does not select the product runtime.
 
 ```sh
 python3 planning/capture_roadmap.py --help
 python3 planning/integrity/validate.py /path/to/issues.json --output /path/to/generated
+python3 planning/integrity/regenerate.py plan --base old.json --live now.json --amendments amendments.json --output plan.json
+python3 planning/integrity/regenerate.py apply --plan plan.json --repository owner/name --dry-run
 python3 planning/integrity/test_validate.py
 python3 planning/integrity/test_validate.py --snapshot /path/to/issues.json
+python3 planning/integrity/test_regenerate.py
 ```
 
 Input is a JSON array with REST `number`, `body`, `labels`, `state`, `state_reason`, and `updated_at` fields. Pull requests are ignored. Canonical issues require `planning:canonical`, one `symbiote-plan-key`, and one `symbiote-plan-revision` marker. Reference entries require `planning:reference`, `symbiote-reference-key`, and a direct `Canonical owner: #N`; the historical program entry uses `symbiote-program-entry` and its explicit canonical roadmap link. Unclassified keyed issues remain outside the executable graph.
@@ -53,4 +56,22 @@ python3 planning/integrity/test_source_record.py
 
 It reads and writes nothing; exit status is 0 when every input the compiler read, and every input cargo read to build the binary, is named. The `source-records` job in `Rust contracts` runs it on every pull request after building those two binaries, so a newly unrecorded input class fails the build instead of waiting for an audit; its own tests run with the rest of this directory's in `Roadmap integrity`.
 
-This implements a bounded portion of #470. It does **not** certify conversation-to-issue coverage, acceptance completion, or exact-body mutation safety. `acceptance_items` is only a checkbox inventory. Safe importer regeneration, three-way merge, stale-revision refusal, concurrent-edit/ambiguous-create reconciliation, and post-mutation readback remain separate work. The original bootstrap importer must not be used to overwrite this registry's newer issue authority.
+This implements a bounded portion of #470. The registry accounts for every issue a snapshot holds: the counts name each class — master, task, epic, retired, unclassified, reference, program entry and unkeyed — and the suite asserts that those classes sum to `snapshot_issues`, so no issue can disappear into a class the counts do not name. It does **not** read any conversation: scope discovered in discussion is not evidenced by a REST snapshot, so **conversation-to-issue coverage is not certified**, and neither is acceptance completion (`acceptance_items` is only a checkbox inventory). The original bootstrap importer must not be used to overwrite this registry's newer issue authority.
+
+## Regeneration
+
+`regenerate.py` owns what happens after validation: regenerating issue bodies from the current registry and accepted amendments. `plan` takes the REST capture the registry was generated from, the current capture and the amendments, builds the intended snapshot under the next free numbers, validates it with the same `validate_snapshot` the registry is checked with, and writes a plan; `apply` performs it through a runner, or prints a unified diff per body and mutates nothing under `--dry-run`. A plan carrying any refusal is never applied.
+
+Each rule is refused by name rather than left to an operator's care:
+
+- a duplicate key, dangling dependency or cycle — no mutation is planned at all;
+- an amendment declaring no base revision and body hash;
+- a live revision newer than the declared one;
+- a concurrent edit whose changes overlap the amendment, naming the conflicting lines, with disjoint changes merged three-way;
+- a regenerated bootstrap that would drop a section the live body has, naming the lost sections;
+- a create that would break epic membership;
+- an amendment naming a **reference-only** key, naming the canonical issue that entry resolves to: an alias's history is preserved, so the plan amends the target and leaves those bytes alone;
+- an ambiguous create — a lost response, or an issue a human made first — reconciled by reading the key back, with a second ambiguity failing visibly instead of retrying blind;
+- a target that moved after planning, and a read-back whose body is not the intended one.
+
+`verify` then proves what landed is exactly what was planned and that every issue the plan did not name is byte-identical and in the same state. The rules are exercised through a recording fake, so what the tests prove is the rule and not a transport, and no test reaches the network. Two limits are stated rather than implied: `verify` needs both captures, so the CLI leaves it to an operator who holds them; and validation does not cross-check a reference key against a canonical key, which is why regeneration refuses a reference key itself instead of relying on validation to notice the duplicate.
