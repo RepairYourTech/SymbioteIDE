@@ -32,7 +32,15 @@ Three things are compared:
   target directories cargo looks for at a package root alone are skipped there
   alone, so `src/tests/mod.rs` compiles into the binary and the record must name
   it, while generated, installed and version-control state is skipped wherever it
-  sits and a name the file does not list — `dist` among them — is walked.
+  sits and a name the file does not list — `dist` among them — is walked. A
+  skipped directory bounds the walk and not the build, so a file the compiler
+  finds in one by a module's own name is inside the record too, through the
+  declaration that names it.
+
+  The comparison rests on the dep-info of those closure units, so it is only as
+  good as finding them: where none of the driven package's own units left one — a
+  target directory that was cleaned, or one the binary was copied out of — the
+  check has measured nothing and says so rather than passing.
 * **Completeness (cargo).** The record must also name, for every closure
   package, its own manifest and every workspace root cargo can resolve for it —
   the root a `package.workspace` names, or else each ancestor manifest declaring
@@ -804,6 +812,12 @@ def excluded(path, package_dirs):
     purpose, so a comparison that ignored the rule would fail on them; a directory
     that merely carries one of those names deeper in the package is not one of
     them, and a record that left it out is short rather than excused.
+
+    A skipped directory bounds the walk rather than the build, so this excuses
+    only what no declaration names: a file the compiler finds in one by a module's
+    own name — measured, `mod target;` compiles `src/target/mod.rs` — is recorded
+    through the declaration that reaches it, and where a record leaves one out the
+    refusal is the one above rather than a silence here.
     """
     for directory in package_dirs:
         if directory in path.parents:
@@ -832,8 +846,10 @@ def configuration_candidates(workspace, package_dirs):
 
 
 def check(workspace, target_dir, binaries, metadata):
-    """Every problem found: a read input the record does not name, or a
-    configuration file it does not hold, or holds stale."""
+    """Every problem found: a read input the record does not name, a
+    configuration file it does not hold or holds stale, or a target directory
+    holding no dep-info for a unit of the driven package, where nothing was
+    measured to compare the record with."""
     problems = []
     summaries = []
     for package_name, binary_name in binaries:
@@ -883,14 +899,29 @@ def check(workspace, target_dir, binaries, metadata):
             if package["id"] in package_ids
             and Path(package["manifest_path"]).parent.is_relative_to(workspace)
         ]
-        dep_info = unit_dep_info(target_dir, metadata, package_ids)
-        reads = workspace_reads(dep_info, workspace)
         # A record's relative locators are spelled against the workspace its own
         # build resolved, which is the driven package's nearest `[workspace]`
         # ancestor — not necessarily the workspace this check is invoked in.
         driven = next(
             (p for p in metadata["packages"] if p["name"] == package_name), None
         )
+        dep_info = unit_dep_info(target_dir, metadata, package_ids)
+        # The dep-info of the driven package's own units is what says this target
+        # directory is the one its build wrote to, and the comparison below rests
+        # on it whole. Measured: against a target directory holding no dep-info at
+        # all — as one does after `cargo clean` — the check reported OK having read
+        # 0 units and 0 inputs, and a dependency's units alone passed the same way,
+        # so a record nothing was compared with was called complete rather than
+        # unmeasured.
+        own = unit_names(metadata, {driven["id"]}) if driven is not None else set()
+        if not any(unit in own for unit in dep_info.values()):
+            problems.append(
+                f"{binary_name}: {target_dir} holds no dep-info for any unit of "
+                f"{package_name}, so nothing here measured what this binary's build read "
+                f"— build it before checking its record"
+            )
+            continue
+        reads = workspace_reads(dep_info, workspace)
         base = workspace
         if driven is not None:
             base = nearest_workspace_root(Path(driven["manifest_path"]).parent) or workspace

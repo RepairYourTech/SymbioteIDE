@@ -13,7 +13,10 @@
 //! It owns what is *not* an input (test, example and bench targets, build
 //! output, registry dependencies, dev edges), by the rule the wire file states:
 //! its `exclusion` lines name the directory names a walk skips and where it skips
-//! them, so what a name means is not this module's to decide; which roots a
+//! them, so what a name means is not this module's to decide — and a file the
+//! compiler finds in a skipped directory by a module's own name is not outside
+//! the record either, because the declaration that names it is followed
+//! ([`crate::scan`]); which roots a
 //! record's locators are spelled against is [`roots`]' business, and which
 //! workspace a build actually resolved in is [`invocation`]'s.
 //!
@@ -298,6 +301,12 @@ fn enclosing_package(source: &Path, packages: &[PathBuf]) -> Option<PathBuf> {
 /// compiles a source from — whatever the file is called. Every file rather than
 /// `.rs` alone, because a compile can read a file no extension announces
 /// (`include_str!("schema.sql")`).
+///
+/// A skipped directory is not a hole in the record. The compiler finds a module
+/// source by the module's own name as well, so a file inside a directory this
+/// walk skips is recorded by the declaration that names it ([`crate::scan`]
+/// follows every plain `mod name;` wherever the compiler looks for it), and what
+/// the walk leaves out is only what no declaration names.
 pub(crate) fn package_sources(root: &Path) -> Vec<PathBuf> {
     let wire = wire();
     let mut sources = BTreeSet::new();

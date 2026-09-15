@@ -8,6 +8,16 @@
 //! string literals are not code — and follows them to a fixed point, because an
 //! included `.rs` file can include another.
 //!
+//! A plain `mod name;` is followed too, and that is what makes the walk's
+//! directory names a statement about the walk rather than about the build:
+//! the compiler finds `name.rs` or `name/mod.rs` by the module's own name, so a
+//! directory the walk skips — `target`, `node_modules` or anything else the wire
+//! file names — still compiles a file when a source declares a module with that
+//! name. Measured, a `mod target;` compiling `src/target/mod.rs` was left out of
+//! a record whose walk skipped `src/target`, and both readers then reported the
+//! binary current after that module changed. Following the declaration names the
+//! file wherever the compiler looks for it, exactly as an include macro does.
+//!
 //! What it cannot follow it reports rather than skips: a record that cannot name
 //! an input a binary compiled is the failure the crate exists to prevent.
 
@@ -18,10 +28,11 @@ use std::path::{Path, PathBuf};
 /// part of the name it looks for.
 const INCLUDE_MACROS: [&str; 3] = ["include", "include_bytes", "include_str"];
 
-/// The inputs one source pulls in — the files its include macros name and the
-/// module sources its `#[path]` attributes name — or the reason this scan cannot
-/// follow one of them. A literal path is resolved the way the compiler resolves
-/// it — relative to the file that names it — and a `concat!` of literals and
+/// The inputs one source pulls in — the files its include macros name, the
+/// module sources its `#[path]` attributes name, and the files its plain `mod
+/// name;` declarations compile — or the reason this scan cannot follow one of
+/// them. A literal path is resolved the way the compiler resolves it — relative
+/// to the file that names it — and a `concat!` of literals and
 /// `env!("CARGO_MANIFEST_DIR")` is resolved against `package`, the package
 /// directory the caller found the file in. An input the compiler takes from
 /// `OUT_DIR` is left to the build script that wrote it, which is itself
@@ -106,7 +117,23 @@ pub(crate) fn followed_inputs(
             }
         }
     }
+    // The files the compiler finds by a module's own name, which the walk only
+    // reaches where it did not skip their directory.
+    for declared in declared_modules(&text) {
+        inputs.extend(declared_inputs(source, &declared));
+    }
     Ok(inputs)
+}
+
+/// A module declaration that compiles a file of its own.
+#[derive(Debug)]
+pub(crate) struct Declared {
+    /// The name the compiler spells the module's file and directory with, which
+    /// is the name a raw identifier's `r#` is dropped from.
+    pub(crate) name: String,
+    /// The inline modules the declaration sits inside, outermost first, which
+    /// move the directory the compiler looks in.
+    pub(crate) inline: Vec<String>,
 }
 
 /// A module source a `#[path]` attribute names, as far as the scan can follow
@@ -308,6 +335,93 @@ fn module_declaration(tokens: &[Token], index: usize) -> Option<bool> {
         ) if keyword == "mod" => Some(true),
         _ => None,
     }
+}
+
+/// The modules one source declares with a file of their own: every `mod name;`
+/// that no `#[path]` attribute names, which [`module_paths`] carries instead.
+/// Read from the code, so a declaration a comment or a string literal names is
+/// not an input, and a `mod name { … }` is not one either: it declares its
+/// module's body inline and compiles no file the compiler finds by that name.
+/// Every enclosing inline module is tracked, because it moves the directory the
+/// compiler looks in.
+pub(crate) fn declared_modules(source: &str) -> Vec<Declared> {
+    let tokens = tokens(source);
+    let mut declared = Vec::new();
+    // One entry per open brace: the inline module it opens, when it opens one.
+    let mut frames: Vec<Option<String>> = Vec::new();
+    // Whether the declaration being read is one a `#[path]` attribute names: its
+    // file is the attribute's rather than one the compiler finds by the module's
+    // own name, and `module_paths` carries it.
+    let mut named_by_a_path = false;
+    let mut index = 0;
+    while index < tokens.len() {
+        match &tokens[index] {
+            Token::Punct('{') => {
+                frames.push(opened_module(&tokens, index));
+                index += 1;
+            }
+            Token::Punct('}') => {
+                frames.pop();
+                index += 1;
+            }
+            Token::Punct('#') => match attribute(&tokens, index) {
+                Some(Attribute::Path { next, .. }) => {
+                    named_by_a_path = true;
+                    index = next;
+                }
+                Some(Attribute::Other { next }) => index = next,
+                None => index += 1,
+            },
+            Token::Ident(keyword) if keyword == "mod" => {
+                if module_declaration(&tokens, index) == Some(false) && !named_by_a_path {
+                    if let Some(Token::Ident(name)) = tokens.get(index + 1) {
+                        declared.push(Declared {
+                            name: module_name(name).to_owned(),
+                            inline: enclosing(&frames),
+                        });
+                    }
+                }
+                named_by_a_path = false;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    declared
+}
+
+/// The files a plain `mod name;` declaration compiles: for each directory the
+/// compiler could look in, `name.rs` and `name/mod.rs`, which are the two
+/// spellings rustc accepts.
+///
+/// A plain declaration has no `#[path]` to pin the directory, and the file it
+/// sits in does not say whether the compiler found it as `mod name;` — which
+/// puts its modules under a directory of its own name — or as a crate root or
+/// through a `#[path]`, which do not. So both directories are recorded, exactly
+/// as [`module_inputs`] records both inside an inline module: one of them is the
+/// compiler's, and a record that is long is a rebuild where a record that is
+/// short is the failure this crate exists to prevent.
+pub(crate) fn declared_inputs(source: &Path, declared: &Declared) -> Vec<PathBuf> {
+    let Some(directory) = source.parent() else {
+        return Vec::new();
+    };
+    let mut bases = vec![directory.to_path_buf()];
+    if let Some(name) = added_module_directory(source) {
+        bases.push(directory.join(name));
+    }
+    bases
+        .into_iter()
+        .flat_map(|base| {
+            let directory = declared
+                .inline
+                .iter()
+                .fold(base, |directory, name| directory.join(name));
+            [
+                directory.join(format!("{}.rs", declared.name)),
+                directory.join(&declared.name).join("mod.rs"),
+            ]
+        })
+        .collect()
 }
 
 /// The files a `#[path]` module declaration compiles, from the directory the

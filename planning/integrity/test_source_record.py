@@ -467,6 +467,40 @@ class CompletenessTests(unittest.TestCase):
             )
             self.assertEqual(fixture.problems(complete(fixture)), [])
 
+    def test_an_oracle_with_no_unit_of_the_driven_package_measures_nothing(self):
+        """A green has to be earned by a dep-info of the driven package's own units.
+
+        Measured: against a target directory holding no dep-info at all the check
+        reported OK having read 0 units and 0 inputs, so a record nothing was
+        compared with was called complete — and a `cargo clean` leaves exactly
+        that directory behind.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            self.assertEqual(
+                fixture.problems(complete(fixture)),
+                [
+                    f"demo: {fixture.target} holds no dep-info for any unit of demo, so "
+                    f"nothing here measured what this binary's build read — build it "
+                    f"before checking its record"
+                ],
+            )
+
+    def test_a_dependencys_units_do_not_stand_in_for_the_driven_packages_own(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            dependency = fixture.write("crates/dep/Cargo.toml", '[package]\nname = "dep"\n')
+            metadata = with_dependency(fixture, dependency)
+            fixture.unit("dep-9a", ["crates/dep/src/lib.rs"])
+            self.assertEqual(
+                fixture.problems(complete(fixture), metadata),
+                [
+                    f"demo: {fixture.target} holds no dep-info for any unit of demo, so "
+                    f"nothing here measured what this binary's build read — build it "
+                    f"before checking its record"
+                ],
+            )
+
     def test_registry_and_generated_reads_are_not_the_records_business(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as cache:
             fixture = Fixture(directory)
