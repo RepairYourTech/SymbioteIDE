@@ -396,6 +396,44 @@ class CompletenessTests(unittest.TestCase):
             fixture.unit("demo-9a", ["crates/demo/src/main.rs", "crates/demo/tests/process.rs"])
             self.assertEqual(fixture.problems(complete(fixture)), [])
 
+    def test_a_target_name_below_the_package_root_is_not_an_exclusion(self):
+        # Cargo looks for its test, example and bench directories at the package
+        # root alone. A file under `src/tests/` declared as `mod tests;` compiles
+        # into the binary — measured, rustc reports errors inside it — so a
+        # record that does not name it is short, which is the failure this
+        # checker exists to catch rather than a change no rebuild could clear.
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            nested = fixture.write("crates/demo/src/tests/mod.rs", "// a module\n")
+            fixture.unit(
+                "demo-9a", ["crates/demo/src/main.rs", "crates/demo/src/tests/mod.rs"]
+            )
+            self.assertEqual(
+                fixture.problems(complete(fixture)),
+                [
+                    f"demo: the record does not name {nested}, which "
+                    f"{fixture.target / 'deps' / 'demo-9a.d'} says was read"
+                ],
+            )
+
+    def test_build_output_below_the_package_root_is_still_excluded(self):
+        # Build output, dependency cache and version-control state are outside the
+        # walk wherever they sit: none of it is an input to a build, so requiring
+        # one would refuse a current binary for a change no rebuild could clear.
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.write("crates/demo/.git/HEAD", "ref: refs/heads/main\n")
+            fixture.write("crates/demo/src/node_modules/dep/index.js", "// dep\n")
+            fixture.unit(
+                "demo-9a",
+                [
+                    "crates/demo/src/main.rs",
+                    "crates/demo/.git/HEAD",
+                    "crates/demo/src/node_modules/dep/index.js",
+                ],
+            )
+            self.assertEqual(fixture.problems(complete(fixture)), [])
+
     def test_registry_and_generated_reads_are_not_the_records_business(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as cache:
             fixture = Fixture(directory)
