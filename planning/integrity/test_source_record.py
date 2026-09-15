@@ -7,8 +7,6 @@ from pathlib import Path
 
 from source_record import (
     ENVIRONMENT_PREFIX,
-    EXCLUDED_ANYWHERE,
-    EXCLUDED_AT_ROOT,
     EXCLUSIONS,
     HASH_LENGTH,
     MALFORMED_REMEDY,
@@ -52,10 +50,17 @@ class Fixture:
     `cargo metadata` emits, and the record is the shape the binaries embed.
     """
 
-    def __init__(self, directory, target="demo"):
+    def __init__(self, directory, target="demo", target_dir="target/debug"):
+        """A workspace whose binary is driven out of `target_dir`.
+
+        `target_dir` is a path relative to the workspace root, because that is what
+        a check is given and the directory is a fact about the build rather than a
+        name: a test that is about *which* directory is excused drives one of its
+        own, and the default is cargo's.
+        """
         self.root = Path(directory)
         self.target_name = target
-        self.target = self.root / "target" / "debug"
+        self.target = self.root / target_dir
         (self.target / "deps").mkdir(parents=True)
         self.package = self.root / "crates" / "demo"
         self.write("Cargo.toml", "[workspace]\nmembers = [\"crates/demo\"]\n")
@@ -429,14 +434,81 @@ class CompletenessTests(unittest.TestCase):
                 f"{fixture.target / 'deps' / 'demo-9a.d'} says was read",
             )
 
-    def test_a_read_in_an_excluded_directory_is_not_reported(self):
-        # A test target's inputs are outside the record by its own rule, and a
-        # refusal there could not be cleared by any rebuild.
+    def test_a_read_under_a_name_a_walk_skips_is_still_the_records_business(self):
+        """A skip is the walk's rule, and a check requires what a unit actually read.
+
+        A name is skipped by the walk only where skipping it cannot hide a file the
+        build read, and a check is handed the evidence of what each unit read — so a
+        read under one of those names is refused rather than excused. Measured on a
+        probe package: `build.rs`'s `mod tests;` puts `tests/mod.rs` in the record,
+        a check that excused the name reported the record clean with that line
+        removed, and one that excuses nothing by name refused it, naming it as read
+        by the build script's unit.
+        """
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)
-            fixture.write("crates/demo/tests/process.rs", "// a test\n")
-            fixture.unit("demo-9a", ["crates/demo/src/main.rs", "crates/demo/tests/process.rs"])
+            under_git = fixture.write("crates/demo/.git/HEAD", "ref: refs/heads/main\n")
+            installed = fixture.write("crates/demo/src/node_modules/dep/index.js", "// dep\n")
+            test_target = fixture.write("crates/demo/tests/process.rs", "// a test\n")
+            fixture.unit(
+                "demo-9a",
+                [
+                    "crates/demo/src/main.rs",
+                    "crates/demo/.git/HEAD",
+                    "crates/demo/src/node_modules/dep/index.js",
+                    "crates/demo/tests/process.rs",
+                ],
+            )
+            source = fixture.target / "deps" / "demo-9a.d"
+            self.assertEqual(
+                fixture.problems(complete(fixture)),
+                [
+                    f"demo: the record does not name {under_git}, which {source} says was read",
+                    f"demo: the record does not name {installed}, which {source} says was read",
+                    f"demo: the record does not name {test_target}, which {source} says was read",
+                ],
+            )
+
+    def test_the_files_the_build_wrote_under_the_directory_it_was_given_are_excused(self):
+        """Cargo's own output is outside the record, and it is the *given* directory.
+
+        A build script writes into `OUT_DIR`, under the profile directory the check
+        is handed, and the record names the build script rather than what it wrote.
+        Measured, a build driven into `<workspace>/build-output` left 353 such
+        inputs under it, and a rule that excused the name `target` instead refused
+        the binary for every one of them.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory, target_dir="build-output/debug")
+            fixture.write(
+                "build-output/debug/build/demo-9a/out/record.rs", "// written by the build\n"
+            )
+            fixture.unit(
+                "demo-9a",
+                ["crates/demo/src/main.rs", "build-output/debug/build/demo-9a/out/record.rs"],
+            )
             self.assertEqual(fixture.problems(complete(fixture)), [])
+
+    def test_a_directory_named_target_is_not_the_directory_the_check_was_given(self):
+        """The excusal is the directory it was given, not the name cargo defaults to.
+
+        So a record is not asked to name a file under some *other* build's output
+        either, whatever that directory is called — the name decides nothing.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory, target_dir="build-output/debug")
+            other = fixture.write("target/debug/build/demo-9a/out/other.rs", "// elsewhere\n")
+            fixture.unit(
+                "demo-9a",
+                ["crates/demo/src/main.rs", "target/debug/build/demo-9a/out/other.rs"],
+            )
+            self.assertEqual(
+                fixture.problems(complete(fixture)),
+                [
+                    f"demo: the record does not name {other}, which "
+                    f"{fixture.target / 'deps' / 'demo-9a.d'} says was read"
+                ],
+            )
 
     def test_a_target_name_below_the_package_root_is_not_an_exclusion(self):
         # Cargo looks for its test, example and bench directories at the package
@@ -487,24 +559,6 @@ class CompletenessTests(unittest.TestCase):
                     f"{fixture.target / 'deps' / 'demo-9a.d'} says was read",
                 ],
             )
-
-    def test_build_output_below_the_package_root_is_still_excluded(self):
-        # Build output, dependency cache and version-control state are outside the
-        # walk wherever they sit: none of it is an input to a build, so requiring
-        # one would refuse a current binary for a change no rebuild could clear.
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = Fixture(directory)
-            fixture.write("crates/demo/.git/HEAD", "ref: refs/heads/main\n")
-            fixture.write("crates/demo/src/node_modules/dep/index.js", "// dep\n")
-            fixture.unit(
-                "demo-9a",
-                [
-                    "crates/demo/src/main.rs",
-                    "crates/demo/.git/HEAD",
-                    "crates/demo/src/node_modules/dep/index.js",
-                ],
-            )
-            self.assertEqual(fixture.problems(complete(fixture)), [])
 
     def test_a_unit_of_another_package_is_not_one_of_the_driven_packages_own(self):
         """A green rests on a unit of the driven package, not on its name.
@@ -979,19 +1033,10 @@ class WireTests(unittest.TestCase):
             list(MARKS.items()), [(locator, remedy) for _, locator, remedy in marks]
         )
         self.assertEqual(
-            EXCLUDED_AT_ROOT,
-            {"benches", "examples", "tests"},
-            "the file names the target directories cargo looks for at a package root alone",
-        )
-        self.assertEqual(
-            EXCLUDED_ANYWHERE,
-            {"target", "node_modules", ".git"},
-            "and the state a build writes, installs or keeps, skipped wherever it sits",
-        )
-        self.assertEqual(
             EXCLUSIONS,
             exclusions,
-            "the skip rule is the file's rather than this checker's own copy",
+            "the walk's skip rule is the file's rather than this checker's own copy, "
+            "and the file is refused unless it names both scopes a walk reads",
         )
 
     def test_the_marks_are_distinct_and_the_cargo_is_reported_first(self):
