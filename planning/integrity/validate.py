@@ -210,7 +210,7 @@ def validate_snapshot(snapshot):
     master_body = (next(i for i in snapshot if i.get("number") == masters[0]["number"])["body"] or "").split("<details", 1)[0]
     if sorted(refs(section(master_body, "Canonical epics"))) != sorted(epics):
         raise IntegrityError("master epic membership differs from canonical registry")
-    counts = {"tasks": len(tasks), "epics": len(epics), "references": sum(not r["program_entry"] for r in aliases.values()), "program_entries": sum(r["program_entry"] for r in aliases.values()), "retired": sum(r["kind"] == "retired" for r in entries.values()), "unclassified": sum(r["kind"] == "unclassified" for r in entries.values()), "unkeyed": unkeyed, "masters": len(masters), "snapshot_issues": len(issues)}
+    counts = dict(counted_classes(entries.values()), unkeyed=unkeyed, snapshot_issues=len(issues))
     summary = re.search(r"(\d+) canonical atomic issues across (\d+) epics", master_body)
     if summary and (int(summary[1]), int(summary[2])) != (len(tasks), len(epics)):
         raise IntegrityError("master declared counts differ from generated counts")
@@ -221,6 +221,30 @@ def validate_snapshot(snapshot):
             "counts": counts, "topological_order": order,
             "waves": {str(w): [n for n in order if tasks[n]["wave"] == w] for w in sorted({t["wave"] for t in tasks.values()})},
             "entries": [entries[n] for n in sorted(entries)]}
+
+
+def counted_classes(entries):
+    """What a set of entry records counts as, by the classes a registry declares.
+
+    The classes an entry set answers for itself: `masters`, `tasks`, `epics`,
+    `retired`, `unclassified`, and the aliases split into `references` — every alias
+    that is not the historical program entry — and `program_entries`. `unkeyed` and
+    `snapshot_issues` are deliberately absent: they count issues no entry holds, which
+    only a snapshot can name, and `validate_snapshot` adds them.
+
+    This is the one definition of what agreement means, for the generator and for
+    anything that checks a committed registry against its own entries.
+    """
+    records = list(entries)
+    return {
+        "masters": sum(1 for r in records if r["kind"] == "master"),
+        "tasks": sum(1 for r in records if r["kind"] == "task"),
+        "epics": sum(1 for r in records if r["kind"] == "epic"),
+        "retired": sum(1 for r in records if r["kind"] == "retired"),
+        "unclassified": sum(1 for r in records if r["kind"] == "unclassified"),
+        "references": sum(1 for r in records if r["kind"] == "reference" and not r.get("program_entry")),
+        "program_entries": sum(1 for r in records if r.get("program_entry")),
+    }
 
 
 def render_index(registry):

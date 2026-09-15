@@ -21,8 +21,11 @@ Refused by name:
 * an owner the registry does not hold, or holds as a reference entry — a reference
   entry resolves to work and is not work to be covered;
 * one owner named twice by one family;
-* a registry whose declared counts disagree with the entries it holds;
-* totals that are not the registry's, or not the revision the audit reconciled;
+* a registry whose declared counts disagree with the entries it holds, class by class
+  through `validate.py`'s own counting, or whose entries and unkeyed issues do not
+  account for the snapshot it names;
+* totals that are not taken from the registry's entries, or not the revision the audit
+  reconciled;
 * a canonical task that declares no acceptance item, since a task with no acceptance
   and verification criteria is not actionable work;
 * a ledger that no longer records the atoms these families leave unclaimed;
@@ -38,6 +41,13 @@ reading of the accepted discussion, and this repository holds no conversation co
 This module proves the matrix is internally sound, that its owners are work the
 registry holds, and that it still agrees with the registry. It cannot prove that the
 28 families are the right ones, and it does not claim to.
+
+The provenance records the artifact's expiry as well as its hashes, because after
+2026-10-07 the archive hash cannot be recomputed by anyone. Nothing here reaches the
+network — this suite is offline — so the recorded hashes are a claim a reader re-tests
+against the run, not something this tool re-fetches; the expiry says how long that is
+possible, and it is data rather than a rule precisely so a calendar date cannot fail a
+build.
 """
 
 import argparse
@@ -47,6 +57,8 @@ import re
 import sys
 from pathlib import Path
 
+from validate import counted_classes
+
 ROOT = Path(__file__).parent
 MATRIX = ROOT / "fixtures/audit-2026-09-07-coverage.md"
 REGISTRY = ROOT / "generated/registry.json"
@@ -54,15 +66,18 @@ OUTPUT = ROOT / "generated/coverage.json"
 
 # The artifact this matrix was taken from, so the ledger names its own origin, and the
 # inventory totals the audit reconciled. The archive's sha256 and the matrix's were read
-# from the run below and hashed again on 2026-09-15; the totals and the matrix's hash are
-# the audit's own revision counts and bytes, held here so the ledger can refuse them the
-# moment the registry or the matrix moves past them.
+# from the run below and hashed again on 2026-09-15, and the expiry is the run's own:
+# after it, the archive hash can no longer be recomputed from the artifact, so the
+# ledger states the window instead of leaving it implied. The totals and the matrix's
+# hash are the audit's own revision counts and bytes, held here so the ledger can refuse
+# them the moment the registry or the matrix moves past them.
 PROVENANCE = {
     "revision": "2026-09-07-v2.4",
     "audit_issue": 443,
     "artifact": "roadmap-audit-result",
     "artifact_run": "https://github.com/RepairYourTech/SymbioteIDE/actions/runs/34155229015",
     "artifact_sha256": "a7612e6c529952bf0bb5e87c90af233b60c8ce4665ec0f049608fa9f780cbf36",
+    "artifact_expires_at": "2026-10-07T19:29:47Z",
     "matrix": "fixtures/audit-2026-09-07-coverage.md",
     "matrix_sha256": "1e86040cf4d0142c10eb10aadaa66b3daffcc370c451075e27fc2d9699b7b116",
     "audited_totals": {"atoms": 241, "epics": 19, "references": 198, "edges": 702},
@@ -79,30 +94,47 @@ def parse_matrix(text):
 
 
 def facts(registry):
-    """What the registry holds, counted by the definitions its own validator uses."""
-    counts = registry["counts"]
+    """What the registry holds, counted from its entries by the classes validate.py owns.
+
+    Every figure here is read out of the entries rather than out of the registry's own
+    declaration of them, so a registry that miscounts itself cannot make the ledger
+    repeat the mistake: the audited totals are compared against this, not against the
+    registry's description of itself.
+    """
+    held = counted_classes(registry["entries"])
     return {
-        "atoms": counts["tasks"],
-        "epics": counts["epics"],
-        "references": counts["references"],
+        "atoms": held["tasks"],
+        "epics": held["epics"],
+        "references": held["references"],
         "edges": sum(len(entry.get("dependencies") or []) for entry in registry["entries"]),
     }
 
 
-def counts_agree_with_entries(registry):
-    """Every way the registry's declared counts can disagree with the entries it holds."""
+def counts_disagree(registry):
+    """Every way the registry's declared counts can be untrue of the entries it holds.
+
+    The classes come from `validate.counted_classes`, the definition the generator
+    itself uses, so this asks what agreement means instead of keeping a second opinion.
+    A class the declaration omits is a disagreement too, since a registry that cannot
+    say how many issues fall in a class has not accounted for them.
+    """
     entries = registry["entries"]
     counts = registry["counts"]
-    held = {
-        "tasks": sum(1 for entry in entries if entry["kind"] == "task"),
-        "epics": sum(1 for entry in entries if entry["kind"] == "epic"),
-        "references": sum(1 for entry in entries if entry["kind"] == "reference") - counts["program_entries"],
-    }
-    return [
-        f"the registry declares {counts[field]} {field} and holds {held[field]}"
+    held = counted_classes(entries)
+    found = [
+        f"the registry declares {counts.get(field)} {field} and holds {held[field]}"
         for field in held
-        if counts[field] != held[field]
+        if counts.get(field) != held[field]
     ]
+    # Every issue is either an entry or one no key names, so the two must account for
+    # the snapshot: a declaration moved between the classes without moving the entry
+    # it describes shows up here.
+    if len(entries) + counts.get("unkeyed", 0) != counts.get("snapshot_issues"):
+        found.append(
+            f"the registry holds {len(entries)} entries and declares {counts.get('unkeyed')} unkeyed, "
+            f"which do not account for its {counts.get('snapshot_issues')} snapshot issues"
+        )
+    return found
 
 
 def ledger(matrix_text, registry, provenance=None):
@@ -130,7 +162,7 @@ def ledger(matrix_text, registry, provenance=None):
 
 def problems(built, registry, matrix_text):
     """Every way the ledger can be untrue of the registry, named."""
-    found = list(counts_agree_with_entries(registry))
+    found = list(counts_disagree(registry))
     entries = {entry["number"]: entry for entry in registry["entries"]}
     seen = set()
     for family in built["families"]:
@@ -155,7 +187,7 @@ def problems(built, registry, matrix_text):
     audited = built["provenance"]["audited_totals"]
     for field, held in facts(registry).items():
         if built["totals"].get(field) != held:
-            found.append(f"the ledger's {field} is {built['totals'].get(field)} where the registry holds {held}")
+            found.append(f"the ledger's {field} is {built['totals'].get(field)} where its entries hold {held}")
         if audited[field] != held:
             found.append(
                 f"the audit reconciled {audited[field]} {field} at {built['provenance']['revision']} "

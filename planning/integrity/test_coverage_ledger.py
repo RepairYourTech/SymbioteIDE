@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -27,10 +28,15 @@ def reference(number, canonical_issue):
 def registry_of(*entries, **declared):
     """A registry whose declared counts are counts of the entries it holds, unless asked."""
     counts = {
+        "masters": 0,
         "tasks": sum(1 for entry in entries if entry["kind"] == "task"),
         "epics": sum(1 for entry in entries if entry["kind"] == "epic"),
+        "retired": 0,
+        "unclassified": sum(1 for entry in entries if entry["kind"] == "unclassified"),
         "references": sum(1 for entry in entries if entry["kind"] == "reference"),
         "program_entries": 0,
+        "unkeyed": 0,
+        "snapshot_issues": len(entries),
     }
     counts.update(declared)
     return {"entries": list(entries), "counts": counts}
@@ -85,11 +91,28 @@ class CoverageLedgerTests(unittest.TestCase):
         self.fails("the registry declares 99 tasks and holds 3",
                    registry=registry_of(*self.snapshot, tasks=99))
 
+    def test_every_class_the_entries_define_is_checked_not_only_the_three_that_agree(self):
+        """The class an entry set defines but a declaration omits is a disagreement."""
+        snapshot = self.snapshot + ({"number": 500, "kind": "unclassified", "dependencies": []},)
+        registry = registry_of(*snapshot, unclassified=0, snapshot_issues=6)
+        self.fails("the registry declares 0 unclassified and holds 1", registry=registry)
+
+    def test_a_class_moved_between_the_counts_without_moving_an_entry_is_refused(self):
+        """Counting entries as unkeyed is fit to no entry: the two must account for the snapshot."""
+        registry = registry_of(task(1), task(2), unkeyed=4, snapshot_issues=4)
+        self.fails("the registry holds 2 entries and declares 4 unkeyed, which do not account for its 4 snapshot issues",
+                   registry=registry)
+
+    def test_the_ledger_counts_the_entries_rather_than_the_registrys_description_of_them(self):
+        registry = registry_of(task(1), task(2), task(3), tasks=999, epics=7)
+        built = coverage_ledger.ledger(MATRIX, registry)
+        self.assertEqual((built["totals"]["atoms"], built["totals"]["epics"]), (3, 0))
+
     def test_totals_that_are_not_the_registrys_are_refused(self):
         built = coverage_ledger.ledger(MATRIX, self.registry,
                                        dict(coverage_ledger.PROVENANCE, audited_totals=coverage_ledger.facts(self.registry)))
         built["totals"]["edges"] = 900
-        self.assertIn("the ledger's edges is 900 where the registry holds 1",
+        self.assertIn("the ledger's edges is 900 where its entries hold 1",
                       coverage_ledger.problems(built, self.registry, MATRIX))
 
     def test_a_registry_that_moved_past_the_audited_revision_is_refused(self):
@@ -148,6 +171,49 @@ class CommittedLedgerTests(unittest.TestCase):
 
     def test_the_committed_ledger_is_true_of_the_committed_registry(self):
         self.assertEqual(coverage_ledger.problems(self.ledger, self.registry, self.matrix), [])
+
+    def test_the_committed_registrys_counts_are_true_of_its_own_entries(self):
+        """The registry this tree ships declares what it holds, class by class."""
+        self.assertEqual(coverage_ledger.counts_disagree(self.registry), [])
+        held = coverage_ledger.counted_classes(self.registry["entries"])
+        self.assertEqual(sum(held.values()), len(self.registry["entries"]))
+        self.assertEqual(len(self.registry["entries"]) + self.registry["counts"]["unkeyed"],
+                         self.registry["counts"]["snapshot_issues"])
+        self.assertEqual(self.registry["counts"]["unclassified"], 4,
+                         "the four keyed issues no planning label covers are held as entries, not as unkeyed")
+
+    def test_the_readmes_coverage_numbers_are_the_ledgers(self):
+        """The prose restating the ledger cannot drift from it."""
+        readme = (self.root / "README.md").read_text()
+        claimed = {
+            "families_count": r"covers (\d+) families",
+            "owners_named": r"and (\d+) named owners",
+            "atoms": r"over the (\d+) canonical atoms",
+            "unclaimed atoms": r"\*\*(\d+) canonical atoms are claimed by no family\*\*",
+            "audited atoms": r"— (\d+) canonical atomic issues",
+            "audited epics": r"(\d+) epics",
+            "audited references": r"(\d+) references",
+            "audited edges": r"(\d+) canonical prerequisite edges",
+        }
+        expected = {
+            "families_count": self.ledger["families_count"],
+            "owners_named": self.ledger["owners_named"],
+            "atoms": self.ledger["totals"]["atoms"],
+            "unclaimed atoms": len(self.ledger["unclaimed_atoms"]),
+            "audited atoms": self.ledger["provenance"]["audited_totals"]["atoms"],
+            "audited epics": self.ledger["provenance"]["audited_totals"]["epics"],
+            "audited references": self.ledger["provenance"]["audited_totals"]["references"],
+            "audited edges": self.ledger["provenance"]["audited_totals"]["edges"],
+        }
+        for label, pattern in claimed.items():
+            found = re.search(pattern, readme)
+            self.assertIsNotNone(found, f"the README no longer states the {label} the ledger records")
+            self.assertEqual(int(found.group(1)), expected[label],
+                             f"the README claims {found.group(0)!r} where the ledger records {expected[label]}")
+
+    def test_the_provenance_records_the_artifacts_expiry(self):
+        """After it the archive hash cannot be recomputed by anyone, so the window is stated."""
+        self.assertEqual(self.ledger["provenance"]["artifact_expires_at"], "2026-10-07T19:29:47Z")
 
     def test_the_committed_ledger_names_the_coverage_and_what_no_family_claims(self):
         self.assertEqual(self.ledger["families_count"], 28)
