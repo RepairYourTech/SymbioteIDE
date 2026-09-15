@@ -93,6 +93,30 @@ def write_workspace(root):
         path.write_text(contents)
 
 
+def runnable_cargo():
+    """A cargo that can be run — `CARGO` first, then PATH — or `None`.
+
+    `CARGO` is what a test run through cargo sets, and it is not proof that the
+    binary it names is there: measured, `CARGO=/nonexistent` with a cargo on PATH
+    made these cases fail with `FileNotFoundError` out of `setUpClass` rather than
+    skip, which is the one thing a case that needs a real build must not do where
+    there is none to be had. So the cargo is asked for its version before
+    anything is built, and a candidate that cannot answer is passed over.
+    """
+    for candidate in (os.environ.get("CARGO"), shutil.which("cargo")):
+        if not candidate:
+            continue
+        try:
+            completed = subprocess.run(
+                [candidate, "--version"], capture_output=True, text=True
+            )
+        except OSError:
+            continue
+        if completed.returncode == 0:
+            return candidate
+    return None
+
+
 def build(cargo, workspace, target):
     """Cargo's build of the workspace into `target`, offline.
 
@@ -118,14 +142,14 @@ class RealCargoOutputTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cargo = os.environ.get("CARGO") or shutil.which("cargo")
+        cargo = runnable_cargo()
         if cargo is None:
             raise unittest.SkipTest(
-                "no cargo on PATH and none named by CARGO, so no real build can "
-                "be made and these cases would prove nothing"
+                "no cargo that can be run, from CARGO or from PATH, so no real "
+                "build can be made and these cases would prove nothing"
             )
         if shutil.which("cargo") is None:
-            # `cargo_metadata` runs `cargo` by name, so a cargo found only
+            # `cargo_metadata` runs `cargo` by name, so a cargo reached only
             # through the variable that names it has to be on PATH for it.
             os.environ["PATH"] = (
                 str(Path(cargo).parent) + os.pathsep + os.environ.get("PATH", "")
