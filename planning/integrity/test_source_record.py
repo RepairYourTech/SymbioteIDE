@@ -1,5 +1,6 @@
 """Run: python3 planning/integrity/test_source_record.py."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,6 +35,7 @@ from source_record import (
     mark_locator,
     nearest_workspace_root,
     package_workspace,
+    driven_unit,
     parse_dep_info,
     read_record,
     read_wire,
@@ -67,28 +69,48 @@ class Fixture:
         path.write_text(content)
         return path
 
-    def fingerprint(self, package, hash):
-        """Cargo's own record of a unit, which is what places it in a package.
+    def fingerprint(self, package, hash, kind="bin", target=None):
+        """Cargo's own record of a unit: which package compiles it, and its target.
 
         One directory per unit, named after the package that compiles it and the
-        unit's metadata hash — the same hash the unit's dep-info file carries.
+        unit's metadata hash — the same hash the unit's dep-info file carries — and
+        one pair of files per target the unit compiles, named after that target:
+        the fingerprint itself (`bin-demo`) and its JSON (`bin-demo.json`). A
+        target defaults to the one this fixture's binary is built from, which is
+        what a normal target directory holds a unit for.
         """
         directory = self.target / ".fingerprint" / f"{package}-{hash}"
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"bin-{package}").write_text("")
+        named = f"{kind}-{target or self.target_name}"
+        (directory / named).write_text("")
+        (directory / f"{named}.json").write_text("")
         return directory
 
-    def unit(self, stem, reads, artifact=None, package="demo"):
+    def unit(self, stem, reads, artifact=None, package="demo", kind="bin", target=None, link=False):
         """A dep-info file named after the unit, describing the artifact it names.
 
-        The unit's package is the one cargo's fingerprint of its hash names, so a
-        test that is about *which* unit a dep-info is writes that too: a stem's
-        crate name is shared by every package carrying a target of that name.
+        The unit's package and target are the ones cargo's fingerprint of its hash
+        names, so a test that is about *which* unit a dep-info is writes those too:
+        a stem's crate name is shared by every package carrying a target of that
+        name, and by one package's library, its docs and its test harnesses.
+
+        `link` writes the artifact this unit produced *as* the binary, which is
+        what cargo does where it can: it writes the unit's output into `deps` and
+        links it into the profile directory under the artifact name, so the two are
+        one file. That relation is how the check knows which unit produced the
+        binary — see `driven_unit` — so a test that is about *that* passes it, and
+        one that is about the identity cargo's relation cannot give leaves it out.
+        Returns the unit's own dep-info file.
         """
-        target = self.target / "deps" / (artifact or stem)
-        body = f"{target}: " + " ".join(str(self.root / read) for read in reads) + "\n"
-        (self.target / "deps" / f"{stem}.d").write_text(body)
-        self.fingerprint(package, stem.rsplit("-", 1)[-1])
+        output = self.target / "deps" / (artifact or stem)
+        body = f"{output}: " + " ".join(str(self.root / read) for read in reads) + "\n"
+        dep_info = self.target / "deps" / f"{stem}.d"
+        dep_info.write_text(body)
+        self.fingerprint(package, stem.rsplit("-", 1)[-1], kind, target)
+        if link:
+            output.write_bytes(b"")
+            os.link(output, self.target / self.target_name)
+        return dep_info
 
     def binary(self, record, name=None):
         """A binary carrying `record`, as `locator -> hash`."""
@@ -511,8 +533,8 @@ class CompletenessTests(unittest.TestCase):
             self.assertEqual(
                 fixture.problems(record, metadata),
                 [
-                    f"demo: {fixture.target} holds no dep-info for any unit of demo, so "
-                    f"nothing here measured what this binary's build read — build it "
+                    f"demo: {fixture.target} holds no dep-info for the unit that "
+                    f"builds it, so nothing here measured what its build read — build it "
                     f"before checking its record"
                 ],
             )
@@ -532,6 +554,108 @@ class CompletenessTests(unittest.TestCase):
             fixture.unit("demo-25d0", ["crates/other/src/main.rs"], package="other")
             self.assertEqual(fixture.problems(complete(fixture)), [])
 
+    def test_the_unit_that_produced_the_binary_is_the_evidence_it_is_read_against(self):
+        """Cargo's own uplift names that unit, so no other unit's evidence stands in.
+
+        Cargo writes a unit's output into `deps` and links it into the profile
+        directory under the artifact name, so the profile file *is* that unit's
+        output, and the file in `deps` sharing it is the unit that produced the
+        binary. Measured on this workspace, `symbioted` shares its file with exactly
+        one output while 11 units name its `bin-symbioted` target — and those are
+        not the same evidence: ten of them read 7 workspace files and one reads 10.
+        Measured too, with the producing unit's dep-info gone and a same-target
+        sibling's left, a rule satisfied by any unit of the target read 13 units and
+        reported the record covered.
+
+        The two shapes are the two cargo writes: a binary's output named after the
+        crate it compiles (`demo-9a`), and a library's `libdemo-9a.rlib`, whose
+        dep-info is still `demo-9a.d` — the hash, and not the output's own name, is
+        what names the unit, which is measured by the entry-point test that drives
+        a library artifact. Here the producing unit is linked to the binary and a
+        sibling unit of the same package and target is present as well, so nothing
+        but the failing unit's *identity* can refuse the sibling.
+        """
+        for artifact in (None, "libdemo-9a.rlib"):
+            with self.subTest(artifact=artifact or "demo-9a"):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = Fixture(directory)
+                    own = fixture.unit(
+                        "demo-9a",
+                        ["crates/demo/src/main.rs"],
+                        artifact=artifact,
+                        link=True,
+                    )
+                    fixture.unit("demo-25d0", ["crates/demo/src/main.rs"])
+                    record = complete(fixture)
+                    self.assertEqual(fixture.problems(record), [])
+                    own.unlink()
+                    self.assertEqual(
+                        fixture.problems(record),
+                        [
+                            f"demo: {fixture.target} holds no dep-info for the unit "
+                            f"that builds it, so nothing here measured what its "
+                            f"build read — build it before checking its record"
+                        ],
+                    )
+
+    def test_where_no_output_is_the_binary_the_driven_target_is_the_evidence(self):
+        """Cargo's relation is not always there to read, and then the target is.
+
+        Cargo copies the output rather than linking it where the filesystem has no
+        link to give, and a binary this target directory did not write has no output
+        here at all. The tightest identity left is then the target the artifact is
+        named after, which is still narrower than the package and than the crate
+        name — and this is the path every other test in this class takes, since none
+        of them links an output to the binary.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.unit("demo-9a", ["crates/demo/src/main.rs"])
+            self.assertEqual(fixture.problems(complete(fixture)), [])
+            self.assertIsNone(
+                driven_unit(fixture.target, fixture.target / fixture.target_name)
+            )
+
+    def test_another_unit_of_the_driven_package_is_not_the_binary_being_driven(self):
+        """A green rests on the unit that compiles the binary, not on its package.
+
+        One package compiles several units whose dep-info files are spelled with
+        its binary's crate name — its library, its documentation, and the test
+        harnesses anything that has run `cargo test` leaves. Measured on this
+        workspace, 45 units satisfy a rule reading the crate name of `symbioted`
+        and exactly one of them is the binary; the other 44 are its library, its
+        documentation and its test harnesses, each of which leaves the same dep-info
+        for a *different* compilation. So with the binary's own unit gone and any of
+        those present the record read clean against evidence that never described
+        the build, which is what a stale binary needs to pass.
+
+        The three shapes here are the ones cargo actually writes for one bin target
+        — `lib-demo`, `test-bin-demo`, `doc-bin-demo`, all carrying the hash of their
+        own unit — and everything they read is in the record, so nothing but the
+        unit's *target* can refuse them.
+        """
+        for kind, name in (("lib", "demo"), ("test", "bin-demo"), ("doc", "bin-demo")):
+            with self.subTest(unit=f"{kind}-{name}"):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = Fixture(directory)
+                    metadata = fixture.metadata()
+                    metadata["packages"][0]["targets"].append(
+                        {"name": "demo", "kind": ["lib"]}
+                    )
+                    record = complete(fixture)
+                    record["crates/demo/src/lib.rs"] = "f" * 64
+                    fixture.unit(
+                        "demo-9a", ["crates/demo/src/lib.rs"], kind=kind, target=name
+                    )
+                    self.assertEqual(
+                        fixture.problems(record, metadata),
+                        [
+                            f"demo: {fixture.target} holds no dep-info for the unit that "
+                            f"builds it, so nothing here measured what its build read — "
+                            f"build it before checking its record"
+                        ],
+                    )
+
     def test_an_oracle_with_no_unit_of_the_driven_package_measures_nothing(self):
         """A green has to be earned by a dep-info of the driven package's own units.
 
@@ -545,8 +669,8 @@ class CompletenessTests(unittest.TestCase):
             self.assertEqual(
                 fixture.problems(complete(fixture)),
                 [
-                    f"demo: {fixture.target} holds no dep-info for any unit of demo, so "
-                    f"nothing here measured what this binary's build read — build it "
+                    f"demo: {fixture.target} holds no dep-info for the unit that "
+                    f"builds it, so nothing here measured what its build read — build it "
                     f"before checking its record"
                 ],
             )
@@ -560,8 +684,8 @@ class CompletenessTests(unittest.TestCase):
             self.assertEqual(
                 fixture.problems(complete(fixture), metadata),
                 [
-                    f"demo: {fixture.target} holds no dep-info for any unit of demo, so "
-                    f"nothing here measured what this binary's build read — build it "
+                    f"demo: {fixture.target} holds no dep-info for the unit that "
+                    f"builds it, so nothing here measured what its build read — build it "
                     f"before checking its record"
                 ],
             )
@@ -586,7 +710,9 @@ class CompletenessTests(unittest.TestCase):
     def test_a_hyphenated_unit_is_matched_by_its_file_name(self):
         # cargo spells a unit's dep-info file with underscores
         # (`demo_launch-9a.d`) and the artifact inside it with the target's own
-        # hyphens (`demo-launch-9a`); only the file name identifies the unit.
+        # hyphens (`demo-launch-9a`), and the fingerprint keeps the target's own
+        # hyphens too (`bin-demo-launch`); only the file name identifies the unit
+        # among the ones that name the target.
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory, target="demo-launch")
             fixture.unit("demo_launch-9a", ["crates/demo/src/main.rs"], artifact="demo-launch-9a")

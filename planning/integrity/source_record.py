@@ -38,13 +38,22 @@ Three things are compared:
   declaration that names it.
 
   The comparison rests on the dep-info of those closure units, so it is only as
-  good as finding them, and as good as knowing whose they are: a unit is
-  identified by the package cargo's own fingerprint places its hash in, not by
-  the crate name its dep-info file is spelled with — two packages can each carry
-  a target of the same name and write files that differ in nothing but the hash.
-  Where none of the driven package's own units left one — a target directory that
-  was cleaned, or one the binary was copied out of — the check has measured
-  nothing and says so rather than passing.
+  good as finding them, and as good as knowing which unit each one is: a unit is
+  identified by the target and the package cargo's own fingerprint names it with,
+  not by the crate name its dep-info file is spelled with — two packages can each
+  carry a target of the same name and write files that differ in nothing but the
+  hash, and one package's own library, documentation and test harnesses write
+  files spelled with its binary's crate name as well. A green rests on the dep-info
+  of the unit that produced the binary being driven, which cargo's own uplift
+  names: the profile file is that unit's output, so the file in `deps` sharing it
+  is the unit, whose metadata hash is what its dep-info is spelled with — for a
+  library target's `libpkg-<hash>.rlib` as much as for a binary's
+  `<name>-<hash>` — and where that relation is not there to read, the tightest
+  identity left is the target the artifact is named after. Wherever that unit's
+  dep-info is
+  not among the ones found — a target directory that was cleaned, one the binary
+  was copied out of, or one holding only another unit's evidence — the check has
+  measured some other build and says so rather than passing.
 * **Completeness (cargo).** The record must also name, for every closure
   package, its own manifest and every workspace root cargo can resolve for it —
   the root a `package.workspace` names, or else each ancestor manifest declaring
@@ -552,10 +561,11 @@ def unit_names(metadata, package_ids):
     excludes on purpose — a test target's ``tests/`` inputs and the fixtures
     only its own code compiles.
 
-    A name says which *target*, never which package: two packages can each carry
-    a target of the same name, so every use of this is paired with
-    ``unit_packages``, which reads the package off cargo's own fingerprint of the
-    unit's hash.
+    A name says which *target*, never which package or which unit: two packages
+    can each carry a target of the same name, and one package's library and its
+    binary can share a crate name, so every use of this is paired with
+    ``unit_fingerprints``, which reads the package and the targets off cargo's own
+    fingerprint of the unit's hash.
     """
     names = set()
     for package in metadata["packages"]:
@@ -568,8 +578,10 @@ def unit_names(metadata, package_ids):
     return names
 
 
-def unit_packages(target_dir):
-    """The package cargo's own bookkeeping places each unit hash in.
+def unit_fingerprints(target_dir):
+    """What cargo's own bookkeeping says of each unit hash: the package that
+    compiles the unit spelled as a hash, and the ``(kind, name)`` of every target
+    that unit's fingerprint names.
 
     A fingerprint directory is named after the package that compiles the unit and
     the unit's metadata hash, and a unit's dep-info file carries the same hash, so
@@ -581,31 +593,130 @@ def unit_packages(target_dir):
     reading the crate name instead credited the other package's unit to the
     driven one.
 
+    The package alone is not an identity either, which is what the targets are
+    for: cargo writes one JSON per target the unit compiles, named after that
+    target — ``bin-symbioted``, ``lib-symbiote_host``, ``test-bin-symbioted``,
+    ``doc-lib-symbiote_host`` — and a package's library, documentation and test
+    harnesses write dep-info files spelled with its binary's crate name too.
+    Measured on this workspace: 45 units satisfy a rule reading the crate name of
+    ``symbioted``, and exactly one of them is the binary — the rest are its
+    library, its documentation and its test harnesses, any of which stood in for
+    the binary's own evidence.
+
     A hash no fingerprint places, or one more than one place names, is not an
     identity and is left out rather than guessed at: a unit this cannot place is
     not counted as evidence about any build, and the requirement that a green
-    rest on a unit of the driven package is then what refuses the comparison.
+    rest on the unit that compiles the binary is then what refuses the comparison.
+    A directory naming several targets names all of them, since one hash can be
+    this build's library and its tests — measured, three do here.
     """
     fingerprints = Path(target_dir) / FINGERPRINT_DIRECTORY
-    named = {}
+    packages = {}
+    targets = {}
     for entry in sorted(fingerprints.iterdir()) if fingerprints.is_dir() else []:
         package, separator, hash = entry.name.rpartition("-")
-        if separator and package:
-            named.setdefault(hash, set()).add(package)
-    return {
-        hash: next(iter(packages))
-        for hash, packages in named.items()
-        if len(packages) == 1
+        if not separator or not package:
+            continue
+        packages.setdefault(hash, set()).add(package)
+        for named in sorted(entry.glob("*.json")):
+            kind, separator, name = named.stem.partition("-")
+            if separator and kind and name:
+                targets.setdefault(hash, set()).add((kind, name))
+    placed = {
+        hash: next(iter(named)) for hash, named in packages.items() if len(named) == 1
     }
+    return (
+        placed,
+        {hash: frozenset(targets[hash]) for hash in placed if hash in targets},
+    )
+
+
+def driven_target(binary_name):
+    """The bin target whose artifact `binary_name` is.
+
+    Cargo names a binary's artifact after its bin target, adding the platform's
+    extension, so the target's own name is the artifact's stem — and the
+    fingerprint of the unit that compiles it names that target. Measured on this
+    workspace, whose two driven binaries are `symbioted` and
+    `symbiote-sandbox-launch`: the units that compile them are `bin-symbioted`
+    under ``symbiote-host-0a39c6d919ad2a78`` and `bin-symbiote-sandbox-launch`
+    under ``symbiote-sandbox-*``, whose hashes are those of the dep-info files
+    ``symbioted-0a39c6d919ad2a78.d`` and
+    ``symbiote_sandbox_launch-<hash>.d``. Note that cargo *underscores* the crate
+    name in the file and leaves the target's own hyphens in the fingerprint, so
+    the fingerprint — not the file stem — is what names the target.
+
+    This is the identity `check` falls back to where cargo's own uplift of the
+    artifact is not there to read and the unit that produced the binary cannot be
+    named at all, as on a platform that copies the artifact rather than linking it.
+    """
+    return binary_name[: -len(".exe")] if binary_name.endswith(".exe") else binary_name
+
+
+def unit_hash(dep_info):
+    """The unit's own metadata hash, which cargo spells into a dep-info's name.
+
+    A dep-info is named after the crate the unit compiles with the unit's metadata
+    hash appended — ``symbiote_sandbox_launch-<hash>.d`` — and that hash is the one
+    cargo's own fingerprint directory of the unit carries as well, which is what
+    `unit_fingerprints` places in a package.
+    """
+    return dep_info.name[: -len(".d")].rpartition("-")[2]
+
+
+def driven_unit(target_dir, binary):
+    """The hash of the unit that produced `binary`, where cargo says which.
+
+    Cargo writes a unit's output into the profile's ``deps`` directory and gives
+    the profile directory a name for that same file — a hard link where the
+    filesystem allows one, a copy where it does not — so the file in ``deps``
+    sharing the binary *is* that unit's output, and the unit's metadata hash is in
+    that file's name.
+
+    The hash is what names the unit's dep-info too, whichever kind of target it is,
+    because cargo spells a dep-info after the crate the unit compiles rather than
+    after the file it writes: the binary output ``symbioted-<hash>`` has
+    ``symbioted-<hash>.d`` beside it, while the library output
+    ``libpkg-<hash>.rlib`` has ``pkg-<hash>.d``. Measured — driving the rlib of a
+    library target is one of the entry-point tests — an output's own name is not
+    its dep-info's, and the hash is.
+
+    Measured on this workspace, whose ``symbioted`` shares its file with exactly
+    one output, ``deps/symbioted-c177b639b331cbe6``, out of the 11 units whose
+    fingerprints name the ``bin-symbioted`` target — and those 11 are not the same
+    evidence: ten of them read 7 workspace files while one reads 10, and a stale
+    one names a generated record from a different build-script run of the package.
+
+    Returns that hash, or ``None`` where cargo's relation is not there to read at
+    all: a platform that copies the artifact rather than linking it, or a binary no
+    target directory wrote. A hash it returns that no dep-info carries is the
+    producing unit's own dep-info missing — measured, cargo does not rewrite one for
+    a unit it considers fresh — and `check` refuses on that rather than resting on
+    another unit, which is what the target the artifact is named after is left for.
+    """
+    deps = Path(target_dir) / "deps"
+    for output in sorted(deps.iterdir()) if deps.is_dir() else []:
+        if not output.is_file():
+            continue
+        try:
+            if output.samefile(binary):
+                return output.stem.rpartition("-")[2]
+        except OSError:
+            # A file that vanished under us, or one this process cannot read, is
+            # not one that identifies the unit: keep looking.
+            continue
+    return None
 
 
 class Unit(NamedTuple):
     """A unit of a build, as cargo's own bookkeeping identifies it: the package
-    that compiles it and the crate name of the target, which is ``None`` for a
-    build script, whose crate name is cargo's own ``build_script_build``."""
+    that compiles it, the crate name its dep-info file is spelled with (``None``
+    for a build script, whose crate name is cargo's own ``build_script_build``),
+    and the ``(kind, name)`` of every target that unit's fingerprint names."""
 
     package: str
     name: str | None
+    targets: frozenset[tuple[str, str]] = frozenset()
 
 
 def unit_dep_info(target_dir, metadata, package_ids):
@@ -615,19 +726,21 @@ def unit_dep_info(target_dir, metadata, package_ids):
     metadata hash appended: ``symbiote_sandbox_launch-<hash>.d``, whose records
     name artifacts spelled ``symbiote-sandbox-launch-<hash>``. The *hash* is what
     identifies the unit here: a crate name is shared by every package carrying a
-    target of that name — measured, two packages each carrying a target ``guard``
-    wrote ``guard-<hash>.d`` files differing in nothing but the hash — so the
-    package is read from cargo's fingerprint of the hash (`unit_packages`), and a
-    unit is taken here only where that package both is in the build's closure and
-    has a library, binary or proc-macro target of that crate name. A unit of a
-    package this build does not compile is therefore not read as one of its own
-    however it is named, and one no fingerprint places is not read at all.
+    target of that name, and by a package's own library, documentation and test
+    harnesses — measured, two packages each carrying a target ``guard`` wrote
+    ``guard-<hash>.d`` files differing in nothing but the hash — so the package and
+    the targets are read from cargo's own fingerprint of that hash
+    (`unit_fingerprints`), and a unit is taken here only where that package both is
+    in the build's closure and has a library, binary or proc-macro target of that
+    crate name. A unit of a package this build does not compile is therefore not
+    read as one of its own however it is named, and one no fingerprint places is
+    not read at all.
 
     A build script's own dep-info sits under ``build/<package>-<hash>`` and is
     taken by directory, which places it in the package it is named for: its crate
     name is cargo's own ``build_script_build``, which no target of the package is.
     """
-    packages = unit_packages(target_dir)
+    packages, targets = unit_fingerprints(target_dir)
     closure = {}
     for package in metadata["packages"]:
         if package["id"] in package_ids:
@@ -638,10 +751,11 @@ def unit_dep_info(target_dir, metadata, package_ids):
 
     deps = Path(target_dir) / "deps"
     for dep_info in sorted(deps.glob("*.d")) if deps.is_dir() else []:
-        crate, separator, hash = dep_info.name[: -len(".d")].rpartition("-")
+        crate, separator, _ = dep_info.name[: -len(".d")].rpartition("-")
+        hash = unit_hash(dep_info)
         package = packages.get(hash) if separator else None
         if crate in closure.get(package, ()):
-            found[dep_info] = Unit(package, crate)
+            found[dep_info] = Unit(package, crate, targets.get(hash, frozenset()))
     build = Path(target_dir) / "build"
     for package in metadata["packages"]:
         if package["id"] not in package_ids:
@@ -920,8 +1034,8 @@ def configuration_candidates(workspace, package_dirs):
 def check(workspace, target_dir, binaries, metadata):
     """Every problem found: a read input the record does not name, a
     configuration file it does not hold or holds stale, or a target directory
-    holding no dep-info for a unit of the driven package, where nothing was
-    measured to compare the record with."""
+    holding no dep-info for the unit that compiles the driven binary, where
+    nothing was measured to compare the record with."""
     problems = []
     summaries = []
     for package_name, binary_name in binaries:
@@ -978,24 +1092,37 @@ def check(workspace, target_dir, binaries, metadata):
             (p for p in metadata["packages"] if p["name"] == package_name), None
         )
         dep_info = unit_dep_info(target_dir, metadata, package_ids)
-        # A unit of the driven package's own is what says this target directory is
-        # the one its build wrote to, and the comparison below rests on it whole.
-        # Measured: against a target directory holding no dep-info at all — as one
-        # does after `cargo clean` — the check reported OK having read 0 units and
-        # 0 inputs, and a dependency's units alone passed the same way, so a record
-        # nothing was compared with was called complete rather than unmeasured. The
-        # unit has to be the *driven package's*: with units read by crate name, a
-        # package sharing a target name contributed one — measured, a foreign
-        # `guard-<hash>.d` satisfied this rule alone and the check passed with
-        # nothing of the driven package's build measured.
-        own = unit_names(metadata, {driven["id"]}) if driven is not None else set()
-        if not any(
-            unit.package == package_name and unit.name in own for unit in dep_info.values()
-        ):
+        # The evidence has to be the dep-info of the unit that produced *this*
+        # binary, and that unit is what says this target directory is the one its
+        # build wrote to: the comparison below rests on it whole. Measured: against
+        # a target directory holding no dep-info at all — as one does after `cargo
+        # clean` — the check reported OK having read 0 units and 0 inputs, and a
+        # dependency's units alone passed the same way, so a record nothing was
+        # compared with was called complete rather than unmeasured. A unit of the
+        # driven *package* is not enough either, nor one sharing its crate name, nor
+        # even one of the same target: measured, a foreign `guard-<hash>.d`
+        # satisfied a rule reading the package alone, 45 units satisfy one reading
+        # the crate name of `symbioted` while exactly one is the binary, and 11 name
+        # its `bin-symbioted` target while their read sets differ (7 files against
+        # 10) — each of those stands in for a different compilation.
+        built = driven_unit(target_dir, binary)
+        if built is not None:
+            # Cargo's own uplift names the unit, so a dep-info carrying its hash is
+            # the evidence, and no other unit's can stand in for it.
+            measured = any(unit_hash(found) == built for found in dep_info)
+        else:
+            # Cargo's relation is not there to read, so the tightest identity left
+            # is the target the artifact is named after.
+            target = driven_target(binary_name)
+            measured = any(
+                unit.package == package_name and ("bin", target) in unit.targets
+                for unit in dep_info.values()
+            )
+        if not measured:
             problems.append(
-                f"{binary_name}: {target_dir} holds no dep-info for any unit of "
-                f"{package_name}, so nothing here measured what this binary's build read "
-                f"— build it before checking its record"
+                f"{binary_name}: {target_dir} holds no dep-info for the unit that "
+                f"builds it, so nothing here measured what its build read — build it "
+                f"before checking its record"
             )
             continue
         reads = workspace_reads(dep_info, workspace)
