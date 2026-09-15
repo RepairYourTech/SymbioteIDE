@@ -11,9 +11,11 @@
 //! configuration cargo reads for the same packages.
 //!
 //! It owns what is *not* an input (test, example and bench targets, build
-//! output, registry dependencies, dev edges); which roots a record's locators
-//! are spelled against is [`roots`]' business, and which workspace a build
-//! actually resolved in is [`invocation`]'s.
+//! output, registry dependencies, dev edges), by the rule the wire file states:
+//! its `exclusion` lines name the directory names a walk skips and where it skips
+//! them, so what a name means is not this module's to decide; which roots a
+//! record's locators are spelled against is [`roots`]' business, and which
+//! workspace a build actually resolved in is [`invocation`]'s.
 //!
 //! ## Structure
 //!
@@ -41,28 +43,11 @@ use std::path::{Path, PathBuf};
 
 use crate::manifest::{self, DependencyEdge, Manifest};
 use crate::scan::followed_inputs;
+use crate::wire::wire;
 
 use asking::{Answer, asked_packages, gate_against_cargo};
 use paths::{canonical, is_rust};
 use roots::{patch_directories, resolution_roots, workspace_roots};
-
-/// The directories cargo builds *other* targets from: the tests, examples and
-/// benches of a package. They are excluded because a change there must not
-/// refuse a current binary — no rebuild could clear that refusal, since a test
-/// file is not an input to the binary's build. They are excluded at the package
-/// root alone, because that is the only place cargo looks for them.
-///
-/// A directory *called* `tests` is not the same fact: measured, a file under
-/// `src/tests/` declared as `mod tests;` — no `#[cfg(test)]` anywhere — compiles
-/// into the binary, so excluding every directory of that name at every depth
-/// left a compiled file out of the record, and a change to it was reported
-/// clean. That is the short record this crate exists to prevent.
-const UNCOMPILED_TARGETS: [&str; 3] = ["benches", "examples", "tests"];
-
-/// Build output, dependency cache and version-control state, excluded wherever
-/// they sit: none of it is an input to a build, so naming it would refuse a
-/// current binary for a change no rebuild could clear.
-const UNCOMPILED_ANYWHERE: [&str; 4] = [".git", "dist", "node_modules", "target"];
 
 /// The configuration files cargo reads for a build of any closure package,
 /// relative to the directory it is looked for in.
@@ -307,16 +292,19 @@ fn enclosing_package(source: &Path, packages: &[PathBuf]) -> Option<PathBuf> {
 }
 
 /// Every file under a package that its binaries compile: all of the package
-/// except [`UNCOMPILED_TARGETS`] at its root and [`UNCOMPILED_ANYWHERE`]
-/// wherever they sit, whatever the file is called. Every file rather than `.rs`
-/// alone, because a compile can read a file no extension announces
+/// except the directories the wire file's `exclusion` lines skip — at the package
+/// root alone where cargo looks for a target directory of that name, wherever
+/// they sit where the name is state a build writes, installs or keeps rather than
+/// compiles a source from — whatever the file is called. Every file rather than
+/// `.rs` alone, because a compile can read a file no extension announces
 /// (`include_str!("schema.sql")`).
 pub(crate) fn package_sources(root: &Path) -> Vec<PathBuf> {
+    let wire = wire();
     let mut sources = BTreeSet::new();
     let mut directories = vec![root.to_path_buf()];
     while let Some(directory) = directories.pop() {
-        // The package root is the one place cargo looks for target directories,
-        // so it is the one place the names in `UNCOMPILED_TARGETS` are one.
+        // The package root is the one place cargo looks for target directories, so
+        // it is the one place the file's `root` exclusions apply.
         let at_root = directory == root;
         for entry in std::fs::read_dir(&directory)
             .into_iter()
@@ -324,9 +312,7 @@ pub(crate) fn package_sources(root: &Path) -> Vec<PathBuf> {
             .flatten()
         {
             let name = entry.file_name().to_string_lossy().to_string();
-            if UNCOMPILED_ANYWHERE.contains(&name.as_str())
-                || (at_root && UNCOMPILED_TARGETS.contains(&name.as_str()))
-            {
+            if wire.skips_directory(&name, at_root) {
                 continue;
             }
             match entry.file_type() {

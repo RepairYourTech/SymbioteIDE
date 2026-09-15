@@ -36,6 +36,8 @@
 #   unframed       the remedy it prints for a record whose own bytes spell one of
 #                  the markers it is framed with
 #   mark           role, locator, remedy — in the order a rebuild clears them
+#   exclusion      scope, names — which directory names a walk skips, at the
+#                  package root (`root`) alone or at every depth (`anywhere`)
 #
 # A record is the bytes of a binary between `start` and the `end` that ends it,
 # and `encoding` is what those bytes are spelled in: both readers take the record
@@ -129,6 +131,26 @@
 # depend on how a reader happens to key them — measured, the crate reported the
 # alphabetically first while the checker reported the first in the record, so one
 # record could be described two ways.
+#
+# Which directory names a walk skips, and where it skips them: a name is skipped
+# only where skipping it cannot hide a file the build read. `root` names are
+# skipped at a package root alone, `anywhere` names at every depth. Cargo builds
+# other targets from `tests`, `examples` and `benches`, and looks for them at the
+# package root alone, so a directory of one of those names below the root holds
+# what a declaration compiles: measured, `src/tests/mod.rs` declared as
+# `mod tests;` is compiled into the binary, and skipping the name at every depth
+# left it out of the record while both readers reported the binary current.
+# `target` is what cargo itself writes, `node_modules` is installed package state
+# and `.git` is version-control state: no build compiles an authored source from
+# any of them, so skipping them at every depth cannot hide an input — and a file a
+# source *declares* through an `include!` or a `#[path]` attribute is recorded
+# wherever it sits, because the scan follows the declaration rather than the walk.
+# `dist` is none of those: nothing cargo builds generates it, and this tree's one
+# `dist` is the committed workbench output under `crates/symbiote-desktop/app`,
+# whose package no driven binary's closure contains — so skipping it anywhere can
+# only hide an authored file. Measured, a `mod dist;` compiling `src/dist/mod.rs`
+# was dropped from the record with both readers reporting the binary current, so
+# the name is not skipped at all.
 start	symbiote-source-record:[
 end	]symbiote-source-record
 encoding	UTF-8
@@ -143,3 +165,5 @@ undecodable	this record's bytes are not the {encoding} the wire spells them in, 
 unframed	this record's own bytes spell one of the markers the wire frames it with, which no build writes and which leaves where the record ends unreadable from its bytes, so what the record holds is not known. Rebuild the binary from the workspace and check that build
 mark	unasked-cargo	cargo-not-asked	the cargo that ran that build could not be run to answer the questions the record rests on, so neither the workspace a run directory names nor the closure cargo resolves in it is known, and the record may omit the `[patch]` fork that build compiled. Rebuild it with a cargo that can be started — a cargo replaced or crippled since the build is the arrangement this catches — and check that build
 mark	unnamed-resolution	resolution-not-named	the workspace cargo resolved in could not be established: the readings that can name it — the directory the invoking cargo was started in, the manifest its command line named, the build directory and `PWD` — do not, so the record may omit the `[patch]` fork that build compiled, and a change to one cannot be ruled out. Rebuild it from the workspace, where the shell reports `PWD` (sh, bash, zsh and git bash set it), and check that build
+exclusion	root	benches examples tests
+exclusion	anywhere	target node_modules .git

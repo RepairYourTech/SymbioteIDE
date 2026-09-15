@@ -6,6 +6,9 @@ from pathlib import Path
 
 from source_record import (
     ENVIRONMENT_PREFIX,
+    EXCLUDED_ANYWHERE,
+    EXCLUDED_AT_ROOT,
+    EXCLUSIONS,
     HASH_LENGTH,
     MALFORMED_REMEDY,
     MARKS,
@@ -416,6 +419,36 @@ class CompletenessTests(unittest.TestCase):
                 ],
             )
 
+    def test_a_dist_directory_is_not_an_exclusion(self):
+        """`dist` is not a name any cargo build generates.
+
+        Measured, a `mod dist;` compiling `src/dist/mod.rs` was dropped from the
+        record while this checker reported the binary current, so the name is
+        walked at a package root and below one alike — the file's rule skips only
+        what a build cannot read a source from.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            nested = fixture.write("crates/demo/src/dist/mod.rs", "// a module\n")
+            at_root = fixture.write("crates/demo/dist/tool.rs", "// a source\n")
+            fixture.unit(
+                "demo-9a",
+                [
+                    "crates/demo/src/main.rs",
+                    "crates/demo/src/dist/mod.rs",
+                    "crates/demo/dist/tool.rs",
+                ],
+            )
+            self.assertEqual(
+                fixture.problems(complete(fixture)),
+                [
+                    f"demo: the record does not name {at_root}, which "
+                    f"{fixture.target / 'deps' / 'demo-9a.d'} says was read",
+                    f"demo: the record does not name {nested}, which "
+                    f"{fixture.target / 'deps' / 'demo-9a.d'} says was read",
+                ],
+            )
+
     def test_build_output_below_the_package_root_is_still_excluded(self):
         # Build output, dependency cache and version-control state are outside the
         # walk wherever they sit: none of it is an input to a build, so requiring
@@ -684,7 +717,7 @@ class WireTests(unittest.TestCase):
     """The wire has one copy, and both readers take their values from it."""
 
     def test_the_checker_spells_the_wire_the_file_holds(self):
-        scalars, marks = read_wire(WIRE_FILE)
+        scalars, marks, exclusions = read_wire(WIRE_FILE)
         self.assertEqual(RECORD_START.decode(), scalars["start"])
         self.assertEqual(RECORD_END.decode(), scalars["end"])
         self.assertEqual(ENVIRONMENT_PREFIX, scalars["prefix"])
@@ -719,9 +752,24 @@ class WireTests(unittest.TestCase):
         self.assertEqual(
             list(MARKS.items()), [(locator, remedy) for _, locator, remedy in marks]
         )
+        self.assertEqual(
+            EXCLUDED_AT_ROOT,
+            {"benches", "examples", "tests"},
+            "the file names the target directories cargo looks for at a package root alone",
+        )
+        self.assertEqual(
+            EXCLUDED_ANYWHERE,
+            {"target", "node_modules", ".git"},
+            "and the state a build writes, installs or keeps, skipped wherever it sits",
+        )
+        self.assertEqual(
+            EXCLUSIONS,
+            exclusions,
+            "the skip rule is the file's rather than this checker's own copy",
+        )
 
     def test_the_marks_are_distinct_and_the_cargo_is_reported_first(self):
-        _, marks = read_wire(WIRE_FILE)
+        _, marks, _ = read_wire(WIRE_FILE)
         roles = [role for role, _, _ in marks]
         locators = [locator for _, locator, _ in marks]
         self.assertEqual(len(roles), len(set(roles)), "a role is how the crate asks for a mark")
@@ -781,6 +829,11 @@ class WireTests(unittest.TestCase):
             'include_str!("wire.txt")',
             (STAMP_CRATE / "src" / "wire.rs").read_text(),
             "the crate embeds the one copy of the wire",
+        )
+        self.assertIn(
+            "skips_directory",
+            (STAMP_CRATE / "src" / "walk.rs").read_text(),
+            "the walk skips what the wire file names rather than keeping its own list",
         )
         self.assertNotIn(
             RECORD_START.decode(),
