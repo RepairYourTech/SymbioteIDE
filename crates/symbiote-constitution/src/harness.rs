@@ -11,7 +11,8 @@
 //! source tree whose module a `mod` declaration actually reaches; a Python
 //! binding must resolve to a file one of the maintenance suites discovers.
 
-use crate::{Outcome, fail, pass};
+use crate::catalog::Invariant;
+use crate::report::Outcome;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -90,47 +91,57 @@ impl Harness {
         })
     }
 
+    /// Every binding an invariant declares, checked against what the harness
+    /// actually compiles and runs rather than against the file's shape alone.
+    pub fn outcomes(&self, invariant: &Invariant) -> Vec<Outcome> {
+        invariant
+            .tests
+            .iter()
+            .map(|binding| self.outcome(binding))
+            .collect()
+    }
+
     /// Check one `relative/path::name` binding against what the harness runs.
     pub fn outcome(&self, binding: &str) -> Outcome {
         let subject = binding.to_string();
         let Some((path, name)) = binding.rsplit_once("::") else {
-            return fail("test", subject, "binding is not `path::test_name`");
+            return Outcome::fail("test", subject, "binding is not `path::test_name`");
         };
         let Ok(source) = std::fs::read_to_string(self.root.join(path)) else {
-            return fail("test", subject, "the named test file does not exist");
+            return Outcome::fail("test", subject, "the named test file does not exist");
         };
         if path.ends_with(".py") {
             return python_outcome(subject, path, name, &source);
         }
         if !self.compiled(path) {
-            return fail(
+            return Outcome::fail(
                 "test",
                 subject,
                 "the harness never compiles that file, so the check it names never runs",
             );
         }
         let Some(attributes) = attributes_above(&source, &format!("fn {name}(")) else {
-            return fail(
+            return Outcome::fail(
                 "test",
                 subject,
                 "no test by that name in the named file, so the evidence moved",
             );
         };
         if !attributes.contains("#[test]") {
-            return fail(
+            return Outcome::fail(
                 "test",
                 subject,
                 "the named item is not a test: no #[test] attribute",
             );
         }
         if attributes.contains("#[ignore") {
-            return fail(
+            return Outcome::fail(
                 "test",
                 subject,
                 "the named test is skipped, and a skipped check is not evidence",
             );
         }
-        pass(
+        Outcome::pass(
             "test",
             subject,
             "a compiled test the workspace run executes",
@@ -157,27 +168,27 @@ fn python_outcome(subject: String, path: &str, name: &str, source: &str) -> Outc
         path.starts_with(&format!("{dir}/")) && pattern_matches(pattern, path)
     });
     if !discovered {
-        return fail(
+        return Outcome::fail(
             "test",
             subject,
             "no maintenance suite discovers that file, so the test never runs",
         );
     }
     let Some(attributes) = attributes_above(source, &format!("def {name}(")) else {
-        return fail(
+        return Outcome::fail(
             "test",
             subject,
             "no test by that name in the named file, so the evidence moved",
         );
     };
     if attributes.contains("@unittest.skip") {
-        return fail(
+        return Outcome::fail(
             "test",
             subject,
             "the named test is skipped, and a skipped check is not evidence",
         );
     }
-    pass(
+    Outcome::pass(
         "test",
         subject,
         "a test the offline-validation suite discovers",

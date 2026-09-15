@@ -1,7 +1,72 @@
+//! The ledger's inventory: what the invariants are, not how they are checked.
+//!
+//! Each entry is a compile-time constant of `&'static` data, so no runtime input
+//! can weaken, add or skip an invariant. The clauses are quoted from the
+//! constitution verbatim, so an edit to the normative sentence and an edit to
+//! the ledger cannot drift apart.
+
+/// A fact of the repository tree rather than of a document or a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fact {
+    /// No manifest declares Electron, whose use the constitution forbids.
+    NoElectron,
+    /// No Go source or module exists: Go is not a second core language.
+    NoGoCore,
+    /// The workspace forbids unsafe Rust and every crate inherits that lint.
+    ForbidUnsafeRust,
+    /// The workbench is strict TypeScript and its build type-checks the tree.
+    StrictTypeScript,
+}
+
+impl Fact {
+    pub fn name(self) -> &'static str {
+        match self {
+            Fact::NoElectron => "no_electron",
+            Fact::NoGoCore => "no_go_core",
+            Fact::ForbidUnsafeRust => "forbid_unsafe_rust",
+            Fact::StrictTypeScript => "strict_typescript",
+        }
+    }
+}
+
+/// One non-negotiable invariant with the evidence that must exist for it to
+/// hold. The fields are `&'static` so the catalog is a compile-time constant
+/// that no runtime input can weaken.
+#[derive(Debug, Clone, Copy)]
+pub struct Invariant {
+    /// Stable identifier quoted by the report and by `docs/contracts/constitution.md`.
+    pub id: &'static str,
+    /// The requirement this invariant satisfies, quoted from #170 or the constitution.
+    pub requirement: &'static str,
+    /// The invariant in one normative sentence.
+    pub statement: &'static str,
+    /// Clauses that must appear verbatim in the constitution.
+    pub document: &'static [&'static str],
+    /// Authorizations that must not appear; the constitution's non-goals are
+    /// machine-enforced as absences, since prose that permits a forbidden
+    /// choice reads as policy.
+    pub forbidden: &'static [&'static str],
+    /// `relative/path::test_name` bindings that the workspace test run executes.
+    pub tests: &'static [&'static str],
+    /// Facts of the tree that must hold.
+    pub facts: &'static [Fact],
+    /// Canonical issues that own the integration this invariant does not implement.
+    pub owners: &'static [u64],
+}
+
+/// Normative sentences the constitution states once and more than one invariant
+/// depends on. Held once, so each clause has a single owner here as well as in
+/// the document: an entry that needs one names it rather than restating it.
+const WORKER_REQUESTS_COMPLETION: &str =
+    "The worker requests completion; Symbiote verifies completion.";
+const NO_WEAKER_GATE: &str = "No metric, prompt, native completion claim, goal or learned method weakens security, impact, documentation, independent review, delivery or Capability Closure gates.";
+const DUAL_PROJECTIONS: &str =
+    "Human documentation and compact agent context are projections of the same knowledge.";
+
 /// The non-negotiable invariants of the Symbiote constitution, in the order the
-/// constitution and #170 name them. Every entry is checked by `evaluate`; an
-/// entry that stops being checked fails `every_invariant_is_machine_checked`
-/// rather than passing quietly.
+/// constitution and #170 name them. Every entry is checked by
+/// [`evaluate`](crate::report::evaluate); an entry that stops being checked
+/// fails the conformance suite rather than passing quietly.
 ///
 /// The `document` clauses are quoted from the constitution verbatim, so the text
 /// and the machine checks cannot drift apart: editing the normative sentence
@@ -18,10 +83,12 @@ pub const INVARIANTS: &[Invariant] = &[
             "The human is its client and supplies goals, constraints, feedback and approvals.",
             "Repeated model selection and manual terminal orchestration are not the product model.",
             "it does not own canonical state, scheduling, policy, context, documentation, evidence or completion.",
-            "The worker requests completion; Symbiote verifies completion.",
+            WORKER_REQUESTS_COMPLETION,
         ],
         forbidden: &[],
-        tests: &["crates/symbiote-protocol/tests/contracts.rs::work_wire_never_accepts_host_completion_or_claimed_authority"],
+        tests: &[
+            "crates/symbiote-protocol/tests/contracts.rs::work_wire_never_accepts_host_completion_or_claimed_authority",
+        ],
         facts: &[],
         owners: &[],
     },
@@ -82,8 +149,8 @@ pub const INVARIANTS: &[Invariant] = &[
         statement: "A worker completion report is advisory; canonical completion requires the Host's exact-source and exact-target evidence for every gate.",
         document: &[
             "are advisory foreign execution evidence.",
-            "The worker requests completion; Symbiote verifies completion.",
-            "No metric, prompt, native completion claim, goal or learned method weakens security, impact, documentation, independent review, delivery or Capability Closure gates.",
+            WORKER_REQUESTS_COMPLETION,
+            NO_WEAKER_GATE,
         ],
         forbidden: &[],
         tests: &[
@@ -104,7 +171,9 @@ pub const INVARIANTS: &[Invariant] = &[
             "Core methodology and control cannot depend on a giant skill/prompt bundle; skills carry specialist expertise.",
         ],
         forbidden: &[],
-        tests: &["crates/symbiote-config/tests/environment.rs::required_constraints_and_core_policy_cannot_be_overridden"],
+        tests: &[
+            "crates/symbiote-config/tests/environment.rs::required_constraints_and_core_policy_cannot_be_overridden",
+        ],
         facts: &[],
         owners: &[],
     },
@@ -130,13 +199,15 @@ pub const INVARIANTS: &[Invariant] = &[
         statement: "Human documentation and agent context are projections of one structured knowledge base whose evidence, freshness and reconstruction status are explicit.",
         document: &[
             "Living Documentation is structured Developer Knowledge with stable identity, evidence, rationale uncertainty, confidence, freshness, audience, ownership and code links.",
-            "Human documentation and compact agent context are projections of the same knowledge.",
+            DUAL_PROJECTIONS,
             "Reconstruction distinguishes CONFIRMED, DERIVED, INFERRED and UNRESOLVED knowledge.",
             "Retain local invariant, safety, algorithm and external-constraint comments",
             "Support code↔docs navigation, documentation blast radius, stale/contradicted/debt states, Context Broker use, Documentation Closure and release/capability integration.",
         ],
         forbidden: &[],
-        tests: &["crates/symbiote-context/src/lib.rs::resolution_carries_prompt_and_structured_guidance_bounded"],
+        tests: &[
+            "crates/symbiote-context/src/lib.rs::resolution_carries_prompt_and_structured_guidance_bounded",
+        ],
         facts: &[],
         owners: &[29, 30, 31, 32, 33, 34],
     },
@@ -178,7 +249,9 @@ pub const INVARIANTS: &[Invariant] = &[
             "The transcript is the source of truth",
             "Generated documentation is authoritative",
         ],
-        tests: &["crates/symbiote-runtime-sdk/tests/provider.rs::native_local_endpoint_needs_no_cli_or_secret_but_requires_exact_local_policy"],
+        tests: &[
+            "crates/symbiote-runtime-sdk/tests/provider.rs::native_local_endpoint_needs_no_cli_or_secret_but_requires_exact_local_policy",
+        ],
         facts: &[Fact::NoElectron, Fact::NoGoCore],
         owners: &[],
     },
@@ -186,7 +259,9 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-11",
         requirement: "#170: constitutional changes require ADR-backed downstream impact propagation.",
         statement: "An accepted decision is immutable; a change arrives as a superseding ADR that names the artifacts it invalidates.",
-        document: &["Accepted constitutional changes require a superseding ADR with authority, constraints, alternatives, dated/versioned evidence, reversibility, consequences and downstream impact propagation."],
+        document: &[
+            "Accepted constitutional changes require a superseding ADR with authority, constraints, alternatives, dated/versioned evidence, reversibility, consequences and downstream impact propagation.",
+        ],
         forbidden: &[],
         tests: &[
             "crates/symbiote-architecture/tests/governance.rs::supersession_invalidates_only_dependent_artifacts",
@@ -199,7 +274,9 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-12",
         requirement: "#170: unit and integration tests cover normal, boundary, failure, interruption and recovery behavior appropriate to this issue.",
         statement: "The workspace tests interruption, failure recovery, cancellation and optimistic-retry behavior rather than only the happy path.",
-        document: &["Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance."],
+        document: &[
+            "Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance.",
+        ],
         forbidden: &[],
         tests: &[
             "crates/symbiote-domain/tests/contracts.rs::interrupted_and_failed_tasks_recover_with_new_dispatch_cancelled_tasks_are_terminal",
@@ -213,7 +290,9 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-13",
         requirement: "#170: public schemas, APIs and configuration are documented, and migration and rollback are included where state changes.",
         statement: "The published schemas are generated artifacts compared against their committed fixtures, and a version change carries a tested converter.",
-        document: &["Runtime/provider/platform facts expire independently and require refreshed official evidence."],
+        document: &[
+            "Runtime/provider/platform facts expire independently and require refreshed official evidence.",
+        ],
         forbidden: &[],
         tests: &[
             "crates/symbiote-host/src/cli_schema.rs::the_committed_fixtures_are_exactly_what_the_builders_emit",
@@ -262,7 +341,9 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-16",
         requirement: "#170: work is delivered through the repository's issue, Change Stream, branch, PR, independent review and current-head checks workflow.",
         statement: "Delivery is issue-linked, and the repository's own guard refuses a closure stated in a commit message or a title, so only a reviewed description closes an issue.",
-        document: &["Material mutation belongs to an issue-linked Change Stream and appropriately isolated branch/worktree."],
+        document: &[
+            "Material mutation belongs to an issue-linked Change Stream and appropriately isolated branch/worktree.",
+        ],
         forbidden: &[],
         tests: &[
             "planning/integrity/test_closing_keywords.py::test_a_commit_message_may_not_close_anything_even_in_a_stated_clause",
@@ -311,7 +392,7 @@ pub const INVARIANTS: &[Invariant] = &[
         requirement: "#170 additional acceptance: no metric, prompt, native completion or learning candidate can weaken a required security, documentation, impact, review or delivery gate.",
         statement: "A gate is not negotiable by a worker, a prompt or a learned method; incomplete or self-reviewed evidence never advances work.",
         document: &[
-            "No metric, prompt, native completion claim, goal or learned method weakens security, impact, documentation, independent review, delivery or Capability Closure gates.",
+            NO_WEAKER_GATE,
             "Children cannot bypass staffing or acquire undelegated authority.",
         ],
         forbidden: &[],
@@ -341,7 +422,7 @@ pub const INVARIANTS: &[Invariant] = &[
         statement: "Documentation may compress knowledge but cannot certify itself or replace primary evidence.",
         document: &[
             "Generated documentation cannot certify itself or replace approved/executable primary evidence.",
-            "Human documentation and compact agent context are projections of the same knowledge.",
+            DUAL_PROJECTIONS,
         ],
         forbidden: &[],
         tests: &[],
@@ -357,7 +438,9 @@ pub const INVARIANTS: &[Invariant] = &[
             "Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance.",
         ],
         forbidden: &[],
-        tests: &["crates/symbiote-constitution/tests/conformance.rs::the_coverage_map_names_every_invariant_and_owner"],
+        tests: &[
+            "crates/symbiote-constitution/tests/conformance.rs::the_coverage_map_names_every_invariant_and_owner",
+        ],
         facts: &[],
         owners: &[36, 173, 38, 470],
     },
@@ -370,7 +453,9 @@ pub const INVARIANTS: &[Invariant] = &[
             "These owners are integration obligations, not circular prerequisites of this record.",
         ],
         forbidden: &[],
-        tests: &["crates/symbiote-constitution/tests/conformance.rs::the_routed_owners_are_named_by_the_record"],
+        tests: &[
+            "crates/symbiote-constitution/tests/conformance.rs::the_routed_owners_are_named_by_the_record",
+        ],
         facts: &[],
         owners: &[464, 447, 460, 449, 454, 470],
     },
@@ -378,7 +463,9 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-24",
         requirement: "#170 non-negotiable constraint: follow the product constitution and applicable Project, Role and Host policies.",
         statement: "A specification or implementation obeys the constitution and the policies of its Project, Role and Host, and no caller can override a policy it does not name.",
-        document: &["Every specification, issue, adapter, workforce binding, documentation subsystem and implementation obeys this constitution and the applicable Project, Role and Host policies."],
+        document: &[
+            "Every specification, issue, adapter, workforce binding, documentation subsystem and implementation obeys this constitution and the applicable Project, Role and Host policies.",
+        ],
         forbidden: &[],
         tests: &[
             "crates/symbiote-host/src/bin/symbiote/tests.rs::authorization_follows_the_operation_not_the_command_name",
