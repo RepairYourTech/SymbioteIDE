@@ -50,6 +50,19 @@ class IntegrityTests(unittest.TestCase):
             for field in ("kind", "key", "revision", "epic", "wave", "dependencies", "children", "canonical_issue"):
                 self.assertEqual(by_number[entry["number"]].get(field), entry.get(field))
 
+    def test_every_snapshot_issue_belongs_to_one_counted_class(self):
+        """No issue may disappear into a class the counts do not name."""
+        self.snapshot.append(
+            dict(number=5, title="history", state="closed", state_reason="completed",
+                 updated_at="2026-09-07T12:00:00Z", labels=[], body="an issue no roadmap key names\n")
+        )
+        counts = validate_snapshot(self.snapshot)["counts"]
+        classes = ("masters", "tasks", "epics", "retired", "unclassified",
+                   "references", "program_entries", "unkeyed")
+        self.assertEqual(set(counts), set(classes) | {"snapshot_issues"}, "the counts name every class")
+        self.assertEqual(sum(counts[field] for field in classes), counts["snapshot_issues"])
+        self.assertEqual(counts["unkeyed"], 1, "the issue no key names is counted, not dropped")
+
     def test_topological_order_is_deterministic_and_not_readiness(self):
         registry = validate_snapshot(self.snapshot)
         self.assertEqual(registry, validate_snapshot(list(reversed(self.snapshot))))
@@ -169,7 +182,9 @@ if __name__ == "__main__":
         def test_live_snapshot_regression(self):
             snapshot = json.loads(snapshot_path.read_text())
             registry = validate_snapshot(snapshot)
-            self.assertEqual(registry["counts"], {"tasks": 241, "epics": 19, "references": 198, "program_entries": 1, "snapshot_issues": 466})
+            self.assertEqual(registry["counts"], {"tasks": 241, "epics": 19, "references": 198, "program_entries": 1,
+                                                        "masters": 1, "retired": 0, "unclassified": 0, "unkeyed": 6,
+                                                        "snapshot_issues": 466})
             positions = {n: i for i, n in enumerate(registry["topological_order"])}
             for entry in registry["entries"]:
                 if entry["kind"] == "task":
