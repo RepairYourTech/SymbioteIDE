@@ -38,9 +38,13 @@ Three things are compared:
   declaration that names it.
 
   The comparison rests on the dep-info of those closure units, so it is only as
-  good as finding them: where none of the driven package's own units left one — a
-  target directory that was cleaned, or one the binary was copied out of — the
-  check has measured nothing and says so rather than passing.
+  good as finding them, and as good as knowing whose they are: a unit is
+  identified by the package cargo's own fingerprint places its hash in, not by
+  the crate name its dep-info file is spelled with — two packages can each carry
+  a target of the same name and write files that differ in nothing but the hash.
+  Where none of the driven package's own units left one — a target directory that
+  was cleaned, or one the binary was copied out of — the check has measured
+  nothing and says so rather than passing.
 * **Completeness (cargo).** The record must also name, for every closure
   package, its own manifest and every workspace root cargo can resolve for it —
   the root a `package.workspace` names, or else each ancestor manifest declaring
@@ -101,6 +105,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 # The scalar keywords the wire file spells, which is what the crate's own parser
 # reads too: the framing and the encoding of the bytes it frames, the variable a
@@ -303,6 +308,13 @@ HASH_LENGTH, HASH_ALPHABET = WIRE["hash"]
 # the record for the reason the record documents: their content comes from the
 # build script, which the record does name.
 GENERATED_DIRECTORY = "target"
+
+# The directory cargo keeps its own bookkeeping of a build in, inside the profile
+# directory: one directory per unit, named after the package that compiles it and
+# the unit's metadata hash — the hash a unit's dep-info file carries too. It is
+# where this check reads *which package* a unit is, since the crate name cannot
+# say it.
+FINGERPRINT_DIRECTORY = ".fingerprint"
 
 # The directory names a walk skips, from the wire file's own `exclusion` lines:
 # `root` names at a package root alone (where cargo looks for a target directory of
@@ -539,6 +551,11 @@ def unit_names(metadata, package_ids):
     dep-info shares the naming shape, because they read files the record
     excludes on purpose — a test target's ``tests/`` inputs and the fixtures
     only its own code compiles.
+
+    A name says which *target*, never which package: two packages can each carry
+    a target of the same name, so every use of this is paired with
+    ``unit_packages``, which reads the package off cargo's own fingerprint of the
+    unit's hash.
     """
     names = set()
     for package in metadata["packages"]:
@@ -551,32 +568,87 @@ def unit_names(metadata, package_ids):
     return names
 
 
+def unit_packages(target_dir):
+    """The package cargo's own bookkeeping places each unit hash in.
+
+    A fingerprint directory is named after the package that compiles the unit and
+    the unit's metadata hash, and a unit's dep-info file carries the same hash, so
+    the hash is an identity where the crate name is not. Measured on a workspace
+    whose targets collide: ``deps/guard-25d04fabbb313b6d.d`` belongs to the
+    package whose fingerprint is ``other-25d04fabbb313b6d``, while the driven
+    package's own ``deps/guard-cf49597cb80e0847.d`` belongs to
+    ``probe-cf49597cb80e0847`` — the two files differ in nothing but the hash, and
+    reading the crate name instead credited the other package's unit to the
+    driven one.
+
+    A hash no fingerprint places, or one more than one place names, is not an
+    identity and is left out rather than guessed at: a unit this cannot place is
+    not counted as evidence about any build, and the requirement that a green
+    rest on a unit of the driven package is then what refuses the comparison.
+    """
+    fingerprints = Path(target_dir) / FINGERPRINT_DIRECTORY
+    named = {}
+    for entry in sorted(fingerprints.iterdir()) if fingerprints.is_dir() else []:
+        package, separator, hash = entry.name.rpartition("-")
+        if separator and package:
+            named.setdefault(hash, set()).add(package)
+    return {
+        hash: next(iter(packages))
+        for hash, packages in named.items()
+        if len(packages) == 1
+    }
+
+
+class Unit(NamedTuple):
+    """A unit of a build, as cargo's own bookkeeping identifies it: the package
+    that compiles it and the crate name of the target, which is ``None`` for a
+    build script, whose crate name is cargo's own ``build_script_build``."""
+
+    package: str
+    name: str | None
+
+
 def unit_dep_info(target_dir, metadata, package_ids):
     """The dep-info files of the units that produce one binary's artifacts.
 
     A unit's dep-info is named after the crate it compiles, with the unit's own
     metadata hash appended: ``symbiote_sandbox_launch-<hash>.d``, whose records
-    name artifacts spelled ``symbiote-sandbox-launch-<hash>``. The file name is
-    the unit's identity here — it is the crate name as cargo spells it, with
-    underscores, and it does not depend on which record the unit happened to
-    write first. A build script's own dep-info sits under
-    ``build/<package>-<hash>`` and is taken by directory, since its crate name
-    is cargo's own ``build_script_build``.
+    name artifacts spelled ``symbiote-sandbox-launch-<hash>``. The *hash* is what
+    identifies the unit here: a crate name is shared by every package carrying a
+    target of that name — measured, two packages each carrying a target ``guard``
+    wrote ``guard-<hash>.d`` files differing in nothing but the hash — so the
+    package is read from cargo's fingerprint of the hash (`unit_packages`), and a
+    unit is taken here only where that package both is in the build's closure and
+    has a library, binary or proc-macro target of that crate name. A unit of a
+    package this build does not compile is therefore not read as one of its own
+    however it is named, and one no fingerprint places is not read at all.
+
+    A build script's own dep-info sits under ``build/<package>-<hash>`` and is
+    taken by directory, which places it in the package it is named for: its crate
+    name is cargo's own ``build_script_build``, which no target of the package is.
     """
-    names = unit_names(metadata, package_ids)
+    packages = unit_packages(target_dir)
+    closure = {}
+    for package in metadata["packages"]:
+        if package["id"] in package_ids:
+            closure.setdefault(package["name"], set()).update(
+                unit_names(metadata, {package["id"]})
+            )
     found = {}
+
     deps = Path(target_dir) / "deps"
     for dep_info in sorted(deps.glob("*.d")) if deps.is_dir() else []:
-        unit = dep_info.name[: -len(".d")].rsplit("-", 1)[0]
-        if unit in names:
-            found[dep_info] = unit
+        crate, separator, hash = dep_info.name[: -len(".d")].rpartition("-")
+        package = packages.get(hash) if separator else None
+        if crate in closure.get(package, ()):
+            found[dep_info] = Unit(package, crate)
     build = Path(target_dir) / "build"
     for package in metadata["packages"]:
         if package["id"] not in package_ids:
             continue
         for directory in sorted(build.glob(f"{package['name']}-*")) if build.is_dir() else []:
             for dep_info in sorted(directory.glob("*.d")):
-                found[dep_info] = dep_info.name
+                found[dep_info] = Unit(package["name"], None)
     return found
 
 
@@ -906,15 +978,20 @@ def check(workspace, target_dir, binaries, metadata):
             (p for p in metadata["packages"] if p["name"] == package_name), None
         )
         dep_info = unit_dep_info(target_dir, metadata, package_ids)
-        # The dep-info of the driven package's own units is what says this target
-        # directory is the one its build wrote to, and the comparison below rests
-        # on it whole. Measured: against a target directory holding no dep-info at
-        # all — as one does after `cargo clean` — the check reported OK having read
-        # 0 units and 0 inputs, and a dependency's units alone passed the same way,
-        # so a record nothing was compared with was called complete rather than
-        # unmeasured.
+        # A unit of the driven package's own is what says this target directory is
+        # the one its build wrote to, and the comparison below rests on it whole.
+        # Measured: against a target directory holding no dep-info at all — as one
+        # does after `cargo clean` — the check reported OK having read 0 units and
+        # 0 inputs, and a dependency's units alone passed the same way, so a record
+        # nothing was compared with was called complete rather than unmeasured. The
+        # unit has to be the *driven package's*: with units read by crate name, a
+        # package sharing a target name contributed one — measured, a foreign
+        # `guard-<hash>.d` satisfied this rule alone and the check passed with
+        # nothing of the driven package's build measured.
         own = unit_names(metadata, {driven["id"]}) if driven is not None else set()
-        if not any(unit in own for unit in dep_info.values()):
+        if not any(
+            unit.package == package_name and unit.name in own for unit in dep_info.values()
+        ):
             problems.append(
                 f"{binary_name}: {target_dir} holds no dep-info for any unit of "
                 f"{package_name}, so nothing here measured what this binary's build read "
