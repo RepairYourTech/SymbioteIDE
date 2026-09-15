@@ -2961,6 +2961,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-constitution"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "symbiote-context"
 version = "0.1.0"
 dependencies = [

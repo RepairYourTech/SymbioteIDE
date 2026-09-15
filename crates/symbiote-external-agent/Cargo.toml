@@ -17,3 +17,6 @@ serde_json.workspace = true
 
 [[example]]
 name = "codex_thread_smoke"
+
+[lints]
+workspace = true

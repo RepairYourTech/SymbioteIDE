@@ -1,6 +1,6 @@
 # Symbiote product constitution
 
-Status: accepted product direction; implementation and conformance pending. Owner: [#170](https://github.com/RepairYourTech/SymbioteIDE/issues/170). Decision record: [ADR-0001](adr-0001-technology-direction.md).
+Status: accepted product direction; every non-negotiable invariant is machine-checked and reported per criterion by [`symbiote-constitution`](../contracts/constitution.md). This record establishes the prerequisite contract, not a production capability; implementation remains bounded as recorded in [Change control and open acceptance](#change-control-and-open-acceptance). Owner: [#170](https://github.com/RepairYourTech/SymbioteIDE/issues/170). Decision record: [ADR-0001](adr-0001-technology-direction.md).
 
 This record reconciles the client's takeover instruction with live canonical v2.4 requirements retrieved on 2026-09-08 UTC. The instruction supersedes incompatible older technology candidates, not unrelated requirements. [#154](https://github.com/RepairYourTech/SymbioteIDE/issues/154) is the executable roadmap; #36 owns domain/security/event/lifecycle contracts; #443 records consolidation; #470 owns safe roadmap regeneration. Reference-only issues are history, not assignments. Source proves current behavior; approved specifications govern intended behavior. Contradictions require recorded remediation, never automatic rewriting of intent to match faulty code.
 
@@ -10,7 +10,7 @@ Symbiote is an open-source AI software-development firm. The human is its client
 
 Symbiote owns Tasks, dependencies, decisions, artifacts, permissions and completion gates. The worker requests completion; Symbiote verifies completion. Native todos, subagent state, session history, successful exits and “done” reports are advisory foreign execution evidence. No metric, prompt, native completion claim, goal or learned method weakens security, impact, documentation, independent review, delivery or Capability Closure gates.
 
-The process is code; expertise is pluggable. Deep Guidance is native stateful methodology: breadth-before-depth discovery, competitor and adjacent gap analysis, cross-cuts, decisions, implementation simulation, ambiguity audits, upstream remediation and independent re-audit. Skills and instructions provide expertise and guidance. Only demonstrated native or Host mechanisms enforce policy; observation is never prevention. Hosting, distribution, CI/CD, operations and rollback are researched from workload requirements during planning.
+The process is code; expertise is pluggable. Core methodology and control cannot depend on a giant skill/prompt bundle; skills carry specialist expertise. Deep Guidance is native stateful methodology: breadth-before-depth discovery, competitor and adjacent gap analysis, cross-cuts, decisions, implementation simulation, ambiguity audits, upstream remediation and independent re-audit. Skills and instructions provide expertise and guidance. Only demonstrated native or Host mechanisms enforce policy; observation is never prevention. Hosting, distribution, CI/CD, operations and rollback are researched from workload requirements during planning.
 
 ## Projects and workforce
 
@@ -62,6 +62,22 @@ Global/Project/task analytics account for roots, children, reviews, failed attem
 
 Accepted constitutional changes require a superseding ADR with authority, constraints, alternatives, dated/versioned evidence, reversibility, consequences and downstream impact propagation. Runtime/provider/platform facts expire independently and require refreshed official evidence. No proprietary required model, forced inference reseller, editor-fork dependency, transcript authority, generated-doc circular authority or provider-local completion authority is permitted.
 
-This document establishes the prerequisite contract, not a production capability. #170 remains open until its schemas, deterministic compilation/provenance, external/native/hybrid conformance, enforcement and denied-completion evidence, documentation model, threat implications, contradiction audit, applicability review, exact implementation/PR/current-head evidence and required review are accounted for. Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance.
+This document establishes the prerequisite contract, not a production capability. This section accounts for every coverage item #170 named as open, each by the machine check that executes it or by the canonical issue that owns the integration this contract does not implement. `cargo test -p symbiote-constitution` runs the ledger, and `cargo run -p symbiote-constitution --example constitution_report` emits the per-invariant evidence quoted against #170.
+
+| Named coverage item | Machine check or canonical owner |
+| --- | --- |
+| Constitution invariants | `CN-01`–`CN-22`; `crates/symbiote-constitution/tests/conformance.rs` |
+| Schemas and schema migration | #36, #179; `typed_schemas_roundtrip_dispatch_and_reject_unknown_fields_and_versions`, `v1_migration_preserves_existing_records_and_journal` |
+| Deterministic compilation and provenance | `CN-03`; `compilation_is_deterministic_and_role_survives_restaffing` |
+| External/native/hybrid conformance | `CN-18`; `native_and_external_paths_share_canonical_completion_contract`, `two_harness_demo_native_and_external_workers_on_one_project_without_leakage` |
+| Enforcement and denied-completion evidence | `CN-04`, `CN-05`; `observed_emulated_unsupported_and_expired_controls_cannot_authorize`, `worker_done_is_advisory_and_worker_cannot_begin_or_complete_verification` |
+| Documentation model | `CN-08`, `CN-21`; #29–#34 own Living Documentation |
+| Threat implications | `CN-15`; #191 and #218 own the enforcement evidence |
+| Contradiction audit | `CN-14`; `probe_failures_are_preserved_and_contradictions_rejected` |
+| Applicability review | `CN-15`; `unsupported_platform_never_claims_operating_system_probe_success` |
+| Exact implementation, PR and current-head evidence | the containing issue-linked pull request and its checks |
+| Required review | separate reviewer evidence recorded against #170 |
+
+Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance. #170's constitutional deliverable is this recorded, machine-checked coverage; the production capability the contract enables remains owned by the issues named above and by #38.
 
 Hard prerequisites are only the live issues' **Dependencies** sections. Later canonical integrations do not become circular foundation prerequisites. #173 depends on #170; #38 depends on #170 and #173. Draft proof/governance artifacts may be prepared concurrently, but dependent implementation readiness must be established explicitly. The [ADR impact map](adr-0001-technology-direction.md#canonical-impact-map) preserves canonical ownership.
