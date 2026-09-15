@@ -62,6 +62,10 @@ const WORKER_REQUESTS_COMPLETION: &str =
 const NO_WEAKER_GATE: &str = "No metric, prompt, native completion claim, goal or learned method weakens security, impact, documentation, independent review, delivery or Capability Closure gates.";
 const DUAL_PROJECTIONS: &str =
     "Human documentation and compact agent context are projections of the same knowledge.";
+const MATERIAL_MUTATION_ISSUE_LINKED: &str = "Material mutation belongs to an issue-linked Change Stream and appropriately isolated branch/worktree.";
+const RUNTIME_CHECKS_REMAIN_PENDING: &str = "Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance.";
+const NATIVE_WORKERS_CANNOT_WRITE_CANONICAL_STATE: &str =
+    "Native workers cannot directly write privileged canonical state.";
 
 /// The non-negotiable invariants of the Symbiote constitution, in the order the
 /// constitution and #170 name them. Every entry is checked by
@@ -222,7 +226,7 @@ pub const INVARIANTS: &[Invariant] = &[
             "The Context Broker supplies the smallest sufficient task/Role/model/permission/Host-aware evidence package",
             "Deep Guidance is native stateful methodology",
             "Capability Closure covers applicable functionality",
-            "Material mutation belongs to an issue-linked Change Stream and appropriately isolated branch/worktree.",
+            MATERIAL_MUTATION_ISSUE_LINKED,
         ],
         forbidden: &[],
         tests: &[
@@ -274,9 +278,7 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-12",
         requirement: "#170: unit and integration tests cover normal, boundary, failure, interruption and recovery behavior appropriate to this issue.",
         statement: "The workspace tests interruption, failure recovery, cancellation and optimistic-retry behavior rather than only the happy path.",
-        document: &[
-            "Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance.",
-        ],
+        document: &[RUNTIME_CHECKS_REMAIN_PENDING],
         forbidden: &[],
         tests: &[
             "crates/symbiote-domain/tests/contracts.rs::interrupted_and_failed_tasks_recover_with_new_dispatch_cancelled_tasks_are_terminal",
@@ -326,7 +328,7 @@ pub const INVARIANTS: &[Invariant] = &[
         document: &[
             "Preview applications, including localhost content, are untrusted and receive no workbench/Host authority. An iframe is not an assumed security boundary.",
             "Worktrees isolate Git mutation, not network access, secrets, production services or the filesystem. The threat model and enforcement evidence remain required.",
-            "Native workers cannot directly write privileged canonical state.",
+            NATIVE_WORKERS_CANNOT_WRITE_CANONICAL_STATE,
         ],
         forbidden: &[],
         tests: &[
@@ -341,9 +343,7 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-16",
         requirement: "#170: work is delivered through the repository's issue, Change Stream, branch, PR, independent review and current-head checks workflow.",
         statement: "Delivery is issue-linked, and the repository's own guard refuses a closure stated in a commit message or a title, so only a reviewed description closes an issue.",
-        document: &[
-            "Material mutation belongs to an issue-linked Change Stream and appropriately isolated branch/worktree.",
-        ],
+        document: &[MATERIAL_MUTATION_ISSUE_LINKED],
         forbidden: &[],
         tests: &[
             "planning/integrity/test_closing_keywords.py::test_a_commit_message_may_not_close_anything_even_in_a_stated_clause",
@@ -407,7 +407,7 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "CN-20",
         requirement: "#170 non-negotiable constraint: native runtime extensibility is an enforcement substrate for Symbiote workforce policy, not the canonical location of that policy.",
         statement: "A worker or harness cannot write privileged canonical state; its report is an input the Host judges.",
-        document: &["Native workers cannot directly write privileged canonical state."],
+        document: &[NATIVE_WORKERS_CANNOT_WRITE_CANONICAL_STATE],
         forbidden: &[],
         tests: &[
             "crates/symbiote-protocol/tests/contracts.rs::work_wire_never_accepts_host_completion_or_claimed_authority",
@@ -435,7 +435,7 @@ pub const INVARIANTS: &[Invariant] = &[
         statement: "The document states that its named coverage is accounted for, and that pending runtime checks are pending rather than passed.",
         document: &[
             "This section accounts for every coverage item #170 named as open",
-            "Runtime failure, interruption, recovery, concurrency and permission checks remain pending until real mechanisms exist; mocks cannot pass later integration acceptance.",
+            RUNTIME_CHECKS_REMAIN_PENDING,
         ],
         forbidden: &[],
         tests: &[
