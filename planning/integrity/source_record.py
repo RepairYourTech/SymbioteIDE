@@ -26,12 +26,13 @@ Three things are compared:
 * **Completeness (rustc).** Every workspace file the units of the driven
   binary's closure read must be named by the record. Registry sources and
   generated files under the target directory are excluded, as the record's own
-  documentation excludes them, and so are the test, example and bench
-  directories at a package root, which the record excludes on purpose and whose
-  own units read them. A directory that carries one of those names deeper in a
-  package is not one of them: cargo looks for its target directories at the
-  package root alone, so `src/tests/mod.rs` compiles into the binary and the
-  record must name it.
+  documentation excludes them, and so are the directories the wire file's
+  `exclusion` lines name, which the record excludes on purpose and whose own units
+  read them. Which names those are, and where each is skipped, is the file's: the
+  target directories cargo looks for at a package root alone are skipped there
+  alone, so `src/tests/mod.rs` compiles into the binary and the record must name
+  it, while generated, installed and version-control state is skipped wherever it
+  sits and a name the file does not list — `dist` among them — is walked.
 * **Completeness (cargo).** The record must also name, for every closure
   package, its own manifest and every workspace root cargo can resolve for it —
   the root a `package.workspace` names, or else each ancestor manifest declaring
@@ -97,8 +98,9 @@ from pathlib import Path
 # reads too: the framing and the encoding of the bytes it frames, the variable a
 # record pins, the locators and contents, and what a refusal says about a mark the
 # file does not name, a line it cannot read, or a record it cannot read at all.
-# The marks come from its `mark` lines, and `unknown-order` and `encoding` are read
-# beside them in `read_wire`.
+# The marks come from its `mark` lines, the directory names a walk skips from its
+# `exclusion` lines, and `unknown-order` and `encoding` are read beside them in
+# `read_wire`.
 WIRE_KEYWORDS = {
     "start",
     "end",
@@ -126,8 +128,16 @@ WIRE_FILE = (
 )
 
 
+# The scopes the wire file's `exclusion` lines name: the directory names a walk
+# skips at a package root alone (`root`, where cargo looks for a target directory
+# of that name) and the ones it skips at every depth (`anywhere`). Both are the
+# file's, so this checker skips exactly what the walk skips.
+EXCLUSION_SCOPES = ("root", "anywhere")
+
+
 def read_wire(path):
-    """The wire file, parsed: its scalar keywords and its marks in order.
+    """The wire file, parsed: its scalar keywords, its marks in order, and the
+    directory names a walk skips by scope.
 
     A line is a keyword and its tab-separated fields, and ``#`` starts a comment.
     A malformed file raises rather than falling back to a default, because every
@@ -136,6 +146,7 @@ def read_wire(path):
     """
     scalars = {}
     marks = []
+    exclusions = {scope: [] for scope in EXCLUSION_SCOPES}
     for line in Path(path).read_text().splitlines():
         line = line.rstrip()
         if not line or line.startswith("#"):
@@ -147,6 +158,22 @@ def read_wire(path):
             if not role or not locator or not remedy:
                 raise ValueError(f"the wire file mark {fields!r} is incomplete")
             marks.append((role, locator, remedy))
+        elif keyword == "exclusion":
+            # Which directory names a walk skips, and where it skips them: data, so
+            # the walk's rule and this checker's cannot drift and neither reader
+            # decides for itself what a name means.
+            scope, _, names = fields.partition("\t")
+            if scope not in EXCLUSION_SCOPES:
+                raise ValueError(
+                    f"the wire file names the exclusion scope {scope!r}, which this "
+                    f"checker does not implement"
+                )
+            listed = names.split(" ")
+            if not names or any(not name for name in listed):
+                raise ValueError(f"the wire file's exclusion {fields!r} names no directories")
+            if exclusions[scope]:
+                raise ValueError(f"the wire file spells the {scope!r} exclusions twice")
+            exclusions[scope] = listed
         elif keyword == "hash":
             # The shape of a hash — the content a record gives an input that is
             # there — so what tells an input's line from a mark's is the file's to
@@ -185,10 +212,16 @@ def read_wire(path):
         raise ValueError(f"the wire file names no {sorted(missing)}")
     if not marks:
         raise ValueError("the wire file holds no mark")
-    return scalars, marks
+    for scope in EXCLUSION_SCOPES:
+        if not exclusions[scope]:
+            raise ValueError(
+                f"the wire file names no {scope!r} exclusion, so a walk cannot be told "
+                f"what to skip"
+            )
+    return scalars, marks, exclusions
 
 
-WIRE, WIRE_MARKS = read_wire(WIRE_FILE)
+WIRE, WIRE_MARKS, EXCLUSIONS = read_wire(WIRE_FILE)
 
 # The encoding the wire states the bytes between the framing markers are in: both
 # readers decode a record by it, so a record neither can decode is refused the
@@ -263,19 +296,16 @@ HASH_LENGTH, HASH_ALPHABET = WIRE["hash"]
 # build script, which the record does name.
 GENERATED_DIRECTORY = "target"
 
-# Directory names the record excludes wherever they sit under a package: build
-# output, dependency cache and version-control state, none of which is an input
-# to a build, so naming one would refuse a current binary for a change no rebuild
-# could clear.
-EXCLUDED_ANYWHERE = {".git", "dist", "node_modules", "target"}
-
-# The directories cargo builds *other* targets from, which it looks for at the
-# package root alone: their own units read them, so a change there must not
-# refuse a current binary. Excluded at the package root alone because that is
-# where cargo looks for them — measured, `src/tests/mod.rs` declared as
-# `mod tests;`, with no `#[cfg(test)]` anywhere, compiles into the binary, so the
-# record names it and this rule must not excuse a record that does not.
-EXCLUDED_TARGETS = {"benches", "examples", "tests"}
+# The directory names a walk skips, from the wire file's own `exclusion` lines:
+# `root` names at a package root alone (where cargo looks for a target directory of
+# that name) and `anywhere` names at every depth (state a build writes, installs or
+# keeps rather than compiles a source from). The rule is the file's, so this
+# checker excuses exactly the reads the walk does not name — and a name in neither
+# list, `dist` among them, is walked: measured, a `mod dist;` compiling
+# `src/dist/mod.rs` was dropped from the record with both readers reporting the
+# binary current.
+EXCLUDED_AT_ROOT = set(EXCLUSIONS["root"])
+EXCLUDED_ANYWHERE = set(EXCLUSIONS["anywhere"])
 
 # The configuration files cargo reads for a build of a package, relative to a
 # directory it looks in for them.
@@ -765,22 +795,22 @@ def cargo_inputs(metadata, package_ids):
 
 
 def excluded(path, package_dirs):
-    """Whether the record excludes this path by its own documented rule.
+    """Whether the record excludes this path by the wire file's own rule.
 
-    Under a closure package, the build output is outside the walk wherever it
-    sits and the test, example and bench targets are outside it at the package
-    root alone, which is the only place cargo looks for them. Those units read
-    files the record does not name on purpose, so a comparison that ignored the
-    rule would fail on them; a directory that merely carries one of those names
-    deeper in the package is not one of them, and a record that left it out is
-    short rather than excused.
+    Under a closure package, the names the file skips at every depth are outside
+    the walk wherever they sit and the names it skips at a package root alone are
+    outside it there alone, which is the only place cargo looks for a target
+    directory of that name. Those units read files the record does not name on
+    purpose, so a comparison that ignored the rule would fail on them; a directory
+    that merely carries one of those names deeper in the package is not one of
+    them, and a record that left it out is short rather than excused.
     """
     for directory in package_dirs:
         if directory in path.parents:
             relative = path.relative_to(directory)
             if any(part in EXCLUDED_ANYWHERE for part in relative.parts):
                 return True
-            if relative.parts and relative.parts[0] in EXCLUDED_TARGETS:
+            if relative.parts and relative.parts[0] in EXCLUDED_AT_ROOT:
                 return True
     return False
 

@@ -5,8 +5,9 @@
 //! how it begins and ends inside a binary and what those bytes are encoded as,
 //! which locators a record can hold at all, where its lines end, the one
 //! environment variable it pins, how an environment locator is spelled, the
-//! content an input that is not there is given, what a record line is, and every
-//! mark a build writes where it could not establish a fact the record rests on.
+//! content an input that is not there is given, what a record line is, which
+//! directory names a walk skips and where it skips them, and every mark a build
+//! writes where it could not establish a fact the record rests on.
 //! This crate
 //! writes a record and `planning/integrity/source_record.py` refuses one, so the
 //! two must agree about all of it to the byte; rather than each keeping a copy,
@@ -100,6 +101,14 @@ pub(crate) struct Wire {
     /// The remedy a refusal prints for a record whose own bytes spell one of the
     /// markers it is framed with, so where it ends cannot be read from its bytes.
     pub(crate) unframed_remedy: &'static str,
+    /// The directory names a walk skips at a package root alone, where cargo
+    /// looks for a target directory of that name; see [`skips_directory`].
+    ///
+    /// [`skips_directory`]: Wire::skips_directory
+    pub(crate) excluded_at_root: Vec<&'static str>,
+    /// The directory names it skips wherever they sit: state a build generates,
+    /// installs or keeps rather than compiles a source from.
+    pub(crate) excluded_anywhere: Vec<&'static str>,
     /// Every mark, in the order a rebuild has to clear them.
     pub(crate) marks: Vec<Mark>,
 }
@@ -198,6 +207,20 @@ impl Wire {
     pub(crate) fn mark_line(&self, role: &str) -> String {
         let mark = self.mark(role);
         format!("{}\t{}\n", self.unset, mark.locator)
+    }
+
+    /// Whether a walk skips the directory `name`, at a package root (`at_root`)
+    /// or below one: the file's `root` names apply at a package root alone, its
+    /// `anywhere` names wherever the directory sits, and a name in neither list is
+    /// walked.
+    ///
+    /// The rule is the file's rather than this crate's, and its reason is stated
+    /// there: a name is skipped only where skipping it cannot hide a file the
+    /// build read. Measured, the file's own list once held `dist`, and a
+    /// `mod dist;` compiling `src/dist/mod.rs` was left out of the record while
+    /// both readers reported the binary current.
+    pub(crate) fn skips_directory(&self, name: &str, at_root: bool) -> bool {
+        self.excluded_anywhere.contains(&name) || (at_root && self.excluded_at_root.contains(&name))
     }
 
     /// What one record line is, by the rule the file states; its own text carries
@@ -306,6 +329,8 @@ fn read() -> Wire {
     let mut scalars = BTreeMap::new();
     let mut marks: Vec<Mark> = Vec::new();
     let mut hash: Option<(usize, &'static str)> = None;
+    let mut excluded_at_root: Vec<&'static str> = Vec::new();
+    let mut excluded_anywhere: Vec<&'static str> = Vec::new();
     for line in WIRE_FILE.lines().map(str::trim_end) {
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -351,6 +376,32 @@ fn read() -> Wire {
                 assert!(hash.is_none(), "the wire file spells the hash shape twice");
                 hash = Some((length, alphabet));
             }
+            // Which directory names a walk skips, and where it skips them: data,
+            // so the walk's rule and the checker's cannot drift and neither
+            // reader decides for itself what a name means.
+            "exclusion" => {
+                let (scope, names) = fields.split_once('\t').unwrap_or_else(|| {
+                    panic!("the wire file exclusion {fields:?} names no scope and names")
+                });
+                let listed: Vec<&'static str> = names.split(' ').collect();
+                assert!(
+                    listed.iter().all(|name| !name.is_empty()),
+                    "the wire file exclusion {fields:?} holds an empty name"
+                );
+                let excluded = match scope {
+                    "root" => &mut excluded_at_root,
+                    "anywhere" => &mut excluded_anywhere,
+                    other => panic!(
+                        "the wire file names the exclusion scope {other:?}, which this crate does \
+                         not implement"
+                    ),
+                };
+                assert!(
+                    excluded.is_empty(),
+                    "the wire file spells the {scope:?} exclusions twice"
+                );
+                *excluded = listed;
+            }
             // Which of several marks the file does not name a refusal reports:
             // data, so a reader cannot invent its own order.
             "unknown-order" => assert_eq!(
@@ -383,6 +434,15 @@ fn read() -> Wire {
         }
     }
     assert!(!marks.is_empty(), "the wire file holds no mark");
+    for (scope, excluded) in [
+        ("root", &excluded_at_root),
+        ("anywhere", &excluded_anywhere),
+    ] {
+        assert!(
+            !excluded.is_empty(),
+            "the wire file names no {scope:?} exclusion, so a walk cannot be told what to skip"
+        );
+    }
     let (hash_length, hash_alphabet) = hash.expect("the wire file names no hash shape");
     let scalar = |name: &str| {
         *scalars
@@ -402,6 +462,8 @@ fn read() -> Wire {
         malformed_remedy: scalar("malformed"),
         undecodable_remedy: scalar("undecodable"),
         unframed_remedy: scalar("unframed"),
+        excluded_at_root,
+        excluded_anywhere,
         marks,
     }
 }
@@ -490,6 +552,38 @@ mod tests {
                 "a mark a refusal cannot print is not a mark: {mark:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_file_states_which_directory_names_a_walk_skips_and_where() {
+        let wire = wire();
+        assert_eq!(
+            wire.excluded_at_root,
+            ["benches", "examples", "tests"],
+            "cargo builds other targets from these, and looks for them at the package root alone"
+        );
+        assert_eq!(
+            wire.excluded_anywhere,
+            ["target", "node_modules", ".git"],
+            "what cargo itself writes, what is installed, and version-control state: no build \
+             compiles an authored source from any of them"
+        );
+        assert!(wire.skips_directory("tests", true));
+        assert!(
+            !wire.skips_directory("tests", false),
+            "measured, `src/tests/mod.rs` declared as `mod tests;` is compiled into the binary, so \
+             skipping the name below the package root left a compiled file out of the record"
+        );
+        assert!(
+            wire.skips_directory("target", false) && wire.skips_directory(".git", false),
+            "state at any depth: a nested one is written, installed or kept, not authored"
+        );
+        assert!(
+            !wire.skips_directory("dist", true) && !wire.skips_directory("dist", false),
+            "measured, a `mod dist;` compiling `src/dist/mod.rs` was left out of the record while \
+             both readers reported the binary current — nothing cargo builds generates the name, \
+             so skipping it anywhere can only hide a file the build read"
+        );
     }
 
     #[test]

@@ -994,6 +994,30 @@ fn a_directory_of_a_target_name_below_the_root_holds_compiled_files() {
 }
 
 #[test]
+fn a_directory_no_build_generates_holds_compiled_files_wherever_it_sits() {
+    // The wire file's `exclusion` lines name what a walk skips and where. `dist`
+    // is not one of them: it is not a name cargo writes (`target`), not installed
+    // package state (`node_modules`) and not version-control state (`.git`), so
+    // skipping it anywhere can only hide an authored file. Measured with a probe
+    // crate, a `mod dist;` compiling `src/dist/mod.rs` was dropped from the
+    // record while both readers reported the binary current.
+    let root = fixture("walk-dist");
+    for path in ["src/lib.rs", "src/dist/mod.rs", "dist/tool.rs"] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+        std::fs::write(&file, "content").expect("the source");
+    }
+    let sources = package_sources(&root);
+    for path in ["src/lib.rs", "src/dist/mod.rs", "dist/tool.rs"] {
+        assert!(
+            sources.contains(&root.join(path)),
+            "{path} sits under a name no build generates, so it is walked: skipping the name \
+             anywhere would hide a file the build read"
+        );
+    }
+}
+
+#[test]
 fn an_input_compiled_from_outside_the_package_is_recorded_and_named() {
     let root = fixture("outside");
     std::fs::create_dir_all(root.join("crates/app/src")).expect("the package");
