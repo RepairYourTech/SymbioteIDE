@@ -6,9 +6,23 @@ records every call, so "no mutation was attempted" is an assertion rather than a
 claim.
 """
 
+import json
 import unittest
+from pathlib import Path
 
-from regenerate import AmbiguousCreate, apply, body_hash, diff_of, key_of, plan, verify
+from validate import validate_snapshot
+
+from regenerate import (
+    AmbiguousCreate,
+    apply,
+    body_hash,
+    canonical_key_of,
+    diff_of,
+    key_holders,
+    plan,
+    revision_of,
+    verify,
+)
 
 
 def task_body(key, dependencies="- None", notes="original", revision="approved-v1"):
@@ -72,11 +86,11 @@ def snapshot(children="- [ ] #3\n- [ ] #4\n", **bodies):
     return [by_number[n] for n in sorted(by_number)]
 
 
-def amendment(key, body, base_body, kind="amendment", **extra):
+def amendment(key, body, base_body, kind="amendment", revision="approved-v1", **extra):
     entry = {
         "key": key,
         "body": body,
-        "base_revision": "approved-v1",
+        "base_revision": revision,
         "base_body_sha256": body_hash(base_body),
         "kind": kind,
     }
@@ -106,9 +120,10 @@ class RecordingRunner:
         return dict(self.issues[number])
 
     def find(self, key):
+        """The canonical issue carrying `key`, as the runner protocol states."""
         self.calls.append(("find", key))
         for number, raw in self.issues.items():
-            if key_of(raw["body"]) == key:
+            if canonical_key_of(raw) == key:
                 return number
         return None
 
@@ -169,7 +184,7 @@ class RegenerationSafety(unittest.TestCase):
                 self.assertIn(expected, detail)
                 runner = RecordingRunner(self.live)
                 with self.assertRaisesRegex(Exception, "carries refusals"):
-                    apply(planned, runner)
+                    apply(planned, runner, self.live)
                 self.assertEqual(runner.mutations(), [], "a refused plan must attempt no mutation")
 
     def test_a_valid_plan_validates_the_intended_registry(self):
@@ -189,7 +204,7 @@ class RegenerationSafety(unittest.TestCase):
         self.assertEqual(refusal["live_revision"], "approved-v2")
         runner = RecordingRunner(self.live)
         with self.assertRaisesRegex(Exception, "carries refusals"):
-            apply(planned, runner)
+            apply(planned, runner, self.live)
         self.assertEqual(runner.mutations(), [])
         self.assertEqual(self.live[3]["body"], task_body("A02", "- #3", revision="approved-v2"))
 
@@ -208,7 +223,7 @@ class RegenerationSafety(unittest.TestCase):
         self.assertIn("human note", mutation["body"])
         self.assertIn("regenerated", mutation["body"])
         runner = RecordingRunner(self.live)
-        report = apply(planned, runner)
+        report = apply(planned, runner, self.live)
         self.assertEqual(report["applied"][0]["number"], 4)
         self.assertIn("human note", runner.issues[4]["body"])
         self.assertEqual(verify(planned, self.live, runner.snapshot()), [])
@@ -222,7 +237,7 @@ class RegenerationSafety(unittest.TestCase):
         self.assertEqual(refusal["conflicts"], [{"ours": ["regenerated"], "theirs": ["human edit"]}])
         runner = RecordingRunner(self.live)
         with self.assertRaisesRegex(Exception, "carries refusals"):
-            apply(planned, runner)
+            apply(planned, runner, self.live)
         self.assertEqual(runner.mutations(), [])
         self.assertIn("human edit", runner.issues[4]["body"])
 
@@ -252,7 +267,7 @@ class RegenerationSafety(unittest.TestCase):
         self.assertIn("epic membership differs", planned["refusals"][0]["detail"])
         runner = RecordingRunner(self.live)
         with self.assertRaisesRegex(Exception, "carries refusals"):
-            apply(planned, runner)
+            apply(planned, runner, self.live)
         self.assertEqual(runner.mutations(), [])
 
     def test_an_ambiguous_create_reconciles_instead_of_duplicating(self):
@@ -260,10 +275,10 @@ class RegenerationSafety(unittest.TestCase):
         actions = [mutation["action"] for mutation in planned["mutations"]]
         self.assertEqual(actions, ["update", "create"])
         runner = RecordingRunner(self.live, ambiguous=1)
-        report = apply(planned, runner)
+        report = apply(planned, runner, self.live)
         creates = [call for call in runner.calls if call[0] == "create"]
         self.assertEqual(creates, [("create", "A03")], "the response was lost, so it is not retried blind")
-        carrying = [raw for raw in runner.issues.values() if key_of(raw["body"]) == "A03"]
+        carrying = [raw for raw in runner.issues.values() if canonical_key_of(raw) == "A03"]
         self.assertEqual(len(carrying), 1)
         self.assertEqual(carrying[0]["number"], report["applied"][1]["number"])
         self.assertEqual(verify(planned, self.live, runner.snapshot()), [])
@@ -272,13 +287,13 @@ class RegenerationSafety(unittest.TestCase):
         """The create's answer was lost and no issue landed: the key is read back, then created once."""
         planned = self.create_plan()
         runner = RecordingRunner(self.live, ambiguous=1, lands_on_ambiguity=False)
-        report = apply(planned, runner)
+        report = apply(planned, runner, self.live)
         self.assertEqual(
             [call for call in runner.calls if call[0] == "create"],
             [("create", "A03"), ("create", "A03")],
             "the ambiguous attempt is reconciled before it is retried",
         )
-        carrying = [raw for raw in runner.issues.values() if key_of(raw["body"]) == "A03"]
+        carrying = [raw for raw in runner.issues.values() if canonical_key_of(raw) == "A03"]
         self.assertEqual(len(carrying), 1, "no duplicate is left behind")
         self.assertEqual(carrying[0]["number"], report["applied"][1]["number"])
         self.assertEqual(verify(planned, self.live, runner.snapshot()), [])
@@ -287,12 +302,12 @@ class RegenerationSafety(unittest.TestCase):
         planned = self.create_plan()
         runner = RecordingRunner(self.live, ambiguous=2, lands_on_ambiguity=False)
         with self.assertRaisesRegex(Exception, "ambiguous create"):
-            apply(planned, runner)
+            apply(planned, runner, self.live)
         self.assertEqual(
             [call for call in runner.calls if call[0] == "create"],
             [("create", "A03"), ("create", "A03")],
         )
-        self.assertEqual([raw for raw in runner.issues.values() if key_of(raw["body"]) == "A03"], [])
+        self.assertEqual([raw for raw in runner.issues.values() if canonical_key_of(raw) == "A03"], [])
 
     def test_an_existing_key_is_never_created_again(self):
         """A key a human made first is planned as an update, so no create is ever attempted."""
@@ -312,24 +327,48 @@ class RegenerationSafety(unittest.TestCase):
         self.assertEqual(planned["refusals"], [])
         self.assertEqual([mutation["action"] for mutation in planned["mutations"]], ["update", "update"])
         runner = RecordingRunner(self.live)
-        report = apply(planned, runner)
+        report = apply(planned, runner, self.live)
         self.assertEqual([call for call in runner.calls if call[0] == "create"], [])
         self.assertEqual(report["applied"][1]["number"], 5)
         self.assertEqual(
-            len([raw for raw in runner.issues.values() if key_of(raw["body"]) == "A03"]),
+            len([raw for raw in runner.issues.values() if canonical_key_of(raw) == "A03"]),
             1,
             "the key is carried by exactly one issue",
         )
 
-    # 4. A reference-only entry keeps its history and resolves to canonical work.
-    def test_a_reference_only_entry_is_never_regenerated(self):
-        body = reference_body("A03", owner=3)
-        alias = issue(5, "A03", body)
+    # 4. A key resolves to the work it addresses, and a reference entry's history
+    #    is never rewritten.
+    def test_a_key_a_reference_entry_also_carries_amends_the_canonical_issue(self):
+        """The reconciled roadmap keys a superseded entry exactly as the work that
+        supersedes it, so the work is what an amendment addresses — the shape 80 of
+        this registry's 192 reference keys have."""
+        body = reference_body("E00", owner=2)
+        alias = issue(5, "E00", body)
         alias["labels"] = [{"name": "planning:reference"}]
         self.live = snapshot() + [alias]
-        # The amendment arrives with the epic listing the number a create would
-        # land on, so the intended graph is valid and nothing but this rule stands
-        # between the plan and a second A03.
+        canonical = self.base[1]["body"]
+        planned = self.one("E00", canonical + "## Accepted amendment\namendment text\n", canonical)
+        self.assertEqual(planned["refusals"], [])
+        self.assertEqual([(m["action"], m["number"]) for m in planned["mutations"]], [("update", 2)])
+        runner = RecordingRunner(self.live)
+        report = apply(planned, runner, self.live)
+        self.assertEqual(report["applied"][0]["number"], 2)
+        self.assertIn("Accepted amendment", runner.issues[2]["body"])
+        self.assertEqual(runner.issues[5]["body"], body, "the retained history is untouched")
+        self.assertEqual(verify(planned, self.live, runner.snapshot()), [])
+
+    def test_a_key_only_a_reference_entry_carries_is_refused(self):
+        """A key that addresses no canonical work is not a regeneration target, and
+        the refusal names the canonical issue the entry resolves to.
+
+        The amendment arrives with its epic listing the number a create would land
+        on, so the intended graph would be valid and only this rule stands between
+        the plan and a canonical entry for a key a reference entry already carries.
+        """
+        body = reference_body("A09", owner=3)
+        alias = issue(5, "A09", body)
+        alias["labels"] = [{"name": "planning:reference"}]
+        self.live = snapshot() + [alias]
         planned = plan(
             self.base,
             self.live,
@@ -339,28 +378,78 @@ class RegenerationSafety(unittest.TestCase):
                     marked("E00", "## Child issues\n- [ ] #3\n- [ ] #4\n- [ ] #6\n"),
                     self.base[1]["body"],
                 ),
-                amendment("A03", task_body("A03"), body),
+                amendment("A09", task_body("A09"), body),
             ],
         )
         self.assertEqual(planned["mutations"], [], "a reference entry is not an amendment target")
         refusal = planned["refusals"][0]
-        self.assertIn("reference-only entries are never regenerated", refusal["reason"])
+        self.assertIn("a key only a reference entry carries is never regenerated", refusal["reason"])
         self.assertEqual((refusal["number"], refusal["canonical_issue"]), (5, 3))
         runner = RecordingRunner(self.live)
         with self.assertRaisesRegex(Exception, "carries refusals"):
-            apply(planned, runner)
+            apply(planned, runner, self.live)
         self.assertEqual(runner.mutations(), [])
         self.assertEqual(runner.issues[5]["body"], body, "the retained history is untouched")
 
-    def test_an_amendment_reaches_canonical_work_the_reference_points_at(self):
-        """The same edit addressed to the canonical issue is planned, not refused."""
-        body = reference_body("A03", owner=3)
-        alias = issue(5, "A03", body)
-        alias["labels"] = [{"name": "planning:reference"}]
-        self.live = snapshot() + [alias]
-        planned = self.one("A01", task_body("A01", notes="regenerated"), task_body("A01"))
-        self.assertEqual(planned["refusals"], [])
-        self.assertEqual([mutation["number"] for mutation in planned["mutations"]], [3])
+    # 5. The path is proved over the registry, not over one convenient key.
+    def capture(self):
+        return json.loads((Path(__file__).parent / "fixtures/audit-2026-09-08.json").read_text())["issues"]
+
+    def test_every_canonical_key_in_the_real_capture_plans_one_update(self):
+        capture = self.capture()
+        registry = validate_snapshot(capture)
+        canonical = [entry for entry in registry["entries"] if entry["kind"] != "reference"]
+        self.assertGreater(len(canonical), 200, "the registry this sweeps is the real one")
+        refused, wrong = [], []
+        for entry in canonical:
+            raw = next(candidate for candidate in capture if candidate["number"] == entry["number"])
+            planned = plan(capture, capture, [amendment(
+                entry["key"],
+                raw["body"] + "## Accepted amendment\namendment text\n",
+                raw["body"],
+                revision=revision_of(raw["body"]),
+            )])
+            actions = [(mutation["action"], mutation["number"]) for mutation in planned["mutations"]]
+            if planned["refusals"]:
+                refused.append((entry["number"], entry["key"], planned["refusals"][0]["reason"]))
+            elif actions != [("update", entry["number"])]:
+                wrong.append((entry["number"], entry["key"], actions))
+        self.assertEqual(refused, [], f"{len(refused)} canonical keys were refused")
+        self.assertEqual(wrong, [], f"{len(wrong)} canonical keys did not plan one update")
+
+    def test_every_reference_only_key_in_the_real_capture_is_refused(self):
+        capture = self.capture()
+        registry = validate_snapshot(capture)
+        canonical_keys = {key for key, held in key_holders(capture).items() if held["canonical"]}
+        probed = 0
+        for entry in registry["entries"]:
+            if entry["kind"] != "reference" or entry["key"] in canonical_keys:
+                continue
+            raw = next(candidate for candidate in capture if candidate["number"] == entry["number"])
+            planned = plan(capture, capture, [amendment(
+                entry["key"], raw["body"], raw["body"], revision=revision_of(raw["body"]),
+            )])
+            refusal = planned["refusals"][0]
+            self.assertIn("a key only a reference entry carries is never regenerated", refusal["reason"])
+            self.assertEqual(refusal["canonical_issue"], entry["canonical_issue"])
+            self.assertEqual(planned["mutations"], [])
+            probed += 1
+        self.assertGreater(probed, 100, "the real registry's reference-only keys are all probed")
+
+    def test_the_key_index_agrees_with_the_registry_the_validator_builds(self):
+        """One question, one answer: regeneration's index must classify every issue
+        exactly as the registry the validator emits does."""
+        capture = self.capture()
+        registry = validate_snapshot(capture)
+        holders = key_holders(capture)
+        self.assertEqual(
+            {number for held in holders.values() for number in held["canonical"]},
+            {entry["number"] for entry in registry["entries"] if entry["kind"] != "reference"},
+        )
+        self.assertEqual(
+            {reference["number"] for held in holders.values() for reference in held["references"]},
+            {entry["number"] for entry in registry["entries"] if entry["kind"] == "reference"},
+        )
 
     # 6. Read-back proves the exact bodies and leaves unrelated state intact.
     def test_apply_refuses_when_a_target_moved_since_planning(self):
@@ -368,7 +457,7 @@ class RegenerationSafety(unittest.TestCase):
         runner = RecordingRunner(self.live)
         runner.issues[4]["body"] = task_body("A02", "- #3", notes="moved under us")
         with self.assertRaisesRegex(Exception, "moved since the plan was made"):
-            apply(planned, runner)
+            apply(planned, runner, self.live)
         self.assertEqual(runner.mutations(), [], "no mutation was attempted")
         self.assertIn("moved under us", runner.issues[4]["body"])
 
@@ -377,12 +466,26 @@ class RegenerationSafety(unittest.TestCase):
         runner = RecordingRunner(self.live)
         runner.tamper_after_update = task_body("A02", "- #3", notes="something else landed")
         with self.assertRaisesRegex(Exception, "read-back of #4 does not match"):
-            apply(planned, runner)
+            apply(planned, runner, self.live)
+
+    def test_what_is_written_is_validated_not_only_what_was_computed(self):
+        """A plan file is instructions: editing one into a graph-breaking body is
+        refused against the capture it would be written to, before any mutation."""
+        planned = self.one("A02", task_body("A02", "- #3", notes="regenerated"), task_body("A02", "- #3"))
+        self.assertEqual([mutation["action"] for mutation in planned["mutations"]], ["update"])
+        broken = task_body("A02", "- #999", notes="regenerated")
+        planned["mutations"][0]["body"] = broken
+        planned["mutations"][0]["body_sha256"] = body_hash(broken)
+        runner = RecordingRunner(self.live)
+        with self.assertRaisesRegex(Exception, "would leave the registry invalid"):
+            apply(planned, runner, self.live)
+        self.assertEqual(runner.mutations(), [], "nothing is written")
+        self.assertEqual(runner.issues[4]["body"], task_body("A02", "- #3"))
 
     def test_verify_reports_an_unplanned_modification(self):
         planned = self.one("A02", task_body("A02", "- #3", notes="regenerated"), task_body("A02", "- #3"))
         runner = RecordingRunner(self.live)
-        apply(planned, runner)
+        apply(planned, runner, self.live)
         runner.issues[3]["body"] = task_body("A01", notes="edited without a plan")
         problems = verify(planned, self.live, runner.snapshot())
         self.assertEqual(problems, ["#3 was modified without being planned"])
@@ -390,7 +493,7 @@ class RegenerationSafety(unittest.TestCase):
     def test_verify_reports_a_state_change_and_a_disappearance(self):
         planned = self.one("A02", task_body("A02", "- #3", notes="regenerated"), task_body("A02", "- #3"))
         runner = RecordingRunner(self.live)
-        apply(planned, runner)
+        apply(planned, runner, self.live)
         runner.issues[3]["state"] = "closed"
         del runner.issues[2]
         problems = verify(planned, self.live, runner.snapshot())
@@ -409,7 +512,7 @@ class RegenerationSafety(unittest.TestCase):
     def test_a_dry_run_mutates_nothing(self):
         planned = self.one("A02", task_body("A02", "- #3", notes="regenerated"), task_body("A02", "- #3"))
         runner = RecordingRunner(self.live)
-        report = apply(planned, runner, dry_run=True)
+        report =        apply(planned, runner, self.live, dry_run=True)
         self.assertTrue(report["dry_run"])
         self.assertEqual(runner.calls, [], "a dry run reads and writes nothing")
         self.assertEqual(runner.issues[4]["body"], task_body("A02", "- #3"))

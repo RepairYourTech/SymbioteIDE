@@ -6,7 +6,7 @@ This Python standard-library maintenance tool validates an immutable GitHub REST
 python3 planning/capture_roadmap.py --help
 python3 planning/integrity/validate.py /path/to/issues.json --output /path/to/generated
 python3 planning/integrity/regenerate.py plan --base old.json --live now.json --amendments amendments.json --output plan.json
-python3 planning/integrity/regenerate.py apply --plan plan.json --repository owner/name --dry-run
+python3 planning/integrity/regenerate.py apply --plan plan.json --live now.json --repository owner/name --dry-run
 python3 planning/integrity/test_validate.py
 python3 planning/integrity/test_validate.py --snapshot /path/to/issues.json
 python3 planning/integrity/test_regenerate.py
@@ -56,11 +56,13 @@ python3 planning/integrity/test_source_record.py
 
 It reads and writes nothing; exit status is 0 when every input the compiler read, and every input cargo read to build the binary, is named. The `source-records` job in `Rust contracts` runs it on every pull request after building those two binaries, so a newly unrecorded input class fails the build instead of waiting for an audit; its own tests run with the rest of this directory's in `Roadmap integrity`.
 
-This implements a bounded portion of #470. The registry accounts for every issue a snapshot holds: the counts name each class — master, task, epic, retired, unclassified, reference, program entry and unkeyed — and the suite asserts that those classes sum to `snapshot_issues`, so no issue can disappear into a class the counts do not name. It does **not** read any conversation: scope discovered in discussion is not evidenced by a REST snapshot, so **conversation-to-issue coverage is not certified**, and neither is acceptance completion (`acceptance_items` is only a checkbox inventory). The original bootstrap importer must not be used to overwrite this registry's newer issue authority.
+This implements a bounded portion of #470. The registry accounts for every issue a snapshot holds: the counts name each class — master, task, epic, retired, unclassified, reference, program entry and unkeyed — and the suite asserts that those classes sum to `snapshot_issues`, so no issue can disappear into a class the counts do not name. It does **not** read any conversation: scope discovered in discussion is not evidenced by a REST snapshot, so **conversation-to-issue coverage is not certified** — that reconciliation belongs to **#443**, which owns auditing the live inventory against the accepted discussion, and this tool neither performs nor claims it. Neither is acceptance completion certified (`acceptance_items` is only a checkbox inventory). The original bootstrap importer must not be used to overwrite this registry's newer issue authority.
 
 ## Regeneration
 
-`regenerate.py` owns what happens after validation: regenerating issue bodies from the current registry and accepted amendments. `plan` takes the REST capture the registry was generated from, the current capture and the amendments, builds the intended snapshot under the next free numbers, validates it with the same `validate_snapshot` the registry is checked with, and writes a plan; `apply` performs it through a runner, or prints a unified diff per body and mutates nothing under `--dry-run`. A plan carrying any refusal is never applied.
+`regenerate.py` owns what happens after validation: regenerating issue bodies from the current registry and accepted amendments. `plan` takes the REST capture the registry was generated from, the current capture and the amendments, builds the intended snapshot under the next free numbers, validates it with the same `validate_snapshot` the registry is checked with, and writes a plan; `apply` performs it through a runner, or prints a unified diff per body and mutates nothing under `--dry-run`. A plan carrying any refusal is never applied, and neither is one whose mutations would leave the registry invalid: **what is written is validated against the capture it is written to**, which is why `apply` takes `--live` and why a plan file an operator edited is re-checked rather than trusted.
+
+A key is answered by role, in one place. `key_holders` says which issues a key addresses as work and which historical entries carry it, and both the plan and the verification ask it — a key canonical work carries amends that work even where a superseded entry shares the key (in this registry 80 of 192 reference keys, covering 80 of 261 tasks), and a key *only* a reference entry carries is refused, naming the canonical issue it resolves to. Historical entry bytes are never regenerated.
 
 Each rule is refused by name rather than left to an operator's care:
 
@@ -70,8 +72,11 @@ Each rule is refused by name rather than left to an operator's care:
 - a concurrent edit whose changes overlap the amendment, naming the conflicting lines, with disjoint changes merged three-way;
 - a regenerated bootstrap that would drop a section the live body has, naming the lost sections;
 - a create that would break epic membership;
-- an amendment naming a **reference-only** key, naming the canonical issue that entry resolves to: an alias's history is preserved, so the plan amends the target and leaves those bytes alone;
+- an amendment naming a key **only** a reference entry carries, naming the canonical issue that entry resolves to;
 - an ambiguous create — a lost response, or an issue a human made first — reconciled by reading the key back, with a second ambiguity failing visibly instead of retrying blind;
-- a target that moved after planning, and a read-back whose body is not the intended one.
+- a target that moved after planning, and a read-back whose body is not the intended one;
+- a plan whose mutations would leave the registry invalid, refused before the first mutation.
+
+The suite proves the path over the whole registry rather than over a convenient key: every canonical key in the committed audit capture is planned and required to produce exactly one update, and every reference-only key is required to be refused naming its canonical owner.
 
 `verify` then proves what landed is exactly what was planned and that every issue the plan did not name is byte-identical and in the same state. The rules are exercised through a recording fake, so what the tests prove is the rule and not a transport, and no test reaches the network. Two limits are stated rather than implied: `verify` needs both captures, so the CLI leaves it to an operator who holds them; and validation does not cross-check a reference key against a canonical key, which is why regeneration refuses a reference key itself instead of relying on validation to notice the duplicate.

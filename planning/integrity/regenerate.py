@@ -31,14 +31,22 @@ are refused by name rather than left to an operator's care.
   response, or an issue a human made first — is resolved by reading the key back
   and adopting what is there; a second ambiguity fails visibly instead of trying
   again blind.
-- **A reference-only entry is never regenerated.** An amendment naming a
-  reference key is refused, naming the canonical issue that entry resolves to:
-  a reference entry's whole point is that its history is preserved, so the
-  regenerator amends the canonical target and leaves the entry's bytes alone.
-- **Every mutation is read back.** `apply` re-reads each target immediately
-  before mutating and refuses if it moved since planning, then compares the body
-  hash it reads back with the intended one, and `verify` proves that every issue
-  the plan did not name is byte-identical and in the same state.
+- **A key resolves to the work it addresses, or it is refused.** `key_holders`
+  answers "who carries this key" once, by role, and both the plan and `verify`
+  ask it: an amendment naming a key canonical work carries amends that work, even
+  where a superseded historical entry shares the key — which is how this roadmap
+  keys most of its references — and an amendment naming a key *only* a reference
+  entry carries is refused, naming the canonical issue that entry resolves to.
+  A reference entry's bytes are never regenerated: its whole point is that its
+  history is preserved.
+- **What is written is validated, not only what was computed.** `apply` builds the
+  registry its mutations would leave behind from the capture it is given, validates
+  it with the same `validate_snapshot`, and refuses before the first mutation; the
+  CLI always supplies that capture, so a plan file an operator edited is re-checked
+  rather than trusted. `apply` then re-reads each target immediately before
+  mutating and refuses if it moved since planning, compares the body hash it reads
+  back with the intended one, and `verify` proves that every issue the plan did not
+  name is byte-identical and in the same state.
 
 The module holds no network path of its own. `apply` takes a runner: `CliRunner`
 shells out to `gh api` for an operator — through `apply --dry-run`, which prints
@@ -73,9 +81,61 @@ def headings(body):
     return re.findall(r"(?m)^##[ \t]+(.+?)[ \t]*$", body or "")
 
 
-def key_of(body):
-    """The stable plan key a body carries, canonical or reference."""
-    return marker(body or "", "plan-key") or marker(body or "", "reference-key")
+def label_names(raw):
+    return [x.get("name") if isinstance(x, dict) else x for x in raw.get("labels") or []]
+
+
+def canonical_key_of(raw):
+    """The plan key that identifies this issue as canonical work, or None.
+
+    A reference entry's key is deliberately *not* this: the two roles share a
+    namespace in the issue text, and answering "who carries this key" from one
+    string is what used to make a historical entry look like the work it points
+    at. `key_holders` is the one place that question is answered.
+    """
+    text = authoritative_text(raw.get("body") or "", label_names(raw))
+    return marker(text, "plan-key")
+
+
+def reference_of(raw):
+    """The reference entry this issue is — its key and the canonical issue it
+    resolves to — or None where it is not one."""
+    text = authoritative_text(raw.get("body") or "", label_names(raw))
+    program_entry = marker(text, "program-entry")
+    key = marker(text, "reference-key") or program_entry
+    if not key:
+        return None
+    return {
+        "number": raw["number"],
+        "key": key,
+        "canonical_issue": canonical_owner(text, bool(program_entry)),
+    }
+
+
+def key_holders(snapshot):
+    """Who carries every key a snapshot holds, by role.
+
+    ``canonical`` lists the issues a key addresses as work; ``references`` lists
+    the historical entries that resolve to it. A key in both is ordinary here:
+    the reconciled roadmap keys a superseded entry exactly as the task that
+    supersedes it, and the task is what an amendment addresses.
+    """
+    index = {}
+    for raw in snapshot:
+        if "pull_request" in raw:
+            continue
+        key = canonical_key_of(raw)
+        if key:
+            index.setdefault(key, {"canonical": [], "references": []})["canonical"].append(raw["number"])
+            continue
+        reference = reference_of(raw)
+        if reference:
+            index.setdefault(reference["key"], {"canonical": [], "references": []})["references"].append(reference)
+    return index
+
+
+def holders_of(index, key):
+    return index.get(key, {"canonical": [], "references": []})
 
 
 def revision_of(body):
@@ -143,20 +203,7 @@ def plan(base_snapshot, live_snapshot, amendments):
     """
     base = {raw["number"]: raw for raw in base_snapshot if "pull_request" not in raw}
     live = {raw["number"]: raw for raw in live_snapshot if "pull_request" not in raw}
-    live_by_key, references = {}, {}
-    for number, raw in live.items():
-        text = authoritative_text(raw.get("body") or "", raw.get("labels") or [])
-        key = marker(text, "plan-key")
-        if key:
-            live_by_key.setdefault(key, []).append(number)
-            continue
-        program_entry = marker(text, "program-entry")
-        reference = marker(text, "reference-key") or program_entry
-        if reference:
-            references[reference] = {
-                "number": number,
-                "canonical_issue": canonical_owner(text, bool(program_entry)),
-            }
+    holders = key_holders(live.values())
 
     intended, mutations, refusals = dict(live), [], []
     provisional = max(live, default=0)
@@ -172,18 +219,20 @@ def plan(base_snapshot, live_snapshot, amendments):
             )
             continue
         key = amendment["key"]
-        if key in references:
-            alias = references[key]
+        held = holders_of(holders, key)
+        candidates = held["canonical"]
+        if not candidates and held["references"]:
+            alias = held["references"][0]
             refusals.append(
                 refusal(
-                    "reference-only entries are never regenerated: amend the canonical issue they resolve to",
+                    "a key only a reference entry carries is never regenerated: "
+                    "amend the canonical issue it resolves to",
                     key=key,
                     number=alias["number"],
                     canonical_issue=alias["canonical_issue"],
                 )
             )
             continue
-        candidates = live_by_key.get(key, [])
         if len(candidates) > 1:
             refusals.append(refusal("duplicate live key", key=key, numbers=sorted(candidates)))
             continue
@@ -300,16 +349,50 @@ def created_reading(runner, mutation):
         return None
 
 
-def apply(plan_dict, runner, dry_run=False):
+def intended_snapshot(plan_dict, live):
+    """The registry a plan's mutations would leave behind, built from a capture.
+
+    This is what makes the write path check the same thing the plan path did: an
+    operator's plan file is instructions, and they are validated against the
+    capture they will be applied to before any of them is written.
+    """
+    intended = {raw["number"]: dict(raw) for raw in live if "pull_request" not in raw}
+    for mutation in plan_dict["mutations"]:
+        number = mutation.get("number") or mutation.get("validated_as")
+        if number is None:
+            continue
+        entry = intended.get(number)
+        if entry is None:
+            entry = {
+                "number": number,
+                "title": mutation.get("title", mutation["key"]),
+                "state": "open",
+                "state_reason": None,
+                "updated_at": "",
+                "labels": [{"name": "planning:canonical"}],
+            }
+        intended[number] = dict(entry, body=mutation["body"])
+    return [intended[number] for number in sorted(intended)]
+
+
+def apply(plan_dict, runner, live, dry_run=False):
     """Mutate through the runner, reading back and reporting what landed.
 
-    The runner provides ``read(number)``, ``find(key)``, ``create(title, body)``
-    and ``update(number, body)``. A plan carrying refusals is never applied: that
-    is what planning first is for.
+    The runner provides ``read(number)``, ``find(key)`` — the *canonical* issue
+    carrying that key, or None — ``create(title, body)`` and ``update(number,
+    body)``. A plan carrying refusals is never applied, and neither is one whose
+    mutations would leave the registry invalid: what is written is validated
+    against the capture it is written to, not only what was computed.
     """
     if plan_dict.get("refusals"):
         raise IntegrityError(
             f"plan carries refusals and cannot be applied: {plan_dict['refusals']}"
+        )
+    try:
+        validate_snapshot(intended_snapshot(plan_dict, live))
+    except IntegrityError as exc:
+        raise IntegrityError(
+            f"applying this plan would leave the registry invalid, so nothing is written: {exc}"
         )
     applied = []
     for mutation in plan_dict["mutations"]:
@@ -345,15 +428,27 @@ def apply(plan_dict, runner, dry_run=False):
 
 
 def verify(plan_dict, before, live):
-    """Prove what the plan named landed exactly and that nothing else moved."""
+    """Prove what the plan named landed exactly and that nothing else moved.
+
+    A key is matched against the canonical work that carries it, never against a
+    reference entry: the historical entry shares the key by design and is not the
+    issue the plan named.
+    """
     problems = []
     named = set()
+    holders = key_holders(live)
+    by_number = {raw["number"]: raw for raw in live}
     for mutation in plan_dict["mutations"]:
-        matching = [raw for raw in live if key_of(raw.get("body") or "") == mutation["key"]]
+        matching = holders_of(holders, mutation["key"])["canonical"]
         if len(matching) != 1:
-            problems.append(f"{mutation['key']} is carried by {len(matching)} issues after mutation")
+            problems.append(
+                f"{mutation['key']} is carried by {len(matching)} canonical issues after mutation"
+            )
+            planned = mutation.get("number") or mutation.get("validated_as")
+            if planned is not None:
+                named.add(planned)
             continue
-        raw = matching[0]
+        raw = by_number[matching[0]]
         named.add(raw["number"])
         if body_hash(raw.get("body") or "") != mutation["body_sha256"]:
             problems.append(f"#{raw['number']} does not carry the intended body")
@@ -387,10 +482,12 @@ class CliRunner:
         return self._api(f"repos/{self.repository}/issues/{number}")
 
     def find(self, key):
+        """The canonical issue carrying `key`, or None: a reference entry shares the
+        key by design and is not the issue a create is reconciled against."""
         search = self._api("search/issues", "-f", f"q=repo:{self.repository} {key} in:body")
         for item in search.get("items", []):
-            body = self._api(f"repos/{self.repository}/issues/{item['number']}").get("body") or ""
-            if key_of(body) == key:
+            raw = self._api(f"repos/{self.repository}/issues/{item['number']}")
+            if canonical_key_of(raw) == key:
                 return item["number"]
         return None
 
@@ -436,17 +533,24 @@ def plan_command(parser, arguments):
 
 
 def apply_command(arguments):
+    """Apply a plan file against the capture it will be written to.
+
+    The plan file is instructions an operator may edit; `--live` is the registry
+    those instructions would leave behind, and it is validated before a mutation is
+    attempted.
+    """
     planned = json.loads(arguments.plan.read_text())
+    live = json.loads(arguments.live.read_text())
     runner = CliRunner(arguments.repository)
     if arguments.dry_run:
         for mutation in planned["mutations"]:
             number = mutation.get("number")
             before = runner.read(number).get("body") if number else ""
             print(diff_of(mutation["key"], before, mutation["body"]), end="")
-        report = apply(planned, runner, dry_run=True)
+        report = apply(planned, runner, live, dry_run=True)
         print(json.dumps(report, sort_keys=True), file=sys.stderr)
         return 0
-    report = apply(planned, runner)
+    report = apply(planned, runner, live)
     print(json.dumps(report, sort_keys=True))
     return 0
 
@@ -462,11 +566,10 @@ def main(argv=None):
     applying = commands.add_parser("apply", help="apply a plan through gh api, or --dry-run it")
     applying.add_argument("--plan", required=True, type=Path)
     applying.add_argument("--repository", required=True, help="owner/name the plan's numbers belong to")
+    applying.add_argument("--live", required=True, type=Path,
+                          help="the capture these instructions are applied to, validated before any mutation")
     applying.add_argument("--dry-run", action="store_true", help="print the diff and mutate nothing")
     arguments = parser.parse_args(argv)
     return plan_command(parser, arguments) if arguments.command == "plan" else apply_command(arguments)
-
-
-
 if __name__ == "__main__":
     main()
