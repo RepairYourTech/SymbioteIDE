@@ -352,6 +352,7 @@
   "owners_named": 196,
   "provenance": {
     "artifact": "roadmap-audit-result",
+    "artifact_expires_at": "2026-10-07T19:29:47Z",
     "artifact_run": "https://github.com/RepairYourTech/SymbioteIDE/actions/runs/34155229015",
     "artifact_sha256": "a7612e6c529952bf0bb5e87c90af233b60c8ce4665ec0f049608fa9f780cbf36",
     "audit_issue": 443,

@@ -2,7 +2,7 @@
 
 Generated from a validated snapshot. Ordering does not establish readiness, acceptance coverage, or implementation completion.
 
-Counts: {"epics": 19, "masters": 1, "program_entries": 1, "references": 198, "retired": 0, "snapshot_issues": 466, "tasks": 241, "unclassified": 0, "unkeyed": 6}
+Counts: {"epics": 19, "masters": 1, "program_entries": 1, "references": 198, "retired": 0, "snapshot_issues": 466, "tasks": 241, "unclassified": 4, "unkeyed": 2}
 
 ## Wave 0
 
