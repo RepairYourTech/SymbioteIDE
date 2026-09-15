@@ -77,8 +77,8 @@ This document establishes the prerequisite contract, not a production capability
 | Threat implications | `CN-15`; #191 and #218 own the enforcement evidence |
 | Contradiction audit | `CN-14`; `probe_failures_are_preserved_and_contradictions_rejected` |
 | Applicability review | `CN-15`; `unsupported_platform_never_claims_operating_system_probe_success` |
-| Exact implementation, PR and current-head evidence | the containing issue-linked pull request and its checks |
-| Required review | separate reviewer evidence recorded against #170 |
+| Exact implementation, PR and current-head evidence | the required checks on the pull request's exact head: `contracts`, `source-records`, `closing-keywords`, `offline-validation`, `host-lifetime`, `shell-client-build`, `desktop-workbench` |
+| Required review | a reviewer gate this ledger cannot check; #387 owns the independent review gates and #394 the PR review, findings and approvals |
 | Concrete implementation owners | `CN-23`; #464, #447, #460, #449, #454 and #470 |
 
 These owners are integration obligations, not circular prerequisites of this record.

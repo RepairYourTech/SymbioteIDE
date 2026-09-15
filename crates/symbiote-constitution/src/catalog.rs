@@ -342,7 +342,7 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "CN-16",
         requirement: "#170: work is delivered through the repository's issue, Change Stream, branch, PR, independent review and current-head checks workflow.",
-        statement: "Delivery is issue-linked, and the repository's own guard refuses a closure stated in a commit message or a title, so only a reviewed description closes an issue.",
+        statement: "Delivery is issue-linked, and the repository's own guard refuses a closure stated in a commit message or a title, so a pull-request description is the only channel that can close an issue; whether that description was independently reviewed is a separate gate this layer cannot check.",
         document: &[MATERIAL_MUTATION_ISSUE_LINKED],
         forbidden: &[],
         tests: &[
@@ -350,7 +350,7 @@ pub const INVARIANTS: &[Invariant] = &[
             "planning/integrity/test_closing_keywords.py::test_a_landed_title_citing_an_issue_number_passes",
         ],
         facts: &[],
-        owners: &[],
+        owners: &[387, 394],
     },
     Invariant {
         id: "CN-17",
@@ -432,7 +432,7 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "CN-22",
         requirement: "The constitution's own record: #170's named coverage is accounted for, each by the machine check that runs it or the canonical issue that owns the integration.",
-        statement: "The document states that its named coverage is accounted for, and that pending runtime checks are pending rather than passed.",
+        statement: "The document states that its named coverage is accounted for, and every row of its coverage map names the check that runs it or a canonical issue that owns it; pending runtime checks are pending rather than passed.",
         document: &[
             "This section accounts for every coverage item #170 named as open",
             RUNTIME_CHECKS_REMAIN_PENDING,
@@ -440,6 +440,7 @@ pub const INVARIANTS: &[Invariant] = &[
         forbidden: &[],
         tests: &[
             "crates/symbiote-constitution/tests/conformance.rs::the_coverage_map_names_every_invariant_and_owner",
+            "crates/symbiote-constitution/tests/conformance.rs::every_coverage_row_names_a_check_or_an_owner",
         ],
         facts: &[],
         owners: &[36, 173, 38, 470],
