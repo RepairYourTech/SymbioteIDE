@@ -1,0 +1,425 @@
+{
+  "atoms_without_acceptance_items": [],
+  "families": [
+    {
+      "family": "Firm identity; native/external control-plane separation",
+      "owners": [
+        170,
+        36,
+        464,
+        184
+      ]
+    },
+    {
+      "family": "Projects/multi-root/portable manifests/per-client switching",
+      "owners": [
+        176,
+        177,
+        178,
+        179,
+        271
+      ]
+    },
+    {
+      "family": "Index placement and resource-aware pause/resume",
+      "owners": [
+        219,
+        220,
+        239,
+        272
+      ]
+    },
+    {
+      "family": "Role staffing, deterministic routing and user-authorized fallback",
+      "owners": [
+        200,
+        202,
+        203,
+        204,
+        229,
+        420
+      ]
+    },
+    {
+      "family": "Native configuration/profiles/ownership/compatibility/MCP/skills/hooks",
+      "owners": [
+        184,
+        187,
+        188,
+        59,
+        214,
+        215,
+        216,
+        265,
+        266,
+        267,
+        268,
+        269
+      ]
+    },
+    {
+      "family": "Canonical tasks/events/workforce contracts/artifacts/handoffs",
+      "owners": [
+        189,
+        94,
+        95,
+        201,
+        205,
+        206,
+        207,
+        208,
+        209,
+        230,
+        231,
+        322
+      ]
+    },
+    {
+      "family": "System Graph structural/runtime/Git/contracts/infra/traceability",
+      "owners": [
+        232,
+        233,
+        234,
+        235,
+        236,
+        237,
+        238,
+        239,
+        323,
+        324,
+        325,
+        326,
+        327
+      ]
+    },
+    {
+      "family": "Hybrid retrieval, budgets, JIT and honest context visibility",
+      "owners": [
+        240,
+        241,
+        242,
+        243,
+        244,
+        328,
+        329
+      ]
+    },
+    {
+      "family": "Blast radius/dead code/affected tests/graph policies/Impact Closure",
+      "owners": [
+        330,
+        331,
+        332,
+        379,
+        381,
+        383
+      ]
+    },
+    {
+      "family": "Deep Guidance/CFSA breadth-first discovery/personas/crosscuts",
+      "owners": [
+        245,
+        246,
+        247,
+        248,
+        250,
+        251,
+        333,
+        334
+      ]
+    },
+    {
+      "family": "Competitor research: Orca/Traycer artifacts/BridgeMind/T3 and atomic gaps",
+      "owners": [
+        171,
+        172,
+        249
+      ]
+    },
+    {
+      "family": "Decision locking/ambiguity/adversarial audits/remediation/fresh re-audit",
+      "owners": [
+        252,
+        253,
+        254,
+        255,
+        256
+      ]
+    },
+    {
+      "family": "Hosting/distribution/CI/CD cost/operations/rollback design",
+      "owners": [
+        257,
+        258,
+        259,
+        260,
+        261,
+        262,
+        263
+      ]
+    },
+    {
+      "family": "Capability not slice completeness/current-evidence delivery",
+      "owners": [
+        264,
+        335,
+        385,
+        387,
+        422,
+        120
+      ]
+    },
+    {
+      "family": "Floating chat/voice/hybrid/editor/tree/terminals/agent floor",
+      "owners": [
+        337,
+        338,
+        339,
+        341,
+        343,
+        346,
+        347,
+        349,
+        351,
+        358
+      ]
+    },
+    {
+      "family": "Preview as design aid/DOM-source visual edits/annotations",
+      "owners": [
+        353,
+        354,
+        388,
+        390
+      ]
+    },
+    {
+      "family": "Artifact and graph workspaces/versioned review",
+      "owners": [
+        356,
+        392,
+        209,
+        230,
+        231,
+        322
+      ]
+    },
+    {
+      "family": "GitHub issue-first/PR/Actions/independent review/merge",
+      "owners": [
+        190,
+        212,
+        213,
+        361,
+        363,
+        394,
+        424,
+        426,
+        396,
+        365
+      ]
+    },
+    {
+      "family": "Change Stream isolation/semantic collision/speculative integration",
+      "owners": [
+        211,
+        360,
+        442,
+        381,
+        424,
+        273
+      ]
+    },
+    {
+      "family": "Living developer+user docs, by construction/reconstruction/comment hygiene",
+      "owners": [
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34
+      ]
+    },
+    {
+      "family": "Host/Fabric/typed protocol/CLI/mobile/secure Link",
+      "owners": [
+        180,
+        181,
+        182,
+        183,
+        193,
+        221,
+        222,
+        54,
+        314,
+        397,
+        399,
+        401,
+        402,
+        405,
+        407,
+        409,
+        411,
+        412,
+        414,
+        428,
+        429,
+        147,
+        148,
+        152
+      ]
+    },
+    {
+      "family": "Native Symbiote Agent / provider adapters / standalone CLI",
+      "owners": [
+        464,
+        471,
+        465,
+        466,
+        467,
+        468,
+        469
+      ]
+    },
+    {
+      "family": "Allowed auth and entitlement/billing separation",
+      "owners": [
+        447,
+        448,
+        186,
+        217,
+        369
+      ]
+    },
+    {
+      "family": "Long goals and nested models/efforts/Ultra/delegation",
+      "owners": [
+        460,
+        461,
+        462,
+        463
+      ]
+    },
+    {
+      "family": "Opt-in project/client methods/learning/experiments/rollback",
+      "owners": [
+        449,
+        450,
+        451,
+        452,
+        453,
+        419
+      ]
+    },
+    {
+      "family": "Global/project/task observability/analytics/cost/gains",
+      "owners": [
+        454,
+        455,
+        456,
+        457,
+        458,
+        459,
+        374,
+        375,
+        420
+      ]
+    },
+    {
+      "family": "Security, continuous diagnostics, crash/backup/release conformance",
+      "owners": [
+        191,
+        218,
+        270,
+        370,
+        372,
+        430,
+        434,
+        435
+      ]
+    },
+    {
+      "family": "Canonical roadmap/dependency integrity/importer protection",
+      "owners": [
+        470,
+        443
+      ]
+    }
+  ],
+  "families_count": 28,
+  "owners_named": 196,
+  "provenance": {
+    "artifact": "roadmap-audit-result",
+    "artifact_run": "https://github.com/RepairYourTech/SymbioteIDE/actions/runs/34155229015",
+    "artifact_sha256": "a7612e6c529952bf0bb5e87c90af233b60c8ce4665ec0f049608fa9f780cbf36",
+    "audit_issue": 443,
+    "audited_totals": {
+      "atoms": 241,
+      "edges": 702,
+      "epics": 19,
+      "references": 198
+    },
+    "matrix": "fixtures/audit-2026-09-07-coverage.md",
+    "matrix_sha256": "1e86040cf4d0142c10eb10aadaa66b3daffcc370c451075e27fc2d9699b7b116",
+    "revision": "2026-09-07-v2.4"
+  },
+  "schema_version": 1,
+  "scope": "accepted-decision coverage of the canonical roadmap; not implementation conformance",
+  "totals": {
+    "atoms": 241,
+    "edges": 702,
+    "epics": 19,
+    "references": 198
+  },
+  "unclaimed_atoms": [
+    38,
+    43,
+    74,
+    76,
+    77,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    173,
+    174,
+    175,
+    185,
+    192,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    210,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    315,
+    316,
+    317,
+    318,
+    319,
+    320,
+    321,
+    336,
+    367,
+    417,
+    431,
+    432,
+    433
+  ]
+}
