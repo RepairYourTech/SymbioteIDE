@@ -361,4 +361,41 @@ pub const INVARIANTS: &[Invariant] = &[
         facts: &[],
         owners: &[36, 173, 38, 470],
     },
+    Invariant {
+        id: "CN-23",
+        requirement: "#170 additional acceptance: follow #464, #447, #460, #449, #454 and #470 as concrete implementation owners; the references are not circular prerequisites of this foundational schema.",
+        statement: "This record names those owners and routes the work to them; whether their integrations exist is theirs to prove, so the check this layer can make is that the routing is present and complete.",
+        document: &[
+            "#464, #447, #460, #449, #454 and #470",
+            "These owners are integration obligations, not circular prerequisites of this record.",
+        ],
+        forbidden: &[],
+        tests: &["crates/symbiote-constitution/tests/conformance.rs::the_routed_owners_are_named_by_the_record"],
+        facts: &[],
+        owners: &[464, 447, 460, 449, 454, 470],
+    },
+    Invariant {
+        id: "CN-24",
+        requirement: "#170 non-negotiable constraint: follow the product constitution and applicable Project, Role and Host policies.",
+        statement: "A specification or implementation obeys the constitution and the policies of its Project, Role and Host, and no caller can override a policy it does not name.",
+        document: &["Every specification, issue, adapter, workforce binding, documentation subsystem and implementation obeys this constitution and the applicable Project, Role and Host policies."],
+        forbidden: &[],
+        tests: &[
+            "crates/symbiote-host/src/bin/symbiote/tests.rs::authorization_follows_the_operation_not_the_command_name",
+            "crates/symbiote-host/src/bin/symbiote/tests.rs::a_private_policy_authorizes_exactly_the_dangerous_kinds_it_names",
+        ],
+        facts: &[],
+        owners: &[],
+    },
 ];
+
+/// Why an invariant has no executable binding at this layer, for the entries
+/// that have none. The conformance suite requires every invariant without a
+/// `tests` or `facts` channel to appear here, and every entry here to name such
+/// an invariant, so a future entry cannot arrive with nothing to run and no
+/// stated reason — and a reason cannot be used as a crutch by an entry that has
+/// an executable check.
+pub const EXPLANATIONS: &[(&str, &str)] = &[(
+    "CN-21",
+    "documentation authority is a rule about documents, and no executable artifact in this workspace can certify that a document is not authoritative; the clause checks are the strongest evidence this layer can produce.",
+)];

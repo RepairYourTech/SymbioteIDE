@@ -14,16 +14,21 @@
 //!   whatever a later run finds on disk.
 //! * **repository** — a fact of the tree itself, such as the absence of an
 //!   Electron dependency or the workspace-wide `unsafe_code = "forbid"` lint.
-//! * **test** — a named test in this workspace that must exist, carry `#[test]`
-//!   (or `def` for the Python maintenance suites), and not be `#[ignore]`d. The
-//!   workspace test run executes it; the binding is what keeps the ledger from
-//!   drifting away from the test it points at.
+//! * **test** — a named test in this workspace that must be a check the harness
+//!   actually compiles and runs, carry `#[test]` (or `def` for the Python
+//!   maintenance suites), and not be `#[ignore]`d. [`Harness`] reads cargo's own
+//!   target list and the workflow's discovery patterns, so a binding cannot
+//!   cite a file the harness never compiles.
 //!
 //! [`evaluate`] produces the per-invariant report that is published as evidence
-//! against the issue. Where an invariant is an integration obligation owned by
-//! another canonical issue, the record names that owner instead of claiming a
-//! behavior this change does not implement.
+//! against the issue, committed under [`REPORT_PATH`] and diffed against a fresh
+//! run so the record cannot drift from the tree. Where an invariant is an
+//! integration obligation owned by another canonical issue, the record names
+//! that owner instead of claiming a behavior this change does not implement.
 
+mod harness;
+
+pub use harness::Harness;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -122,12 +127,16 @@ pub struct Report {
 }
 
 /// The workspace root, derived from this crate's manifest so a test or example
-/// never depends on the process's current directory.
+/// never depends on the process's current directory. It is resolved through the
+/// filesystem, because the manifest directory reaches it through `..` and a
+/// path that still holds those components does not compare equal to the
+/// absolute paths cargo reports.
 pub fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    root.canonicalize().unwrap_or(root)
 }
 
-fn pass(channel: &'static str, subject: String, detail: &str) -> Outcome {
+pub(crate) fn pass(channel: &'static str, subject: String, detail: &str) -> Outcome {
     Outcome {
         channel,
         subject,
@@ -136,7 +145,7 @@ fn pass(channel: &'static str, subject: String, detail: &str) -> Outcome {
     }
 }
 
-fn fail(channel: &'static str, subject: String, detail: &str) -> Outcome {
+pub(crate) fn fail(channel: &'static str, subject: String, detail: &str) -> Outcome {
     Outcome {
         channel,
         subject,
@@ -182,74 +191,14 @@ pub fn repository_outcomes(invariant: &Invariant, root: &Path) -> Vec<Outcome> {
         .collect()
 }
 
-/// The named tests an invariant declares, checked for existence and for being
-/// run rather than skipped.
-pub fn test_outcomes(invariant: &Invariant, root: &Path) -> Vec<Outcome> {
+/// The named tests an invariant declares, checked against what the harness
+/// actually compiles and runs rather than against the file's shape alone.
+pub fn test_outcomes(invariant: &Invariant, harness: &Harness) -> Vec<Outcome> {
     invariant
         .tests
         .iter()
-        .map(|binding| binding_outcome(root, binding))
+        .map(|binding| harness.outcome(binding))
         .collect()
-}
-
-/// Check one `relative/path::name` test binding.
-pub fn binding_outcome(root: &Path, binding: &str) -> Outcome {
-    let subject = binding.to_string();
-    let Some((path, name)) = binding.rsplit_once("::") else {
-        return fail("test", subject, "binding is not `path::test_name`");
-    };
-    let Ok(source) = std::fs::read_to_string(root.join(path)) else {
-        return fail("test", subject, "the named test file does not exist");
-    };
-    let python = path.ends_with(".py");
-    let needle = if python {
-        format!("def {name}(")
-    } else {
-        format!("fn {name}(")
-    };
-    let Some(at) = source.find(&needle) else {
-        return fail(
-            "test",
-            subject,
-            "no test by that name in the named file, so the evidence moved",
-        );
-    };
-    let line_start = source[..at].rfind('\n').map_or(0, |end| end + 1);
-    let attributes = attribute_block(&source[..line_start]);
-    if !python && !attributes.contains("#[test]") {
-        return fail(
-            "test",
-            subject,
-            "the named item is not a test: no #[test] attribute",
-        );
-    }
-    if attributes.contains("#[ignore") || attributes.contains("@unittest.skip") {
-        return fail(
-            "test",
-            subject,
-            "the named test is skipped, and a skipped check is not evidence",
-        );
-    }
-    pass("test", subject, "exists and runs with the workspace tests")
-}
-
-/// The contiguous attribute/doc-comment block directly above an item, read so a
-/// skipped or non-test item cannot be passed off as evidence.
-fn attribute_block(before: &str) -> String {
-    let mut block = Vec::new();
-    for line in before.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("#[")
-            || trimmed.starts_with("///")
-            || trimmed.starts_with("//!")
-            || trimmed.starts_with('@')
-        {
-            block.push(trimmed);
-        } else {
-            break;
-        }
-    }
-    block.join("\n")
 }
 
 /// Evaluate one repository fact, so a test can also assert it directly.
@@ -464,14 +413,28 @@ fn walk(dir: &Path, visit: &mut impl FnMut(&Path)) {
 }
 
 /// Evaluate every invariant against the embedded constitution and the tree.
+///
+/// The harness is discovered once, from cargo and the workflow's own patterns.
+/// A harness that cannot be discovered fails every `test` channel with the
+/// reason rather than reporting a channel that was never checked: an appraiser
+/// with nothing to compare against has not passed the apprisal.
 pub fn evaluate(root: &Path) -> Report {
     let mut invariants = Vec::with_capacity(INVARIANTS.len());
     let mut failures = Vec::new();
     let mut checked = 0;
+    let harness = Harness::discover(root);
     for invariant in INVARIANTS {
         let mut outcomes = document_outcomes(invariant, CONSTITUTION);
         outcomes.extend(repository_outcomes(invariant, root));
-        outcomes.extend(test_outcomes(invariant, root));
+        match &harness {
+            Ok(harness) => outcomes.extend(test_outcomes(invariant, harness)),
+            Err(error) => outcomes.extend(
+                invariant
+                    .tests
+                    .iter()
+                    .map(|binding| fail("test", binding.to_string(), error)),
+            ),
+        }
         checked += outcomes.len();
         for outcome in outcomes.iter().filter(|outcome| !outcome.ok) {
             let mut line = String::new();
@@ -501,6 +464,24 @@ pub fn evaluate(root: &Path) -> Report {
 /// report covers the whole catalog rather than a subset.
 pub fn identifiers() -> BTreeSet<&'static str> {
     INVARIANTS.iter().map(|invariant| invariant.id).collect()
+}
+
+/// Where the report is committed, relative to the workspace root. The example
+/// writes it and the conformance suite diffs it, so the record on the issue
+/// cannot diverge from the tree that produced it.
+pub const REPORT_PATH: &str = "docs/contracts/constitution-report.json";
+
+/// The report exactly as the committed artifact spells it, so the example that
+/// regenerates it and the test that diffs it agree byte for byte.
+pub fn report_to_json(report: &Report) -> String {
+    let mut json = serde_json::to_string_pretty(report).expect("report serialization");
+    json.push('\n');
+    json
+}
+
+/// Evaluate the tree and render the report in the committed encoding.
+pub fn report_json(root: &Path) -> String {
+    report_to_json(&evaluate(root))
 }
 
 include!("catalog.rs");
