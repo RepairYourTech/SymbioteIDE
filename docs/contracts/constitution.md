@@ -9,8 +9,8 @@ The invariant catalog is `INVARIANTS` in `crates/symbiote-constitution/src/catal
 Each concern has one owner, and a channel never depends on another channel:
 
 - `catalog.rs` — the inventory and nothing else: `Fact`, `Invariant`, `INVARIANTS` and `EXPLANATIONS`, plus the normative sentences the constitution states once and more than one invariant depends on, held in one constant each so no clause has two owners.
-- `document.rs` — the document channel, and the embedded constitution it reads.
-- `repository.rs` — the repository channel: the tree walk, the manifest key heuristics, and the four facts.
+- `document.rs` — the document channel, the embedded constitution it reads, and the coverage map parsed out of it.
+- `repository.rs` — the repository channel: the tree walk, the manifest key heuristics, the four facts, and the checks this tree provides, which a coverage row's check names resolve against.
 - `harness.rs` — the test channel: what cargo and the maintenance suites actually compile and run.
 - `report.rs` — the verdict vocabulary (`Outcome`, `Coverage`, `Report`), the assembly of the three channels in `evaluate`, and the committed encoding.
 - `lib.rs` — the crate documentation, the module map, the re-exports, and the workspace root the tests and example locate from.
@@ -27,6 +27,16 @@ The channels depend on `report` for `Outcome` and never on one another, so a cha
 
 The rule this enforces is narrow and deliberate: `tests/fixtures/not_evidence.rs` holds a plain `#[test]` that carries no `#[ignore]`, and a binding to it is refused because cargo never compiles it. Under the earlier rule, which checked only for the attribute, that binding passed.
 
+## The coverage map accounts for itself
+
+The constitution's coverage map — the table saying what accounts for each item #170 named — is checked rather than trusted. `document::coverage_rows` parses its rows out of the embedded text, and `document::accounts_for(row, is_known_check)` requires **every** check a row names to resolve: citing one real check beside an invented one is not accounting for the row, so a name merely shaped like a check is refused.
+
+The resolver is `repository::Checks`, which reads the tree rather than inventing a second reading of it — the job names the workflows define (a key indented one level under `jobs:`), the invariant ids the ledger defines, and the paths and test names of the bindings `harness` has already proved are compiled and run. As everywhere else in this crate, a read that finds nothing is a failure rather than a pass: a resolver that finds no workflow job fails instead of resolving nothing.
+
+An owner is an issue reference other than `RECORDED_ISSUE`, because naming the issue being accounted for is the claim itself rather than an owner of it. **What this does not verify**: an issue number cannot be resolved offline, so the owner half proves only that a row names some issue other than #170. Whether that issue owns the work is a human judgement recorded in the map, not something this ledger checks. The row for the reviewer gate says exactly that and routes it to #387 and #394 rather than asserting evidence that does not exist.
+
+The rule is enforced as a test channel of `CN-22`, so `every_coverage_row_names_a_check_or_an_owner` and `a_row_citing_a_check_this_repository_does_not_run_is_refused` appear in the report as evidence and fail a build like any other channel.
+
 ## Evidence and reproduction
 
 ```sh
@@ -38,7 +48,7 @@ cargo run -p symbiote-constitution --example constitution_report -- --check  # r
 
 The per-invariant report is a generated artifact guarded the way this repository guards its other generated artifacts: it is committed at [`docs/contracts/constitution-report.json`](constitution-report.json), the example regenerates or checks it, and `the_committed_report_is_what_the_tree_emits` diffs the committed encoding against a fresh run and names the first differing line. Any failed channel — or drift under `--check` — exits non-zero, so the example gates a build as well as producing the evidence published against the issue.
 
-The suite's own tests are the evidence that the channels are not vacuous. `a_weakened_constitution_is_refused` removes one normative sentence and requires the invariant that carries it to fail. `a_forbidden_authorization_is_refused` appends an authorization and requires the non-goals to fail. `a_binding_the_harness_does_not_run_is_refused` hands the harness a test in a file cargo never compiles, a skipped test, a helper that is not a test, an unknown name, a missing file, a non-test script under a discovered suite, and malformed syntax, and requires all seven to be refused while a target test, a `mod`-reached unit test and a discovered suite test are accepted. `an_invariant_with_no_executable_check_states_why` requires every invariant to have a document clause or an executable check, and every invariant without one to appear in `EXPLANATIONS` with a stated reason — in both directions, so a reason cannot become a crutch for an entry that does have a check. `the_routed_owners_are_named_by_the_record` requires the owners `#170` routes (`CN-23`) to appear in the ledger's routing.
+The suite's own tests are the evidence that the channels are not vacuous. `a_weakened_constitution_is_refused` removes one normative sentence and requires the invariant that carries it to fail. `a_forbidden_authorization_is_refused` appends an authorization and requires the non-goals to fail. `a_binding_the_harness_does_not_run_is_refused` hands the harness a test in a file cargo never compiles, a skipped test, a helper that is not a test, an unknown name, a missing file, a non-test script under a discovered suite, and malformed syntax, and requires all seven to be refused while a target test, a `mod`-reached unit test and a discovered suite test are accepted. `an_invariant_with_no_executable_check_states_why` requires every invariant to have a document clause or an executable check, and every invariant without one to appear in `EXPLANATIONS` with a stated reason — in both directions, so a reason cannot become a crutch for an entry that does have a check. `the_routed_owners_are_named_by_the_record` requires the owners `#170` routes (`CN-23`) to appear in the ledger's routing. `every_coverage_row_names_a_check_or_an_owner` requires every row of the coverage map to cite a check this repository actually runs or an issue other than the one being accounted for, and `a_row_citing_a_check_this_repository_does_not_run_is_refused` proves the resolution bites: renaming a job in the map fails the first test by name.
 
 ## Boundary and remaining acceptance
 

@@ -5,8 +5,9 @@
 //! rather than passes when it finds nothing to read: `no manifest was found to
 //! check` is not the same finding as `no manifest declares Electron`.
 
-use crate::catalog::{Fact, Invariant};
+use crate::catalog::{Fact, INVARIANTS, Invariant};
 use crate::report::Outcome;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// The repository facts an invariant declares.
@@ -197,6 +198,112 @@ fn strict_typescript(root: &Path) -> (bool, String) {
         true,
         "the workbench is strict TypeScript and type-checks".into(),
     )
+}
+
+/// The checks this repository actually runs, as a coverage row may cite them.
+///
+/// A row's check half is only evidence if what it names exists here, so the
+/// names come from the tree and the ledger rather than from the sentence: the
+/// jobs the workflows define, the invariants the ledger defines, and the paths
+/// and test names of the bindings the ledger claims the harness runs. That last
+/// part is not circular — `harness` proves those bindings are compiled and run,
+/// and `document` uses that answer here.
+///
+/// What this cannot resolve is an issue reference: there is no network in this
+/// check, so an owner such as `#387` is verified only as being an issue other
+/// than the one being accounted for. Whether the named issue owns the work is a
+/// judgement recorded in the map, not something this ledger verifies.
+#[derive(Debug, Default)]
+pub struct Checks {
+    names: BTreeSet<String>,
+}
+
+impl Checks {
+    /// Every check this tree provides.
+    ///
+    /// Fails rather than passing when the workflows cannot be read: a resolver
+    /// with nothing to resolve against has not resolved anything, which is the
+    /// same failure mode the facts refuse.
+    pub fn read(root: &Path) -> Result<Self, String> {
+        let mut names = workflow_jobs(root);
+        if names.is_empty() {
+            return Err("no workflow job was found to resolve against".into());
+        }
+        for invariant in INVARIANTS {
+            names.insert(invariant.id.to_string());
+            for binding in invariant.tests {
+                if let Some((path, name)) = binding.split_once("::") {
+                    names.insert(path.to_string());
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        Ok(Self { names })
+    }
+
+    /// Whether this repository provides the named check.
+    pub fn knows(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+}
+
+/// The job names the workflows define: a key indented one level under a
+/// top-level `jobs:` block, which is the shape every workflow here uses.
+fn workflow_jobs(root: &Path) -> BTreeSet<String> {
+    let mut jobs = BTreeSet::new();
+    let Ok(entries) = std::fs::read_dir(root.join(".github/workflows")) else {
+        return jobs;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
+        .collect();
+    files.sort();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let mut in_jobs = false;
+        for line in text.lines() {
+            if line.starts_with("jobs:") {
+                in_jobs = true;
+                continue;
+            }
+            if !in_jobs {
+                continue;
+            }
+            // A blank line separates jobs rather than ending the block.
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Some(under_jobs) = line.strip_prefix("  ") else {
+                in_jobs = false;
+                continue;
+            };
+            // Only the job keys themselves, not the keys inside a job.
+            if under_jobs.starts_with(' ') {
+                continue;
+            }
+            let Some((key, _)) = under_jobs.split_once(':') else {
+                continue;
+            };
+            let key = key.trim();
+            if !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                jobs.insert(key.to_string());
+            }
+        }
+    }
+    jobs
 }
 
 /// A bounded, deterministic walk that skips build output, dependency caches and
