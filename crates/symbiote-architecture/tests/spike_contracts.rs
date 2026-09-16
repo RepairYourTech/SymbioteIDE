@@ -22,7 +22,9 @@ const ADR: &str = "docs/architecture/adr-0001-technology-direction.md";
 const ID: &str = "TEST/SHELL";
 const CONTRACT: &str = "TEST/SHELL-CONTRACT";
 const RESULTS: &str = "docs/proofs/results/desktop-shell.json";
+const RAW: &str = "docs/proofs/evidence/desktop-shell/run-1.log";
 const SHELL_CONTRACT: &str = "#38/desktop-shell-representative-workload";
+const OBLIGATION: &str = "#38: four concurrent agent streams";
 
 fn root() -> PathBuf {
     workspace_root()
@@ -45,6 +47,15 @@ fn real_problems() -> Vec<Problem> {
         &root(),
         NOW,
     )
+}
+
+/// Whether a refusal says this, with every refusal printed when none does.
+#[track_caller]
+fn refused(found: &[Problem], needle: &str) {
+    assert!(
+        found.iter().any(|problem| problem.detail.contains(needle)),
+        "no refusal mentions {needle:?}: {found:?}"
+    );
 }
 
 #[test]
@@ -117,6 +128,21 @@ fn every_obligation_belongs_to_an_issue_the_choice_owns() {
         cited.insert(tag.to_string());
     }
     assert!(cited.contains("#38"));
+    for recorded in [
+        "the commit it was built from",
+        "the platform and version it exercised",
+        "the hardware it ran on",
+        "the contract fingerprint",
+        "the obligations it exercised",
+        "its raw artifacts",
+        "the failures it saw",
+    ] {
+        assert!(
+            contract.method.contains(recorded),
+            "the method a run is measured by must name {recorded:?}, which the result has to carry: {}",
+            contract.method
+        );
+    }
     assert!(contract.cleanup.contains("no user-display use"));
 }
 
@@ -128,7 +154,7 @@ fn a_contract_that_settles_a_decision_the_ledger_does_not_hold_is_refused() {
     let found = fixture.problems();
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].subject, format!("contract {CONTRACT}"));
-    assert!(found[0].detail.contains("TEST/UNKNOWN"));
+    refused(&found, "TEST/UNKNOWN");
 }
 
 #[test]
@@ -138,11 +164,7 @@ fn a_choice_whose_contract_does_not_name_it_back_is_refused() {
     let fixture = Fixture::new(value, vec![fixture_contract()], None);
     let found = fixture.problems();
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(
-        found[0]
-            .detail
-            .contains("does not name this contract as its proof")
-    );
+    refused(&found, "does not name this contract as its proof");
 }
 
 #[test]
@@ -151,19 +173,19 @@ fn a_choice_naming_a_contract_the_repository_does_not_hold_is_refused() {
     let found = fixture.problems();
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].subject, format!("{ID}: proof contract"));
-    assert!(found[0].detail.contains("does not hold"));
+    refused(&found, "does not hold");
 }
 
 #[test]
 fn an_obligation_naming_no_owned_clause_is_refused() {
     let mut contract = fixture_contract();
-    contract["workload"] = json!(["#38: four concurrent agent streams", "no clause at all"]);
+    contract["workload"] = json!([OBLIGATION, "no clause at all"]);
     let fixture = Fixture::new(fixture_ledger(), vec![contract], None);
     let found = fixture.problems();
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found[0].detail.contains("no clause at all"));
-    assert!(found[0].detail.contains("names no clause of TEST/SHELL"));
-    assert!(found[0].detail.contains("so nothing owns it"));
+    refused(&found, "no clause at all");
+    refused(&found, "names no clause of TEST/SHELL");
+    refused(&found, "so nothing owns it");
 }
 
 #[test]
@@ -173,7 +195,7 @@ fn an_issue_the_choice_names_that_no_obligation_addresses_is_refused() {
     let fixture = Fixture::new(value, vec![fixture_contract()], None);
     let found = fixture.problems();
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found[0].detail.contains("addresses no obligation to #233"));
+    refused(&found, "addresses no obligation to #233");
 }
 
 #[test]
@@ -186,21 +208,28 @@ fn a_decided_choice_with_no_run_is_refused() {
             .iter()
             .all(|problem| problem.subject.starts_with("contract"))
     );
-    assert!(
-        found
-            .iter()
-            .any(|problem| problem.detail.contains("no run settles it"))
-    );
-    assert!(found.iter().any(|problem| {
-        problem
-            .detail
-            .contains("does not cite it as its own evidence")
-    }));
+    refused(&found, "no run settles it");
+    refused(&found, "does not cite it as its own evidence");
+}
+
+#[test]
+fn a_decided_choice_that_does_not_cite_its_own_run_is_refused() {
+    let found = Fixture::new(
+        accepted_ledger(),
+        vec![fixture_contract()],
+        Some(results_value(json!([run_value(observations())]))),
+    )
+    .problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "does not cite it as its own evidence");
 }
 
 #[test]
 fn a_partial_run_is_recorded_without_settling_the_choice() {
-    let mut results = results_value(json!([]));
+    let mut run = run_value(json!([]));
+    run["exercised"] = json!([]);
+    run["artifacts"] = json!([]);
+    let mut results = results_value(json!([run]));
     results["untested_platforms"] = json!(["windows-11"]);
     let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], Some(results));
     assert_eq!(
@@ -211,162 +240,243 @@ fn a_partial_run_is_recorded_without_settling_the_choice() {
 }
 
 #[test]
-fn a_run_that_ends_on_a_stop_condition_does_not_settle_the_choice() {
-    let mut results =
-        results_value(json!([{ "measurement": "cold_start_seconds", "observed": 2.0 }]));
-    results["outcome"] = json!("stop_condition_triggered");
-    results["stop_condition"] = json!("a native command was allowed from Preview");
-    let fixture = Fixture::new(accepted_ledger(), vec![fixture_contract()], Some(results));
-    let found = fixture.problems();
-    assert!(found.iter().any(|problem| {
-        problem
-            .detail
-            .contains("ended on a stop condition: a native command was allowed from Preview")
-    }));
-    assert!(
-        found
-            .iter()
-            .any(|problem| problem.detail.contains("does not settle the choice"))
+fn a_result_that_records_no_run_does_not_settle_the_choice() {
+    let found = settled(json!([])).problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "records no run, so nothing has been measured");
+}
+
+#[test]
+fn a_run_that_names_no_revision_does_not_settle_the_choice() {
+    let found = settled_run(|run| run["commit"] = json!("unknown"));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "names no revision");
+    refused(&found, "\"unknown\" is not a commit hash");
+}
+
+#[test]
+fn a_run_that_names_no_platform_does_not_settle_the_choice() {
+    let found = settled_run(|run| run["platform"] = json!(""));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "a run names no platform, so nothing says where it was measured",
     );
+}
+
+#[test]
+fn a_run_that_names_no_platform_version_does_not_settle_the_choice() {
+    let found = settled_run(|run| run["version"] = json!("  "));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "records no platform version, so its platform is unpinned",
+    );
+}
+
+#[test]
+fn a_run_that_names_no_hardware_does_not_settle_the_choice() {
+    let found = settled_run(|run| run["hardware"] = json!(""));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "records no hardware, so its figures carry no reference configuration",
+    );
+}
+
+#[test]
+fn a_run_that_exercises_part_of_the_workload_does_not_settle_the_choice() {
+    let found = settled_run(|run| run["exercised"] = json!([]));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "does not attest");
+    refused(&found, "which the contract's workload declares");
+}
+
+#[test]
+fn a_run_that_attests_an_obligation_the_contract_never_declared_is_refused() {
+    let found = settled_run(|run| {
+        run["exercised"] = json!([OBLIGATION, "#38: a workload nobody declared"])
+    });
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "attests \"#38: a workload nobody declared\", which the contract's workload never declares",
+    );
+}
+
+#[test]
+fn a_settlement_on_a_run_that_published_nothing_is_refused() {
+    let found = settled_run(|run| run["artifacts"] = json!([]));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "publishes no raw artifact, so nothing stands behind its figures",
+    );
+}
+
+#[test]
+fn a_run_that_lists_the_platform_it_exercised_as_untested_is_refused() {
+    let mut results = results_value(json!([run_value(observations())]));
+    results["untested_platforms"] = json!(["linux-wayland"]);
+    let found = Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![fixture_contract()],
+        Some(results),
+    )
+    .problems();
+    refused(
+        &found,
+        "lists linux-wayland, the platform that run exercised, as untested",
+    );
+}
+
+#[test]
+fn a_run_that_records_a_failure_with_nothing_said_about_it_is_refused() {
+    let found = settled_run(|run| run["failures"] = json!(["  "]));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "lists a failure with nothing said about it");
+}
+
+#[test]
+fn a_run_that_stops_without_recording_the_failure_it_stopped_on_is_refused() {
+    let found = settled_run(|run| {
+        run["outcome"] = json!("stop_condition_triggered");
+        run["stop_condition"] = json!(STOP_CONDITION);
+    });
+    refused(&found, "does not settle the choice");
+    refused(&found, "does not record it among its failures");
+}
+
+#[test]
+fn a_run_that_stops_on_a_condition_the_contract_never_declared_is_refused() {
+    let found = settled_run(|run| {
+        run["outcome"] = json!("stop_condition_triggered");
+        run["stop_condition"] = json!("#38: nobody declared this stop");
+        run["failures"] = json!(["#38: nobody declared this stop"]);
+    });
+    assert_eq!(found.len(), 2, "{found:?}");
+    refused(&found, "does not settle the choice");
+    refused(&found, "which the contract's stop conditions never declare");
+}
+
+#[test]
+fn a_run_that_ends_on_a_stop_condition_does_not_settle_the_choice() {
+    let found = settled_run(|run| {
+        run["outcome"] = json!("stop_condition_triggered");
+        run["stop_condition"] = json!(STOP_CONDITION);
+        run["failures"] = json!([STOP_CONDITION]);
+    });
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "does not settle the choice");
 }
 
 #[test]
 fn a_run_that_leaves_a_platform_untested_does_not_settle_the_choice() {
-    let mut results =
-        results_value(json!([{ "measurement": "cold_start_seconds", "observed": 2.0 }]));
+    let mut results = results_value(json!([run_value(observations())]));
     results["untested_platforms"] = json!(["windows-11", "macos-14"]);
-    let fixture = Fixture::new(accepted_ledger(), vec![fixture_contract()], Some(results));
-    let found = fixture.problems();
-    assert!(found.iter().any(|problem| {
-        problem.detail.contains("2 platform(s) were not exercised")
-            && problem.detail.contains("windows-11, macos-14")
-    }));
+    let found = Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![fixture_contract()],
+        Some(results),
+    )
+    .problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "2 platform(s) were not exercised");
+    refused(&found, "windows-11, macos-14");
 }
 
 #[test]
 fn a_run_that_omits_a_predeclared_measurement_does_not_settle_the_choice() {
-    let fixture = Fixture::new(
-        accepted_ledger(),
-        vec![fixture_contract()],
-        Some(results_value(json!([]))),
+    let found = settled_run(|run| run["observations"] = json!([]));
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "records no observation for cold_start_seconds, which the contract predeclares",
     );
-    let found = fixture.problems();
-    assert!(found.iter().any(|problem| {
-        problem
-            .detail
-            .contains("predeclares cold_start_seconds and the run recorded no observation")
-    }));
 }
 
 #[test]
 fn an_observation_above_the_predeclared_maximum_does_not_settle_the_choice() {
-    let fixture = Fixture::new(
-        citing_its_own_run(accepted_ledger()),
-        vec![fixture_contract()],
-        Some(results_value(
-            json!([{ "measurement": "cold_start_seconds", "observed": 4.5 }]),
-        )),
+    let found = settled_run(|run| {
+        run["observations"] = json!([{ "measurement": "cold_start_seconds", "observed": 4.5 }])
+    });
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "observed cold_start_seconds at 4.5 s, above the predeclared maximum of 3.0",
     );
-    let found = fixture.problems();
-    assert!(found.iter().any(|problem| {
-        problem
-            .detail
-            .contains("cold_start_seconds observed 4.5 s, above the predeclared maximum of 3.0")
-    }));
+}
+
+#[test]
+fn a_run_that_records_one_measurement_twice_does_not_settle_the_choice() {
+    let found = settled_run(|run| {
+        run["observations"] = json!([
+            { "measurement": "cold_start_seconds", "observed": 2.0 },
+            { "measurement": "cold_start_seconds", "observed": 2.5 }
+        ])
+    });
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "records the predeclared measurement cold_start_seconds 2 times",
+    );
 }
 
 #[test]
 fn a_run_measured_against_a_moved_threshold_does_not_settle_the_choice() {
-    let mut results =
-        results_value(json!([{ "measurement": "cold_start_seconds", "observed": 2.0 }]));
+    let mut results = results_value(json!([run_value(observations())]));
     results["contract_sha256"] = json!("0".repeat(64));
-    let fixture = Fixture::new(accepted_ledger(), vec![fixture_contract()], Some(results));
-    let found = fixture.problems();
-    assert!(found.iter().any(|problem| {
-        problem
-            .detail
-            .contains("its thresholds have moved since the run")
-    }));
+    let found = Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![fixture_contract()],
+        Some(results),
+    )
+    .problems();
+    refused(&found, "its thresholds have moved since the run");
 }
 
 #[test]
 fn a_run_that_observes_something_the_contract_does_not_predeclare_is_refused() {
-    let fixture = Fixture::new(
-        citing_its_own_run(accepted_ledger()),
-        vec![fixture_contract()],
-        Some(results_value(json!([
+    let found = settled_run(|run| {
+        run["observations"] = json!([
             { "measurement": "cold_start_seconds", "observed": 2.0 },
             { "measurement": "a_quantity_nobody_declared", "observed": 1.0 }
-        ]))),
-    );
-    let found = fixture.problems();
-    assert!(found.iter().any(|problem| {
-        problem.detail.contains(
-            "the run observes a_quantity_nobody_declared, which the contract does not predeclare",
-        )
-    }));
-}
-
-#[test]
-fn a_run_citing_a_raw_artifact_the_tree_does_not_hold_is_refused() {
-    let mut results =
-        results_value(json!([{ "measurement": "cold_start_seconds", "observed": 2.0 }]));
-    results["artifacts"] = json!([
-        { "artifact": "docs/proofs/results/raw/run-1.json", "sha256": "a".repeat(64) }
-    ]);
-    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], Some(results));
-    let found = fixture.problems();
+        ])
+    });
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(
-        found[0]
-            .detail
-            .contains("docs/proofs/results/raw/run-1.json, which is not in the tree")
+    refused(
+        &found,
+        "observes a_quantity_nobody_declared, which the contract does not predeclare",
     );
 }
 
 #[test]
-fn a_run_citing_a_raw_artifact_that_has_changed_is_refused() {
-    let mut results =
-        results_value(json!([{ "measurement": "cold_start_seconds", "observed": 2.0 }]));
-    results["artifacts"] = json!([{ "artifact": ADR, "sha256": "b".repeat(64) }]);
-    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], Some(results));
-    let found = fixture.problems();
+fn a_settled_run_citing_a_raw_artifact_the_tree_does_not_hold_is_refused() {
+    let found = settled_run(|run| {
+        run["artifacts"] = json!([
+            { "artifact": "docs/proofs/evidence/desktop-shell/absent.log", "sha256": "a".repeat(64) }
+        ])
+    });
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(
-        found[0]
-            .detail
-            .contains("has changed since the run cited it")
+    refused(
+        &found,
+        "docs/proofs/evidence/desktop-shell/absent.log, which is not in the tree",
     );
 }
 
 #[test]
-fn the_settled_path_passes_when_the_run_is_complete_and_in_threshold() {
-    let fixture = Fixture::new(
-        citing_its_own_run(accepted_ledger()),
-        vec![fixture_contract()],
-        Some(results_value(
-            json!([{ "measurement": "cold_start_seconds", "observed": 2.5 }]),
-        )),
-    );
+fn a_settled_run_citing_a_raw_artifact_that_has_changed_is_refused() {
+    let found = settled_run(|run| {
+        run["artifacts"] = json!([{ "artifact": RAW, "sha256": "b".repeat(64) }])
+    });
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "has changed since the run cited it");
+}
+
+#[test]
+fn the_settled_path_passes_when_every_run_is_complete_and_in_threshold() {
+    let fixture = settled(json!([run_value(observations())]));
     assert_eq!(fixture.problems(), Vec::new());
-}
-
-#[test]
-fn a_decided_choice_that_does_not_cite_its_own_run_is_refused() {
-    let fixture = Fixture::new(
-        accepted_ledger(),
-        vec![fixture_contract()],
-        Some(results_value(
-            json!([{ "measurement": "cold_start_seconds", "observed": 2.5 }]),
-        )),
-    );
-    let found = fixture.problems();
-    assert_eq!(found.len(), 1, "{found:?}");
-    assert!(
-        found[0]
-            .detail
-            .contains("does not cite it as its own evidence")
-    );
 }
 
 #[test]
@@ -424,8 +534,7 @@ fn a_contract_document_with_an_unknown_field_or_no_contract_is_refused() {
 #[test]
 fn a_result_artifact_of_an_unknown_schema_version_is_refused() {
     let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
-    let mut results =
-        results_value(json!([{ "measurement": "cold_start_seconds", "observed": 2.0 }]));
+    let mut results = results_value(json!([run_value(observations())]));
     results["schema_version"] = json!(2);
     fixture.write(RESULTS, &results);
     let error = Results::read(&fixture.path(RESULTS)).expect_err("a future results schema");
@@ -506,26 +615,6 @@ fn accepted_ledger() -> Value {
     value
 }
 
-/// A contract for that choice, predeclaring one measurement.
-fn fixture_contract() -> Value {
-    json!({
-        "schema_version": 1,
-        "id": CONTRACT,
-        "decision": ID,
-        "hypothesis": "the candidate meets every predeclared ceiling on the reference configuration",
-        "workload": ["#38: four concurrent agent streams"],
-        "platform": "Linux Wayland",
-        "hardware": "four cores, 16 GiB",
-        "method": "sample the candidate's own process tree at 100 ms",
-        "measurements": [
-            { "name": "cold_start_seconds", "unit": "s", "maximum": 3.0 }
-        ],
-        "stop_conditions": ["#38: a blank-window figure stops the run"],
-        "result_artifact": RESULTS,
-        "cleanup": "remove the disposable display and only the identities the driver observed"
-    })
-}
-
 /// The same choice, settling on the run the contract points at: the results
 /// artifact is the evidence the acceptance rests on.
 fn citing_its_own_run(mut value: Value) -> Value {
@@ -539,23 +628,82 @@ fn citing_its_own_run(mut value: Value) -> Value {
     value
 }
 
-/// A run of that contract, with the fingerprint filled in by the fixture.
-fn results_value(observations: Value) -> Value {
+/// A contract for that choice, predeclaring one measurement and one stop
+/// condition.
+fn fixture_contract() -> Value {
+    json!({
+        "schema_version": 1,
+        "id": CONTRACT,
+        "decision": ID,
+        "hypothesis": "the candidate meets every predeclared ceiling on the reference configuration",
+        "workload": [OBLIGATION],
+        "platform": "Linux Wayland",
+        "hardware": "four cores, 16 GiB",
+        "method": "sample the candidate's own process tree at 100 ms",
+        "measurements": [
+            { "name": "cold_start_seconds", "unit": "s", "maximum": 3.0 }
+        ],
+        "stop_conditions": [STOP_CONDITION],
+        "result_artifact": RESULTS,
+        "cleanup": "remove the disposable display and only the identities the driver observed"
+    })
+}
+
+const STOP_CONDITION: &str = "#38: a blank-window figure stops the run";
+
+/// The one measurement the fixture contract predeclares, inside its ceiling.
+fn observations() -> Value {
+    json!([{ "measurement": "cold_start_seconds", "observed": 2.5 }])
+}
+
+/// One run that answers everything the contract asks: the platform and version
+/// it exercised, the hardware and revision it ran on, the obligation it ran, its
+/// measurement, and the raw artifact it published (the fixture fills the hash).
+fn run_value(observations: Value) -> Value {
+    json!({
+        "platform": "linux-wayland",
+        "version": "kwin 5.27",
+        "hardware": "four cores, 16 GiB",
+        "commit": "cd204823d96de468520434e94054ff412b7cc497",
+        "exercised": [OBLIGATION],
+        "outcome": "within_thresholds",
+        "failures": [],
+        "observations": observations,
+        "artifacts": [{ "artifact": RAW, "sha256": "" }]
+    })
+}
+
+/// A dossier of runs, with the fingerprint and raw hashes filled by the fixture.
+fn results_value(runs: Value) -> Value {
     json!({
         "schema_version": 1,
         "contract": CONTRACT,
         "contract_sha256": "",
-        "outcome": "within_thresholds",
         "untested_platforms": [],
-        "observations": observations,
-        "artifacts": []
+        "runs": runs
     })
+}
+
+/// A choice settled on a dossier of runs, valid as written.
+fn settled(runs: Value) -> Fixture {
+    Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![fixture_contract()],
+        Some(results_value(runs)),
+    )
+}
+
+/// A settled choice whose one run has exactly one thing broken in it.
+fn settled_run(break_it: impl FnOnce(&mut Value)) -> Vec<Problem> {
+    let mut run = run_value(observations());
+    break_it(&mut run);
+    settled(json!([run])).problems()
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-/// A throwaway tree holding one ledger, one contract document and at most one
-/// run, removed when it drops.
+/// A throwaway tree holding one ledger, one contract document, one raw artifact
+/// and at most one results dossier, removed when it drops.
 struct Fixture {
     root: PathBuf,
     contracts: Contracts,
@@ -568,11 +716,17 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
-        std::fs::create_dir_all(root.join("docs/proofs/results")).expect("a fixture tree");
-        std::fs::create_dir_all(root.join("docs/architecture")).expect("a fixture tree");
+        for directory in [
+            "docs/proofs/results",
+            "docs/proofs/evidence/desktop-shell",
+            "docs/architecture",
+        ] {
+            std::fs::create_dir_all(root.join(directory)).expect("a fixture tree");
+        }
         let root = root.canonicalize().expect("a canonical fixture root");
         std::fs::write(root.join(ADR), "the accepted text this record interprets\n")
             .expect("the fixture record");
+        std::fs::write(root.join(RAW), "the run's own log\n").expect("the fixture raw artifact");
         let contracts = Contracts {
             schema_version: 1,
             contracts: contracts
@@ -586,6 +740,16 @@ impl Fixture {
         if let Some(mut results) = results {
             if results["contract_sha256"] == json!("") {
                 results["contract_sha256"] = json!(fingerprint(&fixture.contracts.contracts[0]));
+            }
+            for run in results["runs"].as_array_mut().into_iter().flatten() {
+                for cited in run["artifacts"].as_array_mut().into_iter().flatten() {
+                    if cited["sha256"] == json!("") {
+                        let artifact = cited["artifact"].as_str().expect("a cited artifact");
+                        cited["sha256"] = json!(
+                            hash(&fixture.root, artifact).expect("the cited raw artifact hashes")
+                        );
+                    }
+                }
             }
             fixture.write(RESULTS, &results);
         }

@@ -409,7 +409,7 @@ fn run_problems(
     for detail in unmet {
         problems.push(Problem::new(subject, detail));
     }
-    for cited in &results.artifacts {
+    for cited in results.runs.iter().flat_map(|run| &run.artifacts) {
         match hash(root, &cited.artifact) {
             None => problems.push(Problem::new(
                 subject,
