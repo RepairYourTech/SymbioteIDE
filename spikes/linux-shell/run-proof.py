@@ -26,9 +26,11 @@ before the run reports success:
   must be either observed or named with the reason the instrument could not see
   it — a measurement that is simply absent is refused rather than left silent.
   These are the crate's own terms, applied here as well so a run the contract does
-  not answer is refused before anything is written rather than after; the ceilings
-  are not among them, because a result records what was observed and the crate is
-  what judges an observation against its maximum;
+  not answer is refused before anything in the tree is written rather than after —
+  the run's own records under the ignored ``artifacts/`` directory exist by then,
+  and every path the repository commits is untouched; the ceilings are not among
+  them, because a result records what was observed and the crate is what judges an
+  observation against its maximum;
 * an obligation is attested only where the fixture's own log carries the marker
   for it (see ``ATTESTED_BY``), so ``exercised`` cannot be typed;
 * the run itself refuses to record a revision while the tree differs from it, and
@@ -41,6 +43,13 @@ before the run reports success:
   actually holds; and the clean build it cites has to have logged the revision the
   run records, because a log that names only the commands cannot be tied to the
   tree the figures came from.
+
+A program this driver runs and the host does not have — Xvfb, kwin_wayland, cargo,
+git, the candidate binary — fails with the operating system's own message, which
+names it; the driver adds no refusal of its own there, because it could not say more
+than that message already says. Every document it reads is different: the contract
+document, the dossier it merges into and the build log it cites are refused by name,
+because nothing else in the failure would say which file was short.
 
 The terms a run is judged against — the platforms the contract applies to, the stop
 conditions it declares and the measurements it predeclares — are read from the
@@ -584,8 +593,14 @@ def session_record(session, binary, compositor_log_bytes, build):
     built into. Each says in place what a reader can still reach instead.
 
     The session is read here rather than passed field by field, so what a session
-    was has one owner: ``Session``.
+    was has one owner: ``Session``. A session with no private runtime directory is
+    refused by name rather than recorded with a hole where its provenance should be:
+    an Xvfb session has none, and this record is only written for the session kind
+    that does.
     """
+    if session.runtime is None:
+        raise SystemExit(f'refusing to record {session.name!r}: it has no private runtime '
+                         'directory, so it is not the session this record describes')
     env = session.env
     def tool(*command):
         try:
@@ -611,6 +626,23 @@ def session_record(session, binary, compositor_log_bytes, build):
         'hardware': hardware_of(env),
         'build': build,
     }
+
+
+def read_document(path, what):
+    """A JSON document this run depends on, or a refusal naming what is missing.
+
+    The contract document and the dossier a run merges into are both read here, so a
+    file that is absent, unreadable or not JSON is refused by name rather than
+    raised as a traceback from whichever line happened to touch it first: a run that
+    cannot establish the terms it answers has nothing to record, and saying which
+    document is short is the whole of what a reader can do with it.
+    """
+    try:
+        return json.loads(Path(path).read_text())
+    except FileNotFoundError:
+        raise SystemExit(f'{what} {path} does not exist')
+    except (OSError, ValueError) as error:
+        raise SystemExit(f'{what} {path} cannot be read as JSON: {error}')
 
 
 @dataclass(frozen=True)
@@ -642,14 +674,36 @@ class Contract:
         return stop_condition in self.stop_conditions
 
     @classmethod
-    def read(cls, path, identity):
-        """The named contract, from the document the repository commits."""
-        document = json.loads(Path(path).read_text())
-        for entry in document['contracts']:
-            if entry['id'] == identity:
-                return cls(entry['id'], tuple(entry['applicable_platforms']),
-                           tuple(entry['stop_conditions']),
-                           tuple(measurement['name'] for measurement in entry['measurements']))
+    def read(cls, path, identity=None):
+        """The contract a run answers, from the document that holds it.
+
+        ``identity`` names the contract; with none, the document's own first one is
+        meant, which is what an invocation that names no contract is measured
+        against. A document that cannot be read, that names no contract at all, or
+        whose contract does not carry the terms a run is judged by is refused by
+        name — as every other failure in this driver is — because a term read out of
+        whatever happens to be present would judge a run by something the document
+        never declared.
+        """
+        path = Path(path)
+        document = read_document(path, 'the contract document')
+        entries = document.get('contracts') or []
+        if not entries:
+            raise SystemExit(f'{path} names no contract, so a run has no terms to answer')
+        for entry in entries:
+            if identity is not None and entry.get('id') != identity:
+                continue
+            absent = [what for term, what in (('applicable_platforms', 'the platforms it applies to'),
+                                              ('stop_conditions', 'the stop conditions it declares'),
+                                              ('measurements', 'the measurements it predeclares'))
+                      if not entry.get(term)]
+            if absent or not all(item.get('name') for item in entry.get('measurements') or []):
+                raise SystemExit(f'the contract {entry.get("id")!r} in {path} does not carry '
+                                 + ' or '.join(absent or ['the names of the measurements it '
+                                                          'predeclares']))
+            return cls(entry['id'], tuple(entry['applicable_platforms']),
+                       tuple(entry['stop_conditions']),
+                       tuple(measurement['name'] for measurement in entry['measurements']))
         raise SystemExit(f'no committed contract named {identity!r} in {path}')
 
     @classmethod
@@ -660,9 +714,7 @@ class Contract:
         either is refused below if the contract does not declare it, so a default
         cannot put a term into a result that the document never held.
         """
-        path = REPO / path
-        document = json.loads(path.read_text())
-        return cls.read(path, document['contracts'][0]['id'])
+        return cls.read(REPO / path)
 
     def default_platform(self):
         """The platform a run takes when none is named: the first one it applies to."""
@@ -757,7 +809,10 @@ def merged_runs(path, contract, fingerprint, platform, entries):
     """
     if not path.exists():
         return entries
-    document = json.loads(path.read_text())
+    document = read_document(path, 'the result dossier')
+    if not isinstance(document, dict):
+        raise SystemExit(f'refusing to merge: {path} holds a {type(document).__name__}, '
+                         'not a dossier')
     if document.get('contract') != contract.id:
         raise SystemExit(f'refusing to merge: {path} holds {document.get("contract")!r}, '
                          f'not {contract.id!r}')
@@ -877,7 +932,10 @@ def build_record(args, revision):
     that names only the commands cannot be tied to the revision the run records.
     """
     log = Path(args.build_log)
-    text = log.read_text()
+    try:
+        text = log.read_text()
+    except OSError as error:
+        raise SystemExit(f'refusing to publish: the build log {log} cannot be read: {error}')
     logged = logged_revision(text)
     if logged is None:
         raise SystemExit(f'refusing to publish: {log} records no revision it was built from, so '
@@ -1046,7 +1104,7 @@ def run_wayland(args, artifacts, binary, commit):
         merged = merged_runs(REPO / args.results, contract, args.contract_sha256, args.platform, entries)
         (REPO / args.results).write_text(json.dumps({
             'schema_version': 1,
-            'contract': contract['id'],
+            'contract': contract.id,
             'contract_sha256': args.contract_sha256,
             'untested_platforms': untested_platforms(contract, merged),
             'runs': merged,
