@@ -58,8 +58,12 @@ this run is on a virtual one.
 What the run observed on 2026-09-16, built from `988c37af` in a clean target
 directory outside the tree (kwin 6.7.5 virtual session at 1440×960, Mesa Intel(R)
 Graphics (RPL-P), 16 logical cores, 62 GiB RAM, NVMe storage), with the evidence
-under `results/desktop-shell/linux-wayland-on-the-reference-compositor/`. Each
-figure is re-checkable from the artifact the run cites for it:
+under `results/desktop-shell/linux-wayland-on-the-reference-compositor/`. The dossier
+also records the contract's fingerprint (`89a55836…`) — the crate's SHA-256 of the
+contract's own canonical JSON, which ties these figures to the thresholds they were
+measured against, and not the SHA-256 of the contract document — and the revision
+the run was built from; the command line that supplied the fingerprint is not part
+of the record. Each figure is re-checkable from the artifact the run cites for it:
 
 - **`cold_start_to_first_frame_seconds` 0.353** of a 3.0 ceiling: the first
   `wl_surface.commit()` after the client attached a buffer, timed from its first

@@ -71,6 +71,8 @@ Where each concern lives, so a change lands in one place:
 * ``measure`` — the sequence both entry points share: run it, sample it, clean up
   after it, read its own log;
 * ``result_problems`` — what a result may not claim, asked of the contract;
+* ``fingerprint_problems`` — whether the value an invocation supplies could be the
+  contract's fingerprint, which is all this driver can decide about it;
 * ``merged_runs`` / ``publish`` / ``build_record`` — how this run's entries and the
   evidence they cite reach the tree, and which revision they belong to;
 * ``run_xvfb`` / ``run_wayland`` — what one entry point adds to the shared sequence;
@@ -783,6 +785,35 @@ def revision_problems(commit, head, status):
     return problems
 
 
+def fingerprint_problems(fingerprint, document):
+    """Why the value an invocation supplies cannot be the contract's fingerprint.
+
+    The ledger's fingerprint is the crate's ``fingerprint(contract)``: the SHA-256 of
+    the contract's own canonical JSON, so a result is tied to the thresholds it was
+    measured against and adding another contract to the document does not move it.
+    This driver does not derive that value — deriving it would be a second
+    implementation of the crate's convention — so what it can honestly decide is that
+    the value it was handed is a fingerprint at all, and that it is not the SHA-256 of
+    the document file: a quantity of the same length that an operator reaching for
+    "the contract's hash" lands on, and that would record a result the ledger reports
+    as measured against a contract that is not the one committed now.
+
+    Which contract a fingerprint belongs to is not decidable here, because nothing in
+    this driver knows any contract's fingerprint; that is the ledger's own identity
+    check, which re-hashes the contract the run named and refuses a result measured
+    under another one.
+    """
+    problems = []
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64 \
+            or any(character not in '0123456789abcdef' for character in fingerprint):
+        problems.append(f'{fingerprint!r} is not a fingerprint: the ledger holds the crate\'s '
+                        'lowercase-hex SHA-256 of the contract\'s own canonical JSON')
+    if document.exists() and sha256_of(document) == fingerprint:
+        problems.append(f'{fingerprint} is the SHA-256 of {document}, the document file, and not '
+                        'the fingerprint of the contract inside it')
+    return problems
+
+
 def untested_platforms(contract, runs):
     """The contract's platforms this run set holds no run for.
 
@@ -1164,7 +1195,9 @@ def main():
                         help='the contract in the committed document this run was measured '
                              'against (default: the document\'s own first contract)')
     parser.add_argument('--contract-sha256', default=None,
-                        help='the fingerprint the contract document reaches; the ledger is what holds it')
+                        help="the contract's fingerprint, which the ledger holds: the crate's "
+                             "SHA-256 of the contract's own canonical JSON, not the document "
+                             "file's, and not this driver's to derive")
     parser.add_argument('--stop-condition', default=None)
     parser.add_argument('--unobservable', nargs='*', default=[],
                         help='measurement=reason pairs this run reports unknown rather than met')
@@ -1187,6 +1220,11 @@ def main():
     if args.results and args.contract_sha256 is None:
         raise SystemExit('--results needs --contract-sha256: a result records the contract it was '
                          'measured against, and the ledger is what re-hashes that fingerprint')
+    if args.results:
+        problems = fingerprint_problems(args.contract_sha256, REPO / args.contracts)
+        if problems:
+            raise SystemExit("refusing to publish a result: the fingerprint has to be the "
+                             "contract's, and:\n  " + '\n  '.join(problems))
     head = subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'],
                           capture_output=True, text=True).stdout.strip()
     commit = args.commit or head

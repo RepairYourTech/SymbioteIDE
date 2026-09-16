@@ -236,6 +236,20 @@ class Publication(unittest.TestCase):
 FINGERPRINT = 'f' * 64
 WAYLAND = 'Linux Wayland on the reference compositor'
 
+# The fingerprint the ledger holds for the committed contract, taken from the result
+# it accepted rather than computed here. The crate's fingerprint is
+# `fingerprint(contract)`: the SHA-256 of the contract's own canonical JSON
+# (`spike.rs`), which Python cannot reach without re-implementing the convention the
+# driver deliberately does not. The committed result records exactly that value, and
+# the crate's own suite is what refuses a result whose contract has moved since. A
+# contract of this suite's own — the fixture above, or a synthetic document — has no
+# ledger to be right about, so its cases carry a value of the right shape: what they
+# hold is not the identity.
+COMMITTED_RESULT = json.loads(
+    (run_proof.REPO / 'docs/proofs/results/desktop-shell.json').read_text())
+COMMITTED_FINGERPRINT = COMMITTED_RESULT['contract_sha256']
+SYNTHETIC_FINGERPRINT = 'a' * 64
+
 
 def dossier(runs, contract=CONTRACT.id, fingerprint=FINGERPRINT):
     return {'schema_version': 1, 'contract': contract, 'contract_sha256': fingerprint,
@@ -597,7 +611,10 @@ class MainEntryPoint(unittest.TestCase):
     the command line calls it — through the parser and the environment — with two
     stand-ins and only two: the session it would start, and the ledger's cargo
     read-back, which the fixture job has no Rust toolchain to run. What the terms are
-    and what a run may write is not stood in for anywhere.
+    and what a run may write is not stood in for anywhere. The fingerprint these cases
+    supply is the one the ledger holds for the committed contract, taken from the result
+    it accepted, because the crate's fingerprint is the SHA-256 of the contract's own
+    canonical JSON and Python cannot compute it without re-implementing that convention.
 
     The revision gate reads the real git state, so a checkout with edits cannot
     publish; CI checks out a clean tree and drives it unpatched. Where a tracked file
@@ -644,11 +661,13 @@ class MainEntryPoint(unittest.TestCase):
         return self.session
 
     def arguments(self, *extra, results=True, session='wayland', contract=None,
-                  unobservable=None, stop_condition=None):
+                  unobservable=None, stop_condition=None, fingerprint=COMMITTED_FINGERPRINT):
         """The command line this case drives, naming no contract and no platform.
 
         Those two terms are the ones an invocation may leave out; a case that wants
         different terms names them through ``extra``, exactly as an operator would.
+        The fingerprint is the ledger's own for the committed contract unless a case is
+        about it.
         """
         contract = contract or self.contract
         unobservable = unobservable or [f'{name}=this case measures nothing'
@@ -659,8 +678,7 @@ class MainEntryPoint(unittest.TestCase):
                 '--unobservable', *unobservable]
         if results:
             argv += ['--publish', str(self.publish), '--results', str(self.dossier),
-                     '--contract-sha256', run_proof.sha256_of(
-                         run_proof.REPO / run_proof.CONTRACTS_PATH)]
+                     '--contract-sha256', fingerprint]
         return argv + list(extra)
 
     def clean_status(self):
@@ -729,6 +747,44 @@ class MainEntryPoint(unittest.TestCase):
         self.assertFalse(self.publish.exists())
         self.assertFalse(self.dossier.exists())
 
+    def test_the_committed_fingerprint_is_the_ledgers_and_not_the_documents(self):
+        """Two quantities of the same length, and the cases carry the ledger's.
+
+        The crate's fingerprint is the SHA-256 of the contract's own canonical JSON; the
+        document file's SHA-256 is a different quantity, and a run recording it is
+        reported by the ledger as measured against a contract that is not the one
+        committed now. Python can compute the second and not the first, so the result the
+        ledger accepted is where this suite takes the first from.
+        """
+        self.assertEqual(COMMITTED_RESULT['contract'], self.contract.id,
+                         'the committed result is of another contract')
+        self.assertEqual(COMMITTED_FINGERPRINT, COMMITTED_RESULT['contract_sha256'])
+        self.assertNotEqual(COMMITTED_FINGERPRINT,
+                            run_proof.sha256_of(run_proof.REPO / run_proof.CONTRACTS_PATH),
+                            'the fingerprint is the document file\'s hash, not the contract\'s')
+        argv = self.arguments()
+        supplied = argv[argv.index('--contract-sha256') + 1]
+        self.assertEqual(supplied, COMMITTED_FINGERPRINT,
+                         'the cases drive with a value that is not the ledger\'s')
+
+    def test_a_fingerprint_that_is_the_documents_hash_is_refused(self):
+        """The value an operator reaches for, refused by name before anything is written."""
+        document = run_proof.sha256_of(run_proof.REPO / run_proof.CONTRACTS_PATH)
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments(fingerprint=document))
+        self.assertIn('the document file', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started with the document\'s hash as a fingerprint')
+        self.assertFalse(self.publish.exists())
+        self.assertFalse(self.dossier.exists())
+
+    def test_a_value_that_is_not_a_fingerprint_is_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments(fingerprint=''))
+        self.assertIn('is not a fingerprint', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started with no fingerprint to record')
+        self.assertFalse(self.publish.exists())
+        self.assertFalse(self.dossier.exists())
+
     def test_the_x11_entry_point_writes_only_its_own_records(self):
         self.drive(self.arguments(results=False, session='xvfb'))
         self.assertIn('process-tree.json', self.records())
@@ -765,6 +821,7 @@ class MainEntryPoint(unittest.TestCase):
         path.write_text(json.dumps(self.SYNTHETIC))
         synthetic = run_proof.Contract.read(path)
         self.drive(self.arguments('--contracts', str(path), contract=synthetic,
+                                  fingerprint=SYNTHETIC_FINGERPRINT,
                                   unobservable=['suite_unseen_measurement=this case']))
         document = json.loads(self.dossier.read_text())
         self.assertEqual(document['contract'], 'SUITE/other-contract')
