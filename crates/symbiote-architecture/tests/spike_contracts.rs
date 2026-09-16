@@ -360,6 +360,48 @@ fn a_bar_named_from_a_section_the_record_does_not_state_is_refused() {
     refused(&found, "that record states no such section");
 }
 
+/// Long snake_case names in backticks in the contract document are case names of
+/// this crate: a citation is a claim, and this holds each of them against the
+/// suite that defines it, so a rename fails a case here rather than leaving the
+/// document pointing at a name nobody can run. The two names the constitution
+/// ledger's catalog also binds are held twice, deliberately: that binding
+/// belongs to the catalog's evidence, this one to the document's own citations.
+#[test]
+fn the_contract_document_names_only_cases_this_crate_holds() {
+    let document = std::fs::read_to_string(root().join("docs/contracts/architecture.md"))
+        .expect("the contract document");
+    assert_eq!(
+        document.matches('`').count() % 2,
+        0,
+        "the document's code spans are balanced, so a citation can be read out of it"
+    );
+    let suite: String = std::fs::read_dir(root().join("crates/symbiote-architecture/tests"))
+        .expect("the crate's test files")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap_or_default())
+        .collect();
+    let mut cited = 0;
+    for (index, span) in document.split('`').enumerate() {
+        if index % 2 == 0 {
+            continue;
+        }
+        if span.matches('_').count() < 2
+            || !span.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        {
+            continue;
+        }
+        cited += 1;
+        assert!(
+            suite.contains(&format!("fn {span}(")),
+            "the contract document names {span} as a case of this crate, and the suite defines no case by that name"
+        );
+    }
+    assert!(
+        cited >= 5,
+        "the document cites the cases its claims rest on: {cited}"
+    );
+}
+
 #[test]
 fn the_committed_choice_names_the_section_its_bar_comes_from() {
     // The bar's location is the choice's, not the contract's: if this heading
@@ -780,6 +822,9 @@ fn a_run_that_records_one_measurement_twice_does_not_settle_the_choice() {
 
 #[test]
 fn a_run_measured_against_a_moved_threshold_does_not_settle_the_choice() {
+    // The fingerprint covers the whole contract, so the binding is checked
+    // against a field the message cannot enumerate: a result whose own hash is
+    // bogus, and one whose hash is right while the contract's method text moved.
     let mut results = results_value(json!([run_value(observations())]));
     results["contract_sha256"] = json!("0".repeat(64));
     let found = Fixture::new(
@@ -788,10 +833,23 @@ fn a_run_measured_against_a_moved_threshold_does_not_settle_the_choice() {
         Some(results),
     )
     .problems();
-    refused(
-        &found,
-        "the contract it was measured against has changed since the run",
+    refused(&found, "is not the one committed now");
+
+    let recorded = fingerprint(
+        &serde_json::from_value::<SpikeContract>(fixture_contract()).expect("the fixture contract"),
     );
+    let mut results = results_value(json!([run_value(observations())]));
+    results["contract_sha256"] = json!(recorded);
+    let mut contract = fixture_contract();
+    contract["method"] = json!("a method the run did not follow, sampling the tree at 100 ms");
+    let found = Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![contract],
+        Some(results),
+    )
+    .problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "is not the one committed now");
 }
 
 #[test]

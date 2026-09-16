@@ -18,7 +18,7 @@ One concern per file, and each module reads the others only through their public
 | `checks/artifacts.rs` | what the workspace must show for what the ledger publishes — gate status, membership in both directions, pins, and the reach of a provisional choice |
 | `checks/contracts.rs` | what the contracts and their runs must show — the contract/decision link, obligation ownership, the bar the choice names with every clause of it answered in the record's own words, and the run set a settled choice stands on |
 
-Refusals keep one owner too: a rule about a record lives with the records, a rule about the tree lives with the artifacts, and a rule about proof lives with the contracts. Two test names in `tests/governance.rs` — `acceptance_requires_new_pin_and_freezes_content` and `supersession_invalidates_only_dependent_artifacts` — are bound by the constitution ledger's catalog, so they cannot be renamed or moved while #170's catalog cites them.
+Refusals keep one owner too: a rule about a record lives with the records, a rule about the tree lives with the artifacts, and a rule about proof lives with the contracts. Two test names in `tests/governance.rs` — `acceptance_requires_new_pin_and_freezes_content` and `supersession_invalidates_only_dependent_artifacts` — are bound by the constitution ledger's catalog, so they cannot be renamed or moved while #170's catalog cites them. Every long snake_case name in backticks in this document is a case of this crate's suite, and `the_contract_document_names_only_cases_this_crate_holds` holds each one against the file that defines it, so renaming a case fails a case here instead of leaving this document citing a name nothing runs.
 
 ## Public contract
 
