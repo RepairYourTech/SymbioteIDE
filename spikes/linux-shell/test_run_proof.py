@@ -1,18 +1,22 @@
 """The runner's own rules: what a run may publish, and what it must refuse.
 
 These hold the parts of ``run-proof.py`` that decide what the result artifact is
-allowed to claim — the attestation read from the fixture's log, the contract
-coverage of its measurements, the citations it publishes, the revision it records,
-the paths it does not keep and the survivors it counts — without needing a
-session, a binary or a compositor. The rules matter because the artifact is the
-only thing a later pass reads: an attestation that can be typed, a predeclared
-measurement left silent, an artifact that recorded nothing cited as evidence, a
-revision that is not the tree, a path the run removed published as provenance, or
-an unreaped process counted as running, would each let the dossier claim more than
-the run shows.
+allowed to claim — the terms it reads from the contract document, the attestation
+read from the fixture's log, the contract coverage of its measurements, the
+citations it publishes, the revision it records, the paths it does not keep and the
+survivors it counts — and the one measured lifetime both entry points share, driven
+here with a stand-in session and a stand-in app rather than a real display. The
+rules matter because the artifact is the only thing a later pass reads: an
+attestation that can be typed, a predeclared measurement left silent, an artifact
+that recorded nothing cited as evidence, a revision that is not the tree, a path the
+run removed published as provenance, a term answered from a copy of its own, or an
+unreaped process counted as running, would each let the dossier claim more than the
+run shows.
 """
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -20,24 +24,35 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 RUNNER = Path(__file__).resolve().parent / 'run-proof.py'
 spec = importlib.util.spec_from_file_location('run_proof', RUNNER)
 run_proof = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run_proof)
 
-CONTRACT = {
-    'id': '#38/desktop-shell-representative-workload',
-    'applicable_platforms': ['Linux Wayland on the reference compositor', 'Linux X11'],
-    'measurements': [{'name': 'cold_start_to_first_frame_seconds', 'unit': 's', 'maximum': 3.0},
-                     {'name': 'worst_input_starvation_ms', 'unit': 'ms', 'maximum': 250.0}],
-    'stop_conditions': ['#38: an untested platform stays pending and keeps the choice from settling'],
-}
+# A contract of this suite's own, built as the driver reads the committed one. It
+# is deliberately not the committed contract's terms: the driver has to answer
+# with the contract it was handed, not with anything kept beside it.
+CONTRACT = run_proof.Contract(
+    id='#38/desktop-shell-representative-workload',
+    applicable_platforms=('Linux Wayland on the reference compositor', 'Linux X11'),
+    stop_conditions=('#38: an untested platform stays pending and keeps the choice from settling',),
+    measurement_names=('cold_start_to_first_frame_seconds', 'worst_input_starvation_ms'))
+
+
+def contract_document(identifier='SUITE/contract', platforms=('Suite Platform',),
+                      measurements=('suite_measurement',)):
+    """A contract document of this suite's own, shaped as the committed one is."""
+    return {'contracts': [{'id': identifier, 'applicable_platforms': list(platforms),
+                           'stop_conditions': ['suite: a thing ended the run'],
+                           'measurements': [{'name': name, 'unit': 's', 'maximum': 1.0}
+                                            for name in measurements]}]}
 
 
 def args(**overrides):
     values = {'platform': 'Linux Wayland on the reference compositor',
-              'stop_condition': CONTRACT['stop_conditions'][0],
+              'stop_condition': CONTRACT.stop_conditions[0],
               'unobservable': ['worst_input_starvation_ms=the driver issues no input'],
               'limitation': []}
     values.update(overrides)
@@ -82,6 +97,52 @@ class Attestation(unittest.TestCase):
         text = self.log(3, 2) + 'synthetic_streams=4\n'
         self.assertNotIn(self.STREAMS, run_proof.attested(text),
                          'four synthetic streams are not four agent streams')
+
+
+class ContractTerms(unittest.TestCase):
+    """The terms a run is judged against come from the document, not from the driver."""
+
+    def document(self, directory, **shaped):
+        path = Path(directory) / 'spike-contracts.json'
+        path.write_text(json.dumps(contract_document(**shaped)))
+        return path
+
+    def test_the_terms_are_the_documents_own(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.document(directory, identifier='SUITE/other', platforms=('A', 'B'),
+                                 measurements=('m_one', 'm_two'))
+            contract = run_proof.Contract.read(path, 'SUITE/other')
+            self.assertTrue(contract.applies_to('B'))
+            self.assertFalse(contract.applies_to('Suite Platform'))
+            self.assertTrue(contract.declares('suite: a thing ended the run'))
+            self.assertFalse(contract.declares('#38: something else ended it'))
+            self.assertEqual(contract.measurement_names, ('m_one', 'm_two'))
+            # A run answering this document's terms is accepted: the names judged are
+            # the ones the document it was handed declares, not the committed one's.
+            self.assertEqual(run_proof.result_problems(
+                args(platform='A', stop_condition='suite: a thing ended the run',
+                     unobservable=['m_one=what this document cannot see']),
+                contract, [run(['m_two'], ['attested'])]), [])
+
+    def test_a_document_that_holds_no_such_contract_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.document(directory, identifier='SUITE/other')
+            with self.assertRaises(SystemExit):
+                run_proof.Contract.read(path, '#38/desktop-shell-representative-workload')
+
+    def test_an_invocation_that_names_no_terms_is_given_the_documents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.document(directory, identifier='SUITE/other', platforms=('Suite First',
+                                                                                 'Suite Second'))
+            named = run_proof.named_defaults(argparse.Namespace(contracts=path, contract=None,
+                                                                platform=None))
+            self.assertEqual((named.contract, named.platform), ('SUITE/other', 'Suite First'))
+
+    def test_an_invocation_that_names_them_keeps_its_own(self):
+        named = run_proof.named_defaults(argparse.Namespace(contracts='no-such-document.json',
+                                                            contract='X', platform='Y'))
+        self.assertEqual((named.contract, named.platform), ('X', 'Y'),
+                         'a document is read for a term the command line did not give')
 
 
 class ResultRules(unittest.TestCase):
@@ -136,7 +197,7 @@ FINGERPRINT = 'f' * 64
 WAYLAND = 'Linux Wayland on the reference compositor'
 
 
-def dossier(runs, contract=CONTRACT['id'], fingerprint=FINGERPRINT):
+def dossier(runs, contract=CONTRACT.id, fingerprint=FINGERPRINT):
     return {'schema_version': 1, 'contract': contract, 'contract_sha256': fingerprint,
             'untested_platforms': ['Linux X11'], 'runs': runs}
 
@@ -144,7 +205,7 @@ def dossier(runs, contract=CONTRACT['id'], fingerprint=FINGERPRINT):
 def entry(platform, observed):
     return {'platform': platform, 'version': 'v', 'hardware': 'h', 'commit': 'c' * 40,
             'exercised': ['an attested obligation'], 'outcome': 'stop_condition_triggered',
-            'stop_condition': CONTRACT['stop_conditions'][0], 'failures': ['what it did not see'],
+            'stop_condition': CONTRACT.stop_conditions[0], 'failures': ['what it did not see'],
             'observations': [{'measurement': 'cold_start_to_first_frame_seconds', 'observed': observed}],
             'artifacts': [{'artifact': 'docs/proofs/results/desktop-shell/app.log', 'sha256': 'a' * 64}]}
 
@@ -168,7 +229,8 @@ class Merge(unittest.TestCase):
 
     def test_a_platform_with_a_recorded_run_is_not_declared_untested(self):
         self.assertEqual(run_proof.untested_platforms(CONTRACT, [entry(WAYLAND, 0.1)]), ['Linux X11'])
-        self.assertEqual(run_proof.untested_platforms(CONTRACT, []), CONTRACT['applicable_platforms'])
+        self.assertEqual(run_proof.untested_platforms(CONTRACT, []),
+                         list(CONTRACT.applicable_platforms))
 
     def test_rerunning_a_platform_replaces_only_its_own_entries(self):
         wayland, old = entry(WAYLAND, 0.1), entry('Linux X11', 0.2)
@@ -281,6 +343,89 @@ class Survivors(unittest.TestCase):
             os.waitpid(pid, 0)
 
 
+class Ended:
+    """The process of a session this suite stands in: it has already ended."""
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):
+        return 0
+
+
+class Closes:
+    """A session log that counts being closed, so a session left open is visible."""
+
+    def __init__(self):
+        self.closes = 0
+
+    def close(self):
+        self.closes += 1
+
+
+class RecordedSession(run_proof.Session):
+    """A session that counts being closed: one nobody closes was never cleaned up."""
+
+    def __init__(self, **fields):
+        super().__init__(**fields)
+        self.closes = 0
+
+    def close(self):
+        self.closes += 1
+        super().close()
+
+
+class EntryPoint(unittest.TestCase):
+    """Both entry points run one measured lifetime through one place, and close it.
+
+    The X11 entry point is driven with a stand-in session and a stand-in app, because
+    what the shared sequence has to preserve is what surrounds the app — run it,
+    sample it, clean up after it, read its own log, close the session — not the
+    display it happens to run on.
+    """
+
+    APP = ('#!/bin/sh\n'
+           'echo PROOF_READY\n'
+           'echo "PROOF_PREVIEW_REPORT snapshot: denied"\n'
+           'echo "PROOF_PREVIEW_REPORT stop_ptys: denied"\n')
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.artifacts = Path(self.directory.name) / 'artifacts'
+        self.artifacts.mkdir()
+        self.app = self.artifacts / 'probe'
+        self.app.write_text(self.APP)
+        self.app.chmod(0o755)
+        self.session = RecordedSession(kind='suite', name='suite session', process=Ended(),
+                                       env=dict(os.environ), log=Closes(), runtime=None)
+
+    def test_the_entry_point_runs_the_lifetime_and_leaves_no_session_behind(self):
+        printed = io.StringIO()
+        with mock.patch.object(run_proof, 'open_session', return_value=self.session):
+            with contextlib.redirect_stdout(printed):
+                run_proof.run_xvfb(argparse.Namespace(interact=False, seconds=1), self.artifacts,
+                                   self.app)
+        self.assertEqual(self.session.closes, 1, 'the session it opened has to be closed')
+        record = json.loads((self.artifacts / 'process-tree.json').read_text())
+        self.assertEqual(record['session'], 'suite session')
+        self.assertEqual(record['app_exit'], 0)
+        self.assertTrue(record['preview_self_reported_denials'])
+        self.assertEqual(json.loads(printed.getvalue().splitlines()[-1])
+                         ['survivors_after_cancel_request'], 0)
+
+    @unittest.skipUnless(Path('/bin/sh').exists(), 'needs a shell for the stand-in app')
+    def test_the_shared_lifetime_reports_what_an_entry_point_consumes(self):
+        # The stand-in app writes its own markers, so the log this returns is not
+        # an empty file that any implementation would satisfy.
+        measured = run_proof.measure(self.session, self.artifacts, self.app, 'app.log', 1, 0,
+                                     trace=False)
+        self.assertEqual((measured['log_name'], measured['code']), ('app.log', 0))
+        self.assertEqual(measured['text'], (self.artifacts / 'app.log').read_text())
+        self.assertIn('PROOF_READY', measured['text'])
+        self.assertEqual(measured['survivors_before_cleanup'], [])
+        self.assertEqual(measured['cancellation']['survivors_after_cancel_request'], 0)
+
+
 class UnkeptPaths(unittest.TestCase):
     """The record has to say which of its paths the run does not keep.
 
@@ -303,8 +448,10 @@ class UnkeptPaths(unittest.TestCase):
         arguments = argparse.Namespace(build_log=str(self.log), build_seconds=1.0,
                                        publish=str(root / 'publish'), platform=WAYLAND)
         self.record = run_proof.session_record(
-            'kwin 6.7.5 --virtual 1440x960', {'WAYLAND_DISPLAY': 'symbiote-proof'}, self.binary,
-            root / 'runtime', 0, run_proof.build_record(arguments, 'a' * 40))
+            run_proof.Session(kind='wayland', name='kwin 6.7.5 --virtual 1440x960',
+                              process=None, env={'WAYLAND_DISPLAY': 'symbiote-proof'},
+                              log=None, runtime=root / 'runtime'),
+            self.binary, 0, run_proof.build_record(arguments, 'a' * 40))
 
     def paths(self):
         """Every string the record carries that reads as a path: a separator, no spaces."""
