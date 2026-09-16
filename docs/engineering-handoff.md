@@ -70,8 +70,13 @@ them.
 ## What remains open
 
 - **#173 — architecture governance.** The shell decision has a contract and rules
-  that refuse a manufactured settlement, and no candidate run exists yet, so the
-  choice is `investigating` and nothing has been measured. The bar's content is
+  that refuse a manufactured settlement, and one real run is now committed against
+  it ([`desktop-shell.json`](proofs/results/desktop-shell.json)): a Wayland run on
+  one applicable platform, in a partial run set that leaves the rest declared
+  untested, so the choice is still `investigating`. What that run measured, what
+  its instrument could not, and the artifacts behind every figure are the
+  artifact's own — this file does not restate them; the run and how it was built
+  are described in [the Linux shell record](proofs/linux-shell.md). The bar's content is
   still written in three prose copies (ADR-0001's proof contract, the technology
   amendment, the Linux shell proof record) against the one the contract answers.
   A contract document carrying both old shapes at once is refused by serde's field

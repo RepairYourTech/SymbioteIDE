@@ -1,0 +1,15 @@
+{
+  "run_1_after_self_exit": {
+    "survivors_after_cancel_request": 0,
+    "listening_ports_after_cancel_request": [],
+    "killed_observed_pids": [],
+    "remaining_observed_pids": []
+  },
+  "run_2_after_cancel_request": {
+    "survivors_after_cancel_request": 0,
+    "listening_ports_after_cancel_request": [],
+    "killed_observed_pids": [],
+    "remaining_observed_pids": []
+  },
+  "compositor_terminated_by": "the driver, on the compositor process group it started"
+}

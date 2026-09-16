@@ -38,3 +38,4 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: python3 -m py_compile run-proof.py
+      - run: python3 -m unittest test_run_proof -v

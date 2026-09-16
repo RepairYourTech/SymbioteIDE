@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "contract": "#38/desktop-shell-representative-workload",
+  "contract_sha256": "89a558363eea6c83ba1bee24eefc6a659f9c5b33972acfc7965a3ff7f305adf7",
+  "untested_platforms": [
+    "Linux X11",
+    "Windows 11 x86_64",
+    "macOS 14 arm64"
+  ],
+  "runs": [
+    {
+      "platform": "Linux Wayland on the reference compositor",
+      "version": "kwin 6.7.5 --virtual 1440x960, Mesa Intel(R) Graphics (RPL-P)",
+      "hardware": "13th Gen Intel(R) Core(TM) i7-13620H (16 logical cores), 62 GiB RAM, Mesa Intel(R) Graphics (RPL-P), NVMe storage",
+      "commit": "6a6189efa7bcc8649704d381d746812774d5abdc",
+      "exercised": [
+        "#38: three active terminal tabs with bounded scrollback in real PTYs",
+        "#38: a live integrated Preview of the run's own output",
+        "#38: Preview origins, localhost included, that inherit neither workbench nor Host authority and reach the app only through validated bridge operations"
+      ],
+      "outcome": "stop_condition_triggered",
+      "stop_condition": "#38: a measurement the instrument cannot observe stops the run and is reported unknown, never counted as met",
+      "failures": [
+        "#38: a measurement the instrument cannot observe stops the run and is reported unknown, never counted as met",
+        "cold_start_to_workbench_ready_seconds: this fixture has no workbench: its PROOF_READY marker precedes its first frame and every WebKit helper, so it is not a workbench-ready signal",
+        "idle_process_tree_pss_mib: this fixture has no idle state: its streams, PTYs and Preview start with the app, so no sample is an idle sample",
+        "worst_input_starvation_ms: this driver issues no input in a Wayland session, so no starvation interval is observed",
+        "journal_events_lost_across_crash: this fixture keeps no canonical store or journal for events to be lost from",
+        "installer_size_mib: nothing in this fixture packages an installer for any platform",
+        "the instrument cannot separate the Preview renderer from the workbench and Lead renderers, so the unattributed share is not attribution at the contract\u2019s finest granularity",
+        "the Preview\u2019s denials are self-reported through the fixture\u2019s unauthenticated report endpoint; its label-and-origin validator is covered by the fixture\u2019s own unit test rather than by this run",
+        "terminal input, tab switching and scrollback behaviour are not exercised; the run attests three active PTYs and their bounded output rings",
+        "workload_process_tree_pss_mib: the peak of 251 samples fell 0.621 s into the sampled window (0.01 s to 25.045 s), so where it fell is recorded with the figure rather than left to the reader"
+      ],
+      "observations": [
+        {
+          "measurement": "cold_start_to_first_frame_seconds",
+          "observed": 0.192
+        },
+        {
+          "measurement": "clean_locked_build_seconds",
+          "observed": 60.875
+        }
+      ],
+      "artifacts": [
+        {
+          "artifact": "docs/proofs/results/desktop-shell/app-1.log",
+          "sha256": "df1534d1498f8593c964e9109487d9c9fc91d10e861523f9f7b6683e3606559d"
+        },
+        {
+          "artifact": "docs/proofs/results/desktop-shell/process-tree-1.json",
+          "sha256": "feeca2449fad6d4a4673188545b99fafbffb74454be2962583d6b41409de684f"
+        },
+        {
+          "artifact": "docs/proofs/results/desktop-shell/session.json",
+          "sha256": "3a0c95f834f6096deda30d144f8e5ee34e5a2df1848efcd9116e15ee5b9d82c1"
+        },
+        {
+          "artifact": "docs/proofs/results/desktop-shell/cleanup.json",
+          "sha256": "aef3f0eb5c33a89fc0a645e54b1736a511a8272bba8f374dc18fa946e0c12461"
+        },
+        {
+          "artifact": "docs/proofs/results/desktop-shell/build-6a6189ef.log",
+          "sha256": "80f990f25f588a619d8e9c5bab9c9e645fb722f5482ac0b25a732e2dd57ee2b3"
+        }
+      ]
+    },
+    {
+      "platform": "Linux Wayland on the reference compositor",
+      "version": "kwin 6.7.5 --virtual 1440x960, Mesa Intel(R) Graphics (RPL-P)",
+      "hardware": "13th Gen Intel(R) Core(TM) i7-13620H (16 logical cores), 62 GiB RAM, Mesa Intel(R) Graphics (RPL-P), NVMe storage",
+      "commit": "6a6189efa7bcc8649704d381d746812774d5abdc",
+      "exercised": [
+        "#38: three active terminal tabs with bounded scrollback in real PTYs",
+        "#38: a live integrated Preview of the run's own output",
+        "#38: Preview origins, localhost included, that inherit neither workbench nor Host authority and reach the app only through validated bridge operations"
+      ],
+      "outcome": "stop_condition_triggered",
+      "stop_condition": "#38: a measurement the instrument cannot observe stops the run and is reported unknown, never counted as met",
+      "failures": [
+        "#38: a measurement the instrument cannot observe stops the run and is reported unknown, never counted as met",
+        "cold_start_to_workbench_ready_seconds: this fixture has no workbench: its PROOF_READY marker precedes its first frame and every WebKit helper, so it is not a workbench-ready signal",
+        "idle_process_tree_pss_mib: this fixture has no idle state: its streams, PTYs and Preview start with the app, so no sample is an idle sample",
+        "worst_input_starvation_ms: this driver issues no input in a Wayland session, so no starvation interval is observed",
+        "journal_events_lost_across_crash: this fixture keeps no canonical store or journal for events to be lost from",
+        "installer_size_mib: nothing in this fixture packages an installer for any platform",
+        "the instrument cannot separate the Preview renderer from the workbench and Lead renderers, so the unattributed share is not attribution at the contract\u2019s finest granularity",
+        "the Preview\u2019s denials are self-reported through the fixture\u2019s unauthenticated report endpoint; its label-and-origin validator is covered by the fixture\u2019s own unit test rather than by this run",
+        "terminal input, tab switching and scrollback behaviour are not exercised; the run attests three active PTYs and their bounded output rings",
+        "workload_process_tree_pss_mib: the peak of 251 samples fell 0.621 s into the sampled window (0.01 s to 25.045 s), so where it fell is recorded with the figure rather than left to the reader"
+      ],
+      "observations": [
+        {
+          "measurement": "workload_process_tree_pss_mib",
+          "observed": 505.944
+        },
+        {
+          "measurement": "unattributed_process_tree_memory_percent",
+          "observed": 1.426
+        },
+        {
+          "measurement": "orphaned_processes_after_cancel",
+          "observed": 0.0
+        },
+        {
+          "measurement": "orphaned_listening_ports_after_cancel",
+          "observed": 0.0
+        }
+      ],
+      "artifacts": [
+        {
+          "artifact": "docs/proofs/results/desktop-shell/app-2.log",
+          "sha256": "64197ae59e9fadfdfb51b9dd769cbe5d96d320ac0be8e5c11e48d81bb8eddd40"
+        },
+        {
+          "artifact": "docs/proofs/results/desktop-shell/process-tree-2.json",
+          "sha256": "490af8f38cf36c264606ad5203eabf60a4ebb499454ca0f5c0ee5b55518d4007"
+        },
+        {
+          "artifact": "docs/proofs/results/desktop-shell/session.json",
+          "sha256": "3a0c95f834f6096deda30d144f8e5ee34e5a2df1848efcd9116e15ee5b9d82c1"
+        },
+        {
+          "artifact": "docs/proofs/results/desktop-shell/cleanup.json",
+          "sha256": "aef3f0eb5c33a89fc0a645e54b1736a511a8272bba8f374dc18fa946e0c12461"
+        }
+      ]
+    }
+  ]
+}
