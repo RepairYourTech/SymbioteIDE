@@ -21,10 +21,13 @@ here touches the user's session, display or packages.
 The result artifact is written from what the run observed, and it is checked
 before the run reports success:
 
-* the platform it names must be one the committed contract applies to, its stop
-  condition must be one the contract declares, and every predeclared measurement
-  must be either observed or named with the reason the instrument could not see
-  it — a measurement that is simply absent is refused rather than left silent.
+* the platform it names must be one the committed contract applies to and one the
+  session it starts can be — it may not name a display server other than that
+  session's own, nor another operating system than the machine it runs on — its stop
+  condition must be one the contract declares and is recorded as the invocation's
+  declaration among them, and every predeclared measurement must be either observed
+  or named with the reason the instrument could not see it — a measurement that is
+  simply absent is refused rather than left silent.
   These are the crate's own terms, applied here as well so a run the contract does
   not answer is refused before anything in the tree is written rather than after —
   the run's own records under the ignored ``artifacts/`` directory exist by then,
@@ -71,6 +74,9 @@ Where each concern lives, so a change lands in one place:
 * ``measure`` — the sequence both entry points share: run it, sample it, clean up
   after it, read its own log;
 * ``result_problems`` — what a result may not claim, asked of the contract;
+* ``platform_problems`` / ``session_record`` — whether the platform a result records
+  is one the session it starts can be, and the facts about that session a reader
+  checks that claim against;
 * ``unconsumed_options`` — what the path an invocation selected would never read, so
   an option cannot be accepted and silently dropped;
 * ``fingerprint_problems`` — whether the value an invocation supplies could be the
@@ -115,6 +121,16 @@ _RENDERERS = {}
 # directions: a declared path says what replaces it, and a path the record cannot
 # read back has to be declared.
 UNKEPT_PATHS = ('runtime_dir', 'binary', 'build.log')
+
+# The display server each session this driver starts provides, and the operating
+# systems a platform can name. A platform a result records is a claim about a
+# machine, and these are the two facts about the session the driver can hold it to;
+# ``session_record`` carries both beside the platform so a reader can check the rest.
+# Which of the contract's platforms such a session stands for stays the operator's
+# judgement — a virtual compositor standing for the reference compositor is one the
+# documents state — because nothing here can know a machine it did not run on.
+SESSION_DISPLAY = {'xvfb': 'X11', 'wayland': 'Wayland'}
+OPERATING_SYSTEMS = {'Linux': 'Linux', 'Darwin': 'macOS', 'macOS': 'macOS', 'Windows': 'Windows'}
 
 # The contract obligations this fixture's own log can attest, the marker the
 # fixture emits for each, and how many of them one run has to show. An
@@ -603,6 +619,10 @@ def session_record(session, binary, compositor_log_bytes, build):
     refused by name rather than recorded with a hole where its provenance should be:
     an Xvfb session has none, and this record is only written for the session kind
     that does.
+
+    ``display`` and ``system`` are what the platform a result records is held to: the
+    display server this session provides and the operating system it ran on, recorded
+    beside the figures so a reader checks the label rather than trusting it.
     """
     if session.runtime is None:
         raise SystemExit(f'refusing to record {session.name!r}: it has no private runtime '
@@ -616,6 +636,8 @@ def session_record(session, binary, compositor_log_bytes, build):
             return 'not reported'
     return {
         'session': session.name,
+        'display': SESSION_DISPLAY[session.kind],
+        'system': host_system(),
         'runtime_dir': repo_path(session.runtime),
         'runtime_dir_note': 'the private XDG_RUNTIME_DIR this session started in, removed when the run ends; no figure is read from it',
         'wayland_display': env.get('WAYLAND_DISPLAY'),
@@ -747,6 +769,12 @@ def platform_key(value):
     return value.strip().lower()
 
 
+def host_system():
+    """The operating system this process runs on, named the way a platform names it."""
+    reported = os.uname().sysname
+    return OPERATING_SYSTEMS.get(reported, reported)
+
+
 def publish_slug(platform):
     """The directory one platform's artifacts live in inside the publish root.
 
@@ -786,6 +814,36 @@ def revision_problems(commit, head, status):
         problems.append('the tree differs from HEAD in:\n    ' + '\n    '.join(changed))
     if commit and head and commit != head:
         problems.append(f'the run would record revision {commit} and this tree is {head}')
+    return problems
+
+
+def platform_problems(platform, session, system):
+    """Why a result may not record this platform, if it may not.
+
+    The platform a result records is a claim about a machine, and until this rule the
+    only thing that bore it was the invocation: a kwin Wayland session on this Linux
+    host could publish a run recording ``macOS 14 arm64``, and the untested list the
+    ledger reads was derived from that word. What the driver can hold the claim to is
+    the session it starts — the display server that session provides, and the
+    operating system this process runs on — so a platform naming another display
+    server, or another operating system, is refused rather than recorded.
+
+    Which of the platforms a session could be is still the operator's judgement, and
+    the record says so: a label naming neither of those facts cannot be contradicted
+    from here, and ``session_record`` carries both beside it so a reader compares them
+    with what the run's own machine showed rather than trusting the label.
+    """
+    problems = []
+    provided = SESSION_DISPLAY[session]
+    for display in SESSION_DISPLAY.values():
+        if platform_key(display) in platform_key(platform) and display != provided:
+            problems.append(f'{platform!r} names {display}, and this run starts a {session} session '
+                            f'that provides {provided}: a result would record a platform the '
+                            'session it started cannot be')
+    for reported, name in OPERATING_SYSTEMS.items():
+        if platform_key(reported) in platform_key(platform) and name != system:
+            problems.append(f'{platform!r} names {name}, and this session runs on {system}: a run '
+                            'measured here cannot be one of those')
     return problems
 
 
@@ -1125,6 +1183,10 @@ def result_runs(args, contract, runs, published, session, hardware, commit):
         'exercised': row['exercised'],
         'outcome': 'stop_condition_triggered',
         'stop_condition': args.stop_condition,
+        'stop_condition_note': ('the condition this invocation declares ended the run, among the ones '
+                               'the contract carries: which of them a run trips is the operator\'s '
+                               'statement, and the exits, cleanup, unknowns and untested platforms '
+                               'in these entries are what a reader compares it against'),
         'failures': failures,
         'observations': row['figures'],
         'artifacts': [by_name[name] for name in row['cites'] if name in by_name],
@@ -1249,8 +1311,10 @@ def main():
     parser.add_argument('--commit', default=None, help='the revision the binary was built from')
     parser.add_argument('--platform', default=None,
                         help='the contract platform this run exercised, which the contract has to '
-                             'apply to; the rest are derived as untested (default: the first '
-                             'platform the contract document applies to)')
+                             'apply to and the session it starts has to be able to be (it may not '
+                             'name another display server or operating system); the rest are '
+                             'derived as untested (default: the first platform the contract '
+                             'document applies to)')
     parser.add_argument('--publish', default=None,
                         help='repository-relative root to publish the cited artifacts under, in a '
                              'directory per platform, so a second platform cannot overwrite the first')
@@ -1266,7 +1330,11 @@ def main():
                         help="the contract's fingerprint, which the ledger holds: the crate's "
                              "SHA-256 of the contract's own canonical JSON, not the document "
                              "file's, and not this driver's to derive")
-    parser.add_argument('--stop-condition', default=None)
+    parser.add_argument('--stop-condition', default=None,
+                        help='the condition this invocation declares ended the run, which the '
+                             'contract has to declare; each run entry records it as declared, '
+                             'beside the exits, cleanup, unknowns and untested platforms a reader '
+                             'compares it against')
     parser.add_argument('--unobservable', nargs='*', default=[],
                         help='measurement=reason pairs this run reports unknown rather than met')
     parser.add_argument('--limitation', nargs='*', default=[],
@@ -1301,6 +1369,10 @@ def main():
         if problems:
             raise SystemExit("refusing to publish a result: the fingerprint has to be the "
                              "contract's, and:\n  " + '\n  '.join(problems))
+        problems = platform_problems(args.platform, args.session, host_system())
+        if problems:
+            raise SystemExit('refusing to publish a result: the platform it would record has to be '
+                             'one this session can be, and:\n  ' + '\n  '.join(problems))
     head = subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'],
                           capture_output=True, text=True).stdout.strip()
     commit = args.commit or head

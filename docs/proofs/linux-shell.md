@@ -104,13 +104,20 @@ path, so the rendering evidence is the client's own protocol log and the app's l
 The result attests only what the fixture's own log shows. `exercised` is derived
 from the app's markers — three `PROOF_PTY_START`, one `PROOF_READY
 preview_origin=`, two `PROOF_PREVIEW_REPORT` denials — so four concurrent agent
-streams are absent from it even though the fixture starts four synthetic ones. The
-runner refuses to publish a result whose platform the contract does not apply to,
-whose stop condition the contract does not declare, which leaves a predeclared
+streams are absent from it even though the fixture starts four synthetic ones.The runner refuses to publish a result whose platform the contract does not apply to, whose stop condition the contract does not declare, which leaves a predeclared
 measurement neither observed nor named with its reason, or which attests an
 obligation no marker supports; the platforms this run did not exercise are derived
 from the runs the dossier holds rather than typed; and the artifact it wrote was
-read back by the ledger's own map, which reported no refusals for it.
+read back by the ledger's own map, which reported no refusals for it. Two of those
+terms are the invocation's word and are held to the session instead: the platform has
+to be one the session it started can be — it may not name a display server other
+than that session's own, nor another operating system than the machine it ran on, and
+the session record carries both facts beside the figures so a reader checks the label
+rather than trusting it, while *which* of the platforms that session could be stays
+the operator's judgement, as the compositor compromise above shows — and the
+condition a run records as ending it is the invocation's declaration among the
+contract's own, with the run's exits, cleanup, unknowns and untested platforms
+beside it for a reader to compare.
 
 A dossier is one contract's, and this driver runs one platform at a time, so a run
 merges: another platform's recorded runs are kept exactly as they stand, this
