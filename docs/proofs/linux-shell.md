@@ -117,13 +117,13 @@ than that session's own, nor another operating system than the machine it ran on
 and the record a run writes from here carries both facts beside the figures, so a
 reader checks the label rather than trusting it, and declares its own
 `schema_version`, so a reader compares the record's fields with the ones that version
-carries in `run-proof.py` rather than dating them against this paragraph. Version 1 is
+carries in `shellproof/records.py` rather than dating them against this paragraph. Version 1 is
 the shape the runner writes now: it added `display` and `system` to the shape written
 before it, beside the `schema_version` that names it. The record the committed run left
 declares no version, so it is that earlier shape — it shows the display server through
 `wayland_display`, `display_unset` and the compositor it names in `session`, and names
 no operating system at all, its `hardware` line giving the machine's components — and
-the reader in `run-proof.py` reads it as that shape rather than refusing it. *Which*
+the reader in `shellproof/records.py` reads it as that shape rather than refusing it. *Which*
 of the platforms that session could be stays the operator's judgement, as the
 compositor compromise above shows — and the condition a run records as ending it is the
 invocation's declaration among the contract's own, with the run's exits, cleanup,
