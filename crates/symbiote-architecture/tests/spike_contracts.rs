@@ -829,16 +829,7 @@ fn the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field() {
     // exists, so this holds the quotation against the deserializer that produced it.
     // (Nothing here can run the pre-#602 loader itself: the line that formatted the
     // message is gone from the tree.)
-    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
-    let contract = value["contracts"][0]
-        .as_object_mut()
-        .expect("the fixture's contract object");
-    let answered = contract.remove("answers").expect("the fixture's answers");
-    contract.insert(
-        "obligations".into(),
-        json!({ "section": SECTION, "answered": answered }),
-    );
-    let error = serde_json::from_str::<Contracts>(&value.to_string())
+    let error = serde_json::from_str::<Contracts>(&pre_bar_move_contract().to_string())
         .expect_err("the shape #601 read is refused by the type, not by a rule");
     let message = error.to_string();
     assert!(message.contains("unknown field `obligations`"), "{message}");
@@ -853,16 +844,7 @@ fn a_contract_document_of_the_shape_before_the_bar_moved_is_refused_naming_what_
     // holding the old document is told where the section went and that there is
     // no second version to wait for.
     let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
-    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
-    let contract = value["contracts"][0]
-        .as_object_mut()
-        .expect("the fixture's contract object");
-    let answered = contract.remove("answers").expect("the fixture's answers");
-    contract.insert(
-        "obligations".into(),
-        json!({ "section": SECTION, "answered": answered }),
-    );
-    fixture.write(CONTRACTS_PATH, &value);
+    fixture.write(CONTRACTS_PATH, &pre_bar_move_contract());
     let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
         .expect_err("the shape this loader read before the bar moved is refused");
     assert!(
@@ -1027,6 +1009,23 @@ const SECTION: &str = "Proof contract and stop conditions";
 const RECORD: &str = "# The accepted text this record interprets\n\n## Proof contract and stop conditions\n\nthe workload the choice was accepted with; the standard its runs are held to; the method a run follows.\nthe wider acceptance this contract is not.\n\n## Remaining acceptance\n\nnothing yet.\n";
 
 const STOP_CONDITION: &str = "#38: a blank-window figure stops the run";
+
+/// A contract document as #601 wrote it: the section it answered on the contract,
+/// the answers under it, and no `answers` of its own. Two tests need exactly this
+/// shape — one for the message the derive printed before the read path named it,
+/// one for the refusal the read path produces now — so it is built once here.
+fn pre_bar_move_contract() -> Value {
+    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
+    let contract = value["contracts"][0]
+        .as_object_mut()
+        .expect("the fixture's contract object");
+    let answered = contract.remove("answers").expect("the fixture's answers");
+    contract.insert(
+        "obligations".into(),
+        json!({ "section": SECTION, "answered": answered }),
+    );
+    value
+}
 
 /// The one measurement the fixture contract predeclares, inside its ceiling.
 fn observations() -> Value {
