@@ -130,6 +130,44 @@ class ContractTerms(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 run_proof.Contract.read(path, '#38/desktop-shell-representative-workload')
 
+    def test_a_document_that_names_no_contract_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'spike-contracts.json'
+            path.write_text(json.dumps({'contracts': []}))
+            for refuse in (lambda: run_proof.Contract.read(path, 'anything'),
+                           lambda: run_proof.Contract.read(path),
+                           lambda: run_proof.Contract.named_by_the_document(path)):
+                with self.assertRaises(SystemExit) as caught:
+                    refuse()
+                self.assertIn('names no contract', str(caught.exception))
+
+    def test_a_document_that_cannot_be_read_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / 'absent.json'
+            with self.assertRaises(SystemExit) as caught:
+                run_proof.Contract.read(missing, 'anything')
+            self.assertIn('does not exist', str(caught.exception))
+            broken = Path(directory) / 'broken.json'
+            broken.write_text('{not json')
+            with self.assertRaises(SystemExit) as caught:
+                run_proof.Contract.named_by_the_document(broken)
+            self.assertIn('cannot be read as JSON', str(caught.exception))
+
+    def test_a_contract_without_the_terms_a_run_answers_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'spike-contracts.json'
+            for shaped, names in (
+                    ({'contracts': [{'id': 'C', 'stop_conditions': ['s'],
+                                     'measurements': [{'name': 'm'}]}]},
+                     'the platforms it applies to'),
+                    ({'contracts': [{'id': 'C', 'applicable_platforms': ['p'],
+                                     'stop_conditions': ['s'], 'measurements': [{'unit': 's'}]}]},
+                     'the names of the measurements it predeclares')):
+                path.write_text(json.dumps(shaped))
+                with self.assertRaises(SystemExit) as caught:
+                    run_proof.Contract.read(path, 'C')
+                self.assertIn(names, str(caught.exception))
+
     def test_an_invocation_that_names_no_terms_is_given_the_documents(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.document(directory, identifier='SUITE/other', platforms=('Suite First',
@@ -240,6 +278,16 @@ class Merge(unittest.TestCase):
         self.assertEqual([row for row in merged if row['platform'] == 'Linux X11'], [fresh])
         self.assertEqual([row for row in merged if row['platform'] != 'Linux X11'], [wayland])
 
+    def test_a_dossier_that_cannot_be_read_is_refused_by_name(self):
+        self.path.write_text('{not json')
+        with self.assertRaises(SystemExit) as caught:
+            run_proof.merged_runs(self.path, CONTRACT, FINGERPRINT, 'Linux X11', [])
+        self.assertIn('cannot be read as JSON', str(caught.exception))
+        self.path.write_text('[]')
+        with self.assertRaises(SystemExit) as caught:
+            run_proof.merged_runs(self.path, CONTRACT, FINGERPRINT, 'Linux X11', [])
+        self.assertIn('not a dossier', str(caught.exception))
+
     def test_a_dossier_of_another_contract_or_other_thresholds_is_refused(self):
         self.path.write_text(json.dumps(dossier([], contract='SOME/OTHER')))
         with self.assertRaises(SystemExit):
@@ -279,6 +327,13 @@ class Revision(unittest.TestCase):
             self.assertEqual(record['commands'], ['+ git rev-parse HEAD', '+ npm run build'])
             with self.assertRaises(SystemExit):
                 run_proof.build_record(arguments, 'b' * 40)
+
+    def test_a_build_log_that_cannot_be_read_is_refused_by_name(self):
+        arguments = argparse.Namespace(build_log='/no/such/build.log', build_seconds=1.0,
+                                       publish=None, platform='Linux X11')
+        with self.assertRaises(SystemExit) as caught:
+            run_proof.build_record(arguments, 'a' * 40)
+        self.assertIn('/no/such/build.log', str(caught.exception))
 
 
 class Survivors(unittest.TestCase):
@@ -426,6 +481,99 @@ class EntryPoint(unittest.TestCase):
         self.assertEqual(measured['cancellation']['survivors_after_cancel_request'], 0)
 
 
+class Publishing(unittest.TestCase):
+    """Nothing is published for a run that cannot support its own result.
+
+    The Wayland entry point is driven with a stand-in session and a stand-in app, and
+    every path it writes is inside this case's own temporary directory, so what a
+    refusal leaves behind — and what a publishing run does write — can be counted
+    without reaching the tree the repository commits: that tree is read before and
+    after each drive, by bytes, and has to be identical.
+
+    The ledger's own read-back of what was published is stood in for here, because
+    it runs cargo and is not what these cases are about; the artifact it would read
+    is checked by ``results`` below and by the commits that carry it.
+    """
+
+    MARKERS = ('#!/bin/sh\n'
+               'echo PROOF_PTY_START\n'
+               'echo PROOF_PTY_START\n'
+               'echo PROOF_PTY_START\n'
+               'echo "PROOF_READY preview_origin=http://127.0.0.1:5173"\n'
+               'echo "PROOF_PREVIEW_REPORT snapshot: denied"\n'
+               'echo "PROOF_PREVIEW_REPORT stop_ptys: denied"\n')
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.artifacts = self.root / 'artifacts'
+        self.artifacts.mkdir()
+        (self.artifacts / 'kwin.log').write_text('')
+        self.session = RecordedSession(kind='wayland', name='suite compositor',
+                                       process=Ended(), env=dict(os.environ), log=Closes(),
+                                       runtime=self.root / 'runtime')
+        self.publish = self.root / 'publish'
+        self.dossier = self.root / 'desktop-shell.json'
+        contract = run_proof.Contract.read(run_proof.REPO / run_proof.CONTRACTS_PATH)
+        self.arguments = argparse.Namespace(
+            seconds=1, cancel_after=0, build_seconds=None, build_log=None,
+            publish=str(self.publish), results=str(self.dossier),
+            platform=contract.default_platform(), contracts=run_proof.CONTRACTS_PATH,
+            contract=contract.id, contract_sha256='f' * 64,
+            stop_condition=contract.stop_conditions[0], limitation=[],
+            unobservable=[f'{name}=this case measures nothing'
+                          for name in contract.measurement_names])
+
+    def committed_tree(self):
+        """Every recorded file by its bytes: what a run must leave exactly as it is."""
+        root = run_proof.REPO / 'docs/proofs/results'
+        return {path: run_proof.sha256_of(path) for path in sorted(root.rglob('*')) if path.is_file()}
+
+    def drive(self, markers):
+        before = self.committed_tree()
+        app = self.artifacts / 'probe'
+        app.write_text(markers)
+        app.chmod(0o755)
+        printed = io.StringIO()
+        with mock.patch.object(run_proof, 'open_session', return_value=self.session), \
+             mock.patch.object(run_proof, 'ledger_refusals', return_value=[]):
+            with contextlib.redirect_stdout(printed):
+                run_proof.run_wayland(self.arguments, self.artifacts, app, 'a' * 40)
+        self.assertEqual(self.committed_tree(), before,
+                         'a run must not touch a file the repository commits')
+        return printed.getvalue()
+
+    def test_a_run_that_cannot_attest_what_it_ran_publishes_nothing(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.drive('#!/bin/sh\necho "no marker this fixture attests"\n')
+        self.assertIn('attests no obligation', str(caught.exception))
+        self.assertFalse(self.publish.exists(), 'an artifact directory was published')
+        self.assertFalse(self.dossier.exists(), 'a dossier was written')
+
+    def test_a_run_that_does_not_answer_the_contract_publishes_nothing(self):
+        self.arguments.unobservable = ['not_predeclared=this case measures nothing']
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.MARKERS)
+        self.assertIn('not_predeclared', str(caught.exception))
+        self.assertFalse(self.publish.exists(), 'an artifact directory was published')
+        self.assertFalse(self.dossier.exists(), 'a dossier was written')
+
+    def test_a_run_that_supports_its_result_publishes_it(self):
+        printed = self.drive(self.MARKERS)
+        self.assertIn(f'wrote {self.dossier}', printed)
+        document = json.loads(self.dossier.read_text())
+        self.assertEqual(document['contract'], self.arguments.contract)
+        self.assertEqual(document['untested_platforms'],
+                         ['Linux X11', 'Windows 11 x86_64', 'macOS 14 arm64'])
+        self.assertEqual(len(document['runs']), 2)
+        published = [item for row in document['runs'] for item in row['artifacts']]
+        self.assertTrue(published, 'a published run cites the artifacts it stands on')
+        for item in published:
+            path = run_proof.REPO / item['artifact']
+            self.assertTrue(path.exists(), f"{item['artifact']} is cited and not published")
+            self.assertEqual(run_proof.sha256_of(path), item['sha256'])
+
+
 class UnkeptPaths(unittest.TestCase):
     """The record has to say which of its paths the run does not keep.
 
@@ -478,6 +626,13 @@ class UnkeptPaths(unittest.TestCase):
         self.assertEqual(self.record['build']['log_sha256'], run_proof.sha256_of(self.published),
                          'the hash names the bytes of the copy that is kept')
         self.assertEqual(self.record['build']['published_log'], str(self.published))
+
+    def test_a_session_with_no_runtime_directory_is_refused_by_name(self):
+        session = run_proof.Session(kind='xvfb', name='Xvfb :9', process=Ended(), env={},
+                                    log=Closes(), runtime=None)
+        with self.assertRaises(SystemExit) as caught:
+            run_proof.session_record(session, self.binary, 0, None)
+        self.assertIn('no private runtime directory', str(caught.exception))
 
     def test_a_path_the_record_cannot_read_back_has_to_be_declared(self):
         # The run is over: what it did not publish goes with it, and what it
