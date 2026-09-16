@@ -788,7 +788,10 @@ fn a_run_measured_against_a_moved_threshold_does_not_settle_the_choice() {
         Some(results),
     )
     .problems();
-    refused(&found, "its thresholds have moved since the run");
+    refused(
+        &found,
+        "the contract it was measured against has changed since the run",
+    );
 }
 
 #[test]
