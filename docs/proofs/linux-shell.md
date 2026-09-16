@@ -27,7 +27,7 @@ First run `artifacts/20260908T032747Z`: exit 0 and both Preview commands denied,
 
 After explicit GTK Fixed layout, run `artifacts/20260908T033012Z` lasted 21.003 seconds (20-second requested app lifetime), Xvfb 1440×960 and app 1400×900. Exit 0; Preview self-reported denial of both `snapshot` and `stop_ptys`; three native PTYs started and were reaped; zero sampled survivors before or after cleanup. Screenshot inspection shows four synthetic streams, Monaco diff, separate Preview, overlapping Lead input, three PTY tabs, and tty output. Interaction, keyboard focus and project switching were not exercised in this run. Native denial counter is zero; framework IPC rejection is inferred, not independently proven. The separate unit test verifies the custom label+origin defense.
 
-Peak **summed RSS**, not physical RAM/PSS, was 1,336,624 KiB at 1.680 seconds: shell 220,060 KiB, three PTY processes 40,684 KiB, WebKit network/renderers 1,075,880 KiB. Individual WebKit renderer-to-label attribution remains unknown. Xvfb is separate instrumentation and was not included in that peak; subsequent runner samples report it separately. Mesa logged lack of accelerated DRI3 on Xvfb. These debug/software-display observations cannot pass a production memory/performance gate. Raw `app.log`, `process-tree.json`, `cleanup.json`, `xvfb.log`, and `x11.png` remain in the local artifact directories above.
+Peak **summed RSS**, not physical RAM/PSS, was 1,336,624 KiB at 1.680 seconds: shell 220,060 KiB, three PTY processes 40,684 KiB, WebKit network/renderers 1,075,880 KiB. Individual WebKit renderer-to-label attribution remains unknown. Xvfb is separate instrumentation and was not included in that peak; subsequent runner samples report it separately. Mesa logged lack of accelerated DRI3 on Xvfb. These debug/software-display observations cannot pass a production memory/performance gate. Raw `app.log`, `process-tree.json`, `cleanup.json`, `xvfb.log` and `x11.png` are committed beside this record under `evidence/linux-shell/`; what these runs wrote into the ignored `artifacts/` tree above is scratch.
 
 Evidence qualification: references above to Preview commands being denied mean **Preview self-reported denial**, received through an unauthenticated report endpoint. The historical raw `preview_probes_denied` field means only those strings were received. The custom handler was not observed rejecting these attempts; framework rejection is inferred, not independently proven. The label/origin unit test is separate evidence. This run does not certify the Preview security requirement.
 
@@ -104,20 +104,25 @@ path, so the rendering evidence is the client's own protocol log and the app's l
 The result attests only what the fixture's own log shows. `exercised` is derived
 from the app's markers — three `PROOF_PTY_START`, one `PROOF_READY
 preview_origin=`, two `PROOF_PREVIEW_REPORT` denials — so four concurrent agent
-streams are absent from it even though the fixture starts four synthetic ones.The runner refuses to publish a result whose platform the contract does not apply to, whose stop condition the contract does not declare, which leaves a predeclared
+streams are absent from it even though the fixture starts four synthetic ones. The
+runner refuses to publish a result whose platform the contract does not apply to,
+whose stop condition the contract does not declare, which leaves a predeclared
 measurement neither observed nor named with its reason, or which attests an
 obligation no marker supports; the platforms this run did not exercise are derived
 from the runs the dossier holds rather than typed; and the artifact it wrote was
 read back by the ledger's own map, which reported no refusals for it. Two of those
 terms are the invocation's word and are held to the session instead: the platform has
 to be one the session it started can be — it may not name a display server other
-than that session's own, nor another operating system than the machine it ran on, and
-the session record carries both facts beside the figures so a reader checks the label
-rather than trusting it, while *which* of the platforms that session could be stays
-the operator's judgement, as the compositor compromise above shows — and the
-condition a run records as ending it is the invocation's declaration among the
-contract's own, with the run's exits, cleanup, unknowns and untested platforms
-beside it for a reader to compare.
+than that session's own, nor another operating system than the machine it ran on —
+and the record a run writes from here carries both facts beside the figures, so a
+reader checks the label rather than trusting it. The record the committed run left
+predates those two fields: it shows the display server through `wayland_display`,
+`display_unset` and the compositor it names in `session`, and names no operating
+system at all, its `hardware` line giving the machine's components. *Which* of the
+platforms that session could be stays the operator's judgement, as the compositor
+compromise above shows — and the condition a run records as ending it is the
+invocation's declaration among the contract's own, with the run's exits, cleanup,
+unknowns and untested platforms beside it for a reader to compare.
 
 A dossier is one contract's, and this driver runs one platform at a time, so a run
 merges: another platform's recorded runs are kept exactly as they stand, this
