@@ -8,10 +8,12 @@
 //! [`Results`] holds the runs that would settle it, and each [`Run`] says which
 //! platform and version it exercised, on what hardware and revision, which of
 //! the contract's obligations it actually ran, what it measured, which raw
-//! artifacts it published and which failures it saw. A decision can publish
-//! `accepted` only while a run set answering all of that stands, so the path
-//! from `investigating` to `accepted` is walked through measurements rather than
-//! through a file that merely asserts them.
+//! artifacts it published and which failures it saw — and every platform the
+//! contract applies to is either measured by one of its runs or declared untested,
+//! with a declared untested platform keeping the choice pending. A decision can
+//! publish `accepted` only while a run set answering all of that stands, so the
+//! path from `investigating` to `accepted` is walked through measurements rather
+//! than through a file that merely asserts them.
 //!
 //! Every read fails rather than passes when it finds nothing.
 
@@ -113,8 +115,8 @@ pub struct Cited {
 #[serde(deny_unknown_fields)]
 pub struct Run {
     /// The platform this run exercised. A run on one platform says nothing about
-    /// the others; the platforms the run set leaves alone are the file's
-    /// business.
+    /// the others: the file has to declare which of the contract's platforms it
+    /// left alone, and declaring one keeps the choice from settling.
     #[serde(default)]
     pub platform: String,
     /// The platform's version, so the figures belong to a stated stack.
@@ -370,8 +372,61 @@ impl Results {
                 self.untested_platforms.join(", ")
             ));
         }
+        unmet.extend(self.coverage_unmet(contract));
         unmet
     }
+
+    /// Every platform the contract applies to is accounted for: measured by a
+    /// run, or declared untested — and an untested declaration is only about a
+    /// platform the contract applies to. Coverage is the contract's to declare,
+    /// so a result cannot settle a choice by saying nothing about a platform: the
+    /// list of what it left alone has to be complete, which is what makes the
+    /// choice pending rather than settled where a platform was not exercised.
+    fn coverage_unmet(&self, contract: &SpikeContract) -> Vec<String> {
+        let mut unmet = Vec::new();
+        if self.runs.is_empty() {
+            // A result that records no run is refused for exactly that, so the
+            // platforms it therefore covers are not counted a second time.
+            return unmet;
+        }
+        let measured: BTreeSet<String> = self
+            .runs
+            .iter()
+            .map(|run| platform_key(&run.platform))
+            .filter(|platform| !platform.is_empty())
+            .collect();
+        let untested: BTreeSet<String> = self
+            .untested_platforms
+            .iter()
+            .map(|platform| platform_key(platform))
+            .filter(|platform| !platform.is_empty())
+            .collect();
+        let applicable: BTreeSet<String> = contract
+            .applicable_platforms
+            .iter()
+            .map(|platform| platform_key(platform))
+            .collect();
+        for platform in untested.difference(&applicable) {
+            unmet.push(format!(
+                "the result declares {platform:?} untested, which the contract does not apply to"
+            ));
+        }
+        for platform in applicable
+            .difference(&untested)
+            .filter(|p| !measured.contains(*p))
+        {
+            unmet.push(format!(
+                "the result leaves {platform:?} neither measured nor declared untested, so nothing says whether the contract's applicability was covered"
+            ));
+        }
+        unmet
+    }
+}
+
+/// One platform, as a result names it: trimmed and case-insensitive, so a
+/// contract's "Linux X11" and a run's "linux-x11" are the same platform.
+fn platform_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 /// Whether a string names a revision: what git writes, abbreviated or full.

@@ -274,6 +274,7 @@ fn spike_requires_reproducibility_and_finite_predeclared_thresholds() {
         decision: "shell".into(),
         hypothesis: "bounded queues".into(),
         workload: vec!["four streams".into()],
+        applicable_platforms: vec!["test only".into()],
         platform: "test only".into(),
         hardware: "fixture".into(),
         method: "measure tree".into(),

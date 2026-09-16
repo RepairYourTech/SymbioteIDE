@@ -257,10 +257,16 @@ fn a_run_that_names_no_revision_does_not_settle_the_choice() {
 #[test]
 fn a_run_that_names_no_platform_does_not_settle_the_choice() {
     let found = settled_run(|run| run["platform"] = json!(""));
-    assert_eq!(found.len(), 1, "{found:?}");
+    // Two facts, said once each: the run does not say where it was measured, and
+    // the platform the contract applies to is therefore unaccounted for.
+    assert_eq!(found.len(), 2, "{found:?}");
     refused(
         &found,
         "a run names no platform, so nothing says where it was measured",
+    );
+    refused(
+        &found,
+        "leaves \"linux-wayland\" neither measured nor declared untested",
     );
 }
 
@@ -373,16 +379,90 @@ fn a_run_that_ends_on_a_stop_condition_does_not_settle_the_choice() {
 #[test]
 fn a_run_that_leaves_a_platform_untested_does_not_settle_the_choice() {
     let mut results = results_value(json!([run_value(observations())]));
-    results["untested_platforms"] = json!(["windows-11", "macos-14"]);
+    results["untested_platforms"] = json!(["windows-11"]);
+    let found = Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![spanning_contract()],
+        Some(results),
+    )
+    .problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "1 platform(s) were not exercised");
+    refused(&found, "windows-11");
+}
+
+#[test]
+fn a_result_that_leaves_an_applicable_platform_unaccounted_for_is_refused() {
+    // The settlement the audit built: one platform measured, nothing declared
+    // untested, and a contract that applies to two.
+    let found = Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![spanning_contract()],
+        Some(results_value(json!([run_value(observations())]))),
+    )
+    .problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(
+        &found,
+        "leaves \"windows-11\" neither measured nor declared untested",
+    );
+}
+
+#[test]
+fn a_result_that_declares_a_platform_the_contract_does_not_apply_to_is_refused() {
+    let mut results = results_value(json!([run_value(observations())]));
+    results["untested_platforms"] = json!(["windows-11"]);
     let found = Fixture::new(
         citing_its_own_run(accepted_ledger()),
         vec![fixture_contract()],
         Some(results),
     )
     .problems();
-    assert_eq!(found.len(), 1, "{found:?}");
-    refused(&found, "2 platform(s) were not exercised");
-    refused(&found, "windows-11, macos-14");
+    refused(
+        &found,
+        "declares \"windows-11\" untested, which the contract does not apply to",
+    );
+}
+
+#[test]
+fn a_contract_that_declares_no_applicable_platform_is_refused() {
+    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
+    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
+    value["contracts"][0]["applicable_platforms"] = json!([]);
+    fixture.write(CONTRACTS_PATH, &value);
+    let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
+        .expect_err("a contract applying to nothing accounts for nothing");
+    assert!(error.0.contains("must be named once each"), "{error}");
+}
+
+#[test]
+fn a_contract_that_names_one_applicable_platform_twice_is_refused() {
+    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
+    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
+    value["contracts"][0]["applicable_platforms"] = json!(["linux-wayland", "Linux-Wayland"]);
+    fixture.write(CONTRACTS_PATH, &value);
+    let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
+        .expect_err("one platform named twice is one platform");
+    assert!(error.0.contains("must be named once each"), "{error}");
+}
+
+#[test]
+fn the_committed_contract_names_the_platforms_it_applies_to_and_its_prose_defers_to_them() {
+    let contract = contracts()
+        .contract(SHELL_CONTRACT)
+        .expect("the shell contract")
+        .clone();
+    assert_eq!(
+        contract.applicable_platforms.len(),
+        4,
+        "the four platforms the contract applies to belong in data: {:?}",
+        contract.applicable_platforms
+    );
+    assert!(
+        contract.platform.contains("applicable_platforms"),
+        "the prose has to point at the data rather than restate it: {}",
+        contract.platform
+    );
 }
 
 #[test]
@@ -475,8 +555,19 @@ fn a_settled_run_citing_a_raw_artifact_that_has_changed_is_refused() {
 
 #[test]
 fn the_settled_path_passes_when_every_run_is_complete_and_in_threshold() {
-    let fixture = settled(json!([run_value(observations())]));
-    assert_eq!(fixture.problems(), Vec::new());
+    let fixture = Fixture::new(
+        citing_its_own_run(accepted_ledger()),
+        vec![spanning_contract()],
+        Some(results_value(json!([
+            run_value(observations()),
+            run_on("windows-11")
+        ]))),
+    );
+    assert_eq!(
+        fixture.problems(),
+        Vec::new(),
+        "a run for every platform the contract applies to settles it"
+    );
 }
 
 #[test]
@@ -637,7 +728,8 @@ fn fixture_contract() -> Value {
         "decision": ID,
         "hypothesis": "the candidate meets every predeclared ceiling on the reference configuration",
         "workload": [OBLIGATION],
-        "platform": "Linux Wayland",
+        "applicable_platforms": ["linux-wayland"],
+        "platform": "Applicability is the data above, not this sentence",
         "hardware": "four cores, 16 GiB",
         "method": "sample the candidate's own process tree at 100 ms",
         "measurements": [
@@ -671,6 +763,22 @@ fn run_value(observations: Value) -> Value {
         "observations": observations,
         "artifacts": [{ "artifact": RAW, "sha256": "" }]
     })
+}
+
+/// A contract applying to two platforms, so a settlement has to carry a run for
+/// each of them rather than for whichever one it happened to measure.
+fn spanning_contract() -> Value {
+    let mut contract = fixture_contract();
+    contract["applicable_platforms"] = json!(["linux-wayland", "windows-11"]);
+    contract
+}
+
+/// The same run the fixture builds, on the contract's second platform.
+fn run_on(platform: &str) -> Value {
+    let mut run = run_value(observations());
+    run["platform"] = json!(platform);
+    run["version"] = json!("11 23H2");
+    run
 }
 
 /// A dossier of runs, with the fingerprint and raw hashes filled by the fixture.

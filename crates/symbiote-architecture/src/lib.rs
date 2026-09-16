@@ -553,6 +553,10 @@ pub struct SpikeContract {
     pub decision: String,
     pub hypothesis: String,
     pub workload: Vec<String>,
+    /// The platforms this contract applies to, as data rather than as a sentence:
+    /// a settlement has to account for every one of them, and prose cannot be
+    /// asked what it covers.
+    pub applicable_platforms: Vec<String>,
     pub platform: String,
     pub hardware: String,
     pub method: String,
@@ -589,6 +593,18 @@ impl SpikeContract {
         require(
             !self.measurements.is_empty(),
             "predeclared measurements required",
+        )?;
+        require(
+            !self.applicable_platforms.is_empty()
+                && self.applicable_platforms.iter().all(|p| text(p))
+                && self
+                    .applicable_platforms
+                    .iter()
+                    .map(|p| p.trim().to_ascii_lowercase())
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == self.applicable_platforms.len(),
+            "the platforms this contract applies to must be named once each",
         )?;
         let mut names = BTreeSet::new();
         for m in &self.measurements {
