@@ -192,7 +192,7 @@ fn an_answer_that_names_two_carriers_or_none_is_refused() {
         "schema_version": 1,
         "contracts": [fixture_contract()]
     });
-    value["contracts"][0]["obligations"]["answered"][2]["obligation"] = json!(OBLIGATION);
+    value["contracts"][0]["answers"][2]["obligation"] = json!(OBLIGATION);
     fixture.write(CONTRACTS_PATH, &value);
     let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
         .expect_err("a clause is answered once, by one of the three");
@@ -202,7 +202,7 @@ fn an_answer_that_names_two_carriers_or_none_is_refused() {
         "schema_version": 1,
         "contracts": [fixture_contract()]
     });
-    value["contracts"][0]["obligations"]["answered"][2] = json!({ "clause": 3 });
+    value["contracts"][0]["answers"][2] = json!({ "clause": 3 });
     fixture.write(CONTRACTS_PATH, &value);
     let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
         .expect_err("a clause is answered by something");
@@ -216,34 +216,49 @@ fn an_elsewhere_answer_with_no_reason_is_refused() {
         "schema_version": 1,
         "contracts": [fixture_contract()]
     });
-    value["contracts"][0]["obligations"]["answered"][3]["elsewhere"]["why"] = json!("");
+    value["contracts"][0]["answers"][3]["elsewhere"]["why"] = json!("");
     fixture.write(CONTRACTS_PATH, &value);
     let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
         .expect_err("naming the owner is not saying why the clause is not here");
     assert!(error.0.contains("does not say why"), "{error}");
 }
-
 #[test]
-fn a_contract_that_names_no_bar_is_refused() {
+fn a_contract_that_answers_no_clause_of_the_bar_is_refused() {
     let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
     let mut value = json!({
         "schema_version": 1,
         "contracts": [fixture_contract()]
     });
-    value["contracts"][0]["obligations"]["answered"] = json!([]);
+    value["contracts"][0]["answers"] = json!([]);
     fixture.write(CONTRACTS_PATH, &value);
     let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
-        .expect_err("a contract that answers no accepted bar is not a contract");
-    assert!(
-        error.0.contains("must name the section it comes from"),
-        "{error}"
-    );
+        .expect_err("a contract that answers no clause of the bar is not a contract");
+    assert!(error.0.contains("answers no clause of the bar"), "{error}");
+}
+
+#[test]
+fn a_choice_that_names_a_proof_and_no_bar_section_is_refused() {
+    let mut value = fixture_ledger();
+    value["decisions"][0]["proof_section"] = Value::Null;
+    let found = Fixture::new(value, vec![fixture_contract()], None).problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].subject, format!("{ID}: proof section"));
+    refused(&found, "the contract would state its own bar");
+}
+
+#[test]
+fn a_choice_that_names_a_bar_section_and_no_contract_is_refused() {
+    let mut value = fixture_ledger();
+    value["decisions"][0]["proof_contract"] = Value::Null;
+    let found = Fixture::new(value, Vec::new(), None).problems();
+    assert_eq!(found.len(), 1, "{found:?}");
+    refused(&found, "and no contract answers it");
 }
 
 #[test]
 fn a_clause_of_the_accepted_bar_that_nothing_answers_is_refused() {
     let mut contract = fixture_contract();
-    contract["obligations"]["answered"]
+    contract["answers"]
         .as_array_mut()
         .expect("the fixture's answers")
         .retain(|answer| answer["clause"] != json!(3));
@@ -256,7 +271,7 @@ fn a_clause_of_the_accepted_bar_that_nothing_answers_is_refused() {
 #[test]
 fn an_answer_naming_an_issue_the_choice_does_not_own_is_refused() {
     let mut contract = fixture_contract();
-    contract["obligations"]["answered"][3]["elsewhere"]["issue"] = json!(233);
+    contract["answers"][3]["elsewhere"]["issue"] = json!(233);
     let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
     assert_eq!(found.len(), 1, "{found:?}");
     refused(
@@ -268,12 +283,12 @@ fn an_answer_naming_an_issue_the_choice_does_not_own_is_refused() {
 #[test]
 fn an_answer_to_a_clause_the_section_does_not_state_is_refused() {
     let mut contract = fixture_contract();
-    contract["obligations"]["answered"][2]["clause"] = json!(0);
+    contract["answers"][2]["clause"] = json!(0);
     let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
     refused(&found, "counted from one");
 
     let mut contract = fixture_contract();
-    contract["obligations"]["answered"][2]["clause"] = json!(9);
+    contract["answers"][2]["clause"] = json!(9);
     let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
     refused(&found, "which states 4 clause(s)");
 }
@@ -288,26 +303,41 @@ fn a_bar_whose_accepted_record_is_not_in_the_tree_is_refused() {
 
 #[test]
 fn a_bar_named_from_a_section_the_record_does_not_state_is_refused() {
-    let mut contract = fixture_contract();
-    contract["obligations"]["section"] = json!("A Section Nobody Wrote");
-    let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
+    let mut value = fixture_ledger();
+    value["decisions"][0]["proof_section"] = json!("A Section Nobody Wrote");
+    let found = Fixture::new(value, vec![fixture_contract()], None).problems();
     assert_eq!(found.len(), 1, "{found:?}");
     refused(&found, "that record states no such section");
 }
 
 #[test]
-fn the_committed_contract_answers_every_clause_of_the_accepted_bar() {
+fn the_committed_choice_names_the_section_its_bar_comes_from() {
+    // The bar's location is the choice's, not the contract's: if this heading
+    // moved, a contract could be answered against a smaller part of the record
+    // while every rule still passed. The heading is the record's own, so this
+    // pin fails loudly rather than letting the bar be chosen after the fact.
+    let record = ledger()
+        .decision("ADR-0001/DESKTOP-SHELL")
+        .expect("the shell decision")
+        .clone();
+    assert_eq!(
+        record.proof_section.as_deref(),
+        Some("Proof contract and stop conditions"),
+        "the choice names where its bar lives"
+    );
+    let accepted = std::fs::read_to_string(root().join(ADR)).expect("the accepted record");
+    let body = symbiote_architecture::spike::section(
+        &accepted,
+        record.proof_section.as_deref().expect("a named section"),
+    )
+    .expect("the record states the section the choice names");
+    let clauses = symbiote_architecture::spike::clauses(&body);
     let contract = contracts()
         .contract(SHELL_CONTRACT)
         .expect("the shell contract")
         .clone();
-    let accepted = std::fs::read_to_string(root().join(ADR)).expect("the accepted record");
-    let body = symbiote_architecture::spike::section(&accepted, &contract.obligations.section)
-        .expect("the record states the section the contract names");
-    let clauses = symbiote_architecture::spike::clauses(&body);
     let answered: std::collections::BTreeSet<usize> = contract
-        .obligations
-        .answered
+        .answers
         .iter()
         .map(|answer| answer.clause)
         .collect();
@@ -322,13 +352,11 @@ fn the_committed_contract_answers_every_clause_of_the_accepted_bar() {
     );
     assert!(
         contract
-            .obligations
-            .answered
+            .answers
             .iter()
             .any(|answer| answer.obligation.is_some())
             && contract
-                .obligations
-                .answered
+                .answers
                 .iter()
                 .any(|answer| answer.elsewhere.is_some()),
         "the bar is answered by this contract's obligations and, where a clause belongs to #38's wider acceptance, by naming that"
@@ -350,6 +378,7 @@ fn a_contract_that_settles_a_decision_the_ledger_does_not_hold_is_refused() {
 fn a_choice_whose_contract_does_not_name_it_back_is_refused() {
     let mut value = fixture_ledger();
     value["decisions"][0]["proof_contract"] = Value::Null;
+    value["decisions"][0]["proof_section"] = Value::Null;
     let fixture = Fixture::new(value, vec![fixture_contract()], None);
     let found = fixture.problems();
     assert_eq!(found.len(), 1, "{found:?}");
@@ -854,7 +883,8 @@ fn fixture_ledger() -> Value {
                 "record": ADR,
                 "record_sha256": "",
                 "blocking_issue": 38,
-                "proof_contract": CONTRACT
+                "proof_contract": CONTRACT,
+                "proof_section": SECTION
             }
         ],
         "facts": [],
@@ -927,15 +957,12 @@ fn fixture_contract() -> Value {
         "stop_conditions": [STOP_CONDITION],
         "result_artifact": RESULTS,
         "cleanup": "remove the disposable display and only the identities the driver observed",
-        "obligations": {
-            "section": SECTION,
-            "answered": [
-                { "clause": 1, "obligation": OBLIGATION },
-                { "clause": 2, "obligation": STOP_CONDITION },
-                { "clause": 3, "part": "method" },
-                { "clause": 4, "elsewhere": { "issue": 38, "why": "the fixture's own wider acceptance" } }
-            ]
-        }
+        "answers": [
+            { "clause": 1, "obligation": OBLIGATION },
+            { "clause": 2, "obligation": STOP_CONDITION },
+            { "clause": 3, "part": "method" },
+            { "clause": 4, "elsewhere": { "issue": 38, "why": "the fixture's own wider acceptance" } }
+        ]
     })
 }
 

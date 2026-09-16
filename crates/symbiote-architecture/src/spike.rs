@@ -4,11 +4,11 @@
 //!
 //! A contract is predeclared — hypothesis, workload, applicable platforms,
 //! thresholds, stop conditions and cleanup — so nothing can choose its bar after
-//! measuring. The bar itself is not the contract's to state: [`Obligations`]
-//! names the section of the decision's accepted record that says what a proof of
-//! that choice must do, and answers every clause of it, so a contract cannot
-//! carry a smaller bar than the one its choice was accepted with.
-//! [`Contracts`] holds the committed document; [`Results`] holds the
+//! measuring. The bar itself is not the contract's to state: the choice's own
+//! record names the section of its accepted text that says what a proof of that
+//! choice must do, and the contract answers every clause of it — so it can
+//! neither pick a smaller bar out of the record nor carry one its choice did not
+//! accept. [`Contracts`] holds the committed document; [`Results`] holds the
 //! runs that would settle it, and each [`Run`] says which platform and version it
 //! exercised, on what hardware and revision, which of the contract's obligations
 //! it actually ran, what it measured, which raw artifacts it published and which
@@ -34,25 +34,6 @@ pub struct Measurement {
     pub name: String,
     pub unit: String,
     pub maximum: f64,
-}
-
-/// Where a contract's bar comes from, and what answers each clause of it.
-///
-/// A contract cannot state its own bar: the obligations a choice is settled
-/// against are the ones its decision was accepted with, so they are read from
-/// the accepted record's own section rather than restated here. The contract
-/// names that section and answers every clause it states, which is what stops a
-/// pass from shrinking the bar by editing this file alone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Obligations {
-    /// The heading of the section of the decision's accepted record — the text
-    /// the ledger pins by SHA-256 — that states the bar.
-    pub section: String,
-    /// One entry per clause the section states. The clauses themselves are the
-    /// record's, in its order, so nothing here is quoted: what is here is what
-    /// answers each of them.
-    pub answered: Vec<Answered>,
 }
 
 /// What answers one clause of the accepted bar.
@@ -107,7 +88,8 @@ pub struct SpikeContract {
     pub hypothesis: String,
     /// The obligations a run of this contract must exercise, each tagged with
     /// the issue it belongs to. Every one of them answers a clause of the
-    /// accepted bar named in [`SpikeContract::obligations`].
+    /// accepted bar — the section the choice names in its own record — and
+    /// [`SpikeContract::answers`] says which clause each one answers.
     pub workload: Vec<String>,
     /// The platforms this contract applies to, as data rather than as a sentence:
     /// a settlement has to account for every one of them, and prose cannot be
@@ -120,10 +102,13 @@ pub struct SpikeContract {
     pub stop_conditions: Vec<String>,
     pub result_artifact: String,
     pub cleanup: String,
-    /// The accepted bar this contract answers, and what answers each clause of
-    /// it. A clause answered by nothing is refused where the record is read;
-    /// an obligation that answers nothing is refused here.
-    pub obligations: Obligations,
+    /// One entry per clause of the bar the choice names — a section of the
+    /// choice's own accepted text, which the ledger holds rather than this
+    /// contract, so a contract cannot pick the clauses it is settled against —
+    /// saying what answers that clause. A clause answered by nothing is refused
+    /// where the record is read; an obligation that answers nothing is refused
+    /// here.
+    pub answers: Vec<Answered>,
 }
 impl SpikeContract {
     pub fn validate(&self) -> Result<()> {
@@ -180,19 +165,20 @@ impl SpikeContract {
         self.answered_bar()
     }
 
-    /// The accepted bar, answered. Every clause of the record's section is
-    /// answered by an obligation this contract declares, by its method or its
+    /// The accepted bar, answered. Every clause of the section the choice names
+    /// is answered by an obligation this contract declares, by its method or its
     /// ceilings, or by the issue that owns it elsewhere; and every obligation
-    /// this contract declares answers a clause, so the contract cannot widen
-    /// the bar beyond the one its decision was accepted with either.
+    /// this contract declares answers a clause, so the contract can neither
+    /// declare bar its choice did not accept nor leave a clause of it to look
+    /// after itself.
     fn answered_bar(&self) -> Result<()> {
         require(
-            text(&self.obligations.section) && !self.obligations.answered.is_empty(),
-            "the accepted bar this contract answers must name the section it comes from",
+            !self.answers.is_empty(),
+            "a contract that answers no clause of the bar its choice names states nothing about it",
         )?;
         let declared: Vec<&String> = self.workload.iter().chain(&self.stop_conditions).collect();
         let mut answered: BTreeSet<&str> = BTreeSet::new();
-        for answer in &self.obligations.answered {
+        for answer in &self.answers {
             let carried = [
                 answer.obligation.is_some(),
                 answer.part.is_some(),

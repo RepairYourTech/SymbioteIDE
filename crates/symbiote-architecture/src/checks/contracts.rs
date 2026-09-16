@@ -116,10 +116,12 @@ fn clause_problems(
     }
 }
 
-/// The bar the choice was accepted with, read from its own record. Every clause
-/// of the accepted section has to be answered by the contract, so a clause
-/// cannot be dropped by editing the contract alone: the accepted text is pinned
-/// by the ledger, and a smaller bar is a refusal rather than a preference.
+/// The bar the choice was accepted with, read from its own record. The section
+/// belongs to the choice, not to the contract, so a contract cannot point its
+/// obligations at whichever part of the record suits it; and every clause of
+/// that section has to be answered by the contract, so a clause cannot be
+/// dropped by editing the contract alone either. A missing section is refused
+/// where the record is read, so nothing is reported twice here.
 fn bar_problems(
     contract: &SpikeContract,
     record: &DecisionRecord,
@@ -127,6 +129,9 @@ fn bar_problems(
     subject: &str,
     problems: &mut Vec<Problem>,
 ) {
+    let Some(heading) = &record.proof_section else {
+        return;
+    };
     let accepted = std::fs::read_to_string(root.join(&record.record));
     let accepted = match accepted {
         Ok(text) => text,
@@ -141,25 +146,24 @@ fn bar_problems(
             return;
         }
     };
-    let Some(text) = section(&accepted, &contract.obligations.section) else {
+    let Some(text) = section(&accepted, heading) else {
         problems.push(Problem::new(
             subject,
             format!(
-                "its bar is the {} section of {}, and that record states no such section",
-                contract.obligations.section, record.record
+                "its choice names the {heading:?} section of {}, and that record states no such section",
+                record.record
             ),
         ));
         return;
     };
     let clauses = clauses(&text);
-    for answer in &contract.obligations.answered {
+    for answer in &contract.answers {
         if answer.clause == 0 || answer.clause > clauses.len() {
             problems.push(Problem::new(
                 subject,
                 format!(
-                    "it answers clause {} of {}, which states {} clause(s), counted from one",
+                    "it answers clause {} of {heading:?}, which states {} clause(s), counted from one",
                     answer.clause,
-                    contract.obligations.section,
                     clauses.len()
                 ),
             ));
@@ -178,16 +182,14 @@ fn bar_problems(
     }
     for (index, clause) in clauses.iter().enumerate() {
         if !contract
-            .obligations
-            .answered
+            .answers
             .iter()
             .any(|answer| answer.clause == index + 1)
         {
             problems.push(Problem::new(
                 subject,
                 format!(
-                    "{} states a clause this contract answers with nothing: {clause:?}",
-                    contract.obligations.section
+                    "{heading:?} states a clause this contract answers with nothing: {clause:?}"
                 ),
             ));
         }

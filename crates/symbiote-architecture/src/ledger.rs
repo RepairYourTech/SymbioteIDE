@@ -75,6 +75,14 @@ pub struct DecisionRecord {
     /// choice can be published accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_contract: Option<String>,
+    /// The heading of the section of the accepted text that states what this
+    /// choice's proof must do — the bar its contract answers. The choice names
+    /// where its bar lives, not the contract: a contract that named the section
+    /// itself could pick the clauses it is settled against out of the record
+    /// belonging to the choice. Present exactly when the record names a proof
+    /// contract, because a bar nobody answers is not a bar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_section: Option<String>,
     /// The dependency names a dependent implementation would express this
     /// choice with, as cargo reports them. A workspace member that declares one
     /// of these must pin this decision, and a member that pins it must declare
