@@ -2,18 +2,23 @@
 
 These hold the parts of ``run-proof.py`` that decide what the result artifact is
 allowed to claim — the attestation read from the fixture's log, the contract
-coverage of its measurements, the citations it publishes and the revision it
-records — without needing a session, a binary or a compositor. The rules matter
-because the artifact is the only thing a later pass reads: an attestation that
-can be typed, a predeclared measurement left silent, an artifact that recorded
-nothing cited as evidence, or a revision that is not the tree, would each let the
-dossier claim more than the run shows.
+coverage of its measurements, the citations it publishes, the revision it records,
+the paths it does not keep and the survivors it counts — without needing a
+session, a binary or a compositor. The rules matter because the artifact is the
+only thing a later pass reads: an attestation that can be typed, a predeclared
+measurement left silent, an artifact that recorded nothing cited as evidence, a
+revision that is not the tree, a path the run removed published as provenance, or
+an unreaped process counted as running, would each let the dossier claim more than
+the run shows.
 """
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import tempfile
+import time
 import unittest
 
 RUNNER = Path(__file__).resolve().parent / 'run-proof.py'
@@ -212,6 +217,132 @@ class Revision(unittest.TestCase):
             self.assertEqual(record['commands'], ['+ git rev-parse HEAD', '+ npm run build'])
             with self.assertRaises(SystemExit):
                 run_proof.build_record(arguments, 'b' * 40)
+
+
+class Survivors(unittest.TestCase):
+    """A survivor is a process still running, not a /proc entry still listed."""
+
+    def row(self, state, ticks=42):
+        return {7: {'pid': 7, 'name': 'app', 'ppid': 1, 'start_ticks': ticks, 'state': state}}
+
+    def test_a_process_that_has_exited_is_not_a_survivor(self):
+        for state in 'SR':
+            self.assertEqual(run_proof.survivors_of({7: 42}, self.row(state)), [7])
+        for state in run_proof.EXITED_STATES:
+            self.assertEqual(run_proof.survivors_of({7: 42}, self.row(state)), [],
+                             f'a process in state {state} has exited and runs nothing')
+            self.assertEqual(run_proof.unreaped_of({7: 42}, self.row(state)), [7],
+                             'and is named rather than lost')
+
+    def test_a_pid_the_kernel_reused_is_not_the_process_this_run_saw(self):
+        self.assertEqual(run_proof.survivors_of({7: 42}, self.row('S', ticks=43)), [])
+        self.assertEqual(run_proof.unreaped_of({7: 42}, self.row('S', ticks=43)), [])
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'needs a /proc to ask')
+    def test_a_child_never_reaped_is_not_counted_as_running(self):
+        """The same question put to the kernel rather than to a fixture."""
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        try:
+            deadline = time.monotonic() + 10
+            table = run_proof.processes()
+            while time.monotonic() < deadline and table.get(pid, {}).get('state') != 'Z':
+                time.sleep(0.01)
+                table = run_proof.processes()
+            self.assertEqual(table.get(pid, {}).get('state'), 'Z',
+                             'the child exited and this process never reaped it')
+            seen = {pid: table[pid]['start_ticks']}
+            self.assertEqual(run_proof.survivors_of(seen, table), [])
+            self.assertEqual(run_proof.unreaped_of(seen, table), [pid])
+        finally:
+            os.waitpid(pid, 0)
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'needs a /proc to ask')
+    def test_the_cleanup_record_counts_what_runs_and_names_what_it_left(self):
+        """The figure the artifact publishes, asked of a real unreaped child."""
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        try:
+            table, deadline = None, time.monotonic() + 10
+            while time.monotonic() < deadline:
+                table = run_proof.processes()
+                if table.get(pid, {}).get('state') == 'Z':
+                    break
+                time.sleep(0.01)
+            record = run_proof.cleanup({pid: table[pid]['start_ticks']}, [])
+            self.assertEqual(record['survivors_after_cancel_request'], 0,
+                             'nothing is running, however many entries /proc lists')
+            self.assertEqual(record['unreaped_observed_pids'], [pid])
+            self.assertEqual(record['remaining_observed_pids'], [])
+            self.assertEqual(record['listening_ports_after_cancel_request'], [])
+        finally:
+            os.waitpid(pid, 0)
+
+
+class UnkeptPaths(unittest.TestCase):
+    """The record has to say which of its paths the run does not keep.
+
+    A reader following the committed record's provenance landed on paths that no
+    longer existed while the durable copies sat beside them. Both directions are
+    held here: a declared path carries a note saying what outlives it, and a path
+    the record cannot read back has to be declared.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        root = Path(self.directory.name)
+        self.binary = root / 'symbiote-linux-shell-proof'
+        self.binary.write_bytes(b'the candidate this run exercised')
+        self.log = root / 'build-abcdefgh.log'
+        self.log.write_text('+ git rev-parse HEAD\n' + 'a' * 40 + '\n')
+        self.published = (root / 'publish' / run_proof.publish_slug(WAYLAND) / self.log.name)
+        self.published.parent.mkdir(parents=True)
+        shutil.copy2(self.log, self.published)
+        arguments = argparse.Namespace(build_log=str(self.log), build_seconds=1.0,
+                                       publish=str(root / 'publish'), platform=WAYLAND)
+        self.record = run_proof.session_record(
+            'kwin 6.7.5 --virtual 1440x960', {'WAYLAND_DISPLAY': 'symbiote-proof'}, self.binary,
+            root / 'runtime', 0, run_proof.build_record(arguments, 'a' * 40))
+
+    def paths(self):
+        """Every string the record carries that reads as a path: a separator, no spaces."""
+        found = []
+
+        def walk(node, prefix):
+            for key, value in node.items():
+                dotted = f'{prefix}{key}'
+                if isinstance(value, dict):
+                    walk(value, f'{dotted}.')
+                elif isinstance(value, str) and '/' in value and ' ' not in value:
+                    found.append((dotted, value))
+        walk(self.record, '')
+        return found
+
+    def test_each_unkept_path_says_what_outlives_it(self):
+        for dotted in run_proof.UNKEPT_PATHS:
+            container, _, field = dotted.rpartition('.')
+            holder = self.record['build'] if container else self.record
+            self.assertIn(field, holder, f'{dotted} is declared unkept and is not recorded')
+            self.assertTrue(holder.get(f'{field}_note'),
+                            f'{dotted} is recorded and not kept, and says nothing about it')
+        self.assertEqual(self.record['binary_sha256'], run_proof.sha256_of(self.binary))
+        self.assertEqual(self.record['build']['log_sha256'], run_proof.sha256_of(self.published),
+                         'the hash names the bytes of the copy that is kept')
+        self.assertEqual(self.record['build']['published_log'], str(self.published))
+
+    def test_a_path_the_record_cannot_read_back_has_to_be_declared(self):
+        # The run is over: what it did not publish goes with it, and what it
+        # published is still there. A record has to tell the two apart.
+        self.binary.unlink()
+        self.log.unlink()
+        self.assertFalse(self.binary.exists())
+        for dotted, value in self.paths():
+            located = Path(value) if value.startswith('/') else run_proof.REPO / value
+            self.assertEqual(dotted in run_proof.UNKEPT_PATHS, not located.exists(),
+                             f'{dotted} = {value}: declared unkept={dotted in run_proof.UNKEPT_PATHS}, '
+                             f'and it can be read={located.exists()}')
 
 
 if __name__ == '__main__':
