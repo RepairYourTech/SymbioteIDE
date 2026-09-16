@@ -111,9 +111,9 @@ def unconsumed_options(args, declared):
 
     It is asked of what the invocation named, before `named_defaults` fills the terms it
     left out: an option nobody passed is not an option that was dropped. `--contracts`,
-    which names the document itself, keeps its default and is read by both paths, so no
-    path is refused it; a default cannot be told from an option an invocation passed, which
-    is why the terms it carries are judged rather than checked.
+    which names the document itself, keeps its default, and the terms it names are judged
+    rather than checked because a default cannot be told from an option an invocation
+    passed.
     """
     def named(entry):
         value = getattr(args, entry['dest'])

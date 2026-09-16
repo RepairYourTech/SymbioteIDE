@@ -266,13 +266,15 @@ def declared(parser, *flags, reads, help, named='truthy', needs=None, refusal=No
     'wayland' (only the Wayland entry point reads it), 'record' (only where something is
     recorded), 'none' (no path reads it, and `refusal` says why the option is here at all).
     `named` is how an invocation is seen to have asked for it: 'set' where a zero is an
-    answer (a cancellation at 0 seconds, a build measured at 0), 'truthy' otherwise.
-    `needs` names another option that has to be given with this one, and `refusal` is the
-    sentence the refusal adds after this option's name.
+    answer (cancelling at 0 seconds, a build measured at 0), 'truthy' otherwise. `needs`
+    names an option that has to be given with this one; a row is named by its long flag,
+    which is what a refusal prints and what `needs` names, and carries the flags it was
+    declared with; and `refusal` is the sentence that follows that name when it is refused.
     """
     action = parser.add_argument(*flags, help=READS_LABEL[reads] + help, **kwargs)
-    return {'option': flags[0], 'dest': action.dest, 'reads': reads, 'named': named,
-            'needs': needs, 'refusal': refusal}
+    return {'option': next(flag for flag in flags if flag.startswith('--')), 'flags': flags,
+            'dest': action.dest, 'reads': reads, 'named': named, 'needs': needs,
+            'refusal': refusal}
 
 
 def build_parser():
@@ -312,9 +314,9 @@ def build_parser():
         declared(parser, '--publish', reads='result', default=None,
                  help='repository-relative root to publish the cited artifacts under, in a '
                       'directory per platform, so a second platform cannot overwrite the first'),
-        # Read on either path — the X11 one reads it only to refuse it — so the matrix says
-        # nothing about it and the gate below is where its sentence and its position come
-        # from, rather than this row.
+        # Read on either path: `main` reads it on X11 only to refuse it at the gate below,
+        # which owns that refusal's sentence and its position, so this row refuses nothing
+        # for it.
         declared(parser, '--results', reads='both', default=None,
                  help='repository-relative result artifact to write'),
         declared(parser, '--contracts', reads='both', default=CONTRACTS_PATH,
