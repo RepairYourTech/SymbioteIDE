@@ -1,422 +1,112 @@
 # Engineering handoff
 
-## Four findings from the #608 audit: the figure, the binding's words, the citations, the owner — 2026-09-16 UTC
-
-Change Stream `issue-173-citation-holding` starts from merged #608 at `9ab606c3`. Four corrections, no new capability beyond the third: a wrong figure standing in three places, a refusal whose words named two of the fields its check binds, two cited case names nothing held, and one fact with two owners. #173 stays open.
-
-**The figure.** #608's record said *the crate suite reports 59 passed, 1 failed*; that is the `spike_contracts` target's count, and the crate suite reports **98 passed, 1 failed** (26 ledger + 13 policy + 59 of 60 contract). The section below is corrected in place with a note; PR #608's body and the evidence comment on #173 are edited to the same figures, since both were editable.
-
-**The binding's words, again.** `identity_unmet` compares the result's recorded contract hash to the fingerprint of the committed contract, and the fingerprint covers every field. #608's replacement wording — *"its thresholds, its answers or both"* — was therefore still narrower than the check, which the audit proved with a settled fixture whose only change was `method`. The message now names what it compares: *"the contract it was measured against is not the one committed now"*. `a_run_measured_against_a_moved_threshold_does_not_settle_the_choice` holds two cases, the second moving `method` while the result's recorded hash is correct, so the words cannot drift narrower than the binding unnoticed. #608's scope note above records that the earlier edit was itself beyond that pass's scope.
-
-**The citations are held.** #608 named two case names in `docs/contracts/architecture.md` and nothing held them; the document now carries one sentence stating the convention — every long snake_case name in backticks in it is a case of this crate's suite — and `the_contract_document_names_only_cases_this_crate_holds` reads the document, takes each such name, and requires the suite to define it, with a floor so a document citing nothing cannot pass. It covers all six names the document cites, including the two the constitution ledger's catalog already binds (that binding belongs to the catalog's evidence; this one to the document's own citations). Proved twice: renaming a cited case fails that case alone, and with the assertion gutted the rename passes — so the assertion is the mechanism, not the convention.
-
-**One owner.** The detector fact now lives once, in `docs/contracts/architecture.md`: what detects a move, what a reader must compare, and the four mechanisms that cannot refuse it. The #608 section below points at it and keeps only that pass's record, which is where the figures belong.
-
-**Proof and battery.** The consolidated driver gained this pass's check as its forty-ninth rule: **49/49 rules bit**, 0 missing tests, 0 stale anchors, 0 silent, every file restored byte-identically. Crate **100** (26 ledger, 13 policy, 61 contract), workspace **769 / 0** on the default and pinned **1.85.0** toolchains, integrity **161**, housekeeping **11**, legacy-importer **1**, `cargo fmt --all --check` and strict Clippy clean, the committed constitution report, domain ontology and coverage ledger each matching their `--check` path, the map at 0 refusals with the shell choice `investigating`, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0 — unchanged, because no compiled file in those closures moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-Ruled out, and why: no rule was added beyond the citation check, which is a case and not a rule; the three prose copies of the bar's content, the both-shapes document, the unrunnable pre-#602 wrapper message and the absent candidate run stay #173's, untouched.
-
-## The bar's location: a reading with one named detector, not a rule — 2026-09-16 UTC
-
-Change Stream `issue-173-bar-location` starts from merged #607 at `8fde76f7`. This closes out the last item #173's thread carried: *the bar's location pinned in the record*. It is **not** closed by a rule, because no rule can reach it — what this pass does is establish that as a checked statement and say what a reader must compare. #173 stays open.
-
-**The audit's probe, reproduced first.** In a throwaway worktree at `8fde76f7` with its own `CARGO_TARGET_DIR`, the shell choice's `proof_section` was re-pointed from `Proof contract and stop conditions` to `## Remaining acceptance`, and the contract's answers were rewritten against that section's five clauses (one per declared obligation, so every obligation still answers a clause and every clause is answered). Result: the published map reports **0 refusals** and the crate suite reports **98 passed, 1 failed** — the `spike_contracts` target alone reports **59 passed, 1 failed**, and the failing case is `the_committed_choice_names_the_section_its_bar_comes_from`, which pins the committed heading by name. Nothing else in the tree moves. (*Corrected in #609*: this section first read "the crate suite reports 59 passed, 1 failed", which is the target's count, not the crate's.)
-
-**The claim's owner is the contract document.** What detects a move and that it is the only thing that does, what a reader must compare, and why none of the four mechanisms tried (an accepted text designating its own bar; the bar naming the choice's issue; a hash of the section or an echo of it on the contract; a settlement's fingerprint binding) can refuse it, are stated once in `docs/contracts/architecture.md`. This section records the pass and the figures above; it does not restate the claim, because when it did the two copies diverged in precision — the document stated the detector without figures and this record stated the wrong one.
-
-**One refusal's words were narrower than what it detects, and the change went beyond the requested scope.** #608 gave `identity_unmet` new words — *"its thresholds, answers or both"* — because the fingerprint covers the whole contract while the old wording named thresholds alone; that edit was not part of the pass's scope and is recorded here rather than left unremarked. It was still not what the check binds: a settled fixture whose only change is `method` fires the rule while its words name two fields it does not look at. #609 makes the message name what it compares — *the contract it was measured against is not the one committed now* — and `a_run_measured_against_a_moved_threshold_does_not_settle_the_choice` now holds a case whose changed field is outside thresholds and answers, so the words cannot drift narrower than the binding again.
-
-**Proof and battery.** This pass adds no rule and changes none, so the driver exists to show nothing was lost and that the reworded refusal still bites: the consolidated driver (`/tmp/revert_all.py`) re-ran every channel — **48/48 rules bit**, 0 missing tests, 0 stale anchors, 0 silent, every file restored byte-identically. Crate **99** (26/13/60), workspace **768 / 0** on the default and pinned **1.85.0** toolchains, integrity **161**, housekeeping **11**, legacy-importer **1**, `cargo fmt --all --check` and strict Clippy clean, the committed constitution report, domain ontology and coverage ledger each matching their `--check` path, the map at 0 refusals with the shell choice `investigating` and its run `not run`, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0 — unchanged, because no compiled file in those closures moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-Ruled out, and why: no rule was added for the location, for the four reasons above; nothing in ADR-0001 was touched; the six clauses #38 owns still answer `elsewhere`/`part` where they belong, checked by the same rules as before; and the three prose copies of the bar's content remain #173's largest open item.
-
-## An answer carries the clause it answers — 2026-09-16 UTC
-
-Change Stream `issue-173-answers-carry-their-clause` starts from merged #606 at `e1ac0745`. This is the item #173's thread has carried since #601 and two audits named as the last route by which the accepted bar can shrink with nothing refusing: an answer named its clause by a *number*, a position in a split the record's own punctuation decides. #173 stays open.
-
-**What was silent, reproduced first.** One clause deleted from ADR-0001's proof contract, one new sentence appended — the clause *count* unchanged — and the record's SHA-256 pin re-recorded in the ledger, which is what a legitimate amendment does. On the merged tree (`/tmp/base607`, a worktree at `e1ac0745`): **0 refusals, exit 0**, while every answer after the deleted clause now named the clause before the one it was written for. The bar did not shrink; it was silently re-paired. The insertion-only variant is caught (the count grows and a clause is unanswered), which is why the count-unchanged amendment is the case that matters.
-
-**What an answer is now.** `Answered.clause` carries the clause's own words, and `checks/contracts.rs` resolves them against the section the choice names: the words must be a clause that section states (whitespace read as one run, so how the JSON wraps them is not part of the clause), and they must name **one** clause. The number is gone, so there is no positional pairing to shift; a clause's identity is the accepted sentence. Two named refusals replace the old range check: words the record does not state (`it answers …, which "Proof contract and stop conditions" … does not state as a clause of the accepted bar`), and words the record states twice, where one answer would otherwise stand for both twins.
-
-**The shape moved, and the refusal says so.** A document whose `answers` still carry a `clause` number is refused by `moved_shape` naming what moved — *"answers carrying a `clause` number: a clause is now identified by the accepted section's words, which the ledger pins by SHA-256 … rewrite each answer's `clause` to carry that clause's own words"* — rather than as a type error, the same reconciliation #601 and #600 recorded one document over. Version 1 absorbs it: no contract document exists outside this repository and this crate is the only reader of the one in it. Rollback is this repository's own revert of the document. `a_contract_document_that_names_a_clause_by_its_number_is_refused_naming_what_moved` holds the message.
-
-The committed contract's thirty-two answers now carry the section's own words — generated by dumping the crate's own `section`/`clauses` split, never transcribed by hand — and the document still reports **0 refusals**.
-
-**Probes, all in throwaway worktrees with their own build (`git worktree`, CARGO_TARGET_DIR unshared — a shared target dir made an earlier run of these read the main checkout's record, which is worth knowing before trusting any worktree probe in this repository):**
-
-| Probe | Result |
-| --- | --- |
-| baseline, new tree and contract | 0 refusals, exit 0 |
-| one answer's words trivially edited (a final `.` dropped) | **refused**, twice: the words are not the section's, and the clause they named is answered by nothing |
-| one answer re-pointed at **another clause's words** | **refused**: *"editor and diffs" is a clause this contract answers with nothing* |
-| one answer carrying a `clause` **number** | **refused** at read time naming the move |
-| the accepted record itself edited without re-pinning it | refused by the record's SHA-256 pin (pre-existing, unchanged) |
-| the count-unchanged amendment above, on `e1ac0745` | 0 refusals — the defect |
-| the same amendment on this tree | **refused** twice: the words are no longer stated, and the new clause is answered by nothing |
-| **the residual:** two answers' carriers **swapped**, each keeping its own clause's words | 0 refusals, exit 0 |
-
-That last row is the honest limit, and it is stated in `docs/contracts/architecture.md` where the feature lives: whether a carrier's wording really covers the words it carries is a reader's judgement, and what this pass changed is that the judgement is now made at the claim — the clause's own words sit beside the carrier that answers them — rather than from memory against a number. The doc's "What those rules do not decide" paragraph and its "What this does not claim" section say so in those terms.
-
-**Proof and battery.** Every rule channel re-run through one consolidated driver (`/tmp/revert_all.py`) — the side item this pass took: the bar, run and coverage drivers had three copies with two pre-rename spellings whose anchors the last pass relocated by search, so they are now one driver keyed by the test that holds each rule, anchors located by search and reported as **stale** rather than skipped when the code moves — **48/48 rules bit**, 0 missing tests, 0 stale anchors, 0 silent, every file restored byte-identically. The three rules this pass adds or rewrites (words the record does not state; words stated twice; the numeric shape named) are among them; drift no rule covers is what the residual row above is.
-
-Verified locally: crate **99** tests (26 ledger, 13 policy, 60 contract), workspace **768 / 0** on the default and pinned **1.85.0** toolchains, the integrity, housekeeping and legacy-importer suites, `cargo fmt --all --check`, strict Clippy, the committed constitution report, domain ontology and coverage ledger each matching their `--check` path, the map at 0 refusals with the shell choice `investigating` and its run `not run`, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0 — unchanged, because no compiled file in those closures moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-Ruled out, and why: no rule decides whether a carrier's words cover its clause (that is the residual, and a rule could only pretend); the numeric shape's cross-product — a document carrying **both** shapes (`obligations` beside `answers`) — still gets serde's field list rather than a named refusal, which is the same remainder #603 named and this pass did not widen to; and the bar's content still lives in three prose copies, which stays #173's largest open item.
-
-## The exemption list held to the artifact, not trusted — 2026-09-16 UTC
-
-Change Stream `issue-173-exemption-verified` starts from merged #605 at `0bdc6711`. The audit of #605 proved the exemption the pass had just written was a live blind spot: `program_entry` is a boolean in all 199 entries that carry it, so exempting it bought nothing, and item text hidden under that key passed the whole suite. This pass makes the exemption self-verifying rather than a list anybody has to trust. #173 stays open.
-
-**The document advertised an exemption the artifact does not earn.** `planning/integrity/README.md` said a collection appears in an entry only where the roadmap defines one, and listed the program entry among the collections — and `test_validate.py`'s exemption set carried the same wrong name under a comment calling it a collection by design. So the sentence claimed something about the artifact that is false, and the assertion it described had a key-shaped hole in it.
-
-**Every name the exemption rests on is now held to the registry.** The set is `collections_by_design = ("labels", "dependencies", "children")` — the three the artifact actually carries as lists — and, before the entries are walked, each name is asserted to be present and to be a list in *every* entry that carries it: `the registry still defines the {field} collection` and `{field} is a collection in every entry that carries it, so it needs no exemption from the rule below`. A field that cannot trip the collection rule cannot need to be exempt from it, so naming one fails the assertion instead of quietly covering the entries it hides. The README no longer enumerates the fields at all: the exemption list lives in `test_validate.py`, the sentence says so and says how it is held, so there is one list and it cannot drift from a prose copy. `docs/contracts/architecture.md` says the same in one clause — `test_validate.py` asserts the shape over every entry *and holds its own exemption list to the registry* — and both now name the file rather than "this directory's own suite", while still not citing a case name, which is the previous pass's deliberate decision.
-
-**Two smaller audit items.** The `#173` block no longer re-asserts `body_sha256` and `revision`, which the loop over every entry already covers — what is left there is the pin unique to that entry, `key == "A04"`, and its count — so the block reads as clearly and asserts nothing twice. And the exemption set is the single home of the property: the document describes the rule and points at the assertion, rather than restating the list.
-
-Ruled out, and why: no new check beyond the self-verification the finding needed; no doc-claim checker (the previous pass's decision stands, unchanged and unrevisited); and the answer-attribution change, the three prose copies of the bar's content and the two bar-moving routes stay registered on #173.
-
-Proof, in a throwaway copy of `planning/integrity`:
-
-- **The audit's hole reproduced on the pre-fix suite.** With #605's `test_validate.py` restored from `HEAD` and `program_entry` on #173 set to `["## Acceptance criteria", "- [ ] the first item"]`, the suite reported **OK** — 25 tests, nothing refused.
-- **The same hidden text is now refused by name.** With the fix in place and the same mutation: `AssertionError: ['## Acceptance criteria', '- [ ] the first item'] is an instance of <class 'list'> : #173 carries item text in program_entry`, and it is the only failure.
-- **The exemption's own verification bites.** Putting `program_entry` back into the list re-fails it as `False is not true : program_entry is a collection in every entry that carries it, so it needs no exemption from the rule below` — so the trusted-list version of the set cannot pass, which is exactly the class of edit that produced the hole.
-- **Undone byte-identically.** `generated/registry.json` was copied back from the tree and the test file never left the copy, so the real tree holds no mutation; `git status` on it shows only `?? .freebuff/`.
-
-Verified locally: integrity suite **161** green on the merged tree, crate **97** tests (26 ledger, 13 policy, 58 contract), workspace **766 / 0** on the default toolchain and on pinned **1.85.0**, the housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, the committed constitution report, domain ontology and coverage ledger each matching their `--check` path, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## The cited test name dropped, the shape rule stated as the test states it, and the old shape built once — 2026-09-16 UTC
-
-Change Stream `issue-173-citation-pruning` starts from merged #604 at `da4007d5`. The audit of #604 found the pass had replaced a claim with a citation nothing holds, stated the registry's shape rule more narrowly than the test enforces, and duplicated the pre-#601 document shape across two tests. This pass prunes rather than builds. #173 stays open.
-
-**The names are gone, and the reason is that binding them was not worth what it would cost.** #604's test name stood in `planning/integrity/README.md`, both `docs/contracts/architecture.md` and the two handoff sections above, while being defined once — a rename would have left every suite green and four documents stale. Binding a document's cited names to their definitions is a real mechanism and this repository has it twice (the constitution ledger binds the two catalog test names; the coverage map resolves a cited job name against the workflow), but both bind names that a *checker in the same component* owns, and neither reads a prose document for them. Doing it here would mean a doc-claim checker for the planning suite — machinery this project's own stop-gate already ruled out of scope — to protect one pointer whose value is a shorter walk to a file the same sentence names anyway. So the names are dropped and the documents point at the file that owns the assertion: `planning/integrity/README.md` and `docs/contracts/architecture.md` now say the registry's own suite asserts the shape, without naming the case, and the handoff sections name `test_validate.py` rather than a case inside it. Nothing else about the claims moved.
-
-**The doc and the assertion now speak about the same property.** The README said #173's entry carries no item text; the test forbids *any* collection-valued entry field outside the names it exempts — labels, dependencies and children, which the artifact carries as collections, plus `program_entry`, which it carries as a boolean (*corrected after the audit of #605*: that fourth name is not a collection and exempted nothing, and the audit proved the exemption hid item text under it; the pass below removes it and holds every exempted name to the registry). The README and the contract doc now state that shape rule — no entry field carries an issue's acceptance criteria as their text; an entry records the count and pins the body by hash — and the test's docstring says the same, so a future legitimate list field fails a test whose words point at the rule it enforces rather than at one issue's entry. The same edit made the #173 assertions readable when they fail: `bar.get("acceptance_items")` with a named message rather than an unguarded index, which the audit showed raised a bare `KeyError` when the count was removed.
-
-**The pre-#601 shape is built once.** `pre_bar_move_contract()` in `tests/spike_contracts.rs` holds the fixture with the section on the contract and the answers under it, and both tests that need that shape — the one holding the message the derive printed and the one exercising the refusal the read path produces — call it, so a change to the old shape is made in one place.
-
-Ruled out, and why: no doc-claim checker was added, for the reason above; no check changed behaviour, so what is re-proved is that nothing was lost: the bar channel's twelve rules (eleven from #601 plus #602's moved-shape refusal) reverted alone in place, each failing its own named test and restored byte-identically, with the recipe test's expectation mutated as the driver's thirteenth entry, and the run and coverage channels' thirty-eight re-run the same way (`12/12 + 1` expectation, `38/38`); and the answer-attribution change, the three prose copies of the bar's content and the two bar-moving routes stay registered on #173.
-
-Verified locally: crate **97** tests (26 ledger, 13 policy, 58 contract), the integrity suite **161**, workspace **766 / 0** on the default toolchain and on pinned **1.85.0**, the housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, the committed constitution report, domain ontology and coverage ledger each matching their `--check` path, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file in those closures moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## The checkable half of the registration claim pinned where it is owned — 2026-09-16 UTC
-
-Change Stream `issue-173-last-mile` starts from merged #603 at `0d0999ff`. The stop-gate audit of #603 found that the sentence replacing the corrected claim made a claim about checkability that the tree contradicts; this pass splits it, pins the checkable half where its subject is owned, and records the reproduction recipe in runnable form. #173 stays open.
-
-**The sentence was false for half of itself.** It said the tree cannot check what the roadmap holds for #173, but `planning/integrity/generated/registry.json` is committed and read by `validate.py`'s suite and the coverage ledger, so the entry shape is trivially assertable by the component that owns the file. `planning/integrity/README.md` now records what an entry carries — a count of acceptance criteria and a body hash, never their text — and `test_validate.py`'s assertion over every entry holds it, including for #173, the entry the bar registration names. Two mutations in a throwaway copy of that directory prove the check bites rather than decorating: giving #173's entry an `acceptance_text` list fails it naming the field (`#173 carries item text in acceptance_text`), and replacing its count with the items themselves fails it on the type. So the day the registry can carry item text, the check fails and this claim has to be rewritten rather than going quietly false.
-
-**The claim now lives where its subject is owned.** `docs/contracts/architecture.md` states only what this crate owns — the two routes are registered in #173's own thread, which is where a later pass finds them — and points at [`planning/integrity`'s README](../../planning/integrity/README.md) for the artifact's shape, naming the test that holds it. The half that says where the items live cannot be read from this tree at all, and is stated rather than pinned.
-
-**The reproduction recipe is runnable for the part that can be.** The message #601 printed was the derive's, and the #602 wrapper that formatted it is gone; `the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field` now deserializes the old shape into `Contracts` and asserts the message names `obligations` first and lists `answers`, so the quoted refusal is held to the deserializer that produced it rather than to prose. What cannot be run is the pre-#602 wrapper line itself, and the test says so in place instead of inventing a harness that checks out an old commit.
-
-Ruled out, and why: no harness was built for the historical wrapper, because building one means checking out `b33503ea` and running its loader from a test, which this repository does not do for any other claim; the mixed-shape reader refusal, the answer-attribution change, the three prose copies of the bar's content and the two bar-moving routes all stay registered on #173.
-
-Verified locally: crate **97** tests (26 ledger, 13 policy, 58 contract — one more than #603), the integrity suite **161** (one more), workspace **766 / 0** on the default toolchain and on pinned **1.85.0**, the housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, the committed constitution report, domain ontology and coverage ledger each matching their `--check` path, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file in those closures moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## Two claims in the record corrected — 2026-09-16 UTC
-
-Change Stream `issue-173-claims-correction` starts from merged #602 at `133bf929`. The audit of #602 found two statements in that pass's record that its artifacts do not support; this pass corrects them and adds nothing else. #173 stays open.
-
-**The quoted failure was of the wrong document.** The section below said an old-shape contract document failed as a bare ``missing field `answers` ``, and that claim carried the whole slice — it is the stated reason the read path was taught to name what moved. Reproduced against the pre-#602 loader (`b33503ea`'s `map_err` body restored, the committed document's `answers` renamed back to `obligations`), the shape #601 left behind prints ``unknown field `obligations`, expected one of `schema_version`, `id`, `decision`, …, `answers` `` — the field that no longer exists, named first, with its replacement buried in a field list and nothing saying where the section went. ``missing field `answers` `` is what a document prints when it merely drops the section without keeping the stale key, which is the neighbouring case and not the one described. The section below is corrected in place, and the merged pull request that repeated the claim is corrected where the claim lives.
-
-**The registration was said to be where the roadmap can see it.** The contract doc claimed the two registered items sit "where this issue's remaining work is carried … so a later pass finds them". The registry the planning machinery reads holds #173's `acceptance_items`, `body_sha256` and `revision` rather than item text, and the issue body is pinned data this repository does not rewrite, so the roadmap cannot carry them: the carrier is #173's comment thread, and a later pass finds them by reading the issue. The doc and the section below now say exactly that; the artifact's shape is checked where it is owned (`planning/integrity`, in `test_validate.py`), and the half that says where the items live is stated rather than pinned, because the crate has no reader for the roadmap artifact and the thread is not in the tree.
-
-Ruled out, and why: no test was added for the corrected sentence, because a claim about a commit that is no longer the loader cannot be exercised by this tree and a claim about an issue thread cannot be read by it — both are stated with their reproduction method instead; the audit's third finding (a document carrying `obligations` *beside* `answers` still gets the bare field list, with no named test) is a behaviour of the reader this pass does not otherwise touch, so it is named here for the pass that widens that refusal rather than fixed sideways; and the answer-attribution change, new map output and #173's criteria are out of scope as before, with the three prose copies of the bar's content still #173's largest open item.
-
-Verified locally: crate **96** tests (26 ledger, 13 policy, 57 contract), workspace **765 / 0** on the default toolchain and on pinned **1.85.0**, the integrity (160), housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, the committed constitution report, domain ontology and coverage ledger each matching their `--check` path, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because only documents moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## The bar's move recorded, and its two remaining routes registered — 2026-09-16 UTC
-
-Change Stream `issue-173-bar-registration` starts from merged #601 at `b33503ea`. This is a finishing pass for the two defects the audit of #601 named; it adds no capability. #173 stays open.
-
-**The shape change is reconciled where the feature is documented, and the refusal an old document gets is actionable.** #601 changed the contract document's shape incompatibly — the section it named is gone and `answers` is required — while `schema_version` stayed 1, and an old document failed naming the field that no longer exists — ``unknown field `obligations`, expected one of `schema_version`, `id`, `decision`, …, `answers` `` — with nothing saying where the section went. That sentence stood as ``missing field `answers` `` until the audit of #602 reproduced the message: `missing field \`answers\`` is what a document prints when it simply drops the section, while the shape #601 left behind names `obligations` first and buries its replacement in a field list. The message can be reproduced only from the commit that printed it (`git show b33503ea:crates/symbiote-architecture/src/spike.rs`, its `map_err` body restored, run against the committed document with `answers` renamed back), so it is stated here rather than held by a test. `docs/contracts/architecture.md` now carries the same reconciliation #600 recorded one document over: version 1 absorbs the move because no contract document exists outside this repository and this crate is the only reader of the one in it; a document of the old shape is refused *naming what moved* — the section went to the choice's record as `proof_section`, the answers are the contract's `answers`, and there is no second version to wait for — and rollback is the repository's own revert of the document and its ledger record. The ledger's new `proof_section` needed no such refusal (an absent optional field is refused by the rule that already owns the mismatch), so it is recorded rather than special-cased.
-
-`Contracts::read` now names that shape instead of reporting the field it is missing: `moved_shape` looks structurally for a contract carrying `obligations` and no `answers`, and `a_contract_document_of_the_shape_before_the_bar_moved_is_refused_naming_what_moved` holds the message to both halves of the reconciliation. It is the only refusal this pass adds.
-
-**The two bar-moving routes are registered in #173's own comment thread.** The audit's P8 showed re-pointing the record's `proof_section` at `## Remaining acceptance` and re-answering is refused by nothing — the published map reports `0 refusals` and only the pinned heading fails — and the second route, re-answering a clause at another obligation, at `method` or as `elsewhere`'s, was named as #173's without being an item on #173. Both are now items in #173's own comment thread: *answers carry the clause's own words* (which would make the second a refusal) and *the bar's location pinned in the record*, not only in the suite (which would make the first one). That thread is the carrier and the roadmap is not — the registry holds #173's `acceptance_items`, `body_sha256` and `revision` rather than item text, and the body is pinned data this repository does not rewrite — which `docs/contracts/architecture.md` now says in place, since nothing in this tree can check it. The doc states for each route exactly which mechanism detects it today — the name pin for the section, a reader's comparison for the answer — and why a rule cannot refuse it in the contract's present shape: covering a clause is judgement, and reaching it by rule means making each answer carry the clause's words, which changes what the contract holds. The bar's content staying in three prose copies remains #173's largest open item and is untouched here.
-
-Ruled out, and why: no rule was added for either route, because the honest one for the answer route is the attribution change registered on #173 rather than a new check riding on the current shape, and the section route has no rule available at this layer at all; the published map was left alone, so the bar still has no printed surface, which the audit recorded as a separate finding; and nothing outside the crate, the contract doc and the handoff moves.
-
-Verified locally: crate **96** tests (26 ledger, 13 policy, 57 contract), the new refusal reverted alone in place and failing its own named test, then restored byte-identically, and the bar channel's rules — 11 from #601 plus this pass's refusal — and the run and coverage channels' 38 re-run the same way (`12/12`, `38/38`); workspace **765 / 0** on the default toolchain and on pinned **1.85.0**; the integrity (160), housekeeping (11) and legacy-importer (1) suites; `cargo fmt --all --check`; strict Clippy; the committed constitution report, domain ontology and coverage ledger each matching their `--check` path; and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file in those closures moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## The bar's location belongs to the choice — 2026-09-15 UTC
-
-Change Stream `issue-173-bar-ownership` starts from merged #600 at `56045e31`. #600's own section says the contract *"now carries `obligations`: the section of the decision's accepted record ... and one answer per clause of it"*, and that was the defect one level up: the section was the contract's own claim, so a contract could point it anywhere in the record. The audit showed it — `obligations.section` re-pointed at ADR-0001's `## Remaining acceptance`, five clauses about what is *not* implemented, answered round-robin, and all 54 tests passed with the published map reporting **0 refusals**. The coverage pass had already used the shape of the fix on the applicability fact: give the fact one owner in data and let the other statements defer to it.
-
-The section is now the choice's. A decision record names the `proof_section` of its *accepted text* — the bytes the ledger pins by SHA-256 — and the contract has no field in which to name, choose or move a bar: `SpikeContract` carries `answers`, one entry per clause of the section the choice names, and `deny_unknown_fields` refuses a contract that tries to reintroduce an `obligations`/`section` key. Two named rules hold the two sides together where the record is read (`records::proof_problems`): a choice that names a proof contract and no section is refused, because the contract would otherwise state its own bar, and a choice that names a section and no contract to answer it is refused, because a bar nobody answers is not a bar. A third test pins what no rule can derive — the committed choice's heading, `Proof contract and stop conditions`, by name — so re-pointing the record at another section fails loudly instead of silently shrinking the bar, which is also what notices the residual stated below.
-
-The two false sentences the audit proved are corrected in the document the feature is documented in, rather than the claims being weakened into vagueness. `docs/contracts/architecture.md` no longer says the contract *"can neither shrink the accepted bar nor widen it"*: it says the bar is the choice's, and a new paragraph — placed with the rules it qualifies — states what those rules do not decide. Re-answering a clause at another declared obligation, at `method`, or as `elsewhere`'s with a reason still passes; the section can still be re-pointed if the test that names it is edited with it; and the leftover #598 sentence claiming that *"only the contract is read"* and that comparing the three prose copies *"is the check this cannot close honestly here"* is gone, replaced by what is now true — the clauses come from the accepted text, an obligation dropped from the contract while its clause is left hanging is refused, and comparing ADR-0001, `planning/technology-amendment.md` and `docs/proofs/linux-shell.md` against the contract is the check #173 owns. The handoff section below is amended in place, as the #597 section was when #598 made its sentence true.
-
-Ruled out, and why: a rule that decides whether a named section is *the* section that states a workload is not available at this layer — an accepted record states many, and only a reader can say which one the bar is, so the committed heading is pinned by name instead; hiding the section from readers entirely by keeping it out of the ledger would only move the same claim into a constant; and the clause-splitting heuristic, the `Outcome`/`stop_condition` duplication and the rest of #173's criteria are not this pass's.
-
-Verified locally: 95 crate tests (26 ledger, 13 policy, 56 contract) — two more than #600, the two new named refusals — with all 11 rules of the bar channel reverted alone in place, each failing its own named test, then restored byte-identically, and the 38 rules of the run and coverage channels before them re-run the same way (`38/38`); 764 workspace tests on the default toolchain and on pinned 1.85.0; the integrity (160), housekeeping (11) and legacy-importer (1) suites; `cargo fmt --all --check`; strict Clippy; the committed constitution report, domain ontology and coverage ledger each matching its `--check` path; and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file in those closures moved. Probes in a throwaway worktree of this revision confirmed the fix bites rather than only compiling: a contract that reintroduces an `obligations` key is refused at read time (`unknown field \`obligations\``), the two new rules refuse a choice with a contract and no section and a choice with a section and no contract, dropping three obligations is still refused by two independent rules, and re-pointing the choice's record at `## Remaining acceptance` with the contract re-answered still reports 0 refusals — caught by the test that names the committed section rather than by a rule, which is the residual stated above. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval, and #173 stays open.
-
-## The shell contract's bar is the accepted record's — 2026-09-15 UTC
-
-Change Stream `issue-173-accepted-bar` starts from merged #599 at `c0a536fe`. #38's workload obligations were stated four times — in ADR-0001, in the client amendment it interprets, in `docs/proofs/linux-shell.md` and in the contract JSON — and only the JSON was read, so the audit's probe (delete three workload obligations from the contract, run the suite) passed: the contract could shrink its own bar, and the bar it shrank was the accepted one. This pass gives that fact one owner and makes the contract answer it.
-
-`SpikeContract` carries the answers to the bar: at the time of this pass it named the section of the decision's *accepted record* — the text the ledger pins by SHA-256 — that states what a proof of that choice must do, in an `obligations` field, with one answer per clause of it. An audit then showed that this field was the contract's own claim about where the bar lives: pointing it at the record's `## Remaining acceptance` — five clauses about what is *not* implemented — and answering those round-robin passed every rule and reported 0 refusals. The next section moves the section to the choice, and the field is now `answers`, one entry per clause of the section the choice names. An answer is an obligation the contract declares (and a run must therefore exercise), `method` or `measurements` where the clause is about how the proof is run, or `elsewhere` naming the issue that owns a clause belonging to the decision's wider acceptance. The clauses are the record's own text, split at its sentence and semicolon boundaries; nothing is quoted into the contract, so the ADR stays the one readable copy. Two rules close the hole in both directions: a clause answered by nothing is refused where the record is read, and an obligation that answers no clause is refused where the contract is read — so neither a smaller nor a larger bar than the accepted one loads.
-
-The audit's probe now fails by rule. Deleting the same three workload obligations leaves three answers naming obligations the contract does not declare, and the published map exits non-zero saying so (`clause 2 is answered by "#38: three active terminal tabs with bounded scrollback in real PTYs", which this contract does not declare`); deleting the answers instead leaves three clauses of the ADR's section unanswered, refused by the join. Both mutations were run and undone against the real tree.
-
-The reconciliation is visible in the data rather than argued in prose. The committed contract answers the accepted section's 24 clauses with 32 answers: 24 naming an obligation of its own (a run has to exercise it), 2 naming its `method` or its predeclared `measurements`, and 6 naming #38 as the owner of a clause this workload does not carry — clauses 9 (the #38 scope items: file watching, menus, updates and signing, packaging, disconnect and replay), 10 (the geometry, input-method, accessibility and DOM-to-source checks), 18 (that an iframe is not evidence on its own), 19 and 20 (Preview source-edit acceptance), and 23 (bounded caches, queues and scrollback, backpressure, lazy loading, virtualization and Project-service suspension). Seven clauses are answered more than once, where a clause is both exercised and refused-on. Nothing was added to the bar: the six are named as owned elsewhere rather than quietly widened into the workload, and every clause that *is* this contract's is now tied to an accepted clause instead of to the contract's own preference.
-
-`docs/proofs/linux-shell.md` — the copy that is a record of a run rather than accepted text — now says where the bar comes from, and the ADR itself is untouched, because accepted text is not this pass's to rewrite. What the rule proves and what it does not: it proves every clause the accepted record states is answered by something the contract holds, and that every obligation the contract declares answers a clause; it does not read the answer and judge whether an obligation's wording really covers its clause, and a pass could still move a clause to `elsewhere` or re-point it at another obligation it declares — as a change to the contract's own claims, visible in the diff, rather than as a silent shrink. #173 carries the remaining work: the contract is not the only place the shell proof's obligations are stated in prose.
-
-## One concern per module — 2026-09-15 UTC
-
-Change Stream `issue-173-crate-layout` starts from merged #598 at `af7e282f`. Three audits had named the same structure: `checks.rs` held seven refusal families in 448 lines, `SpikeContract`/`Measurement` lived in `lib.rs` while the code that reads them lived in `spike.rs`, and the crate root owned both the engine and the crate's shared vocabulary. This is a shape pass — same rules, same refusals, same order, same output — and the layout table in [the contract doc](../contracts/architecture.md) is the record later passes should build with.
-
-`lib.rs` is now only the crate root: the shared vocabulary, `workspace_root`, the module map and the re-exports consumers name. `policy.rs` is the engine — states, authority, evidence, pins, facts, `DecisionRegistry` — and now owns the printed name of every state, so the duplicate that lived in `checks.rs` and in the example is gone. `spike.rs` absorbed the contract's shape, so a contract's type and the rules that read it are one file. `checks/` splits the join by subject: `mod.rs` (`Problem` and the ordered entry point), `records.rs` (a record's text and evidence, its owner, a lapsed fact), `artifacts.rs` (gate status, membership both ways, pins, provisional reach) and `contracts.rs` (the contract/decision link, obligation ownership, the run set). `Run::unmet` is now five named rule families — identity, workload, published, outcome, observations — in the order it always refused in, instead of one 141-line body.
-
-Proof that nothing observable moved: both examples' output is byte-identical to the pre-pass binaries' — `--example decisions` and `--example architecture_schema` were run from a worktree at this pass's own base `af7e282f` and from this tree, and both diffs are empty (`IDENTICAL`, 8269-byte schema) — and all 38 refusal rules were reverted one at a time in place and still fail their own named tests (`38/38 rules bit`), with the driver resolving each anchor's file by search rather than by a path that no longer exists. `tests/governance.rs` gained `a_state_is_named_the_same_way_wherever_it_is_printed`, which holds the engine's `Display` to the serialized name for every variant of `DecisionState` and `GateStatus`, so the vocabulary cannot be printed one way and stored another.
-
-Ruled out, and why: `Outcome` and `stop_condition` still describe "did it stop" twice, and folding them would delete two refusals rather than move code — a behaviour change this pass does not make, so it is named here instead; and the two test names the constitution's catalog binds in `tests/governance.rs` stay where they are, which the contract doc now states so a later pass does not move them.
-
-Verified: 82 crate tests (26 ledger, 13 policy, 43 contract), 751 workspace tests on the default toolchain and on pinned 1.85.0, the integrity (160), housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0 — unchanged, because no driven binary's closure includes this crate.
-
-## Contract-owned platform coverage — 2026-09-15 UTC
-
-Change Stream `issue-173-contract-coverage` starts from merged #597 at `87b3b36f`. #597's own section claims that *"a single run on a single platform could never settle this contract, whose applicability is four platforms, so the flat shape would have made the path unreachable"*. That was false, and the audit proved it by building the settlement: one run, `untested_platforms: []`, the record flipped to `accepted` citing it, `blocking_issue` nulled — the map reported **0 refusals**. Coverage was enforced in neither direction, and `untested_platforms` was free text that nothing tied to the contract.
-
-The coverage fact now has one owner: the contract declares the platforms it applies to as data (`applicable_platforms`), and its `platform` sentence points at that data rather than restating it as the authority. A settlement is refused by name when a platform the contract applies to is neither measured by one of the result's runs nor declared untested — `the result leaves "linux x11" neither measured nor declared untested, so nothing says whether the contract's applicability was covered` — so the sentence above is true now, for the reason it gave: a single-platform run cannot settle a four-platform contract. A declared untested platform keeps the choice `investigating`, as it did; declaring a platform the contract does not apply to is refused; and a contract that names no applicable platform, or names one twice, is refused when it is read.
-
-Reproduced on the merged tree: the audit's settlement now reports three refusals, one per unaccounted platform, while the same settlement with one run per applicable platform reports 0 refusals and exits 0, so the path is walkable in the direction that measures. Every settlement in the contract suite now carries a run per applicable platform, which is also the first dossier in that suite with more than one run — the shape #597 added had never been exercised with two.
-
-Ruled out, and why: `checks.rs`'s seven refusal families and the `SpikeContract`/`Measurement` split across `lib.rs` and `spike.rs` are the structural pass two audits have now flagged, and growing `checks.rs` here would have widened it, so the new rules live with the contract concern in `spike.rs`; the obligation list's three copies stay with #173, because the ADR is accepted text the ledger pins by hash and the proof record is history. What this does not close: a run's platform strings are self-reported, and `applicable_platforms` is this repository's own data, so a pass could shrink what a settlement has to cover by editing the contract — the workload's own platform obligation is the second copy that would notice, and #173 owns tying the copies together.
-
-Verified locally: 81 crate tests (26 ledger, 12 policy, 43 contract; each rule reverted alone in place, failing its own named test, then restored byte-identically), 750 workspace tests on the default toolchain and on pinned 1.85.0, the integrity (160), housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## Attested spike runs — 2026-09-15 UTC
-
-Change Stream `issue-173-spike-run-attestation` starts from merged #596 at `cd204823`. #596 gave the shell choice a path to settled, and an audit of it showed the path could be walked without anything being measured: a result with an empty artifact list plus a record published `accepted` citing it passed every contract rule, deleting three workload obligations from the contract left the suite green, and the contract's `method` promised a run would record commit, platform and version, hardware, raw artifacts and failures while `Results` had no field for four of those. This slice makes the run the proof.
-
-`Results` is now a dossier of `Run`s, one record per platform measured, and each run carries the commit it was built from, the platform and version it exercised, the hardware it ran on, the obligations it exercised named exactly as the contract names them, its outcome and stop condition, the failures it saw, one observation per predeclared measurement, and the raw artifacts it published with their SHA-256. A settlement is refused by name for a result that records no run, for a run that names no platform, version, hardware or revision, for a run that attests part of the workload or an obligation the contract never declared, for a run that published nothing, for a run that stopped on a condition the contract never declared or without recording it among its failures, and for a run that calls the platform it exercised untested. The hash path over cited artifacts is load-bearing now, because a settlement that published nothing is refused before it is reached. This section's closing claim — that one run per platform is not decoration, because a single-platform run could never settle this four-platform contract — was asserted here before it was true; the next section is the pass that made it true by giving the contract's applicability an owner in data.
-
-Version 1 of the result schema absorbs the change rather than pretending to a history: no result artifact exists in this repository or any other, so there is nothing to migrate, and the first run ever written is written to this shape.
-
-Ruled out, and why: deriving the contract's applicable platforms from its own `platform` prose would be prose parsing, so the platforms are declared as data instead, one section up; and repairing the obligation list's three copies (ADR-0001's proof contract, `docs/proofs/linux-shell.md`, the contract) is not honest here, because the ADR is accepted text the ledger pins by hash and the proof record is history — #173 keeps that check. The audit's other probe was re-run rather than papered over: at the time, deleting three workload obligations from the contract still left the suite green, because the obligations' content is #38's bar and no copy of it was readable as data from the tree. The two sections above are the passes that closed that: the accepted record became the readable copy, and the contract can no longer choose which part of it is the bar. What the run side closes is the half that is checkable: a run must attest every obligation the contract declares, so a narrowed contract cannot be measured against a subset.
-
-Verified locally: 76 crate tests (26 ledger, 12 policy, 38 contract; 34 rules each reverted alone in place, each failing its own named test, then restored byte-identically), 745 workspace tests on the default toolchain and on pinned 1.85.0, the integrity (160), housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## Desktop shell proof contract — 2026-09-15 UTC
-
-Change Stream `issue-173-spike-contract` starts from merged #595 at `c9a5e320`. #173's proof mechanism had the gap the decision lifecycle had: `SpikeContract` existed in `symbiote-architecture` and no contract this repository owns was recorded, so #38's obligations lived in `docs/proofs` prose and nothing could say what the shell choice would be settled *by*. This slice records the contract as data and gives the crate a reader for it, which is a step in #173's plan rather than its closure: #173 still owes authenticated Host enforcement, durable accepted history and a transition history, among the obligations its own contract lists.
-
-`docs/architecture/spike-contracts.json` holds one contract, `#38/desktop-shell-representative-workload`, settling `ADR-0001/DESKTOP-SHELL`: the hypothesis, the representative workload (#38's four agent streams, three bounded-scrollback terminals, editor and diffs, live Preview with floating controls, Project switch and restoration, cancellation of the whole tree, crash and reconnect, a second client over a headless Host, applicability across Wayland/X11/Windows/macOS, and whole-process-tree attribution), the reference hardware, the measurement plan, eleven predeclared ceilings (cold start to first frame and to ready, idle and under-load process-tree PSS, the unattributed share, worst input starvation, orphaned processes and ports after cancellation, journal events lost across a crash, installer size, clean locked build time), eight stop conditions and the cleanup — with every obligation tagged by the issue that owns it. The ledger record names the contract back (`proof_contract`), so the choice and its proof cannot drift apart silently.
-
-A decision can now publish `accepted` only while a complete, in-threshold run of its contract stands, cited as its own evidence: `spike.rs` reads the result (contract identity, the contract's fingerprint when the runs happened, the platforms left untested, and one run per platform carrying its commit, platform and version, hardware, exercised obligations, outcome, failures, observations and raw artifacts with their SHA-256) and `checks.rs` joins it to the tree and the ledger. The shape of that run is extended in the next section. The fingerprint is what makes the ceilings predeclared rather than chosen after the fact: a threshold cannot move under a result measured against it. With no run committed, the shell choice stays `investigating`, which is the honest state — nothing has been measured.
-
-Ruled out, and why: writing #38's *verdict* would invent the outcome of a spike nobody has run, so the contract records obligations and ceilings and never a result; authoring a contract for `ADR-0001/GRAPH-STORAGE` would mean writing #233's storage proof, so the field is per decision and #233 keeps its own; requiring every open decision to name a contract would do the same by force; and a results reader beyond the settlement rules (history, provenance fetching, an artifact store) belongs to the integrations #173 still lists.
-
-Verified locally: 63 crate tests (26 ledger, 12 policy, 25 contract — 21 of them proved by reverting one rule at a time in place and watching its own named test fail, then restoring the file byte-identically, and one walking the settled path end to end), 732 workspace tests on the default toolchain and on pinned 1.85.0, the integrity (160), housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0, unchanged because no compiled file moved. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## Repository decision ledger — 2026-09-15 UTC
-
-Change Stream `issue-173-decision-ledger` starts from merged #594 at `1dc6fb96`. #173's gap was not a missing mechanism but a missing reader: `symbiote-architecture` implemented the decision lifecycle and nothing in this repository consulted it, so every pin and every state was a fixture and ADR-0001 was prose. This slice makes the repository's own decisions data and gives the crate a caller.
-
-`docs/architecture/decisions.json` records ADR-0001 as three decisions — `ADR-0001/HOST-STACK` accepted on explicit client authority, `ADR-0001/DESKTOP-SHELL` and `ADR-0001/GRAPH-STORAGE` investigating under #38 and #233 — with the accepted text and the client instruction that authorized it content-addressed by SHA-256, and one pin record per workspace member cargo reports. `ledger.rs` replays the file through the crate's own transitions (propose, accept, draft revision, fact revisions, pins) and requires each record's published state and revision to be the ones the replay reaches; `repository.rs` asks cargo for the member list and the dependency names rather than parsing manifests by hand; `checks.rs` joins them into the refusals: a record whose text or evidence changed, an open decision with no owning issue, a decided one that still names one, a published status the gate does not reach, a member with no record, a record for a path cargo does not report, a member that declares a provisional choice's dependency without pinning it, a pin that member does not declare, and a compatibility fact whose validity lapsed. `cargo run -p symbiote-architecture --example decisions` prints the same map and exits non-zero while a refusal stands.
-
-The published result is the state that was previously only prose: 24 members settled on the accepted stack constraint, and `crates/symbiote-desktop` — the one artifact reaching a choice still under proof, through `tauri` and `tauri-build` — published `provisional`, owned by #38. No compatibility fact is recorded, because ADR-0001 certifies no version; #38 and #233 own the measurements that would create one.
-
-Ruled out, and why: recording a compatibility fact would mean inventing a certified version; a runtime `require_ready` caller belongs to the Host (#180/#181); and the remaining #173 obligations (durable accepted history, a recorded transition history, graph queryability) are named in [architecture governance](contracts/architecture.md) rather than half-built here. A spike contract was deferred rather than dropped, because committing one means either predeclaring #38's ceilings from outside #38 or inventing its verdict; the slice recorded above takes the first road and rules out the second.
-
-Verified locally: 26 ledger tests and 12 policy tests in the crate, 705 workspace tests on the default toolchain and on pinned 1.85.0, the integrity (160), housekeeping (11) and legacy-importer (1) suites, `cargo fmt --all --check`, strict Clippy, and the source-record check on freshly built binaries at 115 named / 0 unnamed and 42 / 0. Twenty rules were reverted one at a time, each failing its own named test and then restored, and two on the real tree: one byte appended to ADR-0001 refuses all three records by hash, and removing the desktop record refuses the crate that declares `tauri`. CI, current-head checks and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## Constitution conformance structure — 2026-09-15 UTC
-
-A structure-only pass on `issue-170-constitution-structure` splits `symbiote-constitution` so each concern has one owner: `catalog.rs` (the inventory, its `Fact`/`Invariant` types and the three normative sentences two invariants each depend on, now held in one constant each), `document.rs` (the document channel and the embedded constitution), `repository.rs` (the repository channel, its tree walk and manifest key heuristics), `harness.rs` (the test channel, unchanged in rules), `report.rs` (the verdict vocabulary, `evaluate`, and the committed encoding) and a 58-line `lib.rs` that is documentation, the module map and re-exports. The textual `include!("catalog.rs")` splice is gone, so the catalog is a real module with navigation and a module boundary. Channels depend on `report` for `Outcome` and never on one another.
-
-No behaviour moved: the committed `docs/contracts/constitution-report.json` is byte-identical (sha256 `1b0fd21d…` before and after, `--write` idempotent, `--check` matching), so the invariants, channels, verdicts, failures and harness discovery results are the same by construction. The only source changes outside this crate are the two documentation files. The dead `identifiers()` accessor, which had no caller anywhere, is removed with the rewrite.
-
-Verified locally: 9 conformance tests, `cargo test --workspace --locked`, `cargo fmt --all --check`, strict Clippy, the legacy/integrity/housekeeping Python suites, and the source-record check on freshly built binaries at 113 named / 0 unnamed and 40 / 0. CI, current-head checks and independent review remain separate gates recorded on the pull request.
-
-## Constitution conformance hardening — 2026-09-15 UTC
-
-A second slice on `issue-170-conformance-hardening` closes three defects a read-only audit found in the just-merged ledger, all of them ways the recorded evidence could be untrue rather than prose that needed tidying. The `test` channel no longer infers runnability from a file's shape: `symbiote-constitution::Harness` asks cargo for every workspace target and accepts a Rust binding only when the file is one of them or sits in a member's source tree behind a real `mod`/`#[path]` declaration, and a Python binding only when one of the three maintenance suites discovers it. That mattered: `tests/fixtures/not_evidence.rs` holds a plain `#[test]` with no `#[ignore]`, and the previous rule accepted it although cargo never compiles the file. #170's two unmapped criteria now have invariants (`CN-23` routes the named implementation owners, checked by `the_routed_owners_are_named_by_the_record`; `CN-24` requires implementations to obey the constitution and their Project/Role/Host policies, checked against the Host's policy authorization tests), and `EXPLANATIONS` makes an invariant with no executable check state why, in both directions. The report is now a guarded generated artifact: committed at `docs/contracts/constitution-report.json`, regenerated or checked by `cargo run -p symbiote-constitution --example constitution_report -- --write|--check`, and diffed by `the_committed_report_is_what_the_tree_emits`.
-
-Ledger result: 24 invariants, 118 channels, 0 failures. Verified locally with 9 conformance tests, `cargo test --workspace --locked`, `cargo fmt --all --check`, strict Clippy, the legacy/integrity/housekeeping Python suites, and the source-record check on freshly built binaries at 113 named / 0 unnamed and 40 / 0. The design restructure the audit also named — the `include!` splice, `lib.rs` owning five concerns, and normative sentences owned by two entries — is deliberately left for a separate pass. CI, current-head checks and independent review remain separate gates recorded on the pull request.
-
-## Constitution conformance — 2026-09-15 UTC
-
-Change Stream `issue-170-invariant-conformance`. Owner #170 records the constitution's non-negotiable invariants as a machine-checked ledger: `symbiote-constitution` carries `CN-01`–`CN-22`, each bound to an exact document clause, a repository fact or a named workspace test, and emits the per-criterion report published against the issue. See [constitution conformance](contracts/constitution.md).
-
-Two real gaps were fixed while making the ledger pass rather than by weakening the ledger. The constitution did not carry the methodology-boundary sentence #170 requires ("Core methodology and control cannot depend on a giant skill/prompt bundle; skills carry specialist expertise."), and three crates (`symbiote-client-sdk`, `symbiote-external-agent`, `symbiote-repo`) did not inherit the workspace's `unsafe_code = "forbid"` lint, so the workspace-wide claim was not enforced everywhere. The constitution's open-acceptance paragraph now maps every coverage item it named to the check that runs it or the issue that owns it; the production capability and the executable schemas remain owned by #36/#173/#38/#29-#34/#460/#449, and #170's own deliverable is the recorded coverage.
-
-Verification at the pull request's head: `cargo test -p symbiote-constitution` (7 tests, 22 invariants, 112 channels), `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked`. CI, current-head checks, current-head evidence and independent review remain separate gates recorded on the pull request; this section is not an approval.
-
-## Durable workforce bindings — 2026-09-08 UTC
-
-Change Stream `issue-203-workforce-bindings` starts from merged #485 at `7dadbefe`.
-The Host persists staffing intent around canonical WorkforceBinding identity and
-reports incomplete readiness without authorizing execution. See
-[workforce bindings](contracts/workforce-bindings.md) for schema v5, protocol v1.5,
-historical Team validation and the remaining activation gates. #203 and the full
-build goal remain open.
-
-## Live Host inventory — 2026-09-08 UTC
-
-Change Stream `issue-193-host-inventory` starts from merged #484 at `0d6c65a`.
-The local Host exposes bounded passive resource observations with private stable
-identity, expiry and explicit telemetry disablement. See [Host inventory](contracts/host-inventory.md)
-for protocol v1.4, actual probe scope and remaining scheduling acceptance.
-Effective capacity and reservations remain unproven, so they cannot authorize
-worker launch. #193 and the full build goal remain open.
-
-## Durable Project Team — 2026-09-08 UTC
-
-Change Stream `issue-200-project-team` starts from merged #483 at `8383a6b`.
-The Host stores Team configuration with revision checks, journal replay and
-separate management authority. See [Project Team](contracts/project-team.md)
-for schema v4 migration, protocol v1.3 and the executable CLI demonstration.
-This establishes staffing intent; qualified native/external bindings and worker
-execution remain pending. #200 and the full build goal remain open.
-
-## Runtime discovery — 2026-09-08 UTC
-
-Change Stream `issue-186-runtime-discovery` starts from merged #482 at `1735a48`.
-The versioned inventory and read-only Codex probe distinguish observations from
-activation authority. See [runtime discovery](contracts/runtime-discovery.md)
-for the real offline sandbox proof, pinned compatibility and pending acceptance.
-The application is not ready to ship: discovery is not worker execution, and both
-native and external coding workflows still need end-to-end integration.
-
-## Canonical work hierarchy — 2026-09-08 UTC
-
-Change Stream `issue-189-work-hierarchy` starts from merged #481 at `bb95e49`.
-Owner #189 adds replay-validated work aggregates, transactional graph/origin
-storage and Host protocol v1.2. See [the hierarchy contract](contracts/work-hierarchy.md)
-for schema v3 migration, authority, bounds and remaining acceptance. Existing
-unclassified Tasks cannot start until explicitly assigned an origin.
-
-Domain and storage authors independently cross-review each other's modules and
-the Host integration. A separate review task was stopped by an automatic
-security filter and is not counted as completed review. Current-head checks,
-merge and issue evidence remain separate gates. #189 and the persistent build
-goal remain open for the full product integration.
-
-## Linux process sandbox — 2026-09-08 UTC
-
-Change Stream `issue-218-linux-sandbox` starts from merged #480 at `06c81f9`.
-Owner #218 consumes the runtime and resource-consent foundations. The new
-launcher is a bounded internal Linux execution boundary, with read-only and
-worktree-write profiles, isolated networking and a trusted helper for closing
-inherited descriptors. It is not an authenticated Host worker endpoint.
-
-See [the sandbox contract](security/linux-sandbox.md) and
-[the live alias probes](proofs/linux-sandbox-aliases.md). Review identified
-pathname socket, hardlink and inherited-descriptor hazards; these require
-preventive checks in addition to namespace flags. One separate review agent's
-test-writing turn was stopped by an automatic security filter citing possible
-cybersecurity risk. That turn is not counted as completed review. Another
-independent reviewer completed the full crate, helper, test and documentation
-review with no blocking findings under the documented trust boundary. Heartbeat
-assertions were tightened and fixtures bounded to ten seconds; the example now
-asserts its report and exit.
-
-Current-head verification and integration evidence must be recorded before
-claiming this slice delivered. Full #218, production worktree provisioning,
-authenticated dispatch, both live runtimes and the first usable release remain
-open. The persistent build goal is not complete.
-
-## Durable resource consent — 2026-09-08 UTC
-
-Change Stream `issue-174-191-trust` starts from merged #479 at `615e483`. Owners #174/#191 establish the trust/threat baseline and a durable exact-resource consent boundary. New `symbiote-trust` checks snapshots, expiry/revocation and current policy; Host protocol v1.1 records/reads/revokes consent using server-derived authority, and store schema v2 journals those decisions transactionally.
-
-See `docs/contracts/resource-consent.md` and `docs/security/trust-boundaries.md` for migration and remaining acceptance. Same-UID local-owner bootstrap is not a worker sandbox: #218 must prove preventive isolation before native/external workers launch. Licensing, publisher signatures, active revocation, complete trust tests and the first usable release remain pending. Broad #174/#191 and the persistent build goal stay open.
-
-## Inactive profile projection — 2026-09-08 UTC
-
-Change Stream `issue-187-projection` starts from merged #478 at `76ab590`. Owner #187 consumes #184/#179/#214 foundations. `symbiote-projection` reconciles explicit managed TOML primitives, binds pack mappings to exact eligible environment resources and publishes fresh private profile generations with readiness/content verification. Existing generations and native homes are never overwritten.
-
-See `docs/contracts/projection.md` for tests, demo and remaining acceptance. This is inactive profile preparation, not native/Codex compatibility or activation. Next execution prerequisites still include #174/#191/#218 trust/threat/preventive enforcement, worktree/context/dispatch integration and real runtime packs. Broad #187 and the persistent build goal remain incomplete.
-
-## Agent environment contracts — 2026-09-08 UTC
-
-Change Stream `issue-214-environment` starts from merged #477 at `18fd58c`. Owner #214 consumes the #179/#184 foundations. Versioned desired resource declarations enter the portable Project manifest, with read-only environment resolution and explicit scope, trust, ownership and compatibility boundaries. Native files remain projections; this batch performs no resource installation or worker activation.
-
-See `docs/contracts/agent-environment.md` for parsing, merge and remaining integration acceptance. #187 can consume these contracts for read-only projection planning before native file reconciliation. #174/#191/#218 trust and preventive enforcement, #189 hierarchy, actual native/Codex packs and full first-release verification remain open. The persistent build goal is not achieved.
-
-## Local structured runtime transport — 2026-09-08 UTC
-
-Change Stream `issue-185-transport` starts from merged #476 at `d7b1391b0e03e861a168e915c0602be681e3b83d`. Owner #185 consumes the #180/#184 foundational contracts. This batch adds a process-backed local JSONL substrate and separate strict JSON-RPC 2.0 response correlation. It does not expose a Host worker activation endpoint or certify Codex/ACP compatibility.
-
-Independent review separates process supervision/framing from RPC correlation. See `docs/contracts/runtime-transport.md` for the actual guarantees, fixture commands and remaining acceptance. Broad #185 remains open for the other substrates, real packs, complete containment and recovery. The full native/Codex first release and persistent build goal remain incomplete.
-
-Next dependency-ready work: #214 versioned agent environment/resource desired-state contracts before #187 native configuration projection; #189 request/objective/capability/plan hierarchy can consume existing #36/#43/#181 foundations independently. Activation still requires the #174 → #191 → #218 trust/threat/enforcement chain. A successful process fixture supplies no sandbox or credential authority.
-
-## Runtime SDK foundation — 2026-09-08 UTC
-
-Change Stream `issue-184-runtime-sdk` starts from merged #475 at `c1b7f2f6d7adcbe7c50377d1ff9e990b11019ebe`. Owners #184/#464 consume the reviewed #181/#36 contracts. `symbiote-runtime-sdk` separates agent-loop adapters from inference providers, qualifies immutable dispatches against current identity-bound capability/control evidence, and defines bounded session events and native/external auth/billing checks.
-
-Independent review covers adapter capability/activation logic separately from provider/event logic. New failure fixtures cover proof substitution, stale controls, context bounds, native/external ownership, absent CLI/local endpoint metadata, false completion, replay gaps, cancellation uncertainty and impossible/over-budget usage. Conformance fixtures are not real runtimes; the Host has no SDK activation endpoint or implementation of its ActivationJournal callback yet.
-
-Next: implement dependency-ready runtime profile/configuration and trust/enforcement foundations, then actual adapter transport and dispatch integration under the canonical queue. #184/#464 remain open for real reference transports, compatibility dossiers, process isolation and full native/Codex operation. See `docs/contracts/runtime-sdk.md`, `runtime-events.md` and `providers.md`. Overall first usable release remains incomplete; do not mark the persistent build goal achieved.
-
-## Durable metadata Host — 2026-09-08 UTC
-
-Current Change Stream: `issue-43-durable-host`, isolated from merged #474 at `42eda51a7e4955cb5f44aa85833e8a313a6ae3a7`. Owners #43/#181/#180 consume the reviewed #36/#176 foundational contracts. New Rust workspace crates implement SQLite current-state/journal transactions, typed transport-neutral requests, and an actual Linux daemon/CLI using private same-UID IPC. The GUI has no canonical state ownership. No agent subprocess or model billing is enabled.
-
-The daemon can register a Project with its Roots/Roles, create ready Tasks/initial Change Streams, read records and replay committed events. Real-process tests force daemon death and transaction-boundary death, reconnect independent clients, replay dropped replies and check concurrency. Separate review covers storage/protocol and Host transport; current-head CI belongs to the containing PR. See `docs/contracts/{storage,protocol,host}.md` for the exact implemented boundaries and reproduction commands.
-
-Next prerequisite work includes execution permissions/credentials and durable side-effect disposition, runtime/workforce contracts, actual process/worktree supervision and the remaining #38 architecture proofs. Native/Codex execution, desktop integration, backup/export recovery and full protocol/service packaging remain pending. Do not close broad #43/#181/#180 on metadata storage alone or advertise the shell/security/runtime as release-ready.
-
-## Architecture proof batch — 2026-09-08 UTC
-
-Foundations PR #473 merged at `a15368c1744fdff3c186dda11f24714d738c7efe` after separate review and passing stable/MSRV/roadmap checks. The #36/#170/#176/#179/#173 issues remain open for their broader acceptance. Current proof work is isolated on `issue-38-linux-proof` from that revision.
-
-Two runnable experiments now exist: `spikes/linux-shell` (Tauri/React/Monaco, three native PTYs, separate Preview and overlapping Lead WebViews) and `spikes/host-lifecycle` (independent Rust daemon, fixed process tree, disconnect/replay/cancel/restart fixtures). See `docs/proofs/linux-shell.md` and `docs/proofs/host-lifecycle.md` for reproduction, measurements, raw evidence and limitations. The initial GTK composition failure is retained alongside corrected interaction screenshots. Preview denial reports are untrusted observations, not authenticated security proof.
-
-These experiments do not select the desktop shell or transactional storage. Native Wayland/real X11, Windows/macOS, accessibility/IME/scaling, arbitrary descendant containment, representative resource budgets and full Preview authority isolation remain unpassed. The injected guardian-loss test exposes a recovery boundary instead of claiming unconditional orphan cleanup. No native API/Codex integration, production Host or usable release is complete. Continue the live #38 acceptance and separate #43 storage decision before dependent production integration; preserve the canonical queue and open broad issues.
-
-## Executable foundation batch — 2026-09-08 UTC
-
-PR #472 was reviewed and merged as `d2c5d300652e3733ec0172c4b0ef0690fa168e37`. Current worktree `/mnt/data/projects/Symbiote-worktrees/issue-36-176-foundations`, branch `issue-36-176-foundations`, starts from that merged revision. Owners are #36/#170 domain/constitutional contracts, #176/#179 configuration/portable manifests, and #173 architecture decision/proof contracts. The first usable release must prove both native Rust/OpenAI API and external Codex execution under shared canonical controls; none of this batch calls paid inference or claims those integrations.
-
-Three pure Rust crates replace the absence of application contracts: typed identities/dispatch/lifecycle evidence; scoped configuration/portable manifest and conflict previews; immutable accepted architecture decisions/version pins and selective invalidation. See `docs/contracts/` for acceptance coverage and remaining integration obligations. `README.md` documents reproducible build/test/schema commands. A Cargo lockfile pins dependencies; CI adds stable and Rust 1.85 contract verification. No unsafe code is permitted in these crates.
-
-The baseline planning suites passed before changes. Independent review identified forged deserialization/dispatch-context/freshness defects in the domain boundary, invalid portable paths, and incomplete affected-artifact reporting in decision acceptance. All were fixed with regression tests and independently re-reviewed. Final local checks: 42 Rust tests pass (18 domain, 12 configuration, 12 architecture), strict all-target Clippy passes, formatting/diff checks pass and all three schema generators run. The domain reviewer also verified six independent adversarial probes including history tampering. CI/MSRV and merge evidence belong to the containing PR; no GitHub approval is inferred from separate-agent review.
-
-The #38 environment probe found GTK3/WebKitGTK4.1, Tauri CLI and Xvfb. Native display is KDE Wayland; its `:1` X11 connection is XWayland, not standalone X11 certification. The Linux shell spike is prepared separately under `issue-38-linux-proof`; it must not be represented as a chosen desktop architecture. Windows/macOS, minimum-target resource budgets, Preview authority isolation, signed updates and full representative workload remain proof gates. Prototype preparation is independent; execution follows the reviewed #173 foundational contract. Graph storage and transactional control-plane storage remain separate candidates.
-
-Next: integrate reviewed/current-head foundation checks, execute the bounded #38 Linux spike and publish raw evidence/failures, then advance #43/#181/#180 only after their explicit schema/persistence/proof requirements are supported. Keep broad issues open for later Host authentication, durable recovery, runtime, graph, full ontology and cross-platform acceptance. Never mark code-level enforcement authenticated solely because a test supplies an `Actor::Host` or an evidence record.
-
-## Initial takeover record
-
-Recorded 2026-09-08 UTC. Canonical owners: #170 (constitution), #470 (roadmap integrity); #173/#38 own remaining governance/proof. Branch `issue-170-470-takeover-integrity`, worktree `/mnt/data/projects/Symbiote` (also `/home/birdman/Projects/Symbiote`). Base and inspected target: `772fe8446f4ba42d9ad037de76acc3d792fc1d07`. The containing PR's head is the exact implementation revision; this record does not certify a later head.
-
-## Verified starting state
-
-The supplied directory was empty. Cloned the authenticated GitHub repository without deleting existing content. Default `main` contained only planning/import scripts, encoded historical payloads and issue templates: no application, Cargo/npm manifest, tests, accepted ADRs or AGENTS.md. No open PRs or other worktrees were present in this checkout. Remote audit branch `planning/audit-2026-09-07` is preserved and not merged as executable bootstrap. No branch protection/rulesets were configured when inspected; the user's independent-review/current-head gates still apply.
-
-Rust 1.97.1, Cargo 1.97.1, Node 22.22.1 and Python 3.14.7 are available locally. Previous CI certified planning imports/audit only; the latest historical verification workflow had failed. No application/platform baseline exists to certify. Python remains existing repository-maintenance tooling, not a second core service implementation language.
-
-## Delivered scope
-
-- [Constitution](architecture/product-constitution.md) and [ADR-0001](architecture/adr-0001-technology-direction.md) record the accepted Rust/strict-TypeScript/no-Electron direction. Tauri 2 and SurrealDB remain candidates awaiting evidence. #170 remains open for executable schema/conformance and later integration acceptance.
-- Amended #36, #38, #54, #154, #165, #170, #180, #191, #233, #336, #353, #375, #431, #446, #464, #465 and #467. Exact read-back verified each body, and full before/after inventories confirmed unchanged titles, states, labels, assignees and milestones. Removed the positive Electron candidate wording from #38 and #336. Baseline v2.4 identity/revision markers remain; a separate dated architecture-amendment marker records precedence.
-- Historical Python/Node importer entrypoints now refuse before loading payloads or credentials. Historical workflow jobs are disabled and issue-write permissions removed. Payload/history is retained. These protections take effect on the default branch only after reviewed integration; old git revisions and the audit branch remain historical executable code and must not be run as synchronizers.
-- The offline #470 validator generates a compact canonical registry and topological index from current issue evidence. It validates structure, not implementation completion. A safe remote regeneration writer is deliberately absent.
-
-## Evidence and limitations
-
-Captured before/after inventories with `python planning/capture_roadmap.py OUTPUT.json`: 466 issues. Captures are local evidence in `/tmp/symbiote-takeover-before.json` and `/tmp/symbiote-takeover-after.json`; recapture for future work, never treat temporary paths as durable authority. Amendment hash/read-back results: `/tmp/symbiote-amendment-results.json`.
-
-The bounded manual issue amendment performed a batch preflight, immediate per-issue body/timestamp check, body-only PATCH and exact metadata/body read-back. GitHub atomic compare-and-swap was not assumed; this is not certification of the concurrent-edit/three-way-merge writer required by #470. No ambiguous mutation was retried. No issue was closed or marked implemented.
-
-Local regression commands:
+Where this work stands, how a claim in this repository is held, and what remains
+open. Mission, authority and the critical path are in
+[the takeover prompt](agent-takeover.md); what is implemented is in the
+[README](../README.md) and in each subsystem's contract doc.
+
+This file succeeds a per-pass chronicle that recorded every Change Stream's own
+test counts. Those counts are what the repository's claims are *about*, and in
+that form they went stale: twice a pass left a figure the tree contradicted, and
+finding it meant reconstructing which run the sentence had meant. So this document
+states no figure of its own. A number lives in the artifact that produces it — a
+committed report, a suite's own output, a workflow — and is pointed at from here.
+It cites no case name either: where a check matters it names the file or the
+document that owns it, and the crate doc holds its own citations against its suite.
+
+## How a claim is held here
+
+Five habits, each of them checked rather than asserted:
+
+- **One owner per fact.** A rule about a record lives with the records, a rule
+  about the tree with the artifacts, a rule about proof with the contracts, and a
+  rule about a document with the component that owns the document.
+- **A refusal rule is proved by reverting it.**
+  [`planning/integrity/revert_rules.py`](../planning/integrity/revert_rules.py)
+  holds one row per rule of the architecture governance crate and the contract
+  document: it removes the rule alone, watches the case that holds it fail, and
+  restores the file byte-identically.
+  `planning/integrity/test_revert_rules.py` holds that table to the tree — every
+  anchor is held once, every named case is one a suite runs — so a moved anchor or
+  a renamed case fails in a second instead of becoming a row the driver skips.
+- **A generated artifact is guarded, not trusted.** Each committed artifact has a
+  `--check` path plus a case that diffs the emitted bytes, so the artifact cannot
+  drift from the tree silently.
+- **A citation is a claim.** A document that names a check is held to a name a
+  suite runs, or it names the file that owns the assertion instead.
+- **A moved shape is reconciled where the feature is documented**, saying what
+  moved and why the version absorbs it, so a reader of an old artifact gets an
+  actionable refusal rather than a missing-field error.
+
+## What is checked where
+
+| Claim | Owner | Check |
+| --- | --- | --- |
+| The constitution's non-negotiable invariants, per criterion | [constitution](architecture/product-constitution.md), [conformance](contracts/constitution.md) | `cargo run -p symbiote-constitution --example constitution_report -- --check` |
+| The domain's canonical entities and the noun that owns each | [domain](contracts/domain.md) | `cargo run -p symbiote-domain --example ontology_schema -- --check` |
+| Which decisions are settled, provisional or under proof, and the pins each member declares | [architecture governance](contracts/architecture.md), [decisions](architecture/decisions.json) | `cargo run -p symbiote-architecture --example decisions` |
+| What would settle the desktop-shell choice, and whether a run stands | [spike contract](architecture/spike-contracts.json) | the same map, plus the crate's own suite |
+| The roadmap registry, its index and the accepted-decision coverage ledger | [integrity tooling](../planning/integrity/README.md) | `python3 planning/integrity/test_validate.py`, `python3 planning/integrity/coverage_ledger.py --check` |
+| The CLI's published schema fixtures | [schemas](contracts/schemas) | `symbiote schema --check docs/contracts/schemas` |
+| A driven binary's record covering every input its build read | [source records](../planning/integrity/README.md) | `planning/integrity/source_record.py --binary …` (see `.github/workflows/rust-contracts.yml`) |
+
+Each of those is held by a case in the component that owns it, and the driver
+above is how this repository re-proves the architecture crate's own rules.
+
+## The battery
 
 ```sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all --check
 python -m unittest discover -s planning -p 'test_legacy_importers.py' -v
 python -m unittest discover -s planning/integrity -p 'test_*.py' -v
-git diff --check
+python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
+python3 planning/integrity/revert_rules.py
 ```
 
-Results: 23 offline integrity tests pass, including the persistent reduced audit fixture; the legacy test passes for all four entrypoints. The full after-capture validates 241 tasks, 19 epics, 198 references, one historical program entry and 702 prerequisite edges. A separate review agent found a fail-open dependency parser; missing/empty/unsupported declarations now refuse and details sections no longer hide canonical edges. The reviewer verified the fixes, all 23 tests, exact generated registry equality with the full capture and exact index rendering, with no remaining bounded-slice findings. This is separate-agent review, not a GitHub approval or platform certification. PR CI and merge remain separate gates.
+The workspace runs on the declared minimum (Rust 1.85) and on stable; CI does
+both. Every suite prints the counts it passed, and this document does not restate
+them.
 
-No Rust runtime, shell spike, storage benchmark, cross-platform test, preview security property, provider entitlement, merge, deployment or release is claimed. #470 still requires safe three-way regeneration/dry-run, stale authority handling, ambiguous create/lost-response recovery, retained-scope coverage and mutation read-back integration. The offline validator and unconditional legacy refusal cover only the first protective slice.
+## What remains open
 
-## Dependency-correct next work
+- **#173 — architecture governance.** The shell decision has a contract and rules
+  that refuse a manufactured settlement, and no candidate run exists yet, so the
+  choice is `investigating` and nothing has been measured. The bar's content is
+  still written in three prose copies (ADR-0001's proof contract, the technology
+  amendment, the Linux shell proof record) against the one the contract answers.
+  A contract document carrying both old shapes at once is refused by serde's field
+  list rather than by name. The message the pre-#602 wrapper printed is not
+  reproducible from this tree, which the case that quotes it says in place.
+- **#38 — the shell proof.** Platform coverage, representative budgets, Preview
+  authority isolation, signed updates, installer size and the rest of the
+  contract's ceilings stay unmeasured; see [the Linux shell record](proofs/linux-shell.md)
+  and [ADR-0001](architecture/adr-0001-technology-direction.md).
+- **#170 and #36 — broader acceptance.** The machinery is in place and checked;
+  the production capabilities the criteria name are owned by the issues they route.
+- **#470 and #443 — roadmap mutations.** The registry, the index and the coverage
+  ledger are validated read-only, and the one mutation path
+  (`regenerate.py plan`/`apply`) refuses by name rather than leaving a rule to an
+  operator's care — but it mutates only through a runner it is handed, whose every
+  test is a recording fake, so no live regeneration has run and ambiguous
+  create/lost-response recovery is not built.
+- **Activation and release.** Worker execution needs the trust → consent →
+  preventive-isolation chain (#174/#191/#218) and the runtime/environment
+  integrations; the desktop workbench and both native and external agent execution
+  are not implemented. Nothing here is release-ready.
 
-Use the generated index and retrieve full issue acceptance/comments just in time. Topological order alone is not readiness; open prerequisites need explicit verified foundational evidence, not checked boxes. #170's contract is documented but executable schema/conformance is pending. Establish that foundational evidence, then #173's versioned ADR/spike governance and #36 domain/schema contracts. #38 remains gated by #170/#173 and must precede dependent Host/desktop implementation. Advance #470's remaining mutation-safety contract after confirming its #170 prerequisite; independent read-only safeguards do not lock an unproven product architecture. #171 is the other dependency-root investigation owner and can advance independently with bounded current-source research.
+## Working facts worth carrying
 
-Before integration, inspect the separate review findings and PR current-head CI, refresh `origin/main`, and revalidate if the target changes. Leave this Change Stream as a review-ready PR unless all required gates and authority are satisfied. Continue through the same canonical owners rather than creating a parallel backlog.
+- `/tmp` is never durable authority. A capture or a probe written there has to be
+  recaptured when it matters; only committed artifacts and issue threads carry
+  evidence.
+- A probe run in a git worktree needs its own `CARGO_TARGET_DIR`. A shared one has
+  made a worktree probe read the main checkout's artifacts and pass for the wrong
+  reason.
+- Separate-agent review, CI and the merge are separate gates. A recorded approval
+  on a pull request is not an approval of the code, and a test that supplies an
+  `Actor::Host` or an evidence record does not make enforcement authenticated.
+- The historical roadmap importers are retired: they refuse before loading
+  payloads, and old revisions or the audit branch must not be run as
+  synchronizers.

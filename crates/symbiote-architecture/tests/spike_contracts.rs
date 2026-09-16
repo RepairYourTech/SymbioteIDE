@@ -360,12 +360,41 @@ fn a_bar_named_from_a_section_the_record_does_not_state_is_refused() {
     refused(&found, "that record states no such section");
 }
 
-/// Long snake_case names in backticks in the contract document are case names of
-/// this crate: a citation is a claim, and this holds each of them against the
-/// suite that defines it, so a rename fails a case here rather than leaving the
-/// document pointing at a name nobody can run. The two names the constitution
-/// ledger's catalog also binds are held twice, deliberately: that binding
-/// belongs to the catalog's evidence, this one to the document's own citations.
+/// Whether the suite defines `name` as a case it runs: a `fn name(` whose
+/// attribute block carries `#[test]`, rather than any function of that name.
+/// A helper satisfies a name; it is not something a failure can be read from.
+fn defines_a_case(suite: &str, name: &str) -> bool {
+    let lines: Vec<&str> = suite.lines().collect();
+    let needle = format!("fn {name}(");
+    lines.iter().enumerate().any(|(at, line)| {
+        if !line.trim_start().starts_with(&needle) {
+            return false;
+        }
+        let mut above = at;
+        while above > 0 {
+            let previous = lines[above - 1].trim();
+            if previous == "#[test]" {
+                return true;
+            }
+            if previous.starts_with("#[") || previous.is_empty() {
+                above -= 1;
+                continue;
+            }
+            return false;
+        }
+        false
+    })
+}
+
+/// Long snake_case names in code spans of the contract document are case names of
+/// this crate: a citation is a claim, and this holds each of them against a case
+/// the suite actually runs, so a rename fails a case here rather than leaving the
+/// document pointing at a name nobody can run or at a helper that can never fail.
+/// The two names the constitution ledger's catalog also binds are held twice,
+/// deliberately: that binding belongs to the catalog's evidence, this one to the
+/// document's own citations. What it does not read is a name the document writes
+/// outside a code span, or whether the case it finds is the one the citing
+/// sentence needed: it holds the name, not the claim.
 #[test]
 fn the_contract_document_names_only_cases_this_crate_holds() {
     let document = std::fs::read_to_string(root().join("docs/contracts/architecture.md"))
@@ -392,8 +421,8 @@ fn the_contract_document_names_only_cases_this_crate_holds() {
         }
         cited += 1;
         assert!(
-            suite.contains(&format!("fn {span}(")),
-            "the contract document names {span} as a case of this crate, and the suite defines no case by that name"
+            defines_a_case(&suite, span),
+            "the contract document names {span} as a case of this crate, and the suite runs no case by that name"
         );
     }
     assert!(
