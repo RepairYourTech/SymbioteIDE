@@ -1,5 +1,5 @@
 //! This repository's own architecture decisions as data (#173), replayed
-//! through [`DecisionRegistry`] rather than believed.
+//! through [`crate::policy::DecisionRegistry`] rather than believed.
 //!
 //! A record holds the draft it published from, the state and revision it
 //! publishes, and — when it is accepted — the acceptance that made it
@@ -13,10 +13,11 @@
 //! What needs the tree as well — the record's content hash, workspace
 //! membership, the published gate status — is joined in [`crate::checks`].
 
-use crate::{
-    Acceptance, CompatibilityFact, ContractError, Decision, DecisionRegistry, DecisionState,
-    GateStatus, ImplementationPins, Result, require,
+use crate::policy::{
+    Acceptance, CompatibilityFact, Decision, DecisionRegistry, DecisionState, GateStatus,
+    ImplementationPins,
 };
+use crate::{ContractError, Result, require};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;

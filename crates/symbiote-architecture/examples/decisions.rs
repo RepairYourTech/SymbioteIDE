@@ -8,7 +8,8 @@
 //! ```
 //!
 //! The exit status is the verdict, so the same read that a maintainer inspects
-//! is also the check: a refused ledger prints the refusals and fails.
+//! is also the check: a refused ledger prints the refusals and fails. States and
+//! statuses are printed through their own `Display`, which the engine owns.
 
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -64,7 +65,7 @@ fn main() -> ExitCode {
         println!(
             "decision {} {} rev {} {}{} record {}",
             record.draft.id,
-            name(&record.published.state),
+            record.published.state,
             record.published.revision,
             issues,
             blocking(record.blocking_issue, " blocking"),
@@ -88,7 +89,7 @@ fn main() -> ExitCode {
         println!(
             "artifact {} {} pins {}{}{}",
             artifact.pins.artifact,
-            name(&artifact.status),
+            artifact.status,
             pins,
             blocking(artifact.blocking_issue, " blocking"),
             reasons,
@@ -140,11 +141,4 @@ fn counted(count: usize, noun: &str) -> String {
 
 fn blocking(issue: Option<u64>, prefix: &str) -> String {
     issue.map_or_else(String::new, |issue| format!("{prefix} #{issue}"))
-}
-
-fn name<T: serde::Serialize>(state: &T) -> String {
-    serde_json::to_value(state)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_default()
 }

@@ -294,3 +294,35 @@ fn spike_requires_reproducibility_and_finite_predeclared_thresholds() {
     spike.cleanup.clear();
     assert!(spike.validate().is_err());
 }
+
+#[test]
+fn a_state_is_named_the_same_way_wherever_it_is_printed() {
+    // The engine owns the vocabulary the ledger stores, the refusals quote and
+    // the published map prints; this holds the printed name to the stored one.
+    for state in [
+        DecisionState::Proposed,
+        DecisionState::Investigating,
+        DecisionState::Accepted,
+        DecisionState::Superseded,
+        DecisionState::Rejected,
+        DecisionState::Retired,
+    ] {
+        assert_eq!(
+            state.to_string(),
+            serde_json::to_value(state).unwrap().as_str().unwrap(),
+            "a decision state has one name"
+        );
+    }
+    for status in [
+        GateStatus::Settled,
+        GateStatus::Provisional,
+        GateStatus::Blocked,
+        GateStatus::Stale,
+    ] {
+        assert_eq!(
+            status.to_string(),
+            serde_json::to_value(status).unwrap().as_str().unwrap(),
+            "a gate status has one name"
+        );
+    }
+}
