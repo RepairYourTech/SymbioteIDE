@@ -55,22 +55,23 @@ actually used, in `session.json`. That is a session compromise, not a change to 
 app: the committed contract's applicability names the *reference compositor*, and
 this run is on a virtual one.
 
-What the run observed on 2026-09-16, built from `6a6189ef` in a clean target
+What the run observed on 2026-09-16, built from `b11ae0b0` in a clean target
 directory outside the tree (kwin 6.7.5 virtual session at 1440×960, Mesa Intel(R)
-Graphics (RPL-P), 16 logical cores, 62 GiB RAM, NVMe storage). Each figure is
-re-checkable from the artifact the run cites for it:
+Graphics (RPL-P), 16 logical cores, 62 GiB RAM, NVMe storage), with the evidence
+under `results/desktop-shell/linux-wayland-on-the-reference-compositor/`. Each
+figure is re-checkable from the artifact the run cites for it:
 
 - **`cold_start_to_first_frame_seconds` 0.192** of a 3.0 ceiling: the first
   `wl_surface.commit()` after the client attached a buffer, timed from its first
-  request in `app-1.log`, which went on to commit 518 frames, the last at 25.138 s.
-- **`clean_locked_build_seconds` 60.875** of a 900 ceiling: `npm run build` and
-  `cargo build --locked --release` from an empty target directory, in a log that
-  names both commands because it was captured with `set -x`.
-- **`workload_process_tree_pss_mib` 505.944** of a 2560 ceiling and
-  **`unattributed_process_tree_memory_percent` 1.426** of a 5.0 ceiling: the peak
-  of 251 samples of the app tree's summed PSS (shell 92.4 MiB, three terminals
-  21.7 MiB, WebKit helpers 384.6 MiB, unattributed 7.2 MiB). The peak fell 0.621 s
-  into a 25.045 s window, which is a startup peak rather than a steady-state
+  request in `app-1.log`, which went on to commit 516 frames, the last at 25.153 s.
+- **`clean_locked_build_seconds` 64.242** of a 900 ceiling: `npm run build` and
+  `cargo build --locked --release` from an empty target directory, in a log
+  captured with `set -x` that names those commands and the revision it read.
+- **`workload_process_tree_pss_mib` 436.706** of a 2560 ceiling and
+  **`unattributed_process_tree_memory_percent` 1.693** of a 5.0 ceiling: the peak
+  of 251 samples of the app tree's summed PSS (shell 79.6 MiB, three terminals
+  21.7 MiB, WebKit helpers 328.0 MiB, unattributed 7.4 MiB). The peak fell 0.62 s
+  into a 25.043 s window, which is a startup peak rather than a steady-state
   figure; the run records where it fell with the figure instead of leaving a
   reader to guess, and 11 tree members were alive at it.
 - **`orphaned_processes_after_cancel` 0** and

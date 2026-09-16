@@ -1,23 +1,29 @@
 {
   "session": "kwin 6.7.5 --virtual 1440x960, Mesa Intel(R) Graphics (RPL-P)",
-  "runtime_dir": "/mnt/data/projects/Symbiote/spikes/linux-shell/artifacts/20260916T120648Z/runtime",
+  "runtime_dir": "/mnt/data/projects/Symbiote/spikes/linux-shell/artifacts/20260916T123055Z/runtime",
   "wayland_display": "symbiote-proof",
   "display_unset": true,
   "egl_vendor_icd_pinned": "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
   "egl_icd_reason": "the NVIDIA/glvnd path aborts the client against the virtual backend with wp_linux_drm_syncobj_surface_v1 explicit-sync errors, so the session runs on Mesa EGL and says so here",
   "compositor_log_bytes": 0,
   "compositor_log_note": "the compositor writes nothing to the stream this run captures, so the display log is empty and is not cited as evidence; the session it started is recorded here instead",
-  "binary": "/tmp/spike-clean-6a6189ef/release/symbiote-linux-shell-proof",
+  "binary": "/tmp/spike-clean-b11ae0b0/release/symbiote-linux-shell-proof",
   "binary_sha256": "474b643bd7de6a0887262a42f130ae2ba9ebd300aa8f8e8ed161b6f50113d84b",
   "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
   "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
   "hardware": "13th Gen Intel(R) Core(TM) i7-13620H (16 logical cores), 62 GiB RAM, Mesa Intel(R) Graphics (RPL-P), NVMe storage",
   "build": {
-    "seconds": 60.875,
-    "log": "/tmp/build-6a6189ef.log",
-    "log_sha256": "80f990f25f588a619d8e9c5bab9c9e645fb722f5482ac0b25a732e2dd57ee2b3",
-    "command": "+ npm run build",
+    "seconds": 64.242,
+    "revision": "b11ae0b04a0eba1668b30c8dd5f5535413c1abac",
+    "log": "/tmp/build-b11ae0b0.log",
+    "log_sha256": "ecf893f80f75fbbfbbbe32752444180aac706210f7bea6c38e65f2dae937bf8b",
+    "commands": [
+      "+ git rev-parse HEAD",
+      "+ git status --porcelain",
+      "+ npm run build",
+      "+ cargo build --locked --release --manifest-path src-tauri/Cargo.toml --target-dir /tmp/spike-clean-b11ae0b0"
+    ],
     "note": "built from a fresh target directory outside this tree, logged with `set -x` so the log names the commands it timed",
-    "published_log": "docs/proofs/results/desktop-shell/build-6a6189ef.log"
+    "published_log": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/build-b11ae0b0.log"
   }
 }

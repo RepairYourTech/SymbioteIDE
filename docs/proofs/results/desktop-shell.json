@@ -12,7 +12,7 @@
       "platform": "Linux Wayland on the reference compositor",
       "version": "kwin 6.7.5 --virtual 1440x960, Mesa Intel(R) Graphics (RPL-P)",
       "hardware": "13th Gen Intel(R) Core(TM) i7-13620H (16 logical cores), 62 GiB RAM, Mesa Intel(R) Graphics (RPL-P), NVMe storage",
-      "commit": "6a6189efa7bcc8649704d381d746812774d5abdc",
+      "commit": "b11ae0b04a0eba1668b30c8dd5f5535413c1abac",
       "exercised": [
         "#38: three active terminal tabs with bounded scrollback in real PTYs",
         "#38: a live integrated Preview of the run's own output",
@@ -30,7 +30,7 @@
         "the instrument cannot separate the Preview renderer from the workbench and Lead renderers, so the unattributed share is not attribution at the contract\u2019s finest granularity",
         "the Preview\u2019s denials are self-reported through the fixture\u2019s unauthenticated report endpoint; its label-and-origin validator is covered by the fixture\u2019s own unit test rather than by this run",
         "terminal input, tab switching and scrollback behaviour are not exercised; the run attests three active PTYs and their bounded output rings",
-        "workload_process_tree_pss_mib: the peak of 251 samples fell 0.621 s into the sampled window (0.01 s to 25.045 s), so where it fell is recorded with the figure rather than left to the reader"
+        "workload_process_tree_pss_mib: the peak of 251 samples fell 0.62 s into the sampled window (0.01 s to 25.043 s), so where it fell is recorded with the figure rather than left to the reader"
       ],
       "observations": [
         {
@@ -39,29 +39,29 @@
         },
         {
           "measurement": "clean_locked_build_seconds",
-          "observed": 60.875
+          "observed": 64.242
         }
       ],
       "artifacts": [
         {
-          "artifact": "docs/proofs/results/desktop-shell/app-1.log",
-          "sha256": "df1534d1498f8593c964e9109487d9c9fc91d10e861523f9f7b6683e3606559d"
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/app-1.log",
+          "sha256": "1fcb92aa8067802eb5dc05e20b5ba9ceb5e0cbcd7856d609972dc9a1f3d8c592"
         },
         {
-          "artifact": "docs/proofs/results/desktop-shell/process-tree-1.json",
-          "sha256": "feeca2449fad6d4a4673188545b99fafbffb74454be2962583d6b41409de684f"
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/process-tree-1.json",
+          "sha256": "1c59d31bf64fc0a7ec20120d485733b9cdbeb4eac6dbfe86de82bed11708a2eb"
         },
         {
-          "artifact": "docs/proofs/results/desktop-shell/session.json",
-          "sha256": "3a0c95f834f6096deda30d144f8e5ee34e5a2df1848efcd9116e15ee5b9d82c1"
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/session.json",
+          "sha256": "ac1a615bb293c7338014f778d1b88eb3298e69de2e61d0096a76ccb1d00aec11"
         },
         {
-          "artifact": "docs/proofs/results/desktop-shell/cleanup.json",
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/cleanup.json",
           "sha256": "aef3f0eb5c33a89fc0a645e54b1736a511a8272bba8f374dc18fa946e0c12461"
         },
         {
-          "artifact": "docs/proofs/results/desktop-shell/build-6a6189ef.log",
-          "sha256": "80f990f25f588a619d8e9c5bab9c9e645fb722f5482ac0b25a732e2dd57ee2b3"
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/build-b11ae0b0.log",
+          "sha256": "ecf893f80f75fbbfbbbe32752444180aac706210f7bea6c38e65f2dae937bf8b"
         }
       ]
     },
@@ -69,7 +69,7 @@
       "platform": "Linux Wayland on the reference compositor",
       "version": "kwin 6.7.5 --virtual 1440x960, Mesa Intel(R) Graphics (RPL-P)",
       "hardware": "13th Gen Intel(R) Core(TM) i7-13620H (16 logical cores), 62 GiB RAM, Mesa Intel(R) Graphics (RPL-P), NVMe storage",
-      "commit": "6a6189efa7bcc8649704d381d746812774d5abdc",
+      "commit": "b11ae0b04a0eba1668b30c8dd5f5535413c1abac",
       "exercised": [
         "#38: three active terminal tabs with bounded scrollback in real PTYs",
         "#38: a live integrated Preview of the run's own output",
@@ -87,16 +87,16 @@
         "the instrument cannot separate the Preview renderer from the workbench and Lead renderers, so the unattributed share is not attribution at the contract\u2019s finest granularity",
         "the Preview\u2019s denials are self-reported through the fixture\u2019s unauthenticated report endpoint; its label-and-origin validator is covered by the fixture\u2019s own unit test rather than by this run",
         "terminal input, tab switching and scrollback behaviour are not exercised; the run attests three active PTYs and their bounded output rings",
-        "workload_process_tree_pss_mib: the peak of 251 samples fell 0.621 s into the sampled window (0.01 s to 25.045 s), so where it fell is recorded with the figure rather than left to the reader"
+        "workload_process_tree_pss_mib: the peak of 251 samples fell 0.62 s into the sampled window (0.01 s to 25.043 s), so where it fell is recorded with the figure rather than left to the reader"
       ],
       "observations": [
         {
           "measurement": "workload_process_tree_pss_mib",
-          "observed": 505.944
+          "observed": 436.706
         },
         {
           "measurement": "unattributed_process_tree_memory_percent",
-          "observed": 1.426
+          "observed": 1.693
         },
         {
           "measurement": "orphaned_processes_after_cancel",
@@ -109,19 +109,19 @@
       ],
       "artifacts": [
         {
-          "artifact": "docs/proofs/results/desktop-shell/app-2.log",
-          "sha256": "64197ae59e9fadfdfb51b9dd769cbe5d96d320ac0be8e5c11e48d81bb8eddd40"
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/app-2.log",
+          "sha256": "9659264ec27bddcbc9bac393d2a260f765f3e05d00f0b1530e186d4201ed6bbc"
         },
         {
-          "artifact": "docs/proofs/results/desktop-shell/process-tree-2.json",
-          "sha256": "490af8f38cf36c264606ad5203eabf60a4ebb499454ca0f5c0ee5b55518d4007"
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/process-tree-2.json",
+          "sha256": "24f545345e042add512df20d716d6d43a5f9cabf1fa088380db42fb4313044f0"
         },
         {
-          "artifact": "docs/proofs/results/desktop-shell/session.json",
-          "sha256": "3a0c95f834f6096deda30d144f8e5ee34e5a2df1848efcd9116e15ee5b9d82c1"
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/session.json",
+          "sha256": "ac1a615bb293c7338014f778d1b88eb3298e69de2e61d0096a76ccb1d00aec11"
         },
         {
-          "artifact": "docs/proofs/results/desktop-shell/cleanup.json",
+          "artifact": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/cleanup.json",
           "sha256": "aef3f0eb5c33a89fc0a645e54b1736a511a8272bba8f374dc18fa946e0c12461"
         }
       ]
