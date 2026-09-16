@@ -1184,6 +1184,9 @@ def main():
         raise SystemExit('Build first: npm ci --ignore-scripts; npm run build; cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml')
     if args.results and args.publish is None:
         raise SystemExit('--results needs --publish: a result cites the artifacts it stands on')
+    if args.results and args.contract_sha256 is None:
+        raise SystemExit('--results needs --contract-sha256: a result records the contract it was '
+                         'measured against, and the ledger is what re-hashes that fingerprint')
     head = subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'],
                           capture_output=True, text=True).stdout.strip()
     commit = args.commit or head
