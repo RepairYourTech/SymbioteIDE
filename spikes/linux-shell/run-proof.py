@@ -75,7 +75,9 @@ Where each concern lives, so a change lands in one place:
   contract's fingerprint, which is all this driver can decide about it;
 * ``merged_runs`` / ``publish`` / ``build_record`` — how this run's entries and the
   evidence they cite reach the tree, and which revision they belong to;
-* ``run_xvfb`` / ``run_wayland`` — what one entry point adds to the shared sequence;
+* ``run_xvfb`` / ``run_wayland`` — what one entry point adds to the shared sequence,
+  and that only the Wayland one publishes: the X11 entry point measures an Xvfb
+  session, which is no platform a contract in the document applies to;
 * ``named_defaults`` / ``main`` — the terms an invocation left out, and the gate.
 """
 import argparse
@@ -1188,7 +1190,8 @@ def main():
                         help='repository-relative root to publish the cited artifacts under, in a '
                              'directory per platform, so a second platform cannot overwrite the first')
     parser.add_argument('--results', default=None,
-                        help='repository-relative result artifact to write')
+                        help='repository-relative result artifact to write (a Wayland run; the X11 '
+                             'entry point prints its figures and publishes none)')
     parser.add_argument('--contracts', default=CONTRACTS_PATH,
                         help='the committed contract document this run was measured against')
     parser.add_argument('--contract', default=None,
@@ -1215,6 +1218,11 @@ def main():
          if candidate.exists()), None)
     if binary is None or not binary.exists():
         raise SystemExit('Build first: npm ci --ignore-scripts; npm run build; cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml')
+    if args.results and args.session == 'xvfb':
+        raise SystemExit('--results needs --session wayland: the X11 entry point measures an Xvfb '
+                         "session and records it as 'Linux Xvfb X11 only', which no contract in the "
+                         'document applies to, so a result from it would measure none of the '
+                         "contract's applicability; its figures are printed where the run happens")
     if args.results and args.publish is None:
         raise SystemExit('--results needs --publish: a result cites the artifacts it stands on')
     if args.results and args.contract_sha256 is None:
