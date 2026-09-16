@@ -4,7 +4,7 @@ Status: experimental fixture, **not shell selection**. The integrating engineer 
 
 ## Reproduce
 
-From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples and an optional ImageMagick screenshot, checks observed survivor processes, and removes the server. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`. `python3 -m unittest test_run_proof` runs the rules that decide what a Wayland run may publish, and needs neither a session nor a binary.
+From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples and an optional ImageMagick screenshot, checks observed survivor processes, and removes the server. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`. `python3 -m unittest test_run_proof` runs the rules that decide what a Wayland run may publish, and needs neither a session nor a binary. A run that publishes a dossier records the revision it was built from, so the clean build it cites is logged with `git rev-parse HEAD` in the same `set -x` recipe.
 
 Pinned direct components: Tauri 2.11.5, tauri-build 2.6.3, portable-pty 0.9.0, Tauri JavaScript API 2.11.1, React 19.2.8, TypeScript 7.0.2, Vite 8.2.2, Monaco 0.56.0. Cargo/npm lockfiles retain the transitive resolution. Monaco's DOMPurify dependency is explicitly overridden to 3.4.15 because its upstream pin reports security advisories; the resulting npm audit reports zero vulnerabilities at preparation time. No system/global package or user application changes. Local prerequisite discovery: GTK 3.24.52 and WebKitGTK 2.52.6 available on the Linux host.
 
@@ -95,8 +95,20 @@ runner refuses to publish a result whose platform the contract does not apply to
 whose stop condition the contract does not declare, which leaves a predeclared
 measurement neither observed nor named with its reason, or which attests an
 obligation no marker supports; the platforms this run did not exercise are derived
-from the contract's applicability rather than typed; and the artifact it wrote was
+from the runs the dossier holds rather than typed; and the artifact it wrote was
 read back by the ledger's own map, which reported no refusals for it.
+
+A dossier is one contract's, and this driver runs one platform at a time, so a run
+merges: another platform's recorded runs are kept exactly as they stand, this
+platform's own entries are replaced by what the invocation observed, and the
+untested list is the contract's applicability minus the platforms the dossier
+actually holds — a platform whose run is recorded cannot be left declared untested.
+Each platform publishes its evidence into its own directory under the artifact's,
+so a second platform's app and session logs cannot overwrite the first's. A dossier
+of another contract, or one measured against other thresholds, is refused rather
+than merged into. The revision a run records has to be the tree it ran in — clean,
+at `HEAD` — and the recipe it cites has to have logged the same revision, because a
+build log that names only its commands cannot be tied to a tree.
 
 Nothing here settles #38. Three of the contract's four platforms are declared
 untested in the result artifact, and the workload exercised is the prepared

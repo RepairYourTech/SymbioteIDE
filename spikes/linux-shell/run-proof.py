@@ -29,7 +29,14 @@ before the run reports success:
   for it (see ``ATTESTED_BY``), so ``exercised`` cannot be typed;
 * the run itself refuses to record a revision while the tree differs from it, and
   the artifact it writes is then read back by the ledger's own map, which must
-  report no refusals.
+  report no refusals;
+* a run merges into the dossier it was pointed at rather than replacing it: a
+  settlement needs one artifact holding every platform the contract applies to, and
+  this driver runs one platform at a time, so another platform's runs are kept
+  exactly as they stand and the untested list is derived from the runs the dossier
+  actually holds; and the clean build it cites has to have logged the revision the
+  run records, because a log that names only the commands cannot be tied to the
+  tree the figures came from.
 """
 import argparse
 import hashlib
@@ -474,6 +481,96 @@ def uncommitted(text):
     return [line for line in text.splitlines() if line[:2] not in ('??', '')]
 
 
+def platform_key(value):
+    """One platform, as a name is compared: trimmed and case-insensitive.
+
+    The contract, the artifact and the ledger all name platforms as strings and the
+    ledger compares them this way, so a run that spelled its own platform
+    differently from the contract would otherwise be counted as a second platform.
+    """
+    return value.strip().lower()
+
+
+def publish_slug(platform):
+    """The directory one platform's artifacts live in inside the publish root.
+
+    Every run cites its own app, process-tree, session, cleanup and build records,
+    whose file names do not differ between platforms; publishing each platform into
+    its own directory is what keeps a second platform's run from overwriting the
+    first one's evidence as easily as it replaces its run entries.
+    """
+    words = ''.join(character if character.isalnum() else ' ' for character in platform.lower()).split()
+    return '-'.join(words) or 'unnamed'
+
+
+def logged_revision(text):
+    """The revision a build recipe logged, from a line that is nothing but a hash.
+
+    ``set -x`` echoes the recipe, so a build that runs ``git rev-parse HEAD``
+    before it compiles writes the revision it read on a line of its own.
+    """
+    for line in text.splitlines():
+        token = line.strip()
+        if 7 <= len(token) <= 40 and all(character in '0123456789abcdef' for character in token):
+            return token
+    return None
+
+
+def revision_problems(commit, head, status):
+    """Why a run may not record this revision, if it may not.
+
+    Nothing in the tree can re-derive a build's revision from a build log, so the
+    revision a run records has to be the tree it ran in — clean, at HEAD — and the
+    recipe it cites has to have logged the same revision. Anything else is a claim
+    about a tree nobody can find.
+    """
+    problems = []
+    changed = uncommitted(status)
+    if changed:
+        problems.append('the tree differs from HEAD in:\n    ' + '\n    '.join(changed))
+    if commit and head and commit != head:
+        problems.append(f'the run would record revision {commit} and this tree is {head}')
+    return problems
+
+
+def untested_platforms(contract, runs):
+    """The contract's platforms this run set holds no run for.
+
+    Read from the runs the dossier actually carries, never from the platform this
+    invocation was pointed at: a platform with recorded runs is measured, and one
+    another invocation already recorded is not declared untested by this one.
+    """
+    measured = {platform_key(run['platform']) for run in runs}
+    return [platform for platform in contract['applicable_platforms']
+            if platform_key(platform) not in measured]
+
+
+def merged_runs(path, contract, fingerprint, platform, entries):
+    """This run's entries, merged into the dossier the artifact already holds.
+
+    A settlement needs one artifact carrying the runs of every platform its
+    contract applies to, and this driver runs one platform at a time, so a run
+    merges rather than replaces: every other platform's runs stay exactly as they
+    stand — same figures, same citations, still the ones the ledger re-hashes — and
+    this platform's own entries are replaced by what this invocation observed. A
+    dossier of another contract, or one measured against other thresholds, is
+    refused rather than merged into, because the figures it holds were not measured
+    against this contract.
+    """
+    if not path.exists():
+        return entries
+    document = json.loads(path.read_text())
+    if document.get('contract') != contract['id']:
+        raise SystemExit(f'refusing to merge: {path} holds {document.get("contract")!r}, '
+                         f'not {contract["id"]!r}')
+    if document.get('contract_sha256') != fingerprint:
+        raise SystemExit(f'refusing to merge: {path} was measured against contract '
+                         f'{document.get("contract_sha256")}, and this run answers {fingerprint}')
+    held = [run for run in document.get('runs', [])
+            if platform_key(run.get('platform', '')) != platform_key(platform)]
+    return held + entries
+
+
 def ledger_refusals():
     """What the ledger's own map says about the tree, by running it.
 
@@ -569,18 +666,31 @@ def run_xvfb(args, artifacts, binary):
         log.close()
 
 
-def build_record(args):
-    """The clean locked build these figures belong to, as the log recorded it."""
+def build_record(args, revision):
+    """The clean locked build these figures belong to, as the log recorded it.
+
+    The log is captured with ``set -x`` and has to name the revision it built, on a
+    line of its own — ``git rev-parse HEAD`` in the same recipe — because a log
+    that names only the commands cannot be tied to the revision the run records.
+    """
     log = Path(args.build_log)
-    command = next((line.strip() for line in log.read_text().splitlines() if line.startswith('+ ')),
-                   'the log does not record the command that wrote it')
-    record = {'seconds': args.build_seconds, 'log': repo_path(log), 'log_sha256': sha256_of(log),
-              'command': command,
+    text = log.read_text()
+    logged = logged_revision(text)
+    if logged is None:
+        raise SystemExit(f'refusing to publish: {log} records no revision it was built from, so '
+                         'nothing ties the figures to a tree; log `git rev-parse HEAD` in the '
+                         'same recipe')
+    if not (revision.startswith(logged) or logged.startswith(revision)):
+        raise SystemExit(f'refusing to publish: {log} was built from {logged} and the run '
+                         f'records {revision}')
+    record = {'seconds': args.build_seconds, 'revision': logged, 'log': repo_path(log),
+              'log_sha256': sha256_of(log),
+              'commands': [line.strip() for line in text.splitlines() if line.startswith('+ ')],
               'note': 'built from a fresh target directory outside this tree, logged with `set -x` so the log names the commands it timed'}
     if args.publish:
         # The build log is written outside the tree, where nothing durable holds
         # it: the copy the result cites is the record a later pass can re-hash.
-        record['published_log'] = str(Path(args.publish) / log.name)
+        record['published_log'] = str(Path(args.publish) / publish_slug(args.platform) / log.name)
     return record
 
 
@@ -704,7 +814,7 @@ def run_wayland(args, artifacts, binary, commit):
         (artifacts / 'session.json').write_text(json.dumps(
             session_record(session, env, binary, runtime,
                            (artifacts / 'kwin.log').stat().st_size,
-                           build_record(args) if args.build_log else None), indent=2) + '\n')
+                           build_record(args, commit) if args.build_log else None), indent=2) + '\n')
         (artifacts / 'cleanup.json').write_text(json.dumps(
             {'run_1_after_self_exit': runs[0]['cancellation'],
              'run_2_after_cancel_request': runs[1]['cancellation'],
@@ -723,16 +833,16 @@ def run_wayland(args, artifacts, binary, commit):
                                                  'kwin.log')]
         if args.build_log:
             sources.append(Path(args.build_log))
-        published = publish(sources, REPO / args.publish)
+        published = publish(sources, REPO / args.publish / publish_slug(args.platform))
         entries = result_runs(args, contract, runs, published, session, hardware_of(env), commit)
         (artifacts / 'results-draft.json').write_text(json.dumps(entries, indent=2) + '\n')
+        merged = merged_runs(REPO / args.results, contract, args.contract_sha256, args.platform, entries)
         (REPO / args.results).write_text(json.dumps({
             'schema_version': 1,
             'contract': contract['id'],
             'contract_sha256': args.contract_sha256,
-            'untested_platforms': [platform for platform in contract['applicable_platforms']
-                                   if platform != args.platform],
-            'runs': entries,
+            'untested_platforms': untested_platforms(contract, merged),
+            'runs': merged,
         }, indent=2) + '\n')
         print(f'wrote {args.results}')
         refusals = ledger_refusals()
@@ -768,7 +878,8 @@ def main():
     parser.add_argument('--platform', default='Linux Wayland on the reference compositor',
                         help='the contract platform this run exercised; the rest are derived as untested')
     parser.add_argument('--publish', default=None,
-                        help='repository-relative directory to publish the cited artifacts into')
+                        help='repository-relative root to publish the cited artifacts under, in a '
+                             'directory per platform, so a second platform cannot overwrite the first')
     parser.add_argument('--results', default=None,
                         help='repository-relative result artifact to write')
     parser.add_argument('--contracts', default=CONTRACTS_PATH,
@@ -795,18 +906,18 @@ def main():
         raise SystemExit('Build first: npm ci --ignore-scripts; npm run build; cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml')
     if args.results and args.publish is None:
         raise SystemExit('--results needs --publish: a result cites the artifacts it stands on')
+    head = subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'],
+                          capture_output=True, text=True).stdout.strip()
+    commit = args.commit or head
     if args.results:
         status = subprocess.run(['git', '-C', str(REPO), 'status', '--porcelain'],
                                 capture_output=True, text=True).stdout
-        changed = uncommitted(status)
-        if changed:
+        problems = revision_problems(commit, head, status)
+        if problems:
             raise SystemExit('refusing to publish a result: a run records the revision it was '
-                             'built from, and this tree differs from it in:\n  '
-                             + '\n  '.join(changed))
+                             'built from, and:\n  ' + '\n  '.join(problems))
     artifacts = ROOT / 'artifacts' / time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     artifacts.mkdir(parents=True)
-    commit = args.commit or subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'],
-                                           capture_output=True, text=True).stdout.strip()
     if args.session == 'xvfb':
         run_xvfb(args, artifacts, binary)
     else:
