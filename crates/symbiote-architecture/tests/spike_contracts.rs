@@ -821,6 +821,32 @@ fn a_contract_document_of_an_unknown_schema_version_is_refused() {
 }
 
 #[test]
+fn the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field() {
+    // The message #601 printed was the derive's, not a rule's: `deny_unknown_fields`
+    // rejects `obligations` and the section's replacement appears only in the list of
+    // expected fields. The handoff quotes that message as the reason the read path was
+    // taught to name the shape, and the #602 wrapper that formatted it no longer
+    // exists, so this holds the quotation against the deserializer that produced it.
+    // (Nothing here can run the pre-#602 loader itself: the line that formatted the
+    // message is gone from the tree.)
+    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
+    let contract = value["contracts"][0]
+        .as_object_mut()
+        .expect("the fixture's contract object");
+    let answered = contract.remove("answers").expect("the fixture's answers");
+    contract.insert(
+        "obligations".into(),
+        json!({ "section": SECTION, "answered": answered }),
+    );
+    let error = serde_json::from_str::<Contracts>(&value.to_string())
+        .expect_err("the shape #601 read is refused by the type, not by a rule");
+    let message = error.to_string();
+    assert!(message.contains("unknown field `obligations`"), "{message}");
+    assert!(message.contains("expected one of"), "{message}");
+    assert!(message.contains("`answers`"), "{message}");
+}
+
+#[test]
 fn a_contract_document_of_the_shape_before_the_bar_moved_is_refused_naming_what_moved() {
     // The shape changed incompatibly while the version stayed 1, so the refusal
     // has to say what moved rather than only which field is missing: a caller
