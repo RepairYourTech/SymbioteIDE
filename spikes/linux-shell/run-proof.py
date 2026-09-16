@@ -809,12 +809,21 @@ def unconsumed_options(args):
     is read only where a term has to be derived or a result judged, which is stated here
     rather than checked because a default cannot be told from an option an invocation
     passed.
+
+    One option is consumed only where something bears it: `--build-seconds` states a clean
+    locked build's time, which the invocation itself supplies because nothing here builds,
+    so the log is the only thing that can bear the number and a figure supplied without
+    `--build-log` is refused rather than recorded as an observation nothing observed.
     """
     problems = []
     if args.interact:
         problems.append('--interact promises input driving and screenshot capture, and this driver '
                         'does neither: it takes no screenshot and issues no input, so the option is '
                         'refused rather than lengthening the run and calling that inspection')
+    if args.build_seconds is not None and not args.build_log:
+        problems.append('--build-seconds states a clean locked build\'s time and this invocation '
+                        'names no --build-log: the log is the only thing that can bear that figure, '
+                        'and this driver measures no build itself')
     if not args.results:
         for option, value in (('--publish', args.publish), ('--platform', args.platform),
                               ('--contract-sha256', args.contract_sha256),
@@ -1012,6 +1021,10 @@ def build_record(args, revision):
     The log is captured with ``set -x`` and has to name the revision it built, on a
     line of its own — ``git rev-parse HEAD`` in the same recipe — because a log
     that names only the commands cannot be tied to the revision the run records.
+
+    A log given without ``--build-seconds`` is kept the same way and records
+    ``seconds: null`` with no observation beside it, so that direction claims no
+    figure and needs no rule; the figure without its log is the one that would.
     """
     log = Path(args.build_log)
     try:
@@ -1229,8 +1242,10 @@ def main():
                         help='Wayland: seconds into run 2 to request cancellation (default: 25)')
     parser.add_argument('--binary', default=None, help='the built app to run')
     parser.add_argument('--build-seconds', type=float, default=None,
-                        help='a clean locked build of this candidate, measured separately')
-    parser.add_argument('--build-log', default=None, help='where that build wrote its log')
+                        help='a clean locked build of this candidate, measured separately; needs '
+                             '--build-log, which is what bears the figure')
+    parser.add_argument('--build-log', default=None,
+                        help='where that build wrote its log, which has to name the revision it built')
     parser.add_argument('--commit', default=None, help='the revision the binary was built from')
     parser.add_argument('--platform', default=None,
                         help='the contract platform this run exercised, which the contract has to '
