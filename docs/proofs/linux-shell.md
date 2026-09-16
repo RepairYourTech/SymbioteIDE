@@ -35,4 +35,37 @@ Interactive run `20260908T033453Z` used `--interact` on the private Xvfb only. I
 
 Reviewer cleanup correction: the runner retains PID birth ticks and records surviving observed descendants before cleanup; its `finally` block kills only matching observed identities even if the parent already exited, then writes separate cleanup results. Sampling cannot account for a short-lived/unobserved descendant; this is not a complete supervision implementation. PTY reader acquisition now occurs before child spawn, removing a child-leak failure path. Explicit false-green avoidance: no missing probe report is counted as present and no surviving descendant is counted as clean.
 
+## Wayland session run (2026-09-16 UTC)
+
+The runner supports two private sessions: the Xvfb path above, and `--session
+wayland`, which starts its own `kwin_wayland --virtual` compositor in a private
+`XDG_RUNTIME_DIR` and runs the app with no `DISPLAY` at all. Both leave the user's
+session, display and packages alone. The Wayland path samples the app's process
+tree every 100 ms with PSS per member and per component class, cancels a live run,
+and writes the run dossier and the result artifact the contract points at
+([`results/desktop-shell.json`](results/desktop-shell.json)) from what it observed.
+
+Platform finding, recorded with the run as the contract asks: with this host's
+NVIDIA/glvnd EGL the client aborts against the virtual backend with
+`wp_linux_drm_syncobj_surface_v1` explicit-sync errors, so the session pins Mesa's
+EGL ICD (`/usr/share/glvnd/egl_vendor.d/50_mesa.json`) and records the renderer it
+actually used. That is a session compromise, not a change to the app.
+
+What the run observed: the time to the first frame the compositor was handed, the
+workload's peak tree PSS and the share of that PSS no component class claims, the
+survivors and listening ports after a cancellation request, and a clean locked
+release build. What it could not observe, and reports unknown rather than met:
+idle-state PSS (this fixture has no idle state), workbench readiness (its
+`PROOF_READY` marker precedes the first frame and every WebKit helper, so it is not
+a workbench-ready signal), input starvation (this driver issues no input on
+Wayland), journal loss across a crash (the fixture has no canonical store) and
+installer size (nothing here packages an installer). No frames were captured in
+this session: the X11 path's screenshot has no equivalent in the Wayland runner,
+so the rendering evidence is the client's own protocol log and the app's logs.
+
+Nothing here settles #38. Three of the contract's four platforms are declared
+untested in the result artifact, and the workload exercised is the prepared
+fixture, not the product's agent streams, editor source mapping, cancellation path
+or canonical store.
+
 Pending full #38 acceptance: Wayland and real X11 compositor behavior; Windows/macOS; real agent streams; terminal interaction; all geometry, IME, accessibility, focus/stacking and scaling checks; design-bridge authentication/DOM-to-source mapping; crash recovery/replay/reconnect; simultaneous controllers/headless Host; watcher behavior; menus/updater/signing/installers; suspension/cancellation across services; release/idle/cold-start CPU/PSS measurements and representative database/analyzer/provider workloads. A screenshot alone cannot prove these properties. No shell decision is authorized by this partial spike.
