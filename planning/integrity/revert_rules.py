@@ -18,11 +18,6 @@ removes it — then re-reads the live tree's files and fails if any byte of them
 moved. That is why it can be run beside another build: the version before this one
 mutated the live tree in place, and a concurrent `cargo test` reported failures
 that were only its mutations.
-
-A third refusal is not a row here: a listed non-case the crate's source does not
-carry needs the document and the list edited together to fail, and no single-file
-mutation that still compiles reaches it, so that direction is proved by hand when
-the list changes and the assertion states it in place.
 """
 from __future__ import annotations
 
@@ -466,6 +461,12 @@ RULES: list[tuple[str, str, str, str]] = [
         'a name the document cites as not a case must be listed',
         '`require_ready` refuses provisional',
         '`require_ready_moved` refuses provisional',
+        'the_contract_document_names_only_cases_this_crate_holds',
+    ),
+    (
+        "a listed non-case must be a name the crate's source carries",
+        '    pub fn require_ready(&self, artifact: &str, now: u64) -> Result<()> {',
+        '    pub fn require_ready_moved(&self, artifact: &str, now: u64) -> Result<()> {',
         'the_contract_document_names_only_cases_this_crate_holds',
     ),
     (
