@@ -20,10 +20,6 @@ const NOW: u64 = 1_788_825_600;
 const ADR: &str = "docs/architecture/adr-0001-technology-direction.md";
 const ID: &str = "TEST/HOST-STACK";
 
-fn root() -> PathBuf {
-    workspace_root()
-}
-
 /// A contract document that holds nothing: these fixtures are about the ledger.
 fn no_contracts() -> Contracts {
     Contracts {
@@ -33,19 +29,25 @@ fn no_contracts() -> Contracts {
 }
 
 fn ledger() -> Ledger {
-    Ledger::read(&root().join(LEDGER_PATH)).expect("the committed decision ledger")
+    Ledger::read(&workspace_root().join(LEDGER_PATH)).expect("the committed decision ledger")
 }
 
 fn workspace() -> Workspace {
-    Workspace::read(&root()).expect("cargo reports this workspace")
+    Workspace::read(&workspace_root()).expect("cargo reports this workspace")
 }
 
 fn contracts() -> Contracts {
-    Contracts::read(&root().join(CONTRACTS_PATH)).expect("the committed spike contracts")
+    Contracts::read(&workspace_root().join(CONTRACTS_PATH)).expect("the committed spike contracts")
 }
 
 fn real_problems() -> Vec<Problem> {
-    problems(&ledger(), &contracts(), &workspace(), &root(), NOW)
+    problems(
+        &ledger(),
+        &contracts(),
+        &workspace(),
+        &workspace_root(),
+        NOW,
+    )
 }
 
 #[test]
@@ -109,7 +111,7 @@ fn the_desktop_shell_is_published_as_provisional_and_owned_by_38() {
 
 #[test]
 fn an_accepted_record_is_the_bytes_it_was_accepted_from() {
-    let root = root();
+    let root = workspace_root();
     for record in &ledger().decisions {
         assert_eq!(
             hash(&root, &record.record).as_deref(),
