@@ -141,8 +141,10 @@ SESSION_SHAPES = {
         'compositor_log_bytes', 'compositor_log_note', 'binary', 'binary_sha256', 'binary_note',
         'rustc', 'cargo', 'hardware', 'build'),
 }
-# The version the writer writes: the newest shape in the table, so a shape change is one
-# edit above and nothing else to remember.
+# The version the writer writes: the newest shape in the table, so a shape change is the
+# entry above plus the field it names in ``session_record``. Nothing in the suite has to
+# move with it: the cases that read a shape take each version's fields, which versions
+# exist and the version 0 shape from this table rather than from the writer's output.
 SESSION_SCHEMA_VERSION = max(SESSION_SHAPES)
 
 # The display server each session this driver starts provides, and the operating
@@ -705,16 +707,18 @@ def read_session_record(path):
     shape each version carries, and a record whose fields are not the ones its version
     names is refused — a key added or removed without a version change is a different
     shape, and saying so is what keeps the artifact and the table from drifting. A
-    version this reader does not know is refused by name rather than guessed at. A
-    record that declares no version is version 0, the shape written before this record
-    carried a version — the committed run's report — and is read for the same reason a
-    frozen artifact is not re-recorded to gain a field.
+    version this reader does not know is refused by name rather than guessed at, and a
+    version that is not an integer of one of those versions is no version at all: ``1.0``
+    is not ``1`` here, whatever a dict lookup would say. A record that declares no version
+    is version 0, the shape written before this record carried a version — the committed
+    run's report — and is read for the same reason a frozen artifact is not re-recorded to
+    gain a field.
     """
     record = read_document(path, 'the session record')
     if not isinstance(record, dict):
         raise SystemExit(f'the session record {path} holds a {type(record).__name__}, not a record')
     declared = record.get('schema_version', 0)
-    shape = None if isinstance(declared, bool) else SESSION_SHAPES.get(declared)
+    shape = SESSION_SHAPES.get(declared) if type(declared) is int else None
     if shape is None:
         raise SystemExit(f'the session record {path} declares schema version {declared!r}, and this '
                          f'reader reads {sorted(SESSION_SHAPES)}: it refuses to read a shape it '
