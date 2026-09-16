@@ -12,6 +12,8 @@ python3 planning/integrity/test_validate.py --snapshot /path/to/issues.json
 python3 planning/integrity/test_regenerate.py
 python3 planning/integrity/coverage_ledger.py --check
 python3 planning/integrity/test_coverage_ledger.py
+python3 planning/integrity/test_revert_rules.py
+python3 planning/integrity/revert_rules.py
 ```
 
 Input is a JSON array with REST `number`, `body`, `labels`, `state`, `state_reason`, and `updated_at` fields. Pull requests are ignored. Canonical issues require `planning:canonical`, one `symbiote-plan-key`, and one `symbiote-plan-revision` marker. Reference entries require `planning:reference`, `symbiote-reference-key`, and a direct `Canonical owner: #N`; the historical program entry uses `symbiote-program-entry` and its explicit canonical roadmap link. Unclassified keyed issues remain outside the executable graph.
@@ -92,3 +94,9 @@ Each rule is refused by name rather than left to an operator's care:
 The suite proves the path over the whole registry rather than over a convenient key: every canonical key in the committed audit capture is planned and required to produce exactly one update, and every reference-only key is required to be refused naming its canonical owner.
 
 `verify` then proves what landed is exactly what was planned and that every issue the plan did not name is byte-identical and in the same state. The rules are exercised through a recording fake, so what the tests prove is the rule and not a transport, and no test reaches the network. Two limits are stated rather than implied: `verify` needs both captures, so the CLI leaves it to an operator who holds them; and validation does not cross-check a reference key against a canonical key, which is why regeneration refuses a reference key itself instead of relying on validation to notice the duplicate.
+
+## Reverting a rule to prove it bites
+
+`revert_rules.py` is how this repository re-proves its own refusals: one row per rule of the architecture governance crate and the contract document, each removing the rule alone, watching the case that holds it fail, and restoring the file byte-identically. The table is the proof's single home — it was four scripts under `/tmp`, and a proof that lives outside the repository cannot be re-run by anyone else, so it lives here beside the artifacts it proves. Each row costs one `cargo test`, so run it from a clean tree, and give a worktree probe its own `CARGO_TARGET_DIR`: a shared one has made a probe read the main checkout's artifacts and pass for the wrong reason.
+
+`test_revert_rules.py` holds the table to the tree without running cargo: every anchor is text this tree holds exactly once, every named case is one a suite actually runs (not a helper of that name), no two rows are the same rule or the same mutation, and the driver roots itself at the repository it is part of. So a renamed case or a moved anchor fails in a second, rather than becoming a row the driver skips when somebody finally runs it.

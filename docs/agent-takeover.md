@@ -41,8 +41,9 @@ First inspect git status, remote/main, worktrees and any repository instructions
 Preserve existing work. Read `docs/engineering-handoff.md`,
 `docs/architecture/product-constitution.md`, relevant `docs/contracts` and
 `docs/security`, and the live canonical issue bodies/comments. The historical
-handoff has dated sections; its oldest “no application” text describes the
-initial checkout, not the current source.
+handoff states how a claim here is held and what remains open, and points at the
+contract docs for what each subsystem does; it carries no per-pass record, so read
+the artifact it names before trusting any figure.
 
 Roadmap entry points: #154, `planning/integrity/generated/registry.json` and
 `planning/integrity/generated/execution-index.md`. Live issue dependencies and
