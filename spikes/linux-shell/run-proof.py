@@ -77,6 +77,8 @@ Where each concern lives, so a change lands in one place:
 * ``platform_problems`` / ``session_record`` — whether the platform a result records
   is one the session it starts can be, and the facts about that session a reader
   checks that claim against;
+* ``read_session_record`` — the shape a session record declares about itself, so a
+  reader reads the version rather than dating the fields against prose;
 * ``unconsumed_options`` — what the path an invocation selected would never read, so
   an option cannot be accepted and silently dropped;
 * ``fingerprint_problems`` — whether the value an invocation supplies could be the
@@ -121,6 +123,19 @@ _RENDERERS = {}
 # directions: a declared path says what replaces it, and a path the record cannot
 # read back has to be declared.
 UNKEPT_PATHS = ('runtime_dir', 'binary', 'build.log')
+
+# The shape a session record declares about itself, and what each version of it
+# added. A shape change is then stated by the artifact a reader holds rather than
+# dated in a paragraph: ``read_session_record`` holds a record to the version it
+# names, in both directions, and refuses a version it does not know. Version 0 is
+# the shape written before this record carried a version at all, and is not
+# refused: the committed run's report is one, and a frozen artifact cannot be
+# re-recorded to gain a field.
+SESSION_SCHEMA_VERSION = 1
+SESSION_VERSION_FIELDS = {
+    0: (),  # the shape before the record declared a version: the committed run's own
+    SESSION_SCHEMA_VERSION: ('display', 'system'),
+}
 
 # The display server each session this driver starts provides, and the operating
 # systems a platform can name. A platform a result records is a claim about a
@@ -622,7 +637,9 @@ def session_record(session, binary, compositor_log_bytes, build):
 
     ``display`` and ``system`` are what the platform a result records is held to: the
     display server this session provides and the operating system it ran on, recorded
-    beside the figures so a reader checks the label rather than trusting it.
+    beside the figures so a reader checks the label rather than trusting it. They are
+    what version 1 of this record added, declared here so a reader reads the version
+    rather than dating the fields against prose.
     """
     if session.runtime is None:
         raise SystemExit(f'refusing to record {session.name!r}: it has no private runtime '
@@ -635,6 +652,7 @@ def session_record(session, binary, compositor_log_bytes, build):
         except (OSError, IndexError, subprocess.SubprocessError):
             return 'not reported'
     return {
+        'schema_version': SESSION_SCHEMA_VERSION,
         'session': session.name,
         'display': SESSION_DISPLAY[session.kind],
         'system': host_system(),
@@ -671,6 +689,39 @@ def read_document(path, what):
         raise SystemExit(f'{what} {path} does not exist')
     except (OSError, ValueError) as error:
         raise SystemExit(f'{what} {path} cannot be read as JSON: {error}')
+
+
+def read_session_record(path):
+    """The session record at *path*, the one place a record is read.
+
+    The record says which shape it is, so a reader does not date its fields against
+    prose: version 1 is the shape ``session_record`` writes, and a record that
+    declares no version is the shape written before there was one — the committed
+    run's report — and is read as that shape rather than refused, because a frozen
+    artifact cannot be re-recorded to gain a field. Both directions are held, because
+    a version is a claim about a shape: a record declaring a version this reader does
+    not know is refused by name rather than guessed at, one naming a version whose
+    fields are not all there is refused, and one that names earlier than a field it
+    carries is refused too — a version is not a number to stamp on any shape.
+    """
+    record = read_document(path, 'the session record')
+    if not isinstance(record, dict):
+        raise SystemExit(f'the session record {path} holds a {type(record).__name__}, not a record')
+    declared = record.get('schema_version', 0)
+    if declared not in SESSION_VERSION_FIELDS:
+        raise SystemExit(f'the session record {path} declares schema version {declared}, and this '
+                         f'reader reads version {SESSION_SCHEMA_VERSION}: it refuses to read a '
+                         'shape it does not know')
+    for version, added in SESSION_VERSION_FIELDS.items():
+        for field in added:
+            if version <= declared and field not in record:
+                raise SystemExit(f'the session record {path} declares version {declared}, which '
+                                 f'carries {field!r}, and it is not there')
+            if version > declared and field in record:
+                raise SystemExit(f'the session record {path} declares version {declared} and '
+                                 f'carries {field!r}, which version {version} added: a record is '
+                                 'the shape it declares')
+    return record
 
 
 @dataclass(frozen=True)
