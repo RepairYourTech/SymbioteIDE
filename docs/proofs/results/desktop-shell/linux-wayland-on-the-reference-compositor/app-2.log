@@ -1,6 +1,6 @@
-PROOF_PTY_START id=0 pid=Some(2975854)
-PROOF_PTY_START id=1 pid=Some(2975856)
-PROOF_PTY_START id=2 pid=Some(2975858)
-PROOF_READY preview_origin=http://127.0.0.1:40727 pid=2975844 synthetic_streams=4 real_ptys=3
+PROOF_PTY_START id=0 pid=Some(3097618)
+PROOF_PTY_START id=1 pid=Some(3097620)
+PROOF_PTY_START id=2 pid=Some(3097622)
+PROOF_READY preview_origin=http://127.0.0.1:34745 pid=3097608 synthetic_streams=4 real_ptys=3
 PROOF_PREVIEW_REPORT snapshot: denied
 PROOF_PREVIEW_REPORT stop_ptys: denied

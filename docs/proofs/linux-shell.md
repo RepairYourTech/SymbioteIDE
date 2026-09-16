@@ -55,29 +55,39 @@ actually used, in `session.json`. That is a session compromise, not a change to 
 app: the committed contract's applicability names the *reference compositor*, and
 this run is on a virtual one.
 
-What the run observed on 2026-09-16, built from `b11ae0b0` in a clean target
+What the run observed on 2026-09-16, built from `988c37af` in a clean target
 directory outside the tree (kwin 6.7.5 virtual session at 1440×960, Mesa Intel(R)
 Graphics (RPL-P), 16 logical cores, 62 GiB RAM, NVMe storage), with the evidence
 under `results/desktop-shell/linux-wayland-on-the-reference-compositor/`. Each
 figure is re-checkable from the artifact the run cites for it:
 
-- **`cold_start_to_first_frame_seconds` 0.192** of a 3.0 ceiling: the first
+- **`cold_start_to_first_frame_seconds` 0.353** of a 3.0 ceiling: the first
   `wl_surface.commit()` after the client attached a buffer, timed from its first
-  request in `app-1.log`, which went on to commit 516 frames, the last at 25.153 s.
-- **`clean_locked_build_seconds` 64.242** of a 900 ceiling: `npm run build` and
+  request in `app-1.log`, which went on to commit 452 frames, the last at 20.302 s.
+- **`clean_locked_build_seconds` 116.979** of a 900 ceiling: `npm run build` and
   `cargo build --locked --release` from an empty target directory, in a log
-  captured with `set -x` that names those commands and the revision it read.
-- **`workload_process_tree_pss_mib` 436.706** of a 2560 ceiling and
-  **`unattributed_process_tree_memory_percent` 1.693** of a 5.0 ceiling: the peak
-  of 251 samples of the app tree's summed PSS (shell 79.6 MiB, three terminals
-  21.7 MiB, WebKit helpers 328.0 MiB, unattributed 7.4 MiB). The peak fell 0.62 s
-  into a 25.043 s window, which is a startup peak rather than a steady-state
+  captured with `set -x` that names those commands and the revision it read (
+  `Finished \`release\` profile [optimized] target(s) in 1m 55s`).
+- **`workload_process_tree_pss_mib` 485.490** of a 2560 ceiling and
+  **`unattributed_process_tree_memory_percent` 1.525** of a 5.0 ceiling: the peak
+  of 251 samples of the app tree's summed PSS (shell 90.8 MiB, three terminals
+  21.7 MiB, WebKit helpers 365.5 MiB, unattributed 7.4 MiB). The peak fell 1.138 s
+  into a 25.063 s window, which is a startup peak rather than a steady-state
   figure; the run records where it fell with the figure instead of leaving a
   reader to guess, and 11 tree members were alive at it.
 - **`orphaned_processes_after_cancel` 0** and
   **`orphaned_listening_ports_after_cancel` 0** of 0 ceilings: SIGTERM to the live
   tree 25 s into the second run left no observed member and no listening port, and
-  the driver's own cleanup confirmed it before the compositor was torn down.
+  the driver's own cleanup confirmed it before the compositor was torn down. The
+  survivor count is read from the process state, so it means nothing is left
+  running rather than nothing is left listed, and the entries that had exited but
+  were not yet reaped are named beside it (`unreaped_observed_pids`, empty here).
+
+These are a re-run of the same declared run set, taken because `session.json` had
+to stop pointing at paths the run removes: the stop condition, the five
+measurements reported unknown with their reasons, the three recorded limitations
+and the three obligations `exercised` are unchanged, while every figure the run
+observed is this run's own.
 
 What it could not observe, reported unknown rather than met: idle-state PSS (this
 fixture has no idle state), workbench readiness (its `PROOF_READY` marker precedes
@@ -107,8 +117,12 @@ actually holds — a platform whose run is recorded cannot be left declared unte
 Each platform publishes its evidence into its own directory under the artifact's,
 so a second platform's app and session logs cannot overwrite the first's. A dossier
 of another contract, or one measured against other thresholds, is refused rather
-than merged into. The revision a run records has to be the tree it ran in — clean,
-at `HEAD` — and the recipe it cites has to have logged the same revision, because a
+than merged into. The session record names each of its paths the run does not keep
+— the private runtime directory it removes, the binary it built outside the tree,
+the build log that goes with that target directory — beside what outlives it: the
+binary's hash, and the committed copy of the build log with the same bytes. The
+revision a run records has to be the tree it ran in — clean, at `HEAD` — and the
+recipe it cites has to have logged the same revision, because a
 build log that names only its commands cannot be tied to a tree.
 
 Nothing here settles #38. Three of the contract's four platforms are declared

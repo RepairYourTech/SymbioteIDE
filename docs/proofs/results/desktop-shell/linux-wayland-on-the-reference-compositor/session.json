@@ -1,29 +1,33 @@
 {
   "session": "kwin 6.7.5 --virtual 1440x960, Mesa Intel(R) Graphics (RPL-P)",
-  "runtime_dir": "/mnt/data/projects/Symbiote/spikes/linux-shell/artifacts/20260916T123055Z/runtime",
+  "runtime_dir": "spikes/linux-shell/artifacts/20260916T130010Z/runtime",
+  "runtime_dir_note": "the private XDG_RUNTIME_DIR this session started in, removed when the run ends; no figure is read from it",
   "wayland_display": "symbiote-proof",
   "display_unset": true,
   "egl_vendor_icd_pinned": "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
   "egl_icd_reason": "the NVIDIA/glvnd path aborts the client against the virtual backend with wp_linux_drm_syncobj_surface_v1 explicit-sync errors, so the session runs on Mesa EGL and says so here",
   "compositor_log_bytes": 0,
   "compositor_log_note": "the compositor writes nothing to the stream this run captures, so the display log is empty and is not cited as evidence; the session it started is recorded here instead",
-  "binary": "/tmp/spike-clean-b11ae0b0/release/symbiote-linux-shell-proof",
+  "binary": "/tmp/spike-clean-988c37aff235df8f6c66cd207d18130ef7be15b3/release/symbiote-linux-shell-proof",
   "binary_sha256": "474b643bd7de6a0887262a42f130ae2ba9ebd300aa8f8e8ed161b6f50113d84b",
+  "binary_note": "built into a fresh target directory outside this tree to measure a clean locked build, and not kept; binary_sha256 is the identity a later pass checks",
   "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
   "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
   "hardware": "13th Gen Intel(R) Core(TM) i7-13620H (16 logical cores), 62 GiB RAM, Mesa Intel(R) Graphics (RPL-P), NVMe storage",
   "build": {
-    "seconds": 64.242,
-    "revision": "b11ae0b04a0eba1668b30c8dd5f5535413c1abac",
-    "log": "/tmp/build-b11ae0b0.log",
-    "log_sha256": "ecf893f80f75fbbfbbbe32752444180aac706210f7bea6c38e65f2dae937bf8b",
+    "seconds": 116.979,
+    "revision": "988c37aff235df8f6c66cd207d18130ef7be15b3",
+    "log": "/tmp/build-988c37aff235df8f6c66cd207d18130ef7be15b3.log",
+    "log_sha256": "8964bf4eb485e9d228f4e0f6ce4b312fccfa30b888aa29d2eda2bc23eda1af0e",
     "commands": [
       "+ git rev-parse HEAD",
       "+ git status --porcelain",
+      "+ cd spikes/linux-shell",
       "+ npm run build",
-      "+ cargo build --locked --release --manifest-path src-tauri/Cargo.toml --target-dir /tmp/spike-clean-b11ae0b0"
+      "+ cargo build --locked --release --manifest-path src-tauri/Cargo.toml --target-dir /tmp/spike-clean-988c37aff235df8f6c66cd207d18130ef7be15b3"
     ],
     "note": "built from a fresh target directory outside this tree, logged with `set -x` so the log names the commands it timed",
-    "published_log": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/build-b11ae0b0.log"
+    "published_log": "docs/proofs/results/desktop-shell/linux-wayland-on-the-reference-compositor/build-988c37aff235df8f6c66cd207d18130ef7be15b3.log",
+    "log_note": "`log` is where the build wrote this outside the tree and goes with the target directory it built into; `published_log` is the committed copy of the same bytes, and is what log_sha256 re-hashes"
   }
 }
