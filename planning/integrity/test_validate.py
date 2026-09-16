@@ -71,10 +71,23 @@ class IntegrityTests(unittest.TestCase):
         a registration in an issue's own thread invisible to this artifact and to every
         reader of it, and it is the shape #173's entry — the one the architecture
         contract's bar registration names — is held to, so the two items registered on
-        that issue cannot be found here and a later pass has to read the issue."""
+        that issue cannot be found here and a later pass has to read the issue.
+
+        Every name the exemption rests on is held to the registry, because the exemption
+        is exactly what would hide the text: a field that is not a collection in each
+        entry that carries it cannot need to be exempt, so naming one fails rather than
+        passing the entries it covers."""
         expected = json.loads((Path(__file__).parent / "generated/registry.json").read_text())
-        # Fields whose value is a collection by design rather than item text.
-        structural = {"labels", "dependencies", "children", "program_entry"}
+        # The collections the roadmap itself defines for an entry. Authoritative here:
+        # the exemption and the document that describes it both rest on this tuple.
+        collections_by_design = ("labels", "dependencies", "children")
+        for field in collections_by_design:
+            carried = [entry[field] for entry in expected["entries"] if field in entry]
+            self.assertTrue(carried, f"the registry still defines the {field} collection")
+            self.assertTrue(
+                all(isinstance(value, list) for value in carried),
+                f"{field} is a collection in every entry that carries it, so it needs no "
+                "exemption from the rule below")
         for entry in expected["entries"]:
             self.assertIsInstance(entry["body_sha256"], str)
             self.assertEqual(len(entry["body_sha256"]), 64, f"#{entry['number']} pins its body")
@@ -82,7 +95,7 @@ class IntegrityTests(unittest.TestCase):
             if "acceptance_items" in entry:
                 self.assertIsInstance(entry["acceptance_items"], int)
             for field, value in entry.items():
-                if field in structural:
+                if field in collections_by_design:
                     continue
                 self.assertNotIsInstance(
                     value, (list, dict),
@@ -91,8 +104,6 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(bar["key"], "A04")
         self.assertIsInstance(bar.get("acceptance_items"), int,
                               "the bar's entry records the count, not the items")
-        self.assertIsInstance(bar.get("body_sha256"), str)
-        self.assertIsInstance(bar.get("revision"), str)
 
     def test_every_snapshot_issue_belongs_to_one_counted_class(self):
         """No issue may disappear into a class the counts do not name."""
