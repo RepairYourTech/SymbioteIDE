@@ -17,6 +17,19 @@ member and summed), the component each member is attributed to, and — around
 cancellation — the listening ports its members own. The Wayland session writes a
 run dossier and, when asked, the result artifact its contract points at. Nothing
 here touches the user's session, display or packages.
+
+The result artifact is written from what the run observed, and it is checked
+before the run reports success:
+
+* the platform it names must be one the committed contract applies to, its stop
+  condition must be one the contract declares, and every predeclared measurement
+  must be either observed or named with the reason the instrument could not see
+  it — a measurement that is simply absent is refused rather than left silent;
+* an obligation is attested only where the fixture's own log carries the marker
+  for it (see ``ATTESTED_BY``), so ``exercised`` cannot be typed;
+* the run itself refuses to record a revision while the tree differs from it, and
+  the artifact it writes is then read back by the ledger's own map, which must
+  report no refusals.
 """
 import argparse
 import hashlib
@@ -34,6 +47,30 @@ SOCKET_NAME = 'symbiote-proof'
 MESA_EGL_ICD = '/usr/share/glvnd/egl_vendor.d/50_mesa.json'
 SAMPLE_SECONDS = 0.1
 CANCEL_GRACE_SECONDS = 5
+CONTRACTS_PATH = 'docs/architecture/spike-contracts.json'
+_RENDERERS = {}
+
+# The contract obligations this fixture's own log can attest, the marker the
+# fixture emits for each, and how many of them one run has to show. An
+# attestation is read from the app's log and never from the command line, so an
+# obligation whose marker is missing stays unattested: four concurrent agent
+# streams are absent below because this fixture starts four *synthetic* streams,
+# not agent streams, and no marker of its own says otherwise.
+ATTESTED_BY = (
+    ('#38: three active terminal tabs with bounded scrollback in real PTYs',
+     'PROOF_PTY_START', 3),
+    ("#38: a live integrated Preview of the run's own output",
+     'PROOF_READY preview_origin=', 1),
+    ('#38: Preview origins, localhost included, that inherit neither workbench nor Host authority '
+     'and reach the app only through validated bridge operations',
+     'PROOF_PREVIEW_REPORT', 2),
+)
+
+
+def attested(log_text):
+    """The contract obligations this log attests, and nothing it does not show."""
+    return [obligation for obligation, marker, least in ATTESTED_BY
+            if log_text.count(marker) >= least]
 
 
 def processes():
@@ -210,15 +247,18 @@ def start_wayland(artifacts):
 
 def renderer_of(env):
     """The GPU EGL renderer inside this session, so the figures carry their stack."""
+    key = env.get('XDG_RUNTIME_DIR', '')
+    if key in _RENDERERS:
+        return _RENDERERS[key]
     try:
         output = subprocess.run(['eglinfo'], capture_output=True, text=True, env=env,
                                 timeout=60).stdout
     except (OSError, subprocess.SubprocessError):
-        return 'renderer not reported'
-    for line in output.splitlines():
-        if line.strip().startswith('OpenGL core profile renderer:'):
-            return line.split(':', 1)[1].strip()
-    return 'renderer not reported'
+        output = ''
+    _RENDERERS[key] = next((line.split(':', 1)[1].strip() for line in output.splitlines()
+                            if line.strip().startswith('OpenGL core profile renderer:')),
+                           'renderer not reported')
+    return _RENDERERS[key]
 
 
 def observe_app(env, log_path, binary, seconds, cancel_after, trace):
@@ -356,7 +396,40 @@ def sha256_of(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def session_record(session, env, binary, runtime):
+def hardware_of(env):
+    """The reference configuration this run happened on, read from the host.
+
+    A run's figures carry the machine they were taken on, and a typed sentence
+    cannot be re-checked; every part of this one is read here, and the renderer
+    is the one the session's own EGL stack reports. ``session.json`` commits it
+    beside the run that cites the record.
+    """
+    cpu = next((line.split(':', 1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
+                if line.startswith('model name')), 'unknown CPU')
+    kib = next((line.split(':', 1)[1].strip().split()[0]
+                for line in Path('/proc/meminfo').read_text().splitlines()
+                if line.startswith('MemTotal')), '0')
+    storage = 'NVMe storage' if any(path.name.startswith('nvme')
+                                    for path in Path('/sys/block').glob('*')) else 'unreported storage'
+    return (f'{cpu} ({os.cpu_count()} logical cores), {round(int(kib) / 1048576)} GiB RAM, '
+            f'{renderer_of(env)}, {storage}')
+
+
+def repo_path(path):
+    """A path as the artifact cites it, or as given when it is outside the tree.
+
+    The binary a run exercises may have been built from a clean target directory
+    outside this tree, which is how a clean locked build is measured; its path is
+    then recorded as it is, with its hash, rather than made up relative to a root
+    it is not under.
+    """
+    try:
+        return str(Path(path).resolve().relative_to(REPO))
+    except ValueError:
+        return str(Path(path).resolve())
+
+
+def session_record(session, env, binary, runtime, compositor_log_bytes, build):
     """What this session was, so the figures carry their stack and its compromises."""
     def tool(*command):
         try:
@@ -364,10 +437,6 @@ def session_record(session, env, binary, runtime):
                                   timeout=30).stdout.strip().splitlines()[0]
         except (OSError, IndexError, subprocess.SubprocessError):
             return 'not reported'
-    cpu = next((line.split(':', 1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
-                if line.startswith('model name')), 'unknown cpu')
-    memory = next((line for line in Path('/proc/meminfo').read_text().splitlines()
-                   if line.startswith('MemTotal')), 'MemTotal: unknown')
     return {
         'session': session,
         'runtime_dir': str(runtime),
@@ -375,29 +444,68 @@ def session_record(session, env, binary, runtime):
         'display_unset': 'DISPLAY' not in env,
         'egl_vendor_icd_pinned': env.get('__EGL_VENDOR_LIBRARY_FILENAMES'),
         'egl_icd_reason': 'the NVIDIA/glvnd path aborts the client against the virtual backend with wp_linux_drm_syncobj_surface_v1 explicit-sync errors, so the session runs on Mesa EGL and says so here',
-        'binary': str(binary.relative_to(REPO)),
+        'compositor_log_bytes': compositor_log_bytes,
+        'compositor_log_note': 'the compositor writes nothing to the stream this run captures, so the display log is empty and is not cited as evidence; the session it started is recorded here instead',
+        'binary': repo_path(binary),
         'binary_sha256': sha256_of(binary),
         'rustc': tool('rustc', '--version'),
         'cargo': tool('cargo', '--version'),
-        'cpu': cpu,
-        'memory': memory,
+        'hardware': hardware_of(env),
+        'build': build,
     }
+
+
+def contract_of(path, identity):
+    """The contract a run measured, from the document the repository commits."""
+    document = json.loads(path.read_text())
+    for contract in document['contracts']:
+        if contract['id'] == identity:
+            return contract
+    raise SystemExit(f'no committed contract named {identity!r} in {path}')
+
+
+def uncommitted(text):
+    """Tracked files that differ from HEAD, from ``git status --porcelain``.
+
+    Untracked files are the run's own new evidence and are left alone; a modified
+    tracked file means the revision a run would record is not the tree it ran, and
+    the run refuses to publish rather than record a revision it cannot stand on.
+    """
+    return [line for line in text.splitlines() if line[:2] not in ('??', '')]
+
+
+def ledger_refusals():
+    """What the ledger's own map says about the tree, by running it.
+
+    The artifact is written from the run's observations, and this is how the run
+    finds out whether the ledger accepts it: the map reads the committed contract,
+    the fingerprint the result records and every artifact it cites, and reports a
+    refusal for each one that does not stand.
+    """
+    completed = subprocess.run(['cargo', 'run', '-q', '-p', 'symbiote-architecture',
+                                '--example', 'decisions'], cwd=REPO, capture_output=True, text=True)
+    refusals = [line for line in completed.stdout.splitlines() if line.startswith('refused ')]
+    if completed.returncode != 0 and not refusals:
+        raise SystemExit(f'the ledger could not read the tree: {completed.stderr.strip()}')
+    return refusals
 
 
 def publish(paths, publish_dir):
     """Copy the artifacts a run cites into the tree, hashing what was written.
 
     The directory is named from the repository root, because the paths a result
-    artifact cites have to be repository-relative for the ledger to hash them.
+    artifact cites have to be repository-relative for the ledger to hash them. An
+    artifact that recorded nothing is not published: citing an empty file would
+    claim evidence where there is none.
     """
     published = []
     publish_dir.mkdir(parents=True, exist_ok=True)
     for path in paths:
-        if not path.exists():
+        if not path.exists() or path.stat().st_size == 0:
             continue
         target = publish_dir / path.name
         shutil.copy2(path, target)
-        published.append({'artifact': str(target.relative_to(REPO)), 'sha256': sha256_of(target)})
+        published.append({'artifact': repo_path(target), 'sha256': sha256_of(target)})
     return published
 
 
@@ -414,17 +522,16 @@ def figures_of(samples, cleaned, stats, build_seconds, memory=True):
     if stats and stats['first_frame_seconds'] is not None:
         figures.append({'measurement': 'cold_start_to_first_frame_seconds',
                         'observed': stats['first_frame_seconds']})
-    if not memory:
-        return figures, peak
-    figures.append({'measurement': 'workload_process_tree_pss_mib',
-                    'observed': round(pss / 1024, 3)})
-    figures.append({'measurement': 'unattributed_process_tree_memory_percent',
-                    'observed': round(100 * unattributed / max(pss, 1), 3)})
-    if cleaned is not None:
-        figures.append({'measurement': 'orphaned_processes_after_cancel',
-                        'observed': float(cleaned['survivors_after_cancel_request'])})
-        figures.append({'measurement': 'orphaned_listening_ports_after_cancel',
-                        'observed': float(len(cleaned['listening_ports_after_cancel_request']))})
+    if memory:
+        figures.append({'measurement': 'workload_process_tree_pss_mib',
+                        'observed': round(pss / 1024, 3)})
+        figures.append({'measurement': 'unattributed_process_tree_memory_percent',
+                        'observed': round(100 * unattributed / max(pss, 1), 3)})
+        if cleaned is not None:
+            figures.append({'measurement': 'orphaned_processes_after_cancel',
+                            'observed': float(cleaned['survivors_after_cancel_request'])})
+            figures.append({'measurement': 'orphaned_listening_ports_after_cancel',
+                            'observed': float(len(cleaned['listening_ports_after_cancel_request']))})
     if build_seconds is not None:
         figures.append({'measurement': 'clean_locked_build_seconds', 'observed': build_seconds})
     return figures, peak
@@ -462,24 +569,120 @@ def run_xvfb(args, artifacts, binary):
         log.close()
 
 
+def build_record(args):
+    """The clean locked build these figures belong to, as the log recorded it."""
+    log = Path(args.build_log)
+    command = next((line.strip() for line in log.read_text().splitlines() if line.startswith('+ ')),
+                   'the log does not record the command that wrote it')
+    record = {'seconds': args.build_seconds, 'log': repo_path(log), 'log_sha256': sha256_of(log),
+              'command': command,
+              'note': 'built from a fresh target directory outside this tree, logged with `set -x` so the log names the commands it timed'}
+    if args.publish:
+        # The build log is written outside the tree, where nothing durable holds
+        # it: the copy the result cites is the record a later pass can re-hash.
+        record['published_log'] = str(Path(args.publish) / log.name)
+    return record
+
+
+def unknown_of(args):
+    """The measurements this instrument cannot see, and why, in declared order."""
+    unknown = []
+    for item in args.unobservable:
+        name, _, reason = item.partition('=')
+        unknown.append((name.strip(), reason.strip() or 'no reason recorded'))
+    return unknown
+
+
+def peak_note(samples, peak):
+    """Where the memory figure's peak fell, so a reader is not left to guess.
+
+    A peak early in a run is a startup peak, not a steady-state one, and the
+    figure alone cannot say which; the sample it came from is data, so the run
+    records it rather than describing it.
+    """
+    window = f"{samples[0]['seconds']} s to {samples[-1]['seconds']} s" if samples else 'no window'
+    return (f"workload_process_tree_pss_mib: the peak of {len(samples)} samples fell "
+            f"{peak.get('seconds')} s into the sampled window ({window}), so where it fell is "
+            'recorded with the figure rather than left to the reader')
+
+
+def result_problems(args, contract, runs):
+    """Everything that would make this result claim more than the run shows.
+
+    Checked before anything is published: a platform the contract does not apply
+    to, a stop condition it does not declare, a measurement it predeclares that is
+    neither observed nor named unknown, an unknown or an observation the contract
+    never declared, and an obligation answered here with no marker in the run's
+    own log.
+    """
+    problems = []
+    if args.platform not in contract['applicable_platforms']:
+        problems.append(f'{args.platform!r} is not a platform this contract applies to: '
+                        + ', '.join(contract['applicable_platforms']))
+    if args.stop_condition not in contract['stop_conditions']:
+        problems.append(f'{args.stop_condition!r} is not a stop condition this contract declares')
+    predeclared = [measurement['name'] for measurement in contract['measurements']]
+    observed = {figure['measurement'] for row in runs for figure in row['figures']}
+    unknown = dict(unknown_of(args))
+    for name in sorted(set(unknown) - set(predeclared)):
+        problems.append(f'{name} is named unobservable and the contract does not predeclare it')
+    for name in sorted(observed - set(predeclared)):
+        problems.append(f'{name} is observed and the contract does not predeclare it')
+    for name in predeclared:
+        if name not in observed and name not in unknown:
+            problems.append(f'{name} is predeclared and neither observed nor named unobservable, '
+                            'so this result would leave it silent')
+    for row in runs:
+        if not row['exercised']:
+            problems.append('a run attests no obligation: its log carries no marker this fixture '
+                            'emits for one')
+    return problems
+
+
+def result_runs(args, contract, runs, published, session, hardware, commit):
+    """The result artifact's run entries, citing the artifacts that were published."""
+    by_name = {item['artifact'].split('/')[-1]: item for item in published}
+    unknown = unknown_of(args)
+    failures = ([args.stop_condition] + [f'{name}: {reason}' for name, reason in unknown]
+                + args.limitation + [note for row in runs for note in row.get('notes', [])])
+    return [{
+        'platform': args.platform,
+        'version': session,
+        'hardware': hardware,
+        'commit': commit,
+        'exercised': row['exercised'],
+        'outcome': 'stop_condition_triggered',
+        'stop_condition': args.stop_condition,
+        'failures': failures,
+        'observations': row['figures'],
+        'artifacts': [by_name[name] for name in row['cites'] if name in by_name],
+    } for row in runs]
+
+
 def run_wayland(args, artifacts, binary, commit):
+    contract = contract_of(REPO / args.contracts, args.contract)
     compositor, env, log, runtime, session = start_wayland(artifacts)
     log.close()
-    runs, published = [], []
+    runs = []
     try:
         # Run 1: the app's own lifetime, with its protocol log captured, so the
-        # readiness and first-frame figures come from the client's own clock.
+        # first-frame figure comes from the client's own clock. The clean locked
+        # build of this candidate happened before it, on the same commit and
+        # hardware, so run 1 records and cites it.
         code, elapsed, samples, seen, marks = observe_app(
             env, artifacts / 'app-1.log', binary, args.seconds, 0, trace=True)
         cleaned = cleanup(seen, [])
         stats = trace_stats(artifacts / 'app-1.log')
-        figures, peak = figures_of(samples, None, stats, None, memory=False)
+        figures, peak = figures_of(samples, None, stats, args.build_seconds, memory=False)
         (artifacts / 'process-tree-1.json').write_text(json.dumps(
             {'session': session, 'run': 1, 'app_exit': code, 'elapsed_seconds': elapsed,
              'markers': marks, 'trace': stats, 'peak_sample': peak, 'samples': samples,
              'cleaned_after_self_exit': cleaned}, indent=2) + '\n')
-        runs.append({'run': 1, 'code': code, 'elapsed': elapsed, 'marks': marks,
-                     'figures': figures, 'peak': peak, 'cancellation': cleaned})
+        runs.append({'run': 1, 'code': code, 'elapsed': elapsed, 'marks': marks, 'figures': figures,
+                     'peak': peak, 'cancellation': cleaned,
+                     'exercised': attested((artifacts / 'app-1.log').read_text()),
+                     'cites': ['app-1.log', 'process-tree-1.json', 'session.json', 'cleanup.json',
+                               'kwin.log'] + ([Path(args.build_log).name] if args.build_log else [])})
 
         # Run 2: the same workload, cancelled from under the driver, so the
         # cancellation figures are about a live tree rather than a reaped one.
@@ -491,38 +694,52 @@ def run_wayland(args, artifacts, binary, commit):
             {'session': session, 'run': 2, 'app_exit': code, 'elapsed_seconds': elapsed,
              'markers': marks, 'cancellation': cleaned, 'peak_sample': peak,
              'samples': samples}, indent=2) + '\n')
-        runs.append({'run': 2, 'code': code, 'elapsed': elapsed, 'marks': marks,
-                     'figures': figures, 'peak': peak, 'cancellation': cleaned})
+        runs.append({'run': 2, 'code': code, 'elapsed': elapsed, 'marks': marks, 'figures': figures,
+                     'peak': peak, 'cancellation': cleaned,
+                     'exercised': attested((artifacts / 'app-2.log').read_text()),
+                     'notes': [peak_note(samples, peak)],
+                     'cites': ['app-2.log', 'process-tree-2.json', 'session.json', 'cleanup.json',
+                               'kwin.log']})
 
         (artifacts / 'session.json').write_text(json.dumps(
-            session_record(session, env, binary, runtime), indent=2) + '\n')
+            session_record(session, env, binary, runtime,
+                           (artifacts / 'kwin.log').stat().st_size,
+                           build_record(args) if args.build_log else None), indent=2) + '\n')
         (artifacts / 'cleanup.json').write_text(json.dumps(
             {'run_1_after_self_exit': runs[0]['cancellation'],
              'run_2_after_cancel_request': runs[1]['cancellation'],
              'compositor_terminated_by': 'the driver, on the compositor process group it started'}, indent=2) + '\n')
-        sources = [artifacts / 'app-1.log', artifacts / 'app-2.log',
-                   artifacts / 'process-tree-1.json', artifacts / 'process-tree-2.json',
-                   artifacts / 'cleanup.json', artifacts / 'session.json', artifacts / 'kwin.log']
+        print(json.dumps([{key: value for key, value in row.items() if key != 'peak'} for row in runs],
+                         indent=2))
+        print(artifacts)
+        if not args.results:
+            return
+        problems = result_problems(args, contract, runs)
+        if problems:
+            raise SystemExit('refusing to publish a result the run does not show:\n  '
+                             + '\n  '.join(problems))
+        sources = [artifacts / name for name in ('app-1.log', 'app-2.log', 'process-tree-1.json',
+                                                 'process-tree-2.json', 'cleanup.json', 'session.json',
+                                                 'kwin.log')]
         if args.build_log:
             sources.append(Path(args.build_log))
-        published = publish(sources, REPO / args.publish) if args.publish else []
-        if args.build_seconds is not None and published:
-            build_entry = next((item for item in published
-                                if item['artifact'].endswith(Path(args.build_log).name)), None)
-            runs.append({
-                'run': 3, 'code': 0, 'elapsed': args.build_seconds, 'marks': {},
-                'figures': [{'measurement': 'clean_locked_build_seconds',
-                             'observed': args.build_seconds}],
-                'peak': {'sum_pss_kib': 0}, 'cancellation': None,
-                'artifacts': [build_entry] if build_entry else [],
-                'session': 'clean locked release build with a warm toolchain, same host',
-            })
-        print(json.dumps([{key: value for key, value in row.items() if key != 'peak'}
-                          for row in runs], indent=2))
-        print(artifacts)
-        if args.publish:
-            if args.results:
-                write_results(args, runs, published, artifacts, session, commit)
+        published = publish(sources, REPO / args.publish)
+        entries = result_runs(args, contract, runs, published, session, hardware_of(env), commit)
+        (artifacts / 'results-draft.json').write_text(json.dumps(entries, indent=2) + '\n')
+        (REPO / args.results).write_text(json.dumps({
+            'schema_version': 1,
+            'contract': contract['id'],
+            'contract_sha256': args.contract_sha256,
+            'untested_platforms': [platform for platform in contract['applicable_platforms']
+                                   if platform != args.platform],
+            'runs': entries,
+        }, indent=2) + '\n')
+        print(f'wrote {args.results}')
+        refusals = ledger_refusals()
+        if refusals:
+            raise SystemExit('the ledger refuses the run this driver just published:\n  '
+                             + '\n  '.join(refusals))
+        print('the ledger reports no refusals for the tree this run wrote')
     finally:
         shutil.rmtree(runtime, ignore_errors=True)
         if compositor.poll() is None:
@@ -531,48 +748,6 @@ def run_wayland(args, artifacts, binary, commit):
             except ProcessLookupError:
                 pass
             compositor.wait(timeout=CANCEL_GRACE_SECONDS)
-
-
-def write_results(args, runs, published, artifacts, session, commit):
-    """The result artifact this contract points at, from what these runs observed."""
-    by_name = {item['artifact'].split('/')[-1]: item for item in published}
-    entries = []
-    for row in runs:
-        cited = []
-        if row['run'] == 1:
-            cited = [by_name.get('app-1.log'), by_name.get('process-tree-1.json'),
-                     by_name.get('cleanup.json'), by_name.get('session.json'),
-                     by_name.get('kwin.log')]
-        elif row['run'] == 2:
-            cited = [by_name.get('app-2.log'), by_name.get('process-tree-2.json'),
-                     by_name.get('cleanup.json'), by_name.get('session.json'),
-                     by_name.get('kwin.log')]
-        else:
-            cited = row.get('artifacts', [])
-        failures = [args.stop_condition] + [
-            f'{name}: {reason}' for name, reason in (item.split('=', 1) for item in args.unobservable)
-        ] + args.limitation
-        entries.append({
-            'platform': args.platform,
-            'version': row.get('session', session),
-            'hardware': args.hardware,
-            'commit': commit,
-            'exercised': args.exercised,
-            'outcome': 'stop_condition_triggered',
-            'stop_condition': args.stop_condition,
-            'failures': failures,
-            'observations': row['figures'],
-            'artifacts': [item for item in cited if item],
-        })
-    (artifacts / 'results-draft.json').write_text(json.dumps(entries, indent=2) + '\n')
-    (REPO / args.results).write_text(json.dumps({
-        'schema_version': 1,
-        'contract': args.contract,
-        'contract_sha256': args.contract_sha256,
-        'untested_platforms': args.untested,
-        'runs': entries,
-    }, indent=2) + '\n')
-    print(f'wrote {args.results}')
 
 
 def main():
@@ -590,22 +765,22 @@ def main():
                         help='a clean locked build of this candidate, measured separately')
     parser.add_argument('--build-log', default=None, help='where that build wrote its log')
     parser.add_argument('--commit', default=None, help='the revision the binary was built from')
-    parser.add_argument('--hardware', default=None, help='the machine the run happened on')
-    parser.add_argument('--platform', default='Linux Wayland on the reference compositor')
-    parser.add_argument('--untested', nargs='*', default=[],
-                        help='contract platforms this run set left alone')
+    parser.add_argument('--platform', default='Linux Wayland on the reference compositor',
+                        help='the contract platform this run exercised; the rest are derived as untested')
     parser.add_argument('--publish', default=None,
                         help='repository-relative directory to publish the cited artifacts into')
     parser.add_argument('--results', default=None,
                         help='repository-relative result artifact to write')
+    parser.add_argument('--contracts', default=CONTRACTS_PATH,
+                        help='the committed contract document this run was measured against')
     parser.add_argument('--contract', default='#38/desktop-shell-representative-workload')
-    parser.add_argument('--contract-sha256', default=None)
+    parser.add_argument('--contract-sha256', default=None,
+                        help='the fingerprint the contract document reaches; the ledger is what holds it')
     parser.add_argument('--stop-condition', default=None)
     parser.add_argument('--unobservable', nargs='*', default=[],
                         help='measurement=reason pairs this run reports unknown rather than met')
     parser.add_argument('--limitation', nargs='*', default=[],
                         help='what this instrument cannot show, recorded with every run')
-    parser.add_argument('--exercised', nargs='*', default=[])
     args = parser.parse_args()
 
     if args.interact and (not shutil.which('xdotool') or not shutil.which('import')):
@@ -618,6 +793,16 @@ def main():
          if candidate.exists()), None)
     if binary is None or not binary.exists():
         raise SystemExit('Build first: npm ci --ignore-scripts; npm run build; cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml')
+    if args.results and args.publish is None:
+        raise SystemExit('--results needs --publish: a result cites the artifacts it stands on')
+    if args.results:
+        status = subprocess.run(['git', '-C', str(REPO), 'status', '--porcelain'],
+                                capture_output=True, text=True).stdout
+        changed = uncommitted(status)
+        if changed:
+            raise SystemExit('refusing to publish a result: a run records the revision it was '
+                             'built from, and this tree differs from it in:\n  '
+                             + '\n  '.join(changed))
     artifacts = ROOT / 'artifacts' / time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     artifacts.mkdir(parents=True)
     commit = args.commit or subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'],
