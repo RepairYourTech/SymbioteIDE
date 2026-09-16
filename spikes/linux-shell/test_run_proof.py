@@ -712,6 +712,23 @@ class MainEntryPoint(unittest.TestCase):
         self.assertFalse(self.publish.exists())
         self.assertFalse(self.dossier.exists())
 
+    def test_a_result_without_the_contract_fingerprint_is_refused(self):
+        """A result records the contract it was measured against, so it has to name it.
+
+        The fingerprint is not this driver's to derive — the ledger re-hashes the
+        committed document and holds the answer — so a run that was told nothing
+        records nothing the ledger can read, which is a refusal now rather than a
+        dossier nothing can open.
+        """
+        argv = self.arguments()
+        fingerprint = argv.index('--contract-sha256')
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(argv[:fingerprint] + argv[fingerprint + 2:])
+        self.assertIn('contract-sha256', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started with no fingerprint to record')
+        self.assertFalse(self.publish.exists())
+        self.assertFalse(self.dossier.exists())
+
     def test_the_x11_entry_point_writes_only_its_own_records(self):
         self.drive(self.arguments(results=False, session='xvfb'))
         self.assertIn('process-tree.json', self.records())
