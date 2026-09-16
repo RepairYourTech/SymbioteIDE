@@ -4,7 +4,7 @@ Status: experimental fixture, **not shell selection**. The integrating engineer 
 
 ## Reproduce
 
-From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples and an optional ImageMagick screenshot, checks observed survivor processes, and removes the server. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`. `python3 -m unittest test_run_proof` runs the rules that decide what a Wayland run may publish, and needs neither a session nor a binary. A run that publishes a dossier records the revision it was built from, so the clean build it cites is logged with `git rev-parse HEAD` in the same `set -x` recipe.
+From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples, checks observed survivor processes, and removes the server; it drives no input and takes no screenshot on either path, and `--interact` — which captured them before the X11 path was rewritten — is now refused rather than promising a capture the driver does not take. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`. `python3 -m unittest test_run_proof` runs the rules that decide what a Wayland run may publish, and needs neither a session nor a binary. A run that publishes a dossier records the revision it was built from, so the clean build it cites is logged with `git rev-parse HEAD` in the same `set -x` recipe.
 
 Pinned direct components: Tauri 2.11.5, tauri-build 2.6.3, portable-pty 0.9.0, Tauri JavaScript API 2.11.1, React 19.2.8, TypeScript 7.0.2, Vite 8.2.2, Monaco 0.56.0. Cargo/npm lockfiles retain the transitive resolution. Monaco's DOMPurify dependency is explicitly overridden to 3.4.15 because its upstream pin reports security advisories; the resulting npm audit reports zero vulnerabilities at preparation time. No system/global package or user application changes. Local prerequisite discovery: GTK 3.24.52 and WebKitGTK 2.52.6 available on the Linux host.
 
@@ -98,9 +98,8 @@ fixture has no idle state), workbench readiness (its `PROOF_READY` marker preced
 the first frame and every WebKit helper, so it is not a workbench-ready signal),
 input starvation (this driver issues no input on Wayland), journal loss across a
 crash (the fixture has no canonical store) and installer size (nothing here
-packages an installer). No frames were captured in this session: the X11 path's
-screenshot has no equivalent in the Wayland runner, so the rendering evidence is
-the client's own protocol log and the app's logs.
+packages an installer). No frames were captured in this session: the runner takes no screenshot on either
+path, so the rendering evidence is the client's own protocol log and the app's logs.
 
 The result attests only what the fixture's own log shows. `exercised` is derived
 from the app's markers — three `PROOF_PTY_START`, one `PROOF_READY
