@@ -24,7 +24,11 @@ before the run reports success:
 * the platform it names must be one the committed contract applies to, its stop
   condition must be one the contract declares, and every predeclared measurement
   must be either observed or named with the reason the instrument could not see
-  it — a measurement that is simply absent is refused rather than left silent;
+  it — a measurement that is simply absent is refused rather than left silent.
+  These are the crate's own terms, applied here as well so a run the contract does
+  not answer is refused before anything is written rather than after; the ceilings
+  are not among them, because a result records what was observed and the crate is
+  what judges an observation against its maximum;
 * an obligation is attested only where the fixture's own log carries the marker
   for it (see ``ATTESTED_BY``), so ``exercised`` cannot be typed;
 * the run itself refuses to record a revision while the tree differs from it, and
@@ -37,8 +41,34 @@ before the run reports success:
   actually holds; and the clean build it cites has to have logged the revision the
   run records, because a log that names only the commands cannot be tied to the
   tree the figures came from.
+
+The terms a run is judged against — the platforms the contract applies to, the stop
+conditions it declares and the measurements it predeclares — are read from the
+committed contract document through one reader (``Contract``), so the driver keeps
+no copy of them: an invocation that names no contract and no platform is given the
+document's own, and either term is still refused below if the contract does not
+declare it. Two things the driver states rather than reads, and why nothing can read
+them for it: where the document lives (the crate names the same path in Rust, and
+nothing committed maps a contract id to its document) and which platform a run
+takes when none is named (the document lists applicability as a set, so the first
+platform it applies to is the order the document chose, not a term it declares).
+
+Where each concern lives, so a change lands in one place:
+
+* ``Contract`` — the terms a run is judged against, read from the document;
+* ``Session`` / ``open_session`` — where a run happens, and the one thing that
+  closes a session, kills its process group and removes its runtime directory;
+* ``observe_app`` — one app lifetime, sampled, with nothing decided about it;
+* ``measure`` — the sequence both entry points share: run it, sample it, clean up
+  after it, read its own log;
+* ``result_problems`` — what a result may not claim, asked of the contract;
+* ``merged_runs`` / ``publish`` / ``build_record`` — how this run's entries and the
+  evidence they cite reach the tree, and which revision they belong to;
+* ``run_xvfb`` / ``run_wayland`` — what one entry point adds to the shared sequence;
+* ``named_defaults`` / ``main`` — the terms an invocation left out, and the gate.
 """
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -54,6 +84,10 @@ SOCKET_NAME = 'symbiote-proof'
 MESA_EGL_ICD = '/usr/share/glvnd/egl_vendor.d/50_mesa.json'
 SAMPLE_SECONDS = 0.1
 CANCEL_GRACE_SECONDS = 5
+# Where the committed contract document lives: the one contract term this driver
+# states rather than asks for, because the crate names the same path in Rust
+# (``spike::CONTRACTS_PATH``) and no committed data maps a contract id to the
+# document that holds it. Every other term is read from the document itself.
 CONTRACTS_PATH = 'docs/architecture/spike-contracts.json'
 _RENDERERS = {}
 
@@ -217,6 +251,61 @@ def sample(table, members, started):
     }
 
 
+@dataclass
+class Session:
+    """The private session a run happens in, whoever started it.
+
+    One owner of the sequence both entry points share: a session is started where
+    it is described below, and ``close()`` is the only thing that kills its process
+    group, removes whatever private runtime directory it needed, and closes its
+    log — so neither entry point can leave a session behind.
+    """
+
+    kind: str
+    name: str
+    process: subprocess.Popen
+    env: dict
+    log: object
+    runtime: Path | None = None
+
+    def close(self):
+        if self.runtime is not None:
+            shutil.rmtree(self.runtime, ignore_errors=True)
+        if self.process.poll() is None:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self.process.wait(timeout=CANCEL_GRACE_SECONDS)
+        self.log.close()
+
+
+def open_session(args, artifacts):
+    """The private session this invocation runs in: Xvfb X11, or kwin Wayland."""
+    if args.session == 'xvfb':
+        return start_xvfb(artifacts)
+    return start_wayland(artifacts)
+
+
+def measure(session, artifacts, binary, log_name, seconds, cancel_after, trace):
+    """One app lifetime: run it, sample it, clean up after it, read its own log.
+
+    The sequence both entry points share, in one place, so a change to how a run is
+    observed or cleaned up lands once. ``survivors_before_cleanup`` is taken before
+    this function's own cleanup, because that is the figure the X11 record
+    publishes; ``cancellation`` is the cleanup record itself, and ``text`` is the
+    log the attestation is read from.
+    """
+    log_path = artifacts / log_name
+    code, elapsed, samples, seen, marks = observe_app(session.env, log_path, binary, seconds,
+                                                      cancel_after, trace)
+    survivors = survivors_of(seen, processes())
+    cleaned = cleanup(seen, [])
+    return {'log': log_path, 'log_name': log_name, 'code': code, 'elapsed': elapsed,
+            'samples': samples, 'marks': marks, 'survivors_before_cleanup': survivors,
+            'cancellation': cleaned, 'text': log_path.read_text()}
+
+
 def start_xvfb(artifacts):
     log = (artifacts / 'xvfb.log').open('w')
     read_fd, write_fd = os.pipe()
@@ -230,7 +319,7 @@ def start_xvfb(artifacts):
         raise RuntimeError('Xvfb failed to allocate display')
     env = os.environ | {'DISPLAY': display, 'GDK_BACKEND': 'x11'}
     env.pop('WAYLAND_DISPLAY', None)
-    return server, env, log, f'Xvfb {display}'
+    return Session(kind='xvfb', name=f'Xvfb {display}', process=server, env=env, log=log)
 
 
 def start_wayland(artifacts):
@@ -262,7 +351,8 @@ def start_wayland(artifacts):
         raise RuntimeError('the compositor never created its socket')
     version = subprocess.run(['kwin_wayland', '--version'], capture_output=True, text=True,
                              env=env).stdout.strip()
-    return compositor, env, log, runtime, f'{version} --virtual 1440x960, {renderer_of(env)}'
+    return Session(kind='wayland', name=f'{version} --virtual 1440x960, {renderer_of(env)}',
+                   process=compositor, env=env, log=log, runtime=runtime)
 
 
 def renderer_of(env):
@@ -485,14 +575,18 @@ def repo_path(path):
         return str(Path(path).resolve())
 
 
-def session_record(session, env, binary, runtime, compositor_log_bytes, build):
+def session_record(session, binary, compositor_log_bytes, build):
     """What this session was, so the figures carry their stack and its compromises.
 
     Two of the paths it records are ones the run does not keep: the session's
     private runtime directory, which the driver removes when the run ends, and the
     binary, which was built outside the tree and goes with the target directory it
     built into. Each says in place what a reader can still reach instead.
+
+    The session is read here rather than passed field by field, so what a session
+    was has one owner: ``Session``.
     """
+    env = session.env
     def tool(*command):
         try:
             return subprocess.run(command, capture_output=True, text=True,
@@ -500,8 +594,8 @@ def session_record(session, env, binary, runtime, compositor_log_bytes, build):
         except (OSError, IndexError, subprocess.SubprocessError):
             return 'not reported'
     return {
-        'session': session,
-        'runtime_dir': repo_path(runtime),
+        'session': session.name,
+        'runtime_dir': repo_path(session.runtime),
         'runtime_dir_note': 'the private XDG_RUNTIME_DIR this session started in, removed when the run ends; no figure is read from it',
         'wayland_display': env.get('WAYLAND_DISPLAY'),
         'display_unset': 'DISPLAY' not in env,
@@ -519,13 +613,60 @@ def session_record(session, env, binary, runtime, compositor_log_bytes, build):
     }
 
 
-def contract_of(path, identity):
-    """The contract a run measured, from the document the repository commits."""
-    document = json.loads(path.read_text())
-    for contract in document['contracts']:
-        if contract['id'] == identity:
-            return contract
-    raise SystemExit(f'no committed contract named {identity!r} in {path}')
+@dataclass(frozen=True)
+class Contract:
+    """The terms a run is judged against, read from the document that holds them.
+
+    The platforms a contract applies to, the stop conditions it declares and the
+    measurements it predeclares are the document's data, and this is the driver's
+    only view of them: every judgement below asks this object, so the driver cannot
+    answer with a copy of its own that drifts from the document the crate — which
+    reads the same file — refuses by. A contract declares a ceiling beside each
+    measurement and the driver carries none of them: it records what it observed,
+    and the crate is what judges an observation against its maximum.
+    """
+
+    id: str
+    applicable_platforms: tuple[str, ...]
+    stop_conditions: tuple[str, ...]
+    # The predeclared names, in the order the document declares them, because that
+    # order is the order a refusal about a silent measurement is reported in.
+    measurement_names: tuple[str, ...]
+
+    def applies_to(self, platform):
+        """Whether this contract is about a platform, spelled as the document spells it."""
+        return platform in self.applicable_platforms
+
+    def declares(self, stop_condition):
+        """Whether this contract declares a stop condition."""
+        return stop_condition in self.stop_conditions
+
+    @classmethod
+    def read(cls, path, identity):
+        """The named contract, from the document the repository commits."""
+        document = json.loads(Path(path).read_text())
+        for entry in document['contracts']:
+            if entry['id'] == identity:
+                return cls(entry['id'], tuple(entry['applicable_platforms']),
+                           tuple(entry['stop_conditions']),
+                           tuple(measurement['name'] for measurement in entry['measurements']))
+        raise SystemExit(f'no committed contract named {identity!r} in {path}')
+
+    @classmethod
+    def named_by_the_document(cls, path=CONTRACTS_PATH):
+        """The contract an invocation that names none gets: the document's own.
+
+        The command line still overrides both this and the platform it supplies, and
+        either is refused below if the contract does not declare it, so a default
+        cannot put a term into a result that the document never held.
+        """
+        path = REPO / path
+        document = json.loads(path.read_text())
+        return cls.read(path, document['contracts'][0]['id'])
+
+    def default_platform(self):
+        """The platform a run takes when none is named: the first one it applies to."""
+        return self.applicable_platforms[0]
 
 
 def uncommitted(text):
@@ -598,7 +739,7 @@ def untested_platforms(contract, runs):
     another invocation already recorded is not declared untested by this one.
     """
     measured = {platform_key(run['platform']) for run in runs}
-    return [platform for platform in contract['applicable_platforms']
+    return [platform for platform in contract.applicable_platforms
             if platform_key(platform) not in measured]
 
 
@@ -617,9 +758,9 @@ def merged_runs(path, contract, fingerprint, platform, entries):
     if not path.exists():
         return entries
     document = json.loads(path.read_text())
-    if document.get('contract') != contract['id']:
+    if document.get('contract') != contract.id:
         raise SystemExit(f'refusing to merge: {path} holds {document.get("contract")!r}, '
-                         f'not {contract["id"]!r}')
+                         f'not {contract.id!r}')
     if document.get('contract_sha256') != fingerprint:
         raise SystemExit(f'refusing to merge: {path} was measured against contract '
                          f'{document.get("contract_sha256")}, and this run answers {fingerprint}')
@@ -668,6 +809,10 @@ def figures_of(samples, cleaned, stats, build_seconds, memory=True):
 
     A traced run reports the timing figure only: its client logs every protocol
     message, so its memory figures are not the ones the contract predeclares.
+    Each name below is the computation that produces it — the contract predeclares
+    the names, not the arithmetic — and ``result_problems`` refuses a name the
+    contract does not predeclare before anything is written, so this copy cannot go
+    stale silently.
     """
     peak = max(samples, key=lambda row: row['sum_pss_kib'], default={})
     pss = peak.get('sum_pss_kib', 0)
@@ -692,35 +837,36 @@ def figures_of(samples, cleaned, stats, build_seconds, memory=True):
 
 
 def run_xvfb(args, artifacts, binary):
-    server, env, log, session = start_xvfb(artifacts)
+    """The X11 entry point: one measured lifetime, reported where the tool prints."""
+    session = open_session(args, artifacts)
+    measured = None
     try:
-        code, elapsed, samples, seen, marks = observe_app(
-            env, artifacts / 'app.log', binary,
-            35 if args.interact else args.seconds, 0, trace=False)
-        text = (artifacts / 'app.log').read_text()
-        probes_denied = all(f'PROOF_PREVIEW_REPORT {command}: denied' in text
+        measured = measure(session, artifacts, binary, 'app.log',
+                           35 if args.interact else args.seconds, 0, trace=False)
+        probes_denied = all(f'PROOF_PREVIEW_REPORT {command}: denied' in measured['text']
                             for command in ['snapshot', 'stop_ptys'])
         summary = {
             'platform': 'Linux Xvfb X11 only',
-            'session': session,
-            'app_exit': code,
-            'elapsed_seconds': elapsed,
-            'markers': marks,
+            'session': session.name,
+            'app_exit': measured['code'],
+            'elapsed_seconds': measured['elapsed'],
+            'markers': measured['marks'],
             'preview_self_reported_denials': probes_denied,
-            'max_sum_rss_kib': max((row['sum_rss_kib'] for row in samples), default=0),
-            'max_sum_pss_kib': max((row['sum_pss_kib'] for row in samples), default=0),
+            'max_sum_rss_kib': max((row['sum_rss_kib'] for row in measured['samples']), default=0),
+            'max_sum_pss_kib': max((row['sum_pss_kib'] for row in measured['samples']), default=0),
             'rss_caveat': 'RSS sum double-counts shared pages; PSS is reported beside it; Xvfb is instrumentation outside the app tree',
-            'observed_survivors_before_cleanup': survivors_of(seen, processes()),
-            'samples': samples,
+            'observed_survivors_before_cleanup': measured['survivors_before_cleanup'],
+            'samples': measured['samples'],
         }
         (artifacts / 'process-tree.json').write_text(json.dumps(summary, indent=2) + '\n')
         print(json.dumps({key: value for key, value in summary.items() if key != 'samples'}))
         print(artifacts)
-        if code or not probes_denied or 'PROOF_READY' not in text:
+        if measured['code'] or not probes_denied or 'PROOF_READY' not in measured['text']:
             raise SystemExit('Proof failure: inspect artifacts')
     finally:
-        print(json.dumps(cleanup(seen, [server])))
-        log.close()
+        session.close()
+        if measured is not None:
+            print(json.dumps(measured['cancellation']))
 
 
 def build_record(args, revision):
@@ -789,12 +935,12 @@ def result_problems(args, contract, runs):
     own log.
     """
     problems = []
-    if args.platform not in contract['applicable_platforms']:
+    if not contract.applies_to(args.platform):
         problems.append(f'{args.platform!r} is not a platform this contract applies to: '
-                        + ', '.join(contract['applicable_platforms']))
-    if args.stop_condition not in contract['stop_conditions']:
+                        + ', '.join(contract.applicable_platforms))
+    if not contract.declares(args.stop_condition):
         problems.append(f'{args.stop_condition!r} is not a stop condition this contract declares')
-    predeclared = [measurement['name'] for measurement in contract['measurements']]
+    predeclared = list(contract.measurement_names)
     observed = {figure['measurement'] for row in runs for figure in row['figures']}
     unknown = dict(unknown_of(args))
     for name in sorted(set(unknown) - set(predeclared)):
@@ -833,50 +979,48 @@ def result_runs(args, contract, runs, published, session, hardware, commit):
 
 
 def run_wayland(args, artifacts, binary, commit):
-    contract = contract_of(REPO / args.contracts, args.contract)
-    compositor, env, log, runtime, session = start_wayland(artifacts)
-    log.close()
+    """The Wayland entry point: two measured lifetimes, then the dossier."""
+    contract = Contract.read(REPO / args.contracts, args.contract)
+    session = open_session(args, artifacts)
     runs = []
     try:
         # Run 1: the app's own lifetime, with its protocol log captured, so the
         # first-frame figure comes from the client's own clock. The clean locked
         # build of this candidate happened before it, on the same commit and
         # hardware, so run 1 records and cites it.
-        code, elapsed, samples, seen, marks = observe_app(
-            env, artifacts / 'app-1.log', binary, args.seconds, 0, trace=True)
-        cleaned = cleanup(seen, [])
-        stats = trace_stats(artifacts / 'app-1.log')
-        figures, peak = figures_of(samples, None, stats, args.build_seconds, memory=False)
+        first = measure(session, artifacts, binary, 'app-1.log', args.seconds, 0, trace=True)
+        stats = trace_stats(first['log'])
+        figures, peak = figures_of(first['samples'], None, stats, args.build_seconds, memory=False)
         (artifacts / 'process-tree-1.json').write_text(json.dumps(
-            {'session': session, 'run': 1, 'app_exit': code, 'elapsed_seconds': elapsed,
-             'markers': marks, 'trace': stats, 'peak_sample': peak, 'samples': samples,
-             'cleaned_after_self_exit': cleaned}, indent=2) + '\n')
-        runs.append({'run': 1, 'code': code, 'elapsed': elapsed, 'marks': marks, 'figures': figures,
-                     'peak': peak, 'cancellation': cleaned,
-                     'exercised': attested((artifacts / 'app-1.log').read_text()),
+            {'session': session.name, 'run': 1, 'app_exit': first['code'],
+             'elapsed_seconds': first['elapsed'], 'markers': first['marks'], 'trace': stats,
+             'peak_sample': peak, 'samples': first['samples'],
+             'cleaned_after_self_exit': first['cancellation']}, indent=2) + '\n')
+        runs.append({'run': 1, 'code': first['code'], 'elapsed': first['elapsed'],
+                     'marks': first['marks'], 'figures': figures, 'peak': peak,
+                     'cancellation': first['cancellation'], 'exercised': attested(first['text']),
                      'cites': ['app-1.log', 'process-tree-1.json', 'session.json', 'cleanup.json',
                                'kwin.log'] + ([Path(args.build_log).name] if args.build_log else [])})
 
         # Run 2: the same workload, cancelled from under the driver, so the
         # cancellation figures are about a live tree rather than a reaped one.
-        code, elapsed, samples, seen, marks = observe_app(
-            env, artifacts / 'app-2.log', binary, 300, args.cancel_after, trace=False)
-        cleaned = cleanup(seen, [])
-        figures, peak = figures_of(samples, cleaned, None, None)
+        second = measure(session, artifacts, binary, 'app-2.log', 300, args.cancel_after,
+                         trace=False)
+        figures, peak = figures_of(second['samples'], second['cancellation'], None, None)
         (artifacts / 'process-tree-2.json').write_text(json.dumps(
-            {'session': session, 'run': 2, 'app_exit': code, 'elapsed_seconds': elapsed,
-             'markers': marks, 'cancellation': cleaned, 'peak_sample': peak,
-             'samples': samples}, indent=2) + '\n')
-        runs.append({'run': 2, 'code': code, 'elapsed': elapsed, 'marks': marks, 'figures': figures,
-                     'peak': peak, 'cancellation': cleaned,
-                     'exercised': attested((artifacts / 'app-2.log').read_text()),
-                     'notes': [peak_note(samples, peak)],
+            {'session': session.name, 'run': 2, 'app_exit': second['code'],
+             'elapsed_seconds': second['elapsed'], 'markers': second['marks'],
+             'cancellation': second['cancellation'], 'peak_sample': peak,
+             'samples': second['samples']}, indent=2) + '\n')
+        runs.append({'run': 2, 'code': second['code'], 'elapsed': second['elapsed'],
+                     'marks': second['marks'], 'figures': figures, 'peak': peak,
+                     'cancellation': second['cancellation'], 'exercised': attested(second['text']),
+                     'notes': [peak_note(second['samples'], peak)],
                      'cites': ['app-2.log', 'process-tree-2.json', 'session.json', 'cleanup.json',
                                'kwin.log']})
 
         (artifacts / 'session.json').write_text(json.dumps(
-            session_record(session, env, binary, runtime,
-                           (artifacts / 'kwin.log').stat().st_size,
+            session_record(session, binary, (artifacts / 'kwin.log').stat().st_size,
                            build_record(args, commit) if args.build_log else None), indent=2) + '\n')
         (artifacts / 'cleanup.json').write_text(json.dumps(
             {'run_1_after_self_exit': runs[0]['cancellation'],
@@ -897,7 +1041,8 @@ def run_wayland(args, artifacts, binary, commit):
         if args.build_log:
             sources.append(Path(args.build_log))
         published = publish(sources, REPO / args.publish / publish_slug(args.platform))
-        entries = result_runs(args, contract, runs, published, session, hardware_of(env), commit)
+        entries = result_runs(args, contract, runs, published, session.name,
+                              hardware_of(session.env), commit)
         merged = merged_runs(REPO / args.results, contract, args.contract_sha256, args.platform, entries)
         (REPO / args.results).write_text(json.dumps({
             'schema_version': 1,
@@ -913,13 +1058,22 @@ def run_wayland(args, artifacts, binary, commit):
                              + '\n  '.join(refusals))
         print('the ledger reports no refusals for the tree this run wrote')
     finally:
-        shutil.rmtree(runtime, ignore_errors=True)
-        if compositor.poll() is None:
-            try:
-                os.killpg(compositor.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            compositor.wait(timeout=CANCEL_GRACE_SECONDS)
+        session.close()
+
+
+def named_defaults(args):
+    """Fill in the contract terms an invocation left out, from the committed document.
+
+    Nothing here can introduce a term: the document names its own contract and the
+    platforms that contract applies to, and either value is refused below if the
+    contract does not declare it. An invocation that names both is not second-guessed,
+    so the document is read only when something is actually missing.
+    """
+    if args.contract is None or args.platform is None:
+        named = Contract.named_by_the_document(args.contracts)
+        args.contract = args.contract or named.id
+        args.platform = args.platform or named.default_platform()
+    return args
 
 
 def main():
@@ -937,8 +1091,10 @@ def main():
                         help='a clean locked build of this candidate, measured separately')
     parser.add_argument('--build-log', default=None, help='where that build wrote its log')
     parser.add_argument('--commit', default=None, help='the revision the binary was built from')
-    parser.add_argument('--platform', default='Linux Wayland on the reference compositor',
-                        help='the contract platform this run exercised; the rest are derived as untested')
+    parser.add_argument('--platform', default=None,
+                        help='the contract platform this run exercised, which the contract has to '
+                             'apply to; the rest are derived as untested (default: the first '
+                             'platform the contract document applies to)')
     parser.add_argument('--publish', default=None,
                         help='repository-relative root to publish the cited artifacts under, in a '
                              'directory per platform, so a second platform cannot overwrite the first')
@@ -946,7 +1102,9 @@ def main():
                         help='repository-relative result artifact to write')
     parser.add_argument('--contracts', default=CONTRACTS_PATH,
                         help='the committed contract document this run was measured against')
-    parser.add_argument('--contract', default='#38/desktop-shell-representative-workload')
+    parser.add_argument('--contract', default=None,
+                        help='the contract in the committed document this run was measured '
+                             'against (default: the document\'s own first contract)')
     parser.add_argument('--contract-sha256', default=None,
                         help='the fingerprint the contract document reaches; the ledger is what holds it')
     parser.add_argument('--stop-condition', default=None)
@@ -954,7 +1112,7 @@ def main():
                         help='measurement=reason pairs this run reports unknown rather than met')
     parser.add_argument('--limitation', nargs='*', default=[],
                         help='what this instrument cannot show, recorded with every run')
-    args = parser.parse_args()
+    args = named_defaults(parser.parse_args())
 
     if args.interact and (not shutil.which('xdotool') or not shutil.which('import')):
         raise SystemExit('Interaction capture requires installed xdotool and ImageMagick; no packages are installed automatically')
