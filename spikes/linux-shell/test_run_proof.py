@@ -11,6 +11,7 @@ dossier claim more than the run shows.
 """
 import argparse
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -124,6 +125,93 @@ class Publication(unittest.TestCase):
         self.assertEqual(run_proof.uncommitted(status), [])
         self.assertEqual(len(run_proof.uncommitted(status + ' M spikes/linux-shell/run-proof.py\n')), 1)
         self.assertEqual(len(run_proof.uncommitted('M  crates/symbiote-architecture/src/lib.rs\n')), 1)
+
+
+FINGERPRINT = 'f' * 64
+WAYLAND = 'Linux Wayland on the reference compositor'
+
+
+def dossier(runs, contract=CONTRACT['id'], fingerprint=FINGERPRINT):
+    return {'schema_version': 1, 'contract': contract, 'contract_sha256': fingerprint,
+            'untested_platforms': ['Linux X11'], 'runs': runs}
+
+
+def entry(platform, observed):
+    return {'platform': platform, 'version': 'v', 'hardware': 'h', 'commit': 'c' * 40,
+            'exercised': ['an attested obligation'], 'outcome': 'stop_condition_triggered',
+            'stop_condition': CONTRACT['stop_conditions'][0], 'failures': ['what it did not see'],
+            'observations': [{'measurement': 'cold_start_to_first_frame_seconds', 'observed': observed}],
+            'artifacts': [{'artifact': 'docs/proofs/results/desktop-shell/app.log', 'sha256': 'a' * 64}]}
+
+
+class Merge(unittest.TestCase):
+    """A dossier holds one contract's runs, and this driver runs one platform."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / 'desktop-shell.json'
+
+    def test_a_second_platform_leaves_the_firsts_recorded_run_intact(self):
+        wayland = entry(WAYLAND, 0.1)
+        self.path.write_text(json.dumps(dossier([wayland])))
+        x11 = entry('Linux X11', 0.2)
+        merged = run_proof.merged_runs(self.path, CONTRACT, FINGERPRINT, 'Linux X11', [x11])
+        self.assertEqual(merged[0], wayland, 'the first platform\'s run must survive a merge verbatim')
+        self.assertEqual(merged[1], x11)
+        self.assertEqual(run_proof.untested_platforms(CONTRACT, merged), [],
+                         'both platforms are measured once both have a run')
+
+    def test_a_platform_with_a_recorded_run_is_not_declared_untested(self):
+        self.assertEqual(run_proof.untested_platforms(CONTRACT, [entry(WAYLAND, 0.1)]), ['Linux X11'])
+        self.assertEqual(run_proof.untested_platforms(CONTRACT, []), CONTRACT['applicable_platforms'])
+
+    def test_rerunning_a_platform_replaces_only_its_own_entries(self):
+        wayland, old = entry(WAYLAND, 0.1), entry('Linux X11', 0.2)
+        self.path.write_text(json.dumps(dossier([wayland, old])))
+        fresh = entry('Linux X11', 0.3)
+        merged = run_proof.merged_runs(self.path, CONTRACT, FINGERPRINT, 'Linux X11', [fresh])
+        self.assertEqual([row for row in merged if row['platform'] == 'Linux X11'], [fresh])
+        self.assertEqual([row for row in merged if row['platform'] != 'Linux X11'], [wayland])
+
+    def test_a_dossier_of_another_contract_or_other_thresholds_is_refused(self):
+        self.path.write_text(json.dumps(dossier([], contract='SOME/OTHER')))
+        with self.assertRaises(SystemExit):
+            run_proof.merged_runs(self.path, CONTRACT, FINGERPRINT, 'Linux X11', [])
+        self.path.write_text(json.dumps(dossier([], fingerprint='e' * 64)))
+        with self.assertRaises(SystemExit):
+            run_proof.merged_runs(self.path, CONTRACT, FINGERPRINT, 'Linux X11', [])
+
+    def test_one_platforms_evidence_does_not_land_on_anothers(self):
+        self.assertNotEqual(run_proof.publish_slug(WAYLAND), run_proof.publish_slug('Linux X11'))
+        self.assertEqual(run_proof.publish_slug('Linux Wayland on the reference compositor'),
+                         'linux-wayland-on-the-reference-compositor')
+
+
+class Revision(unittest.TestCase):
+    """The revision a run records has to be the tree it ran in and built from."""
+
+    def test_a_clean_tree_at_the_recorded_revision_publishes(self):
+        self.assertEqual(run_proof.revision_problems('a' * 40, 'a' * 40, '?? a-new-file\n'), [])
+
+    def test_a_dirty_tree_or_another_revision_is_refused(self):
+        self.assertTrue(run_proof.revision_problems('a' * 40, 'a' * 40, ' M spikes/linux-shell/run-proof.py\n'))
+        self.assertTrue(run_proof.revision_problems('b' * 40, 'a' * 40, ''))
+
+    def test_the_build_log_has_to_name_the_revision_it_built(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'build.log'
+            log.write_text('+ npm run build\n   Compiling symbiote v0.1.0\n    Finished\n')
+            self.assertIsNone(run_proof.logged_revision(log.read_text()))
+            arguments = argparse.Namespace(build_log=str(log), build_seconds=1.0, publish=None,
+                                           platform='Linux X11')
+            with self.assertRaises(SystemExit):
+                run_proof.build_record(arguments, 'a' * 40)
+            log.write_text('+ git rev-parse HEAD\n' + 'a' * 40 + '\n+ npm run build\n')
+            record = run_proof.build_record(arguments, 'a' * 40)
+            self.assertEqual(record['revision'], 'a' * 40)
+            self.assertEqual(record['commands'], ['+ git rev-parse HEAD', '+ npm run build'])
+            with self.assertRaises(SystemExit):
+                run_proof.build_record(arguments, 'b' * 40)
 
 
 if __name__ == '__main__':

@@ -4,7 +4,7 @@ Status: experimental fixture, **not shell selection**. The integrating engineer 
 
 ## Reproduce
 
-From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples and an optional ImageMagick screenshot, checks observed survivor processes, and removes the server. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`. `python3 -m unittest test_run_proof` runs the rules that decide what a Wayland run may publish, and needs neither a session nor a binary.
+From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples and an optional ImageMagick screenshot, checks observed survivor processes, and removes the server. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`. `python3 -m unittest test_run_proof` runs the rules that decide what a Wayland run may publish, and needs neither a session nor a binary. A run that publishes a dossier records the revision it was built from, so the clean build it cites is logged with `git rev-parse HEAD` in the same `set -x` recipe.
 
 Pinned direct components: Tauri 2.11.5, tauri-build 2.6.3, portable-pty 0.9.0, Tauri JavaScript API 2.11.1, React 19.2.8, TypeScript 7.0.2, Vite 8.2.2, Monaco 0.56.0. Cargo/npm lockfiles retain the transitive resolution. Monaco's DOMPurify dependency is explicitly overridden to 3.4.15 because its upstream pin reports security advisories; the resulting npm audit reports zero vulnerabilities at preparation time. No system/global package or user application changes. Local prerequisite discovery: GTK 3.24.52 and WebKitGTK 2.52.6 available on the Linux host.
 
@@ -55,22 +55,23 @@ actually used, in `session.json`. That is a session compromise, not a change to 
 app: the committed contract's applicability names the *reference compositor*, and
 this run is on a virtual one.
 
-What the run observed on 2026-09-16, built from `6a6189ef` in a clean target
+What the run observed on 2026-09-16, built from `b11ae0b0` in a clean target
 directory outside the tree (kwin 6.7.5 virtual session at 1440×960, Mesa Intel(R)
-Graphics (RPL-P), 16 logical cores, 62 GiB RAM, NVMe storage). Each figure is
-re-checkable from the artifact the run cites for it:
+Graphics (RPL-P), 16 logical cores, 62 GiB RAM, NVMe storage), with the evidence
+under `results/desktop-shell/linux-wayland-on-the-reference-compositor/`. Each
+figure is re-checkable from the artifact the run cites for it:
 
 - **`cold_start_to_first_frame_seconds` 0.192** of a 3.0 ceiling: the first
   `wl_surface.commit()` after the client attached a buffer, timed from its first
-  request in `app-1.log`, which went on to commit 518 frames, the last at 25.138 s.
-- **`clean_locked_build_seconds` 60.875** of a 900 ceiling: `npm run build` and
-  `cargo build --locked --release` from an empty target directory, in a log that
-  names both commands because it was captured with `set -x`.
-- **`workload_process_tree_pss_mib` 505.944** of a 2560 ceiling and
-  **`unattributed_process_tree_memory_percent` 1.426** of a 5.0 ceiling: the peak
-  of 251 samples of the app tree's summed PSS (shell 92.4 MiB, three terminals
-  21.7 MiB, WebKit helpers 384.6 MiB, unattributed 7.2 MiB). The peak fell 0.621 s
-  into a 25.045 s window, which is a startup peak rather than a steady-state
+  request in `app-1.log`, which went on to commit 516 frames, the last at 25.153 s.
+- **`clean_locked_build_seconds` 64.242** of a 900 ceiling: `npm run build` and
+  `cargo build --locked --release` from an empty target directory, in a log
+  captured with `set -x` that names those commands and the revision it read.
+- **`workload_process_tree_pss_mib` 436.706** of a 2560 ceiling and
+  **`unattributed_process_tree_memory_percent` 1.693** of a 5.0 ceiling: the peak
+  of 251 samples of the app tree's summed PSS (shell 79.6 MiB, three terminals
+  21.7 MiB, WebKit helpers 328.0 MiB, unattributed 7.4 MiB). The peak fell 0.62 s
+  into a 25.043 s window, which is a startup peak rather than a steady-state
   figure; the run records where it fell with the figure instead of leaving a
   reader to guess, and 11 tree members were alive at it.
 - **`orphaned_processes_after_cancel` 0** and
@@ -95,8 +96,20 @@ runner refuses to publish a result whose platform the contract does not apply to
 whose stop condition the contract does not declare, which leaves a predeclared
 measurement neither observed nor named with its reason, or which attests an
 obligation no marker supports; the platforms this run did not exercise are derived
-from the contract's applicability rather than typed; and the artifact it wrote was
+from the runs the dossier holds rather than typed; and the artifact it wrote was
 read back by the ledger's own map, which reported no refusals for it.
+
+A dossier is one contract's, and this driver runs one platform at a time, so a run
+merges: another platform's recorded runs are kept exactly as they stand, this
+platform's own entries are replaced by what the invocation observed, and the
+untested list is the contract's applicability minus the platforms the dossier
+actually holds — a platform whose run is recorded cannot be left declared untested.
+Each platform publishes its evidence into its own directory under the artifact's,
+so a second platform's app and session logs cannot overwrite the first's. A dossier
+of another contract, or one measured against other thresholds, is refused rather
+than merged into. The revision a run records has to be the tree it ran in — clean,
+at `HEAD` — and the recipe it cites has to have logged the same revision, because a
+build log that names only its commands cannot be tied to a tree.
 
 Nothing here settles #38. Three of the contract's four platforms are declared
 untested in the result artifact, and the workload exercised is the prepared
