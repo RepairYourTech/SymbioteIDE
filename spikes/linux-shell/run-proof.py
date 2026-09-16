@@ -57,6 +57,16 @@ CANCEL_GRACE_SECONDS = 5
 CONTRACTS_PATH = 'docs/architecture/spike-contracts.json'
 _RENDERERS = {}
 
+# Paths this driver records and does not keep, dotted where they are nested. A
+# reader following the provenance has to land on something that still exists, so
+# each of these is recorded beside what outlives it — the binary beside the hash
+# that identifies it, the build log beside the committed copy of the same bytes —
+# and the one with nothing to reach, the session's private runtime directory, says
+# in place that the driver removes it. ``test_run_proof.py`` holds both
+# directions: a declared path says what replaces it, and a path the record cannot
+# read back has to be declared.
+UNKEPT_PATHS = ('runtime_dir', 'binary', 'build.log')
+
 # The contract obligations this fixture's own log can attest, the marker the
 # fixture emits for each, and how many of them one run has to show. An
 # attestation is read from the app's log and never from the command line, so an
@@ -81,11 +91,13 @@ def attested(log_text):
 
 
 def processes():
-    """Every process this run can see: parentage, identity and name, one read each.
+    """Every process this run can see: parentage, identity, name and state, one read each.
 
     Only ``/proc/<pid>/stat`` is read per process, because the 100 ms sampling the
     contract's method asks for cannot afford the rest; the memory fields a member
-    needs are read for the tree's own members, and by nobody else.
+    needs are read for the tree's own members, and by nobody else. The state comes
+    from the same line, and is what separates a process that is running from a
+    ``/proc`` entry that outlived one.
     """
     result = {}
     for path in Path('/proc').glob('[0-9]*/stat'):
@@ -98,6 +110,7 @@ def processes():
                 'name': name,
                 'ppid': int(fields[1]),
                 'start_ticks': int(fields[19]),
+                'state': fields[0],
             }
         except (OSError, ValueError, IndexError):
             continue
@@ -320,16 +333,51 @@ def observe_app(env, log_path, binary, seconds, cancel_after, trace):
     return app.returncode, round(time.monotonic() - started, 3), samples, seen, marks
 
 
+# The states a ``/proc`` entry can have after the process it described has exited
+# and before its parent reaps it. Such an entry runs nothing and owns no socket,
+# so it is not a survivor; it is still not nothing, and the cleanup record names
+# it instead of letting a survivor count either absorb it or lose it.
+EXITED_STATES = 'ZX'
+
+
+def observed_in(seen, table):
+    """The identities this run observed that ``table`` still lists, and their state.
+
+    Identity is the pid *and* the birth ticks: a pid the kernel has reused is not
+    the process this run saw, so a reused pid is absent here rather than counted.
+    """
+    return {pid: table[pid]['state'] for pid, ticks in seen.items()
+            if pid in table and table[pid]['start_ticks'] == ticks}
+
+
 def survivors_of(seen, table):
-    return sorted(pid for pid, ticks in seen.items()
-                  if pid in table and table[pid]['start_ticks'] == ticks)
+    """The processes this run observed that are still running, by identity.
+
+    ``0 surviving processes`` has to mean nothing is left running, so an entry that
+    has exited but was never reaped is excluded rather than counted.
+    """
+    return sorted(pid for pid, state in observed_in(seen, table).items()
+                  if state not in EXITED_STATES)
+
+
+def unreaped_of(seen, table):
+    """The identities this run observed whose ``/proc`` entry outlived them."""
+    return sorted(pid for pid, state in observed_in(seen, table).items()
+                  if state in EXITED_STATES)
 
 
 def cleanup(seen, sessions):
-    """Kill only the identities this run observed, then report what remains."""
+    """Kill only the identities this run observed, then report what remains.
+
+    ``survivors_after_cancel_request`` counts processes still running when the
+    cancel request was made, ``unreaped_observed_pids`` names the ones the kernel
+    still listed after they exited, and ``remaining_observed_pids`` counts what is
+    running after this function's own kill.
+    """
     live = processes()
     after_request = survivors_of(seen, live)
     ports_after_request = listening_ports(after_request)
+    unreaped = unreaped_of(seen, live)
     killed = []
     for pid in after_request:
         try:
@@ -354,6 +402,7 @@ def cleanup(seen, sessions):
         'listening_ports_after_cancel_request': ports_after_request,
         'killed_observed_pids': killed,
         'remaining_observed_pids': remaining,
+        'unreaped_observed_pids': unreaped,
     }
 
 
@@ -437,7 +486,13 @@ def repo_path(path):
 
 
 def session_record(session, env, binary, runtime, compositor_log_bytes, build):
-    """What this session was, so the figures carry their stack and its compromises."""
+    """What this session was, so the figures carry their stack and its compromises.
+
+    Two of the paths it records are ones the run does not keep: the session's
+    private runtime directory, which the driver removes when the run ends, and the
+    binary, which was built outside the tree and goes with the target directory it
+    built into. Each says in place what a reader can still reach instead.
+    """
     def tool(*command):
         try:
             return subprocess.run(command, capture_output=True, text=True,
@@ -446,7 +501,8 @@ def session_record(session, env, binary, runtime, compositor_log_bytes, build):
             return 'not reported'
     return {
         'session': session,
-        'runtime_dir': str(runtime),
+        'runtime_dir': repo_path(runtime),
+        'runtime_dir_note': 'the private XDG_RUNTIME_DIR this session started in, removed when the run ends; no figure is read from it',
         'wayland_display': env.get('WAYLAND_DISPLAY'),
         'display_unset': 'DISPLAY' not in env,
         'egl_vendor_icd_pinned': env.get('__EGL_VENDOR_LIBRARY_FILENAMES'),
@@ -455,6 +511,7 @@ def session_record(session, env, binary, runtime, compositor_log_bytes, build):
         'compositor_log_note': 'the compositor writes nothing to the stream this run captures, so the display log is empty and is not cited as evidence; the session it started is recorded here instead',
         'binary': repo_path(binary),
         'binary_sha256': sha256_of(binary),
+        'binary_note': 'built into a fresh target directory outside this tree to measure a clean locked build, and not kept; binary_sha256 is the identity a later pass checks',
         'rustc': tool('rustc', '--version'),
         'cargo': tool('cargo', '--version'),
         'hardware': hardware_of(env),
@@ -691,6 +748,12 @@ def build_record(args, revision):
         # The build log is written outside the tree, where nothing durable holds
         # it: the copy the result cites is the record a later pass can re-hash.
         record['published_log'] = str(Path(args.publish) / publish_slug(args.platform) / log.name)
+        record['log_note'] = ('`log` is where the build wrote this outside the tree and goes with the '
+                              'target directory it built into; `published_log` is the committed copy '
+                              'of the same bytes, and is what log_sha256 re-hashes')
+    else:
+        record['log_note'] = ('`log` is outside this tree and this invocation asked for no published '
+                              'copy, so the bytes it names are not kept')
     return record
 
 
@@ -835,7 +898,6 @@ def run_wayland(args, artifacts, binary, commit):
             sources.append(Path(args.build_log))
         published = publish(sources, REPO / args.publish / publish_slug(args.platform))
         entries = result_runs(args, contract, runs, published, session, hardware_of(env), commit)
-        (artifacts / 'results-draft.json').write_text(json.dumps(entries, indent=2) + '\n')
         merged = merged_runs(REPO / args.results, contract, args.contract_sha256, args.platform, entries)
         (REPO / args.results).write_text(json.dumps({
             'schema_version': 1,
