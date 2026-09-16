@@ -214,6 +214,18 @@ class ResultRules(unittest.TestCase):
         found = self.problems(runs=[run(['cold_start_to_first_frame_seconds'], [])])
         self.assertTrue(any('attests no obligation' in problem for problem in found), found)
 
+    def test_a_platform_this_session_cannot_be_is_refused(self):
+        """The session bears the platform a result records; the invocation supplies the label."""
+        for platform in ('macOS 14 arm64', 'Windows 11 x86_64', 'Linux X11'):
+            with self.subTest(platform=platform):
+                self.assertTrue(run_proof.platform_problems(platform, 'wayland', 'Linux'),
+                                f'{platform} is not a platform a Wayland session on Linux can be')
+        self.assertEqual(
+            run_proof.platform_problems('Linux Wayland on the reference compositor', 'wayland', 'Linux'),
+            [], 'the platform this session can be is still accepted')
+        self.assertEqual(run_proof.platform_problems('Suite One', 'wayland', 'Linux'), [],
+                         'a label naming neither fact is not contradicted from here')
+
 
 class Publication(unittest.TestCase):
     def test_an_artifact_that_recorded_nothing_is_not_published(self):
@@ -866,6 +878,46 @@ class MainEntryPoint(unittest.TestCase):
                 self.assertFalse(case.publish.exists(), 'an artifact directory was published')
                 self.assertFalse(case.dossier.exists(), 'a dossier was written')
 
+    def test_a_platform_the_session_cannot_be_is_refused_through_main(self):
+        """A kwin Wayland session on this host cannot publish a run for macOS, Windows or X11.
+
+        Before this rule the invocation's word was all there was: the dossier recorded
+        the platform, the untested list the ledger reads was derived from it, and the
+        crate cannot catch it because the platform is a string inside the result.
+        """
+        for platform in ('macOS 14 arm64', 'Windows 11 x86_64', 'Linux X11'):
+            with self.subTest(platform=platform):
+                case = self.__class__('test_a_run_that_supports_its_result_publishes_it_through_main')
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                with self.assertRaises(SystemExit) as caught:
+                    case.drive(case.arguments('--platform', platform))
+                self.assertIn(platform, str(caught.exception))
+                self.assertEqual(case.records(), [], 'a run started under a platform it cannot be')
+                self.assertFalse(case.publish.exists(), 'an artifact directory was published')
+                self.assertFalse(case.dossier.exists(), 'a dossier was written')
+
+    def test_the_session_record_carries_what_the_platform_has_to_name(self):
+        self.drive(self.arguments())
+        document = json.loads(self.dossier.read_text())
+        platform = document['runs'][0]['platform']
+        sessions = [Path(item['artifact']) for item in document['runs'][0]['artifacts']
+                    if item['artifact'].endswith('session.json')]
+        self.assertTrue(sessions, 'the run cites the session record it was measured in')
+        record = json.loads(sessions[0].read_text())
+        self.assertEqual(record['display'], 'Wayland')
+        self.assertEqual(record['system'], run_proof.host_system())
+        self.assertEqual(run_proof.platform_problems(platform, 'wayland', record['system']), [])
+
+    def test_a_condition_is_recorded_as_the_declaration_it_is(self):
+        self.drive(self.arguments())
+        for row in json.loads(self.dossier.read_text())['runs']:
+            self.assertEqual(row['stop_condition'], self.contract.stop_conditions[0])
+            self.assertIn('declares', row['stop_condition_note'],
+                          'which condition a run tripped is the operator\'s statement, and says so')
+            self.assertIn(row['stop_condition'], row['failures'],
+                          'the condition stays beside the facts a reader compares it with')
+
     def test_a_build_figure_with_its_log_records_the_tree_that_log_names(self):
         head = subprocess.run(['git', '-C', str(run_proof.REPO), 'rev-parse', 'HEAD'],
                               capture_output=True, text=True).stdout.strip()
@@ -1033,6 +1085,34 @@ class UnkeptPaths(unittest.TestCase):
             self.assertEqual(dotted in run_proof.UNKEPT_PATHS, not located.exists(),
                              f'{dotted} = {value}: declared unkept={dotted in run_proof.UNKEPT_PATHS}, '
                              f'and it can be read={located.exists()}')
+
+
+class CommittedResult(unittest.TestCase):
+    """The committed dossier's own platform, against the session record it cites.
+
+    The result artifact is the only thing a later pass reads, and its platform used to
+    be the invocation's word alone. This holds the committed one to the rule the driver
+    now applies: the platform it names is one the session record beside it substantiates.
+    That record predates the ``system`` field, so the operating-system side is read from
+    the machine this suite runs on — Linux here and in CI — while the display side is
+    read from the record itself.
+    """
+
+    def test_the_committed_platform_is_one_its_session_record_substantiates(self):
+        document = json.loads((run_proof.REPO / 'docs/proofs/results/desktop-shell.json').read_text())
+        contract = run_proof.Contract.read(run_proof.REPO / run_proof.CONTRACTS_PATH)
+        for row in document['runs']:
+            self.assertIn(row['platform'], contract.applicable_platforms)
+            records = [run_proof.REPO / item['artifact'] for item in row['artifacts']
+                       if item['artifact'].endswith('session.json')]
+            self.assertTrue(records, 'a run cites the session record it was measured in')
+            session = json.loads(records[0].read_text())
+            self.assertTrue(session.get('wayland_display'),
+                            'the record shows the display server the platform has to name')
+            self.assertEqual(
+                run_proof.platform_problems(row['platform'], 'wayland',
+                                            session.get('system', run_proof.host_system())),
+                [], f"{row['platform']} is not one the session record beside it substantiates")
 
 
 if __name__ == '__main__':
