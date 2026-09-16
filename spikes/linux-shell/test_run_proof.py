@@ -785,6 +785,20 @@ class MainEntryPoint(unittest.TestCase):
         self.assertFalse(self.publish.exists())
         self.assertFalse(self.dossier.exists())
 
+    def test_an_x11_run_that_asks_for_a_result_is_refused(self):
+        """The X11 entry point measures a session no contract applies to, so it never publishes.
+
+        The path prints its own summary and writes its own ignored records; what it cannot do
+        is contribute a run to a contract, and an invocation that asks for a result artifact
+        used to get silence and exit 0 instead of being told that.
+        """
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments(session='xvfb'))
+        self.assertIn('Linux Xvfb X11 only', str(caught.exception))
+        self.assertEqual(self.records(), [], 'an Xvfb run started before it was refused')
+        self.assertFalse(self.publish.exists(), 'an artifact directory was published')
+        self.assertFalse(self.dossier.exists(), 'a dossier was written')
+
     def test_the_x11_entry_point_writes_only_its_own_records(self):
         self.drive(self.arguments(results=False, session='xvfb'))
         self.assertIn('process-tree.json', self.records())
