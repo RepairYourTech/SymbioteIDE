@@ -904,7 +904,9 @@ class MainEntryPoint(unittest.TestCase):
         sessions = [Path(item['artifact']) for item in document['runs'][0]['artifacts']
                     if item['artifact'].endswith('session.json')]
         self.assertTrue(sessions, 'the run cites the session record it was measured in')
-        record = json.loads(sessions[0].read_text())
+        record = run_proof.read_session_record(sessions[0])
+        self.assertEqual(record['schema_version'], run_proof.SESSION_SCHEMA_VERSION,
+                         'the record declares the shape it is, so a reader reads it there')
         self.assertEqual(record['display'], 'Wayland')
         self.assertEqual(record['system'], run_proof.host_system())
         self.assertEqual(run_proof.platform_problems(platform, 'wayland', record['system']), [])
@@ -1087,17 +1089,76 @@ class UnkeptPaths(unittest.TestCase):
                              f'and it can be read={located.exists()}')
 
 
+class SessionRecordVersion(unittest.TestCase):
+    """A session record's shape is the version it declares, not what a reader assumes.
+
+    The committed record's fields used to be dated by a paragraph in the shell proof,
+    and a re-recording would have had to move that paragraph by hand. The version is
+    in the artifact now: this holds both directions — a shape that is not the one it
+    names is refused, and a version this reader does not know is refused by name —
+    while a record written before there was a version still reads.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def written(self):
+        """The shape the driver writes: what version 1 added, plus its declaration."""
+        return {'schema_version': run_proof.SESSION_SCHEMA_VERSION, 'display': 'Wayland',
+                'system': 'Linux'}
+
+    def read(self, record):
+        path = self.root / 'session.json'
+        path.write_text(json.dumps(record))
+        return run_proof.read_session_record(path)
+
+    def test_the_record_declares_the_shape_it_is(self):
+        self.assertEqual(self.read(self.written())['schema_version'],
+                         run_proof.SESSION_SCHEMA_VERSION)
+
+    def test_a_version_this_reader_does_not_know_is_refused_by_name(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.read({**self.written(), 'schema_version': run_proof.SESSION_SCHEMA_VERSION + 1})
+        self.assertIn('declares schema version 2', str(caught.exception))
+        self.assertIn(f'reads version {run_proof.SESSION_SCHEMA_VERSION}', str(caught.exception))
+
+    def test_a_record_declaring_no_version_is_read_as_the_shape_before_it(self):
+        before = {'wayland_display': 'symbiote-proof', 'session': 'kwin 6.7.5 --virtual'}
+        self.assertEqual(self.read(before), before, 'the committed run\'s record is this shape')
+
+    def test_a_record_missing_what_the_version_it_declares_added_is_refused(self):
+        short = {'schema_version': run_proof.SESSION_SCHEMA_VERSION, 'display': 'Wayland'}
+        with self.assertRaises(SystemExit) as caught:
+            self.read(short)
+        self.assertIn("'system'", str(caught.exception))
+
+    def test_a_record_carrying_what_a_later_version_added_is_refused(self):
+        """The shape a version names is not a number to stamp on any record."""
+        carrying = {'wayland_display': 'symbiote-proof', 'display': 'Wayland', 'system': 'Linux'}
+        with self.assertRaises(SystemExit) as caught:
+            self.read(carrying)
+        self.assertIn('which version 1 added', str(caught.exception))
+
+    def test_a_record_that_is_not_a_record_is_refused_by_name(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.read(['wayland_display'])
+        self.assertIn('not a record', str(caught.exception))
+
+
 class CommittedResult(unittest.TestCase):
     """The committed dossier's own platform, against the session record it cites.
 
     The result artifact is the only thing a later pass reads, and its platform used to
     be the invocation's word alone. This holds the committed one to the rule the driver
     now applies: the platform it names is one the session record beside it substantiates.
-    That record predates the ``system`` field, so the operating-system side is read from
-    the machine this suite runs on — Linux here and in CI — while the display side is
-    read from the record itself. The record predates both fields, and the paragraph in
-    ``docs/proofs/linux-shell.md`` says which fields it does carry instead; the pin below
-    is what makes those two sentences move together rather than drift apart.
+    That record declares no schema version, so it is the shape written before version 1
+    added ``display`` and ``system``: the operating-system side is read from the machine
+    this suite runs on — Linux here and in CI — and the display side from the record
+    itself, read through the driver's own reader rather than from a shape this test
+    assumes. The pin on the declaration is what makes the paragraph in
+    ``docs/proofs/linux-shell.md`` move with a re-recording.
     """
 
     def test_the_committed_platform_is_one_its_session_record_substantiates(self):
@@ -1108,15 +1169,14 @@ class CommittedResult(unittest.TestCase):
             records = [run_proof.REPO / item['artifact'] for item in row['artifacts']
                        if item['artifact'].endswith('session.json')]
             self.assertTrue(records, 'a run cites the session record it was measured in')
-            session = json.loads(records[0].read_text())
+            session = run_proof.read_session_record(records[0])
             self.assertTrue(session.get('wayland_display'),
                             'the record shows the display server the platform has to name')
-            for field in ('display', 'system'):
-                self.assertNotIn(
-                    field, session,
-                    f'the committed record predates the {field!r} field the runner now writes, and '
-                    'the paragraph in docs/proofs/linux-shell.md says which fields it carries '
-                    'instead: a re-recording has to move that paragraph with this pin')
+            self.assertNotIn(
+                'schema_version', session,
+                'the committed record declares no schema version, so it is the shape written '
+                'before version 1 added display and system: a re-recording declares version 1 '
+                'instead, and the paragraph in docs/proofs/linux-shell.md moves with this pin')
             self.assertEqual(
                 run_proof.platform_problems(row['platform'], 'wayland',
                                             session.get('system', run_proof.host_system())),
