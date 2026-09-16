@@ -821,6 +821,34 @@ fn a_contract_document_of_an_unknown_schema_version_is_refused() {
 }
 
 #[test]
+fn a_contract_document_of_the_shape_before_the_bar_moved_is_refused_naming_what_moved() {
+    // The shape changed incompatibly while the version stayed 1, so the refusal
+    // has to say what moved rather than only which field is missing: a caller
+    // holding the old document is told where the section went and that there is
+    // no second version to wait for.
+    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
+    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
+    let contract = value["contracts"][0]
+        .as_object_mut()
+        .expect("the fixture's contract object");
+    let answered = contract.remove("answers").expect("the fixture's answers");
+    contract.insert(
+        "obligations".into(),
+        json!({ "section": SECTION, "answered": answered }),
+    );
+    fixture.write(CONTRACTS_PATH, &value);
+    let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
+        .expect_err("the shape this loader read before the bar moved is refused");
+    assert!(
+        error
+            .0
+            .contains("the section moved to the choice's record as `proof_section`"),
+        "{error}"
+    );
+    assert!(error.0.contains("version 1 absorbs that move"), "{error}");
+}
+
+#[test]
 fn a_contract_document_with_an_unknown_field_or_no_contract_is_refused() {
     let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
     fixture.write(

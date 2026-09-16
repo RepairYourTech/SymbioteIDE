@@ -252,7 +252,8 @@ impl Contracts {
             ContractError(format!("spike contracts {}: {error}", path.display()))
         })?;
         let contracts: Contracts = serde_json::from_str(&source).map_err(|error| {
-            ContractError(format!("spike contracts {}: {error}", path.display()))
+            let detail = moved_shape(&source).unwrap_or_else(|| error.to_string());
+            ContractError(format!("spike contracts {}: {detail}", path.display()))
         })?;
         require(
             contracts.schema_version == CONTRACTS_SCHEMA_VERSION,
@@ -282,6 +283,30 @@ impl Contracts {
     pub fn holds(&self, id: &str) -> bool {
         self.contract(id).is_some()
     }
+}
+
+/// A contract document of the shape this loader read before the bar moved, named
+/// rather than reported as the field it is missing.
+///
+/// A contract no longer carries the section it answers: the section belongs to
+/// the choice's record, which names it as `proof_section`, and what answers each
+/// clause of it stayed here as `answers`. Version 1 absorbs that move rather than
+/// pretending to a history — no contract document exists outside this repository
+/// and only this crate reads the one in it, so there is nothing to migrate — the
+/// same reconciliation the result schema recorded when its own shape changed.
+fn moved_shape(source: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(source).ok()?;
+    let stale =
+        value.get("contracts")?.as_array()?.iter().any(|contract| {
+            contract.get("obligations").is_some() && contract.get("answers").is_none()
+        });
+    stale.then(|| {
+        "it is the shape this loader read before the bar moved — a contract carrying `obligations` and no \
+         `answers`: the section moved to the choice's record as `proof_section`, and what answers each clause \
+         is now the contract's `answers`, while version 1 absorbs that move because no contract document \
+         exists outside this repository, so rewrite the document rather than expecting a second version"
+            .to_string()
+    })
 }
 
 /// How one run ended against the contract it was measured under.
