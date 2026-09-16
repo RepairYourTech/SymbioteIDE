@@ -4,7 +4,11 @@
 //!
 //! A contract is predeclared — hypothesis, workload, applicable platforms,
 //! thresholds, stop conditions and cleanup — so nothing can choose its bar after
-//! measuring. [`Contracts`] holds the committed document; [`Results`] holds the
+//! measuring. The bar itself is not the contract's to state: [`Obligations`]
+//! names the section of the decision's accepted record that says what a proof of
+//! that choice must do, and answers every clause of it, so a contract cannot
+//! carry a smaller bar than the one its choice was accepted with.
+//! [`Contracts`] holds the committed document; [`Results`] holds the
 //! runs that would settle it, and each [`Run`] says which platform and version it
 //! exercised, on what hardware and revision, which of the contract's obligations
 //! it actually ran, what it measured, which raw artifacts it published and which
@@ -31,6 +35,69 @@ pub struct Measurement {
     pub unit: String,
     pub maximum: f64,
 }
+
+/// Where a contract's bar comes from, and what answers each clause of it.
+///
+/// A contract cannot state its own bar: the obligations a choice is settled
+/// against are the ones its decision was accepted with, so they are read from
+/// the accepted record's own section rather than restated here. The contract
+/// names that section and answers every clause it states, which is what stops a
+/// pass from shrinking the bar by editing this file alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Obligations {
+    /// The heading of the section of the decision's accepted record — the text
+    /// the ledger pins by SHA-256 — that states the bar.
+    pub section: String,
+    /// One entry per clause the section states. The clauses themselves are the
+    /// record's, in its order, so nothing here is quoted: what is here is what
+    /// answers each of them.
+    pub answered: Vec<Answered>,
+}
+
+/// What answers one clause of the accepted bar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Answered {
+    /// The clause's position in the section, counting from one.
+    pub clause: usize,
+    /// The obligation this contract declares that answers it, named exactly as
+    /// the contract names it: present when the clause is about the workload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obligation: Option<String>,
+    /// The part of the contract that answers it, where the clause is about how
+    /// the proof is run rather than what it exercises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<Part>,
+    /// The issue that owns the clause, where this contract's workload and
+    /// method do not carry it. The accepted bar is wider than any one contract,
+    /// and saying which clauses are not this contract's is part of answering it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elsewhere: Option<Elsewhere>,
+}
+
+/// A clause that belongs to the decision's wider proof rather than to this
+/// contract's workload: the issue that owns it, and why this contract is not
+/// where it is carried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Elsewhere {
+    /// The issue the decision names, which owns the clause.
+    pub issue: u64,
+    /// Why this contract does not carry it.
+    pub why: String,
+}
+
+/// The parts of a contract a clause can be answered by where it is about how
+/// the proof is run: the method a run follows, and the ceilings it is measured
+/// against. Everything else is an obligation or another issue's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Part {
+    Method,
+    Measurements,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpikeContract {
@@ -38,6 +105,9 @@ pub struct SpikeContract {
     pub id: String,
     pub decision: String,
     pub hypothesis: String,
+    /// The obligations a run of this contract must exercise, each tagged with
+    /// the issue it belongs to. Every one of them answers a clause of the
+    /// accepted bar named in [`SpikeContract::obligations`].
     pub workload: Vec<String>,
     /// The platforms this contract applies to, as data rather than as a sentence:
     /// a settlement has to account for every one of them, and prose cannot be
@@ -50,6 +120,10 @@ pub struct SpikeContract {
     pub stop_conditions: Vec<String>,
     pub result_artifact: String,
     pub cleanup: String,
+    /// The accepted bar this contract answers, and what answers each clause of
+    /// it. A clause answered by nothing is refused where the record is read;
+    /// an obligation that answers nothing is refused here.
+    pub obligations: Obligations,
 }
 impl SpikeContract {
     pub fn validate(&self) -> Result<()> {
@@ -103,6 +177,63 @@ impl SpikeContract {
                 "invalid or duplicate measurement threshold",
             )?;
         }
+        self.answered_bar()
+    }
+
+    /// The accepted bar, answered. Every clause of the record's section is
+    /// answered by an obligation this contract declares, by its method or its
+    /// ceilings, or by the issue that owns it elsewhere; and every obligation
+    /// this contract declares answers a clause, so the contract cannot widen
+    /// the bar beyond the one its decision was accepted with either.
+    fn answered_bar(&self) -> Result<()> {
+        require(
+            text(&self.obligations.section) && !self.obligations.answered.is_empty(),
+            "the accepted bar this contract answers must name the section it comes from",
+        )?;
+        let declared: Vec<&String> = self.workload.iter().chain(&self.stop_conditions).collect();
+        let mut answered: BTreeSet<&str> = BTreeSet::new();
+        for answer in &self.obligations.answered {
+            let carried = [
+                answer.obligation.is_some(),
+                answer.part.is_some(),
+                answer.elsewhere.is_some(),
+            ]
+            .iter()
+            .filter(|present| **present)
+            .count();
+            require(
+                carried == 1,
+                format!(
+                    "clause {} of the accepted bar is answered by one obligation, one part or one issue, not {carried} of them",
+                    answer.clause
+                ),
+            )?;
+            if let Some(obligation) = &answer.obligation {
+                require(
+                    declared.contains(&obligation),
+                    format!(
+                        "clause {} is answered by {obligation:?}, which this contract does not declare",
+                        answer.clause
+                    ),
+                )?;
+                answered.insert(obligation.as_str());
+            }
+            if let Some(elsewhere) = &answer.elsewhere {
+                require(
+                    text(&elsewhere.why),
+                    format!(
+                        "clause {} says #{} owns it and does not say why this contract does not",
+                        answer.clause, elsewhere.issue
+                    ),
+                )?;
+            }
+        }
+        require(
+            declared
+                .iter()
+                .all(|obligation| answered.contains(obligation.as_str())),
+            "this contract declares an obligation that answers no clause of the accepted bar, so it states a bar wider than the one its decision was accepted with",
+        )?;
         Ok(())
     }
 }
@@ -567,6 +698,42 @@ fn platform_key(value: &str) -> String {
 fn revision(value: &str) -> bool {
     let value = value.trim();
     (7..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The text of one section of a record: what follows its `## ` heading, up to
+/// the next heading. `None` where the record does not state that section, so a
+/// bar named from a heading nobody wrote is refused rather than read as empty.
+pub fn section(text: &str, heading: &str) -> Option<String> {
+    let mut inside = false;
+    let mut body = String::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("## ") {
+            inside = name.trim() == heading.trim();
+            continue;
+        }
+        if inside {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    let body = body.trim();
+    (!body.is_empty()).then(|| body.to_string())
+}
+
+/// The clauses one section states: a sentence and a semicolon each end one,
+/// because that is how the accepted text enumerates what a proof must do. The
+/// split is the record's punctuation and nothing else — a clause is the text
+/// itself, so nothing here can quietly decide the bar is smaller.
+pub fn clauses(section: &str) -> Vec<String> {
+    section
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_inclusive('.')
+        .flat_map(|sentence| sentence.split(';'))
+        .map(|clause| clause.trim().to_string())
+        .filter(|clause| !clause.is_empty())
+        .collect()
 }
 
 /// The fingerprint of a contract: the SHA-256 of its own canonical JSON, so a
