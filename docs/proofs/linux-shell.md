@@ -1,10 +1,10 @@
 # Linux Tauri shell proof — #38
 
-Status: experimental fixture, **not shell selection**. The integrating engineer authorized execution after independently reviewed foundation PR #473 merged at `a15368c1744fdff3c186dda11f24714d738c7efe` with stable/MSRV/roadmap checks passing. This isolated spike does not alter the production workspace. Baseline: merged #472 and ADR-0001. It is a deliberately partial workload; an Xvfb run cannot pass the complete #38 contract, which is committed as data in [`spike-contracts.json`](../architecture/spike-contracts.json) with its predeclared ceilings, stop conditions and cleanup. That contract does not state its own bar, and does not choose it either: the [decision ledger's](../architecture/decisions.json) record for the shell choice names the "Proof contract and stop conditions" section of [ADR-0001](../architecture/adr-0001-technology-direction.md) as the bar its proof must answer, and the contract answers every clause of that section with an obligation its runs must exercise, with its own method or ceilings, or with the issue that owns a clause belonging to #38's wider acceptance — each answer carrying that clause's own words, read back against ADR-0001 rather than trusted — which is where the checks listed below as pending are owned. Nothing here is that run.
+Status: experimental fixture, **not shell selection**. The integrating engineer authorized execution after independently reviewed foundation PR #473 merged at `a15368c1744fdff3c186dda11f24714d738c7efe` with stable/MSRV/roadmap checks passing. This isolated spike does not alter the production workspace. Baseline: merged #472 and ADR-0001. It is a deliberately partial workload; an Xvfb run cannot pass the complete #38 contract, which is committed as data in [`spike-contracts.json`](../architecture/spike-contracts.json) with its predeclared ceilings, stop conditions and cleanup. That contract does not state its own bar, and does not choose it either: the [decision ledger's](../architecture/decisions.json) record for the shell choice names the "Proof contract and stop conditions" section of [ADR-0001](../architecture/adr-0001-technology-direction.md) as the bar its proof must answer, and the contract answers every clause of that section with an obligation its runs must exercise, with its own method or ceilings, or with the issue that owns a clause belonging to #38's wider acceptance — each answer carrying that clause's own words, read back against ADR-0001 rather than trusted — which is where the checks listed below as pending are owned. Nothing here is that run: the Wayland run recorded below is the first real one measured against the contract, and it is a partial run set that settles nothing.
 
 ## Reproduce
 
-From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples and an optional ImageMagick screenshot, checks observed survivor processes, and removes the server. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`.
+From `spikes/linux-shell`: `npm ci --ignore-scripts`, `npm run build`, then `cargo build --locked -j 4 --manifest-path src-tauri/Cargo.toml`. Run native authorization unit tests with `cargo test --locked -j 4 --manifest-path src-tauri/Cargo.toml`. After the prerequisite gate is established, `SYMBIOTE_PROOF_AUTHORIZED=1 python3 run-proof.py` creates an isolated Xvfb server, runs this app for 20 seconds, captures process-tree RSS samples and an optional ImageMagick screenshot, checks observed survivor processes, and removes the server. It never uses the user's desktop display. Artifacts are under ignored `spikes/linux-shell/artifacts/`. `python3 -m unittest test_run_proof` runs the rules that decide what a Wayland run may publish, and needs neither a session nor a binary.
 
 Pinned direct components: Tauri 2.11.5, tauri-build 2.6.3, portable-pty 0.9.0, Tauri JavaScript API 2.11.1, React 19.2.8, TypeScript 7.0.2, Vite 8.2.2, Monaco 0.56.0. Cargo/npm lockfiles retain the transitive resolution. Monaco's DOMPurify dependency is explicitly overridden to 3.4.15 because its upstream pin reports security advisories; the resulting npm audit reports zero vulnerabilities at preparation time. No system/global package or user application changes. Local prerequisite discovery: GTK 3.24.52 and WebKitGTK 2.52.6 available on the Linux host.
 
@@ -43,29 +43,65 @@ wayland`, which starts its own `kwin_wayland --virtual` compositor in a private
 session, display and packages alone. The Wayland path samples the app's process
 tree every 100 ms with PSS per member and per component class, cancels a live run,
 and writes the run dossier and the result artifact the contract points at
-([`results/desktop-shell.json`](results/desktop-shell.json)) from what it observed.
+([`results/desktop-shell.json`](results/desktop-shell.json)) from what it observed;
+the rules that decide what it may publish are held by `test_run_proof.py`, which
+the fixture's CI job runs beside `py_compile`.
 
 Platform finding, recorded with the run as the contract asks: with this host's
 NVIDIA/glvnd EGL the client aborts against the virtual backend with
 `wp_linux_drm_syncobj_surface_v1` explicit-sync errors, so the session pins Mesa's
 EGL ICD (`/usr/share/glvnd/egl_vendor.d/50_mesa.json`) and records the renderer it
-actually used. That is a session compromise, not a change to the app.
+actually used, in `session.json`. That is a session compromise, not a change to the
+app: the committed contract's applicability names the *reference compositor*, and
+this run is on a virtual one.
 
-What the run observed: the time to the first frame the compositor was handed, the
-workload's peak tree PSS and the share of that PSS no component class claims, the
-survivors and listening ports after a cancellation request, and a clean locked
-release build. What it could not observe, and reports unknown rather than met:
-idle-state PSS (this fixture has no idle state), workbench readiness (its
-`PROOF_READY` marker precedes the first frame and every WebKit helper, so it is not
-a workbench-ready signal), input starvation (this driver issues no input on
-Wayland), journal loss across a crash (the fixture has no canonical store) and
-installer size (nothing here packages an installer). No frames were captured in
-this session: the X11 path's screenshot has no equivalent in the Wayland runner,
-so the rendering evidence is the client's own protocol log and the app's logs.
+What the run observed on 2026-09-16, built from `6a6189ef` in a clean target
+directory outside the tree (kwin 6.7.5 virtual session at 1440×960, Mesa Intel(R)
+Graphics (RPL-P), 16 logical cores, 62 GiB RAM, NVMe storage). Each figure is
+re-checkable from the artifact the run cites for it:
+
+- **`cold_start_to_first_frame_seconds` 0.192** of a 3.0 ceiling: the first
+  `wl_surface.commit()` after the client attached a buffer, timed from its first
+  request in `app-1.log`, which went on to commit 518 frames, the last at 25.138 s.
+- **`clean_locked_build_seconds` 60.875** of a 900 ceiling: `npm run build` and
+  `cargo build --locked --release` from an empty target directory, in a log that
+  names both commands because it was captured with `set -x`.
+- **`workload_process_tree_pss_mib` 505.944** of a 2560 ceiling and
+  **`unattributed_process_tree_memory_percent` 1.426** of a 5.0 ceiling: the peak
+  of 251 samples of the app tree's summed PSS (shell 92.4 MiB, three terminals
+  21.7 MiB, WebKit helpers 384.6 MiB, unattributed 7.2 MiB). The peak fell 0.621 s
+  into a 25.045 s window, which is a startup peak rather than a steady-state
+  figure; the run records where it fell with the figure instead of leaving a
+  reader to guess, and 11 tree members were alive at it.
+- **`orphaned_processes_after_cancel` 0** and
+  **`orphaned_listening_ports_after_cancel` 0** of 0 ceilings: SIGTERM to the live
+  tree 25 s into the second run left no observed member and no listening port, and
+  the driver's own cleanup confirmed it before the compositor was torn down.
+
+What it could not observe, reported unknown rather than met: idle-state PSS (this
+fixture has no idle state), workbench readiness (its `PROOF_READY` marker precedes
+the first frame and every WebKit helper, so it is not a workbench-ready signal),
+input starvation (this driver issues no input on Wayland), journal loss across a
+crash (the fixture has no canonical store) and installer size (nothing here
+packages an installer). No frames were captured in this session: the X11 path's
+screenshot has no equivalent in the Wayland runner, so the rendering evidence is
+the client's own protocol log and the app's logs.
+
+The result attests only what the fixture's own log shows. `exercised` is derived
+from the app's markers — three `PROOF_PTY_START`, one `PROOF_READY
+preview_origin=`, two `PROOF_PREVIEW_REPORT` denials — so four concurrent agent
+streams are absent from it even though the fixture starts four synthetic ones. The
+runner refuses to publish a result whose platform the contract does not apply to,
+whose stop condition the contract does not declare, which leaves a predeclared
+measurement neither observed nor named with its reason, or which attests an
+obligation no marker supports; the platforms this run did not exercise are derived
+from the contract's applicability rather than typed; and the artifact it wrote was
+read back by the ledger's own map, which reported no refusals for it.
 
 Nothing here settles #38. Three of the contract's four platforms are declared
 untested in the result artifact, and the workload exercised is the prepared
 fixture, not the product's agent streams, editor source mapping, cancellation path
-or canonical store.
+or canonical store. Six of the contract's eleven predeclared measurements were
+taken, and every run entry would have to answer all eleven for a choice to settle.
 
 Pending full #38 acceptance: Wayland and real X11 compositor behavior; Windows/macOS; real agent streams; terminal interaction; all geometry, IME, accessibility, focus/stacking and scaling checks; design-bridge authentication/DOM-to-source mapping; crash recovery/replay/reconnect; simultaneous controllers/headless Host; watcher behavior; menus/updater/signing/installers; suspension/cancellation across services; release/idle/cold-start CPU/PSS measurements and representative database/analyzer/provider workloads. A screenshot alone cannot prove these properties. No shell decision is authorized by this partial spike.

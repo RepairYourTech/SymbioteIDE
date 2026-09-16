@@ -66,6 +66,12 @@ fn the_committed_contract_passes_every_rule() {
     assert_eq!(real_problems(), Vec::new());
 }
 
+/// The shell choice, the contract it would be settled by, and the run committed
+/// against that contract. That run is real and partial: it exists, it is this
+/// contract's, and it does not answer everything a settling run must — which is
+/// why the choice is still `investigating`. The day a pass measures every
+/// applicable platform it publishes the choice accepted with the same run, and
+/// this case fails until it does.
 #[test]
 fn the_shell_choice_names_the_contract_that_would_settle_it() {
     let ledger = ledger();
@@ -79,9 +85,25 @@ fn the_shell_choice_names_the_contract_that_would_settle_it() {
         .expect("the shell contract");
     assert_eq!(contract.decision, record.draft.id);
     assert_eq!(record.blocking_issue, Some(38));
+    let results = Results::read(&workspace_root().join(&contract.result_artifact))
+        .expect("the run the contract points at");
+    assert_eq!(
+        results.contract, contract.id,
+        "the committed run measured another contract"
+    );
+    assert_eq!(
+        results.contract_sha256,
+        fingerprint(contract),
+        "the committed run was measured against thresholds the committed contract no longer declares"
+    );
     assert!(
-        !workspace_root().join(&contract.result_artifact).exists(),
-        "nothing has been measured yet, so the run the contract points at is absent"
+        !results.runs.is_empty(),
+        "a run artifact with no run in it settles nothing and shows nothing"
+    );
+    assert!(
+        !results.unmet(contract, &fingerprint(contract)).is_empty(),
+        "the choice is investigating, so the run committed against it cannot answer every \
+         requirement a settling run must meet"
     );
 }
 
