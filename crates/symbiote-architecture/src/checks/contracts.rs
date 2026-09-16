@@ -11,7 +11,7 @@ use super::Problem;
 use crate::ledger::{DecisionRecord, Ledger};
 use crate::policy::DecisionState;
 use crate::repository::hash;
-use crate::spike::{Contracts, Results, SpikeContract, clauses, fingerprint, section};
+use crate::spike::{Contracts, Results, SpikeContract, clauses, fingerprint, normalize, section};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -118,9 +118,13 @@ fn clause_problems(
 
 /// The bar the choice was accepted with, read from its own record. The section
 /// belongs to the choice, not to the contract, so a contract cannot point its
-/// obligations at whichever part of the record suits it; and every clause of
-/// that section has to be answered by the contract, so a clause cannot be
-/// dropped by editing the contract alone either. A missing section is refused
+/// obligations at whichever part of the record suits it; every clause of that
+/// section has to be answered by the contract, so a clause cannot be dropped by
+/// editing the contract alone either; and each answer carries the clause's own
+/// words, read back against the record, so an answer cannot claim a clause the
+/// record does not state at all and cannot drift off the clause it was written
+/// for. Whether a carrier's wording really covers the words it carries is a
+/// reader's judgement, and is not decided here. A missing section is refused
 /// where the record is read, so nothing is reported twice here.
 fn bar_problems(
     contract: &SpikeContract,
@@ -157,35 +161,45 @@ fn bar_problems(
         return;
     };
     let clauses = clauses(&text);
+    let mut claimed: BTreeSet<&str> = BTreeSet::new();
     for answer in &contract.answers {
-        if answer.clause == 0 || answer.clause > clauses.len() {
-            problems.push(Problem::new(
+        let carried = normalize(&answer.clause);
+        let stating: Vec<&String> = clauses
+            .iter()
+            .filter(|clause| clause.as_str() == carried)
+            .collect();
+        match stating.len() {
+            1 => {
+                claimed.insert(stating[0].as_str());
+            }
+            0 => problems.push(Problem::new(
                 subject,
                 format!(
-                    "it answers clause {} of {heading:?}, which states {} clause(s), counted from one",
-                    answer.clause,
-                    clauses.len()
+                    "it answers {carried:?}, which {heading:?} of {} does not state as a clause of the accepted bar",
+                    record.record
                 ),
-            ));
+            )),
+            many => problems.push(Problem::new(
+                subject,
+                format!(
+                    "the words {carried:?} are {many} clauses of {heading:?}, so they name no one clause of the accepted bar"
+                ),
+            )),
         }
         if let Some(elsewhere) = &answer.elsewhere {
             if !record.draft.issue_refs.contains(&elsewhere.issue) {
                 problems.push(Problem::new(
                     subject,
                     format!(
-                        "clause {} is answered by #{}, which this choice does not name as its own",
-                        answer.clause, elsewhere.issue
+                        "{carried:?} is answered by #{}, which this choice does not name as its own",
+                        elsewhere.issue
                     ),
                 ));
             }
         }
     }
-    for (index, clause) in clauses.iter().enumerate() {
-        if !contract
-            .answers
-            .iter()
-            .any(|answer| answer.clause == index + 1)
-        {
+    for clause in &clauses {
+        if !claimed.contains(clause.as_str()) {
             problems.push(Problem::new(
                 subject,
                 format!(
