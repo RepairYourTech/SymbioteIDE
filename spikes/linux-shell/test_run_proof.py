@@ -1239,22 +1239,32 @@ class ConcernMap(unittest.TestCase):
 
     Its owner is the entry point's docstring, which `argparse` prints as the description
     of `--help` — so the map a reader gets is the map held here: what `--help` prints is
-    checked to name every module of the package, and the map's own form is checked to
-    appear nowhere else the fixture owns — not in the package, not elsewhere in the
-    entry point, and not in the document that describes the fixture. A module added,
-    moved or renamed is then one edit, and a map that has stopped describing the package
-    fails rather than being read as true. The limits are measured, not implied: a second
-    list written in another form (a Python constant, a table) is caught by neither case,
-    and neither is one in a document other than the fixture's own.
+    checked to name every module of the package and nothing else, and no second place the
+    fixture owns may name them all again. A module counts as named when the file it lives
+    in is named — `shellproof/records.py` or `records.py`, however that is quoted — so a
+    citation of one or two of them in an option's help text, in a module's docstring or in
+    the fixture document is not a second map and is not refused, while the same list in
+    full, in any of those places, is. A module added, moved or renamed is then one edit,
+    and a map that has stopped describing the package fails rather than being read as true.
+
+    The limits are measured, not implied: a list naming most but not all of them, a list
+    that names them without their files (bare stems, a table, a Python constant), and one
+    in a document other than the fixture's own are caught by neither case — only the
+    fixture's Python files and that one document are read.
     """
 
     FIXTURE = Path(__file__).resolve().parent
     DOCUMENT = FIXTURE.parents[1] / 'docs/proofs/linux-shell.md'
-    MAP = re.compile(r'``shellproof/([a-z_]+)\.py``')
+    MAP = re.compile(r'``shellproof/([a-z_]+)\.py``')          # the map's own form, as printed
+    BY_FILE = re.compile(r'(?:shellproof/)?([a-z_]+)\.py')     # a module named by its file
 
     def modules(self):
         return {path.stem for path in (self.FIXTURE / 'shellproof').glob('*.py')
                 if path.stem != '__init__'}
+
+    def named(self, text):
+        """Which of the package's modules this text names, by the file it names each as."""
+        return {match.group(1) for match in self.BY_FILE.finditer(text)} & self.modules()
 
     def printed(self):
         """The map as a reader gets it: the description of `--help`, driven through main."""
@@ -1275,21 +1285,18 @@ class ConcernMap(unittest.TestCase):
     def test_the_concern_map_is_stated_once(self):
         docstring = run_proof.__doc__ or ''
         entry = (self.FIXTURE / 'run-proof.py').read_text()
-        elsewhere = []
-        for path in [self.FIXTURE / 'run-proof.py'] + sorted(
-                (self.FIXTURE / 'shellproof').glob('*.py')):
-            if path.name == 'run-proof.py':
-                text = entry.replace(docstring, '', 1)
-            else:
-                text = path.read_text()
-            if self.MAP.search(text):
-                elsewhere.append(path.name)
-        if self.MAP.search(self.DOCUMENT.read_text()):
-            elsewhere.append(str(self.DOCUMENT.relative_to(self.FIXTURE.parents[1])))
+        regions = [(path.name, path.read_text()) for path in
+                   [self.FIXTURE / 'run-proof.py'] + sorted(
+                       (self.FIXTURE / 'shellproof').glob('*.py'))]
+        regions = [(name, text.replace(docstring, '', 1) if name == 'run-proof.py' else text)
+                   for name, text in regions]
+        regions.append((str(self.DOCUMENT.relative_to(self.FIXTURE.parents[1])),
+                        self.DOCUMENT.read_text()))
+        elsewhere = [name for name, text in regions if self.named(text) == self.modules()]
         self.assertEqual(elsewhere, [],
-                         'the concern map is the entry point docstring, which `--help` prints; the '
-                         'same form anywhere else — in the package, in the entry point around it, '
-                         'or in the fixture document — is the second list that goes stale')
+                         'the concern map is the entry point docstring, which `--help` prints; a '
+                         'second place naming every module of the package is the copy that goes '
+                         'stale')
 
 
 if __name__ == '__main__':
