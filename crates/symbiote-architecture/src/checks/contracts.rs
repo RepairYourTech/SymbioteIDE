@@ -1,15 +1,17 @@
 //! What the spike contracts, their obligations and their runs must show.
 //!
-//! A contract is predeclared and owned by the issues its decision names; every
-//! obligation belongs to an owner and every owner is addressed; and a decided
-//! choice stands on a complete, in-threshold run set that accounts for every
-//! platform the contract applies to, cited as the record's own evidence.
+//! A contract is predeclared and owned by the issues its decision names; its bar
+//! is the accepted record's own section, read clause by clause and answered by
+//! the contract rather than restated in it; every obligation belongs to an owner
+//! and every owner is addressed; and a decided choice stands on a complete,
+//! in-threshold run set that accounts for every platform the contract applies
+//! to, cited as the record's own evidence.
 
 use super::Problem;
 use crate::ledger::{DecisionRecord, Ledger};
 use crate::policy::DecisionState;
 use crate::repository::hash;
-use crate::spike::{Contracts, Results, SpikeContract, fingerprint};
+use crate::spike::{Contracts, Results, SpikeContract, clauses, fingerprint, section};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -44,6 +46,7 @@ pub(super) fn contract_problems(
             ));
         }
         clause_problems(contract, record, &subject, problems);
+        bar_problems(contract, record, root, &subject, problems);
         run_problems(contract, record, root, &subject, problems);
     }
     for record in &ledger.decisions {
@@ -107,6 +110,84 @@ fn clause_problems(
                 format!(
                     "the contract addresses no obligation to {issue}, which {} names as its own",
                     record.draft.id
+                ),
+            ));
+        }
+    }
+}
+
+/// The bar the choice was accepted with, read from its own record. Every clause
+/// of the accepted section has to be answered by the contract, so a clause
+/// cannot be dropped by editing the contract alone: the accepted text is pinned
+/// by the ledger, and a smaller bar is a refusal rather than a preference.
+fn bar_problems(
+    contract: &SpikeContract,
+    record: &DecisionRecord,
+    root: &Path,
+    subject: &str,
+    problems: &mut Vec<Problem>,
+) {
+    let accepted = std::fs::read_to_string(root.join(&record.record));
+    let accepted = match accepted {
+        Ok(text) => text,
+        Err(error) => {
+            problems.push(Problem::new(
+                subject,
+                format!(
+                    "its bar is read from the accepted record {}, which cannot be read: {error}",
+                    record.record
+                ),
+            ));
+            return;
+        }
+    };
+    let Some(text) = section(&accepted, &contract.obligations.section) else {
+        problems.push(Problem::new(
+            subject,
+            format!(
+                "its bar is the {} section of {}, and that record states no such section",
+                contract.obligations.section, record.record
+            ),
+        ));
+        return;
+    };
+    let clauses = clauses(&text);
+    for answer in &contract.obligations.answered {
+        if answer.clause == 0 || answer.clause > clauses.len() {
+            problems.push(Problem::new(
+                subject,
+                format!(
+                    "it answers clause {} of {}, which states {} clause(s), counted from one",
+                    answer.clause,
+                    contract.obligations.section,
+                    clauses.len()
+                ),
+            ));
+        }
+        if let Some(elsewhere) = &answer.elsewhere {
+            if !record.draft.issue_refs.contains(&elsewhere.issue) {
+                problems.push(Problem::new(
+                    subject,
+                    format!(
+                        "clause {} is answered by #{}, which this choice does not name as its own",
+                        answer.clause, elsewhere.issue
+                    ),
+                ));
+            }
+        }
+    }
+    for (index, clause) in clauses.iter().enumerate() {
+        if !contract
+            .obligations
+            .answered
+            .iter()
+            .any(|answer| answer.clause == index + 1)
+        {
+            problems.push(Problem::new(
+                subject,
+                format!(
+                    "{} states a clause this contract answers with nothing: {clause:?}",
+                    contract.obligations.section
                 ),
             ));
         }

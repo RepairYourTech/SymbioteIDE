@@ -20,7 +20,7 @@ pub mod spike;
 // contract shape at the crate root; each module below keeps its own path for
 // the code that owns it.
 pub use policy::*;
-pub use spike::{Measurement, SpikeContract};
+pub use spike::{Answered, Elsewhere, Measurement, Obligations, Part, SpikeContract};
 
 /// The repository this ledger belongs to.
 pub fn workspace_root() -> PathBuf {
