@@ -1,27 +1,111 @@
-//! This repository's own spike contract (#173), and the result artifact that
-//! would settle the choice it belongs to.
+//! This repository's own spike contracts (#173): the shape a contract has,
+//! the document it is committed in, the runs that would settle the choice it
+//! belongs to, and every rule those runs must meet.
 //!
-//! [`SpikeContract`] already existed in this crate with no contract to read:
-//! #38's proof obligations lived in prose, so nothing could say what the shell
-//! choice would be settled *by*, and nothing stopped a settlement resting on a
-//! file that named no run at all. [`Contracts`] holds the committed contract;
-//! [`Results`] holds the runs that would settle it, and each [`Run`] says which
-//! platform and version it exercised, on what hardware and revision, which of
-//! the contract's obligations it actually ran, what it measured, which raw
-//! artifacts it published and which failures it saw — and every platform the
-//! contract applies to is either measured by one of its runs or declared untested,
-//! with a declared untested platform keeping the choice pending. A decision can
-//! publish `accepted` only while a run set answering all of that stands, so the
-//! path from `investigating` to `accepted` is walked through measurements rather
-//! than through a file that merely asserts them.
+//! A contract is predeclared — hypothesis, workload, applicable platforms,
+//! thresholds, stop conditions and cleanup — so nothing can choose its bar after
+//! measuring. [`Contracts`] holds the committed document; [`Results`] holds the
+//! runs that would settle it, and each [`Run`] says which platform and version it
+//! exercised, on what hardware and revision, which of the contract's obligations
+//! it actually ran, what it measured, which raw artifacts it published and which
+//! failures it saw — and every platform the contract applies to is either
+//! measured by one of its runs or declared untested, with a declared untested
+//! platform keeping the choice pending. A decision can publish `accepted` only
+//! while a run set answering all of that stands, so the path from `investigating`
+//! to `accepted` is walked through measurements rather than through a file that
+//! merely asserts them.
 //!
 //! Every read fails rather than passes when it finds nothing.
 
-use crate::{ContractError, Result, SpikeContract, require, text};
+use crate::{ContractError, Result, require, text};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Measurement {
+    pub name: String,
+    pub unit: String,
+    pub maximum: f64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpikeContract {
+    pub schema_version: u32,
+    pub id: String,
+    pub decision: String,
+    pub hypothesis: String,
+    pub workload: Vec<String>,
+    /// The platforms this contract applies to, as data rather than as a sentence:
+    /// a settlement has to account for every one of them, and prose cannot be
+    /// asked what it covers.
+    pub applicable_platforms: Vec<String>,
+    pub platform: String,
+    pub hardware: String,
+    pub method: String,
+    pub measurements: Vec<Measurement>,
+    pub stop_conditions: Vec<String>,
+    pub result_artifact: String,
+    pub cleanup: String,
+}
+impl SpikeContract {
+    pub fn validate(&self) -> Result<()> {
+        require(self.schema_version == 1, "unsupported spike schema")?;
+        require(
+            [
+                &self.id,
+                &self.decision,
+                &self.hypothesis,
+                &self.platform,
+                &self.hardware,
+                &self.method,
+                &self.result_artifact,
+                &self.cleanup,
+            ]
+            .iter()
+            .all(|s| text(s)),
+            "spike metadata incomplete",
+        )?;
+        require(
+            !self.workload.is_empty()
+                && self.workload.iter().all(|s| text(s))
+                && !self.stop_conditions.is_empty()
+                && self.stop_conditions.iter().all(|s| text(s)),
+            "representative workload and stop conditions required",
+        )?;
+        require(
+            !self.measurements.is_empty(),
+            "predeclared measurements required",
+        )?;
+        require(
+            !self.applicable_platforms.is_empty()
+                && self.applicable_platforms.iter().all(|p| text(p))
+                && self
+                    .applicable_platforms
+                    .iter()
+                    .map(|p| p.trim().to_ascii_lowercase())
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == self.applicable_platforms.len(),
+            "the platforms this contract applies to must be named once each",
+        )?;
+        let mut names = BTreeSet::new();
+        for m in &self.measurements {
+            require(
+                text(&m.name)
+                    && text(&m.unit)
+                    && m.maximum.is_finite()
+                    && m.maximum >= 0.0
+                    && names.insert(&m.name),
+                "invalid or duplicate measurement threshold",
+            )?;
+        }
+        Ok(())
+    }
+}
 
 /// The contracts this repository commits, relative to the workspace root.
 pub const CONTRACTS_PATH: &str = "docs/architecture/spike-contracts.json";
@@ -149,17 +233,36 @@ pub struct Run {
 }
 
 impl Run {
-    /// Every requirement the contract makes of this run, in order. These hold
-    /// only where a choice is being settled: a partial run may commit less.
+    /// Every requirement the contract makes of this run, in order: what the run
+    /// says about itself, what it ran, what it published, how it ended and what
+    /// it measured. These hold only where a choice is being settled: a partial
+    /// run may commit less.
     pub fn unmet(&self, contract: &SpikeContract) -> Vec<String> {
         let mut unmet = Vec::new();
+        unmet.extend(self.identity_unmet());
+        unmet.extend(self.workload_unmet(contract));
+        unmet.extend(self.published_unmet());
+        unmet.extend(self.outcome_unmet(contract));
+        unmet.extend(self.observations_unmet(contract));
+        unmet
+    }
+
+    /// The name a refusal gives this run: the platform it exercised, or "a run"
+    /// while it names none.
+    fn label(&self) -> String {
         let platform = self.platform.trim();
-        let label = if platform.is_empty() {
+        if platform.is_empty() {
             "a run".to_string()
         } else {
             format!("the run on {platform}")
-        };
-        if platform.is_empty() {
+        }
+    }
+
+    /// Where and on what this run happened, as a candidate's figures need it.
+    fn identity_unmet(&self) -> Vec<String> {
+        let mut unmet = Vec::new();
+        let label = self.label();
+        if self.platform.trim().is_empty() {
             unmet.push("a run names no platform, so nothing says where it was measured".into());
         }
         if !text(&self.version) {
@@ -178,6 +281,14 @@ impl Run {
                 self.commit
             ));
         }
+        unmet
+    }
+
+    /// The workload this run attests is the contract's workload: every declared
+    /// obligation, and nothing the contract never declared.
+    fn workload_unmet(&self, contract: &SpikeContract) -> Vec<String> {
+        let mut unmet = Vec::new();
+        let label = self.label();
         let exercised: BTreeSet<&str> = self.exercised.iter().map(String::as_str).collect();
         for entry in &exercised {
             if !contract
@@ -197,6 +308,14 @@ impl Run {
                 ));
             }
         }
+        unmet
+    }
+
+    /// What stands behind the figures: published raw data, and failures that say
+    /// what happened.
+    fn published_unmet(&self) -> Vec<String> {
+        let mut unmet = Vec::new();
+        let label = self.label();
         if self.artifacts.is_empty() {
             unmet.push(format!(
                 "{label} publishes no raw artifact, so nothing stands behind its figures"
@@ -209,6 +328,13 @@ impl Run {
                 ));
             }
         }
+        unmet
+    }
+
+    /// How the run ended, against the stop conditions the contract declares.
+    fn outcome_unmet(&self, contract: &SpikeContract) -> Vec<String> {
+        let mut unmet = Vec::new();
+        let label = self.label();
         match self.outcome {
             Outcome::WithinThresholds => {
                 if let Some(condition) = &self.stop_condition {
@@ -248,6 +374,14 @@ impl Run {
                 }
             }
         }
+        unmet
+    }
+
+    /// Every predeclared measurement, once, inside its threshold — and nothing
+    /// the contract never predeclared.
+    fn observations_unmet(&self, contract: &SpikeContract) -> Vec<String> {
+        let mut unmet = Vec::new();
+        let label = self.label();
         let mut observed: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
         for observation in &self.observations {
             observed

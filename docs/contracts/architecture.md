@@ -2,13 +2,31 @@
 
 `symbiote-architecture` provides executable in-memory decision lifecycle, immutable version pins, selective invalidation and predeclared spike contracts. It consumes the #170 product constraints accepted in ADR-0001. It does not select Tauri, SurrealDB, control-plane storage or a provider entitlement.
 
+## Module layout
+
+One concern per file, and each module reads the others only through their public surface:
+
+| Module | The one thing it owns |
+| --- | --- |
+| `lib.rs` | the crate root: the shared vocabulary (`ContractError`, `Result`, `require`, `text`), `workspace_root`, the module map, and the re-exports consumers name |
+| `policy.rs` | the engine — decision states, authority, evidence, version pins, compatibility facts and the `DecisionRegistry` that owns them, plus the published name of every state. It reads no file and no clock |
+| `ledger.rs` | this repository's `decisions.json`, in one file: its shape, and the replay that requires each record to publish the state and revision the engine reaches |
+| `spike.rs` | the contract concern: `SpikeContract`/`Measurement`, the committed `spike-contracts.json`, the `Run`/`Results` shape, and every rule a run set must meet |
+| `repository.rs` | what cargo reports — workspace members, the dependencies they declare, and the content hash of a file in the tree |
+| `checks/mod.rs` | the join: `Problem`, and the `problems` entry point that asks the three subjects in ledger order |
+| `checks/records.rs` | what the ledger says about its own records and facts — the text and evidence bytes it cited, the owner an open choice names, and a fact whose window lapsed |
+| `checks/artifacts.rs` | what the workspace must show for what the ledger publishes — gate status, membership in both directions, pins, and the reach of a provisional choice |
+| `checks/contracts.rs` | what the contracts and their runs must show — the contract/decision link, obligation ownership, and the run set a settled choice stands on |
+
+Refusals keep one owner too: a rule about a record lives with the records, a rule about the tree lives with the artifacts, and a rule about proof lives with the contracts. Two test names in `tests/governance.rs` — `acceptance_requires_new_pin_and_freezes_content` and `supersession_invalidates_only_dependent_artifacts` — are bound by the constitution ledger's catalog, so they cannot be renamed or moved while #170's catalog cites them.
+
 ## Public contract
 
 Proposals start at revision 1. Draft edits require the exact current revision. Draft revision cannot accept a decision. Acceptance is a separate operation: Worker authority is rejected, high reversal cost requires measured-evidence metadata or an explicit Client exception, and every compatibility pin must resolve to fresh verified metadata. Accepted/terminal content cannot be edited; replacements create a new identity and superseding lineage. Supersession validates before changing either record, including concurrent replacement conflicts. Caller retries with stale revisions receive conflict errors without another mutation.
 
 Implementation artifacts pin exact accepted decision revisions and compatibility fact revisions. `require_ready` refuses provisional, unknown, rejected, superseded and stale dependencies. A changed fact or superseding decision returns the sorted affected artifact identities. Unrelated artifacts stay valid. Evidence expiry is evaluated on each gate call; acceptance alone cannot permanently bless an expiring vendor fact. Preserve the caller's approval identity and exception rationale for audit.
 
-`SpikeContract` requires hypothesis, workload, platform/hardware, method, finite numeric thresholds, stop conditions, result artifact and cleanup. Schema v1 rejects unsupported versions and unknown fixed fields. Generate structural JSON schemas with `cargo run -p symbiote-architecture --example architecture_schema`. The schemas describe serialization; runtime validation additionally checks cross-field policy. No previous persisted schema exists: v1 is the initial version, future versions are rejected rather than guessed or downgraded.
+`SpikeContract` requires hypothesis, workload, the platforms it applies to, platform/hardware prose, method, finite numeric thresholds, stop conditions, result artifact and cleanup. Schema v1 rejects unsupported versions and unknown fixed fields. Generate structural JSON schemas with `cargo run -p symbiote-architecture --example architecture_schema`. The schemas describe serialization; runtime validation additionally checks cross-field policy. No previous persisted schema exists: v1 is the initial version, future versions are rejected rather than guessed or downgraded.
 
 ## The repository's own decision ledger
 
