@@ -846,6 +846,41 @@ class MainEntryPoint(unittest.TestCase):
         self.assertIn('--commit', str(caught.exception))
         self.assertEqual(self.records(), [], 'a run started with a revision it records nowhere')
 
+    def test_a_build_figure_with_nothing_to_bear_it_is_refused(self):
+        """A build time is the invocation's own word, so the log has to bear it.
+
+        Nothing this driver runs measures a build: `--build-seconds` is the number an
+        operator supplies, and `--build-log` is the only thing that can stand behind it.
+        A result recording the figure with no log would state an observation nothing
+        observed, and the session record would carry no build at all.
+        """
+        for results in (False, True):
+            with self.subTest(results=results):
+                case = self.__class__('test_a_run_that_supports_its_result_publishes_it_through_main')
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                with self.assertRaises(SystemExit) as caught:
+                    case.drive(case.arguments('--build-seconds', '12.5', results=results))
+                self.assertIn('--build-log', str(caught.exception))
+                self.assertEqual(case.records(), [], 'a run started on a figure nothing bears')
+                self.assertFalse(case.publish.exists(), 'an artifact directory was published')
+                self.assertFalse(case.dossier.exists(), 'a dossier was written')
+
+    def test_a_build_figure_with_its_log_records_the_tree_that_log_names(self):
+        head = subprocess.run(['git', '-C', str(run_proof.REPO), 'rev-parse', 'HEAD'],
+                              capture_output=True, text=True).stdout.strip()
+        log = self.root / 'build.log'
+        log.write_text('+ git rev-parse HEAD\n' + head + '\n+ cargo build --locked\n')
+        printed = self.drive(self.arguments('--build-seconds', '12.5', '--build-log', str(log),
+                                            results=False))
+        self.assertIn('clean_locked_build_seconds', printed)
+        sessions = list((self.root / 'artifacts').rglob('session.json'))
+        self.assertEqual(len(sessions), 1, 'the run records the build it was given')
+        record = json.loads(sessions[0].read_text())
+        self.assertEqual(record['build']['seconds'], 12.5)
+        self.assertEqual(record['build']['revision'], head)
+        self.assertEqual(record['build']['log_sha256'], run_proof.sha256_of(log))
+
     def test_interaction_capture_is_refused_rather_than_promised(self):
         """The option used to lengthen the run while taking no screenshot and driving nothing."""
         with self.assertRaises(SystemExit) as caught:
