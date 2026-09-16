@@ -25,6 +25,13 @@ const RESULTS: &str = "docs/proofs/results/desktop-shell.json";
 const RAW: &str = "docs/proofs/evidence/desktop-shell/run-1.log";
 const SHELL_CONTRACT: &str = "#38/desktop-shell-representative-workload";
 const OBLIGATION: &str = "#38: four concurrent agent streams";
+/// The fixture record's four clauses, word for word. An answer carries the
+/// clause it answers rather than a number, so what it claims is the record's own
+/// text and a clause cannot be renumbered out from under it.
+const CLAUSE_WORKLOAD: &str = "the workload the choice was accepted with";
+const CLAUSE_STANDARD: &str = "the standard its runs are held to";
+const CLAUSE_METHOD: &str = "the method a run follows.";
+const CLAUSE_WIDER: &str = "the wider acceptance this contract is not.";
 
 fn root() -> PathBuf {
     workspace_root()
@@ -202,7 +209,7 @@ fn an_answer_that_names_two_carriers_or_none_is_refused() {
         "schema_version": 1,
         "contracts": [fixture_contract()]
     });
-    value["contracts"][0]["answers"][2] = json!({ "clause": 3 });
+    value["contracts"][0]["answers"][2] = json!({ "clause": CLAUSE_METHOD });
     fixture.write(CONTRACTS_PATH, &value);
     let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
         .expect_err("a clause is answered by something");
@@ -261,7 +268,7 @@ fn a_clause_of_the_accepted_bar_that_nothing_answers_is_refused() {
     contract["answers"]
         .as_array_mut()
         .expect("the fixture's answers")
-        .retain(|answer| answer["clause"] != json!(3));
+        .retain(|answer| answer["clause"] != json!(CLAUSE_METHOD));
     let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
     assert_eq!(found.len(), 1, "{found:?}");
     refused(&found, "states a clause this contract answers with nothing");
@@ -281,16 +288,59 @@ fn an_answer_naming_an_issue_the_choice_does_not_own_is_refused() {
 }
 
 #[test]
-fn an_answer_to_a_clause_the_section_does_not_state_is_refused() {
+fn an_answer_whose_words_the_section_does_not_state_is_refused() {
+    // A clause's identity is the accepted text, so an answer carries the words
+    // it answers and the record is asked whether it states them: a paraphrase,
+    // a trivially edited clause, and a clause from somewhere else in the record
+    // are all words the bar does not state.
     let mut contract = fixture_contract();
-    contract["answers"][2]["clause"] = json!(0);
+    contract["answers"][2]["clause"] = json!("the method a run never follows");
     let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
-    refused(&found, "counted from one");
+    // Two refusals, one per direction: the words are not the bar's, and the
+    // clause they displaced is now answered by nothing.
+    assert_eq!(found.len(), 2, "{found:?}");
+    refused(&found, "does not state as a clause of the accepted bar");
+    refused(&found, "the method a run never follows");
 
     let mut contract = fixture_contract();
-    contract["answers"][2]["clause"] = json!(9);
+    contract["answers"][2]["clause"] = json!("the method a run follows");
     let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
-    refused(&found, "which states 4 clause(s)");
+    refused(&found, "does not state as a clause of the accepted bar");
+
+    let mut contract = fixture_contract();
+    contract["answers"][2]["clause"] = json!("nothing yet.");
+    let found = Fixture::new(fixture_ledger(), vec![contract], None).problems();
+    refused(&found, "does not state as a clause of the accepted bar");
+}
+
+#[test]
+fn an_answer_whose_words_are_stated_twice_by_the_section_is_refused() {
+    // Identity by words needs the words to name one clause: a section that
+    // states the same clause twice would otherwise let one answer stand for
+    // both twins, which is a bar answered by nothing wearing an answer's face.
+    let mut contract = fixture_contract();
+    contract["answers"][0]["clause"] = json!("the same words");
+    let found =
+        Fixture::new_with_record(TWICE_RECORD, fixture_ledger(), vec![contract], None).problems();
+    refused(&found, "are 2 clauses of");
+}
+
+#[test]
+fn a_contract_document_that_names_a_clause_by_its_number_is_refused_naming_what_moved() {
+    // The shape this loader read before #607 was accepted: the answer named its
+    // clause by a number. Version 1 absorbs the move, so the refusal says what
+    // moved and what to write instead rather than reporting a type error.
+    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
+    let mut value = json!({
+        "schema_version": 1,
+        "contracts": [fixture_contract()]
+    });
+    value["contracts"][0]["answers"][0]["clause"] = json!(1);
+    fixture.write(CONTRACTS_PATH, &value);
+    let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
+        .expect_err("a clause named by its number is the shape before the move");
+    assert!(error.0.contains("by its own words"), "{error}");
+    assert!(error.0.contains("`clause` number"), "{error}");
 }
 
 #[test]
@@ -336,19 +386,27 @@ fn the_committed_choice_names_the_section_its_bar_comes_from() {
         .contract(SHELL_CONTRACT)
         .expect("the shell contract")
         .clone();
-    let answered: std::collections::BTreeSet<usize> = contract
+    let answered: std::collections::BTreeSet<&str> = contract
         .answers
         .iter()
-        .map(|answer| answer.clause)
+        .map(|answer| answer.clause.as_str())
         .collect();
     assert_eq!(
-        answered.len().max(clauses.len()),
+        answered.len(),
         clauses.len(),
         "{answered:?} against {clauses:?}"
     );
     assert!(
-        (1..=clauses.len()).all(|clause| answered.contains(&clause)),
-        "every clause of the accepted bar has an answer: {clauses:?}"
+        clauses
+            .iter()
+            .all(|clause| answered.contains(clause.as_str())),
+        "every clause of the accepted bar has an answer, in the record's own words: {clauses:?}"
+    );
+    assert!(
+        answered
+            .iter()
+            .all(|words| clauses.iter().any(|clause| clause == words)),
+        "every answer carries a clause the accepted section states: {answered:?}"
     );
     assert!(
         contract
@@ -994,10 +1052,10 @@ fn fixture_contract() -> Value {
         "result_artifact": RESULTS,
         "cleanup": "remove the disposable display and only the identities the driver observed",
         "answers": [
-            { "clause": 1, "obligation": OBLIGATION },
-            { "clause": 2, "obligation": STOP_CONDITION },
-            { "clause": 3, "part": "method" },
-            { "clause": 4, "elsewhere": { "issue": 38, "why": "the fixture's own wider acceptance" } }
+            { "clause": CLAUSE_WORKLOAD, "obligation": OBLIGATION },
+            { "clause": CLAUSE_STANDARD, "obligation": STOP_CONDITION },
+            { "clause": CLAUSE_METHOD, "part": "method" },
+            { "clause": CLAUSE_WIDER, "elsewhere": { "issue": 38, "why": "the fixture's own wider acceptance" } }
         ]
     })
 }
@@ -1007,6 +1065,10 @@ fn fixture_contract() -> Value {
 /// run follows, and one clause that belongs to a wider acceptance.
 const SECTION: &str = "Proof contract and stop conditions";
 const RECORD: &str = "# The accepted text this record interprets\n\n## Proof contract and stop conditions\n\nthe workload the choice was accepted with; the standard its runs are held to; the method a run follows.\nthe wider acceptance this contract is not.\n\n## Remaining acceptance\n\nnothing yet.\n";
+
+/// The same record stating one clause twice, which is what identity by words
+/// cannot resolve: a section has to name each of its clauses once.
+const TWICE_RECORD: &str = "# The accepted text this record interprets\n\n## Proof contract and stop conditions\n\nthe same words; the same words; and the wider acceptance this contract is not.\n\n## Remaining acceptance\n\nnothing yet.\n";
 
 const STOP_CONDITION: &str = "#38: a blank-window figure stops the run";
 
@@ -1103,6 +1165,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(ledger: Value, contracts: Vec<Value>, results: Option<Value>) -> Fixture {
+        Fixture::new_with_record(RECORD, ledger, contracts, results)
+    }
+
+    /// A fixture whose accepted record is the given text, so a rule about what
+    /// the record states can be exercised on a record that states it.
+    fn new_with_record(
+        record: &str,
+        ledger: Value,
+        contracts: Vec<Value>,
+        results: Option<Value>,
+    ) -> Fixture {
         let root = std::env::temp_dir().join(format!(
             "symbiote-spikes-{}-{}",
             std::process::id(),
@@ -1116,7 +1189,7 @@ impl Fixture {
             std::fs::create_dir_all(root.join(directory)).expect("a fixture tree");
         }
         let root = root.canonicalize().expect("a canonical fixture root");
-        std::fs::write(root.join(ADR), RECORD).expect("the fixture record");
+        std::fs::write(root.join(ADR), record).expect("the fixture record");
         std::fs::write(root.join(RAW), "the run's own log\n").expect("the fixture raw artifact");
         let contracts = Contracts {
             schema_version: 1,

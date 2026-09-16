@@ -40,8 +40,14 @@ pub struct Measurement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Answered {
-    /// The clause's position in the section, counting from one.
-    pub clause: usize,
+    /// The clause's own words, as the accepted section states them. The clause's
+    /// identity is the record's text — which the ledger pins by SHA-256 — rather
+    /// than a position in a split a comma can renumber, so an ordinal cannot
+    /// drift away from the clause it was written for and the words an answer
+    /// claims are read back against the record rather than trusted. Whitespace
+    /// the record wraps is not part of the clause: the words are compared with
+    /// every run of whitespace read as one.
+    pub clause: String,
     /// The obligation this contract declares that answers it, named exactly as
     /// the contract names it: present when the clause is about the workload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,9 +111,11 @@ pub struct SpikeContract {
     /// One entry per clause of the bar the choice names — a section of the
     /// choice's own accepted text, which the ledger holds rather than this
     /// contract, so a contract cannot pick the clauses it is settled against —
-    /// saying what answers that clause. A clause answered by nothing is refused
-    /// where the record is read; an obligation that answers nothing is refused
-    /// here.
+    /// carrying that clause's own words and saying what answers it. Whether the
+    /// carrier's wording covers those words is a reader's judgement; that the
+    /// words are the accepted clause's is not, so a clause answered by nothing,
+    /// and words the record does not state, are both refused where the record is
+    /// read. An obligation that answers nothing is refused here.
     pub answers: Vec<Answered>,
 }
 impl SpikeContract {
@@ -170,7 +178,8 @@ impl SpikeContract {
     /// ceilings, or by the issue that owns it elsewhere; and every obligation
     /// this contract declares answers a clause, so the contract can neither
     /// declare bar its choice did not accept nor leave a clause of it to look
-    /// after itself.
+    /// after itself. Which clause each answer carries is the accepted record's
+    /// own text, read back there rather than trusted here.
     fn answered_bar(&self) -> Result<()> {
         require(
             !self.answers.is_empty(),
@@ -190,7 +199,7 @@ impl SpikeContract {
             require(
                 carried == 1,
                 format!(
-                    "clause {} of the accepted bar is answered by one obligation, one part or one issue, not {carried} of them",
+                    "the answer to {:?} names one obligation, one part or one issue, not {carried} of them",
                     answer.clause
                 ),
             )?;
@@ -198,7 +207,7 @@ impl SpikeContract {
                 require(
                     declared.contains(&obligation),
                     format!(
-                        "clause {} is answered by {obligation:?}, which this contract does not declare",
+                        "{:?} is answered by {obligation:?}, which this contract does not declare",
                         answer.clause
                     ),
                 )?;
@@ -208,7 +217,7 @@ impl SpikeContract {
                 require(
                     text(&elsewhere.why),
                     format!(
-                        "clause {} says #{} owns it and does not say why this contract does not",
+                        "{:?} says #{} owns it and does not say why this contract does not",
                         answer.clause, elsewhere.issue
                     ),
                 )?;
@@ -296,15 +305,37 @@ impl Contracts {
 /// same reconciliation the result schema recorded when its own shape changed.
 fn moved_shape(source: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(source).ok()?;
-    let stale =
-        value.get("contracts")?.as_array()?.iter().any(|contract| {
-            contract.get("obligations").is_some() && contract.get("answers").is_none()
-        });
-    stale.then(|| {
-        "it is the shape this loader read before the bar moved — a contract carrying `obligations` and no \
-         `answers`: the section moved to the choice's record as `proof_section`, and what answers each clause \
-         is now the contract's `answers`, while version 1 absorbs that move because no contract document \
-         exists outside this repository, so rewrite the document rather than expecting a second version"
+    let contracts = value.get("contracts")?.as_array()?;
+    if contracts
+        .iter()
+        .any(|contract| contract.get("obligations").is_some() && contract.get("answers").is_none())
+    {
+        return Some(
+            "it is the shape this loader read before the bar moved — a contract carrying `obligations` and no \
+             `answers`: the section moved to the choice's record as `proof_section`, and what answers each clause \
+             is now the contract's `answers`, while version 1 absorbs that move because no contract document \
+             exists outside this repository, so rewrite the document rather than expecting a second version"
+                .to_string(),
+        );
+    }
+    let numbered = contracts.iter().any(|contract| {
+        contract
+            .get("answers")
+            .and_then(|answers| answers.as_array())
+            .is_some_and(|answers| {
+                answers.iter().any(|answer| {
+                    answer
+                        .get("clause")
+                        .is_some_and(|clause| !clause.is_string())
+                })
+            })
+    });
+    numbered.then(|| {
+        "it is the shape this loader read before a clause was named by its own words — answers carrying a \
+         `clause` number: a clause is now identified by the accepted section's words, which the ledger pins by \
+         SHA-256, so an answer names the clause it answers rather than a position in a split the record's \
+         punctuation can renumber, while version 1 absorbs that move for the same reason the section's move was \
+         absorbed, so rewrite each answer's `clause` to carry that clause's own words"
             .to_string()
     })
 }
@@ -736,15 +767,19 @@ pub fn section(text: &str, heading: &str) -> Option<String> {
 /// split is the record's punctuation and nothing else — a clause is the text
 /// itself, so nothing here can quietly decide the bar is smaller.
 pub fn clauses(section: &str) -> Vec<String> {
-    section
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    normalize(section)
         .split_inclusive('.')
         .flat_map(|sentence| sentence.split(';'))
-        .map(|clause| clause.trim().to_string())
+        .map(normalize)
         .filter(|clause| !clause.is_empty())
         .collect()
+}
+
+/// Text as one line of words: every run of whitespace read as one space, and no
+/// leading or trailing space. A clause's identity is its words, so how the
+/// record wraps them and how a contract document wraps them are the same text.
+pub fn normalize(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The fingerprint of a contract: the SHA-256 of its own canonical JSON, so a

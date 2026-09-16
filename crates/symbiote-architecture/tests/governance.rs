@@ -288,13 +288,13 @@ fn spike_requires_reproducibility_and_finite_predeclared_thresholds() {
         cleanup: "terminate fixture processes".into(),
         answers: vec![
             Answered {
-                clause: 1,
+                clause: "four streams".into(),
                 obligation: Some("four streams".into()),
                 part: None,
                 elsewhere: None,
             },
             Answered {
-                clause: 2,
+                clause: "overflow".into(),
                 obligation: Some("overflow".into()),
                 part: None,
                 elsewhere: None,
