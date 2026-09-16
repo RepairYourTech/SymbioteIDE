@@ -13,7 +13,8 @@
 //!
 //! A rule that cannot see what it is checking refuses rather than passes: a
 //! record whose file is missing, a member cargo could not report, a fact whose
-//! validity lapsed and a run that cannot be read are findings, not silence.
+//! validity lapsed, a choice that names a proof without saying what it must
+//! prove and a run that cannot be read are findings, not silence.
 
 use crate::ledger::Ledger;
 use crate::repository::Workspace;
@@ -63,6 +64,7 @@ pub fn problems(
     for record in &ledger.decisions {
         records::record_problems(record, root, &mut problems);
         records::owner_problems(record, &mut problems);
+        records::proof_problems(record, &mut problems);
     }
     records::fact_problems(ledger, now, &mut problems);
     artifacts::status_problems(&registry, ledger, now, &mut problems);

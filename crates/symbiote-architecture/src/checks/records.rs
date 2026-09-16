@@ -1,8 +1,10 @@
 //! What the ledger says about its own records and facts.
 //!
 //! The record is the text it was accepted from and its evidence is the bytes it
-//! names, so a record whose file moved or changed is a finding; and a
-//! compatibility fact is only as good as the window it was observed in.
+//! names, so a record whose file moved or changed is a finding; a choice that
+//! names the proof it waits on has to name where that proof's bar lives, in its
+//! own accepted text; and a compatibility fact is only as good as the window it
+//! was observed in.
 
 use super::Problem;
 use crate::ledger::{DecisionRecord, Ledger};
@@ -75,6 +77,29 @@ pub(super) fn owner_problems(record: &DecisionRecord, problems: &mut Vec<Problem
                 record.published.state
             ),
         ));
+    }
+}
+
+/// A choice's proof has one owner on each side: the choice names the section of
+/// its own accepted text that states what a proof of it must do, and the
+/// contract answers that section's clauses. A section belongs to the choice
+/// rather than to the contract, so a contract cannot pick the clauses it is
+/// settled against out of the record belonging to the choice; and a section no
+/// contract answers is a bar nothing is held to.
+pub(super) fn proof_problems(record: &DecisionRecord, problems: &mut Vec<Problem>) {
+    let id = record.draft.id.as_str();
+    match (&record.proof_contract, &record.proof_section) {
+        (Some(_), None) => problems.push(Problem::new(
+            format!("{id}: proof section"),
+            "it names a proof contract and no section of its accepted text that says what that proof must do, so the contract would state its own bar",
+        )),
+        (None, Some(section)) => problems.push(Problem::new(
+            format!("{id}: proof section"),
+            format!(
+                "it names the {section:?} section of its accepted text as the bar its proof must answer, and no contract answers it"
+            ),
+        )),
+        _ => {}
     }
 }
 

@@ -286,23 +286,20 @@ fn spike_requires_reproducibility_and_finite_predeclared_thresholds() {
         stop_conditions: vec!["overflow".into()],
         result_artifact: "result.json".into(),
         cleanup: "terminate fixture processes".into(),
-        obligations: Obligations {
-            section: "Proof contract and stop conditions".into(),
-            answered: vec![
-                Answered {
-                    clause: 1,
-                    obligation: Some("four streams".into()),
-                    part: None,
-                    elsewhere: None,
-                },
-                Answered {
-                    clause: 2,
-                    obligation: Some("overflow".into()),
-                    part: None,
-                    elsewhere: None,
-                },
-            ],
-        },
+        answers: vec![
+            Answered {
+                clause: 1,
+                obligation: Some("four streams".into()),
+                part: None,
+                elsewhere: None,
+            },
+            Answered {
+                clause: 2,
+                obligation: Some("overflow".into()),
+                part: None,
+                elsewhere: None,
+            },
+        ],
     };
     spike.validate().unwrap();
     spike.measurements[0].maximum = f64::NAN;

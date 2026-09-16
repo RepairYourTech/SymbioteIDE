@@ -100,157 +100,154 @@
       ],
       "result_artifact": "docs/proofs/results/desktop-shell.json",
       "cleanup": "Per run the driver removes the disposable display or session it started; kills only the process identities it observed itself, by PID birth ticks; verifies that no tree member, listening port or secret-bearing process it knows of survives; writes the run's logs into the ignored spike artifact directory and commits the artifacts the result cites, so their hashes can be re-checked; and leaves no user-display use, no system or global package change and no lingering worktree. A stopped or failed run is cleaned by the same path and publishes its failure.",
-      "obligations": {
-        "section": "Proof contract and stop conditions",
-        "answered": [
-          {
-            "clause": 1,
-            "obligation": "#38: four concurrent agent streams, dispatched and supervised at once"
-          },
-          {
-            "clause": 2,
-            "obligation": "#38: three active terminal tabs with bounded scrollback in real PTYs"
-          },
-          {
-            "clause": 3,
-            "obligation": "#38: an editor with diffs, mapped back to the sources it opens"
-          },
-          {
-            "clause": 4,
-            "obligation": "#38: a live integrated Preview of the run's own output"
-          },
-          {
-            "clause": 5,
-            "obligation": "#38: floating chat and voice controls over the Preview surface"
-          },
-          {
-            "clause": 6,
-            "obligation": "#38: Project switch and restoration, including the drafts each Project owns"
-          },
-          {
-            "clause": 7,
-            "obligation": "#38: cancellation of the whole process tree, then restart"
-          },
-          {
-            "clause": 7,
-            "obligation": "#38: processes, listening ports or secret-bearing processes that survive cancellation end that candidate"
-          },
-          {
-            "clause": 8,
-            "obligation": "#38: crash and client reconnect that recover canonical state without the transcript"
-          },
-          {
-            "clause": 9,
-            "obligation": "#38: a second desktop client controlling a headless Linux Host, including controller handoff"
-          },
-          {
-            "clause": 9,
-            "elsewhere": {
-              "issue": 38,
-              "why": "file watching, menus, updates and signing, packaging, and disconnect and replay are #38's own acceptance beyond this workload, and docs/proofs/linux-shell.md records them as pending"
-            }
-          },
-          {
-            "clause": 10,
-            "elsewhere": {
-              "issue": 38,
-              "why": "geometry, input-method, accessibility and DOM-to-source checks are #38's acceptance; this contract measures the resource figures it predeclares"
-            }
-          },
-          {
-            "clause": 11,
-            "obligation": "#38: Linux Wayland, Linux X11, Windows and macOS exercised as applicable, with platform-specific compromises and fallbacks recorded"
-          },
-          {
-            "clause": 12,
-            "part": "method"
-          },
-          {
-            "clause": 12,
-            "obligation": "#38: a measurement the instrument cannot observe stops the run and is reported unknown, never counted as met"
-          },
-          {
-            "clause": 13,
-            "obligation": "#38: an untested platform stays pending and keeps the choice from settling"
-          },
-          {
-            "clause": 14,
-            "obligation": "#38: a failing hard requirement stops dependent shell implementation and requires a recorded non-Electron alternative"
-          },
-          {
-            "clause": 15,
-            "obligation": "#38: the same scripted workload on every eligible non-Electron candidate, rerun so its results are reproducible"
-          },
-          {
-            "clause": 15,
-            "obligation": "#38: a candidate that cannot build or launch on an applicable platform, or that exits nonzero, stops with a recorded failure rather than a verdict"
-          },
-          {
-            "clause": 16,
-            "obligation": "#38: Preview origins, localhost included, that inherit neither workbench nor Host authority and reach the app only through validated bridge operations"
-          },
-          {
-            "clause": 17,
-            "obligation": "#38: Preview origins, localhost included, that inherit neither workbench nor Host authority and reach the app only through validated bridge operations"
-          },
-          {
-            "clause": 17,
-            "obligation": "#38: the desktop framework holding no canonical project or agent state, evidenced by authorized headless work surviving shell exit"
-          },
-          {
-            "clause": 17,
-            "obligation": "#38: Preview content that reaches workbench or Host authority, or a native command allowed from Preview, ends that candidate"
-          },
-          {
-            "clause": 18,
-            "obligation": "#38: Preview content that reaches workbench or Host authority, or a native command allowed from Preview, ends that candidate"
-          },
-          {
-            "clause": 18,
-            "elsewhere": {
-              "issue": 38,
-              "why": "that an iframe is not evidence on its own is #38's acceptance; this contract refuses a run whose Preview reaches authority"
-            }
-          },
-          {
-            "clause": 19,
-            "elsewhere": {
-              "issue": 38,
-              "why": "Preview source edits are not part of this workload; #38 owns their acceptance, and docs/proofs/linux-shell.md records the bridge and source edits as required and absent"
-            }
-          },
-          {
-            "clause": 20,
-            "elsewhere": {
-              "issue": 38,
-              "why": "accepting a change made over the DOM is #38's; this contract's runs measure the shell under the workload, not the acceptance of an edit"
-            }
-          },
-          {
-            "clause": 21,
-            "obligation": "#38: whole-process-tree attribution for shell, renderers, Preview, language servers, the database, analyzers, SDK bridges and agents"
-          },
-          {
-            "clause": 21,
-            "obligation": "#38: running more than one candidate at a time on the reference configuration voids the comparison"
-          },
-          {
-            "clause": 22,
-            "part": "measurements"
-          },
-          {
-            "clause": 23,
-            "elsewhere": {
-              "issue": 38,
-              "why": "bounded caches, queues and scrollback, backpressure, lazy loading, virtualization and Project-service suspension are #38's suspension proof; this contract predeclares the ceilings they are measured against"
-            }
-          },
-          {
-            "clause": 24,
-            "obligation": "#38: a candidate whose only resource figures come from a blank window stops without a verdict"
+      "answers": [
+        {
+          "clause": 1,
+          "obligation": "#38: four concurrent agent streams, dispatched and supervised at once"
+        },
+        {
+          "clause": 2,
+          "obligation": "#38: three active terminal tabs with bounded scrollback in real PTYs"
+        },
+        {
+          "clause": 3,
+          "obligation": "#38: an editor with diffs, mapped back to the sources it opens"
+        },
+        {
+          "clause": 4,
+          "obligation": "#38: a live integrated Preview of the run's own output"
+        },
+        {
+          "clause": 5,
+          "obligation": "#38: floating chat and voice controls over the Preview surface"
+        },
+        {
+          "clause": 6,
+          "obligation": "#38: Project switch and restoration, including the drafts each Project owns"
+        },
+        {
+          "clause": 7,
+          "obligation": "#38: cancellation of the whole process tree, then restart"
+        },
+        {
+          "clause": 7,
+          "obligation": "#38: processes, listening ports or secret-bearing processes that survive cancellation end that candidate"
+        },
+        {
+          "clause": 8,
+          "obligation": "#38: crash and client reconnect that recover canonical state without the transcript"
+        },
+        {
+          "clause": 9,
+          "obligation": "#38: a second desktop client controlling a headless Linux Host, including controller handoff"
+        },
+        {
+          "clause": 9,
+          "elsewhere": {
+            "issue": 38,
+            "why": "file watching, menus, updates and signing, packaging, and disconnect and replay are #38's own acceptance beyond this workload, and docs/proofs/linux-shell.md records them as pending"
           }
-        ]
-      }
+        },
+        {
+          "clause": 10,
+          "elsewhere": {
+            "issue": 38,
+            "why": "geometry, input-method, accessibility and DOM-to-source checks are #38's acceptance; this contract measures the resource figures it predeclares"
+          }
+        },
+        {
+          "clause": 11,
+          "obligation": "#38: Linux Wayland, Linux X11, Windows and macOS exercised as applicable, with platform-specific compromises and fallbacks recorded"
+        },
+        {
+          "clause": 12,
+          "part": "method"
+        },
+        {
+          "clause": 12,
+          "obligation": "#38: a measurement the instrument cannot observe stops the run and is reported unknown, never counted as met"
+        },
+        {
+          "clause": 13,
+          "obligation": "#38: an untested platform stays pending and keeps the choice from settling"
+        },
+        {
+          "clause": 14,
+          "obligation": "#38: a failing hard requirement stops dependent shell implementation and requires a recorded non-Electron alternative"
+        },
+        {
+          "clause": 15,
+          "obligation": "#38: the same scripted workload on every eligible non-Electron candidate, rerun so its results are reproducible"
+        },
+        {
+          "clause": 15,
+          "obligation": "#38: a candidate that cannot build or launch on an applicable platform, or that exits nonzero, stops with a recorded failure rather than a verdict"
+        },
+        {
+          "clause": 16,
+          "obligation": "#38: Preview origins, localhost included, that inherit neither workbench nor Host authority and reach the app only through validated bridge operations"
+        },
+        {
+          "clause": 17,
+          "obligation": "#38: Preview origins, localhost included, that inherit neither workbench nor Host authority and reach the app only through validated bridge operations"
+        },
+        {
+          "clause": 17,
+          "obligation": "#38: the desktop framework holding no canonical project or agent state, evidenced by authorized headless work surviving shell exit"
+        },
+        {
+          "clause": 17,
+          "obligation": "#38: Preview content that reaches workbench or Host authority, or a native command allowed from Preview, ends that candidate"
+        },
+        {
+          "clause": 18,
+          "obligation": "#38: Preview content that reaches workbench or Host authority, or a native command allowed from Preview, ends that candidate"
+        },
+        {
+          "clause": 18,
+          "elsewhere": {
+            "issue": 38,
+            "why": "that an iframe is not evidence on its own is #38's acceptance; this contract refuses a run whose Preview reaches authority"
+          }
+        },
+        {
+          "clause": 19,
+          "elsewhere": {
+            "issue": 38,
+            "why": "Preview source edits are not part of this workload; #38 owns their acceptance, and docs/proofs/linux-shell.md records the bridge and source edits as required and absent"
+          }
+        },
+        {
+          "clause": 20,
+          "elsewhere": {
+            "issue": 38,
+            "why": "accepting a change made over the DOM is #38's; this contract's runs measure the shell under the workload, not the acceptance of an edit"
+          }
+        },
+        {
+          "clause": 21,
+          "obligation": "#38: whole-process-tree attribution for shell, renderers, Preview, language servers, the database, analyzers, SDK bridges and agents"
+        },
+        {
+          "clause": 21,
+          "obligation": "#38: running more than one candidate at a time on the reference configuration voids the comparison"
+        },
+        {
+          "clause": 22,
+          "part": "measurements"
+        },
+        {
+          "clause": 23,
+          "elsewhere": {
+            "issue": 38,
+            "why": "bounded caches, queues and scrollback, backpressure, lazy loading, virtualization and Project-service suspension are #38's suspension proof; this contract predeclares the ceilings they are measured against"
+          }
+        },
+        {
+          "clause": 24,
+          "obligation": "#38: a candidate whose only resource figures come from a blank window stops without a verdict"
+        }
+      ]
     }
   ]
 }
