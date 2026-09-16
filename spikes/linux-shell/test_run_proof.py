@@ -21,6 +21,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -238,6 +240,32 @@ WAYLAND = 'Linux Wayland on the reference compositor'
 def dossier(runs, contract=CONTRACT.id, fingerprint=FINGERPRINT):
     return {'schema_version': 1, 'contract': contract, 'contract_sha256': fingerprint,
             'untested_platforms': ['Linux X11'], 'runs': runs}
+
+
+# A stand-in for the candidate: it emits exactly the markers this fixture attests an
+# obligation by, so a run built around it can support a result. One owner, because
+# both the entry-point cases and the publishing cases run it.
+MARKED_APP = ('#!/bin/sh\n'
+              'echo PROOF_PTY_START\n'
+              'echo PROOF_PTY_START\n'
+              'echo PROOF_PTY_START\n'
+              'echo "PROOF_READY preview_origin=http://127.0.0.1:5173"\n'
+              'echo "PROOF_PREVIEW_REPORT snapshot: denied"\n'
+              'echo "PROOF_PREVIEW_REPORT stop_ptys: denied"\n')
+
+
+def committed_tree():
+    """Every committed recorded file by its bytes: what a run must leave alone."""
+    root = run_proof.REPO / 'docs/proofs/results'
+    return {path: run_proof.sha256_of(path) for path in sorted(root.rglob('*')) if path.is_file()}
+
+
+# The revision gate reads the real git state, so the cases that publish need a tree
+# with no modified tracked file. CI checks out one; a case skipped here is skipped for
+# that reason and says so, rather than failing for a reason it does not hold.
+TREE_IS_COMMITTED = not run_proof.uncommitted(subprocess.run(
+    ['git', '-C', str(run_proof.REPO), 'status', '--porcelain'],
+    capture_output=True, text=True).stdout)
 
 
 def entry(platform, observed):
@@ -495,14 +523,6 @@ class Publishing(unittest.TestCase):
     is checked by ``results`` below and by the commits that carry it.
     """
 
-    MARKERS = ('#!/bin/sh\n'
-               'echo PROOF_PTY_START\n'
-               'echo PROOF_PTY_START\n'
-               'echo PROOF_PTY_START\n'
-               'echo "PROOF_READY preview_origin=http://127.0.0.1:5173"\n'
-               'echo "PROOF_PREVIEW_REPORT snapshot: denied"\n'
-               'echo "PROOF_PREVIEW_REPORT stop_ptys: denied"\n')
-
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
@@ -524,13 +544,8 @@ class Publishing(unittest.TestCase):
             unobservable=[f'{name}=this case measures nothing'
                           for name in contract.measurement_names])
 
-    def committed_tree(self):
-        """Every recorded file by its bytes: what a run must leave exactly as it is."""
-        root = run_proof.REPO / 'docs/proofs/results'
-        return {path: run_proof.sha256_of(path) for path in sorted(root.rglob('*')) if path.is_file()}
-
     def drive(self, markers):
-        before = self.committed_tree()
+        before = committed_tree()
         app = self.artifacts / 'probe'
         app.write_text(markers)
         app.chmod(0o755)
@@ -539,7 +554,7 @@ class Publishing(unittest.TestCase):
              mock.patch.object(run_proof, 'ledger_refusals', return_value=[]):
             with contextlib.redirect_stdout(printed):
                 run_proof.run_wayland(self.arguments, self.artifacts, app, 'a' * 40)
-        self.assertEqual(self.committed_tree(), before,
+        self.assertEqual(committed_tree(), before,
                          'a run must not touch a file the repository commits')
         return printed.getvalue()
 
@@ -553,13 +568,13 @@ class Publishing(unittest.TestCase):
     def test_a_run_that_does_not_answer_the_contract_publishes_nothing(self):
         self.arguments.unobservable = ['not_predeclared=this case measures nothing']
         with self.assertRaises(SystemExit) as caught:
-            self.drive(self.MARKERS)
+            self.drive(MARKED_APP)
         self.assertIn('not_predeclared', str(caught.exception))
         self.assertFalse(self.publish.exists(), 'an artifact directory was published')
         self.assertFalse(self.dossier.exists(), 'a dossier was written')
 
     def test_a_run_that_supports_its_result_publishes_it(self):
-        printed = self.drive(self.MARKERS)
+        printed = self.drive(MARKED_APP)
         self.assertIn(f'wrote {self.dossier}', printed)
         document = json.loads(self.dossier.read_text())
         self.assertEqual(document['contract'], self.arguments.contract)
@@ -570,6 +585,188 @@ class Publishing(unittest.TestCase):
         self.assertTrue(published, 'a published run cites the artifacts it stands on')
         for item in published:
             path = run_proof.REPO / item['artifact']
+            self.assertTrue(path.exists(), f"{item['artifact']} is cited and not published")
+            self.assertEqual(run_proof.sha256_of(path), item['sha256'])
+
+
+class MainEntryPoint(unittest.TestCase):
+    """The driver's own entry point, driven the way the command line drives it.
+
+    This is the region that exists only in production: the terms an invocation left
+    out, both gates, and what a run writes when it publishes. ``main`` is called as
+    the command line calls it — through the parser and the environment — with two
+    stand-ins and only two: the session it would start, and the ledger's cargo
+    read-back, which the fixture job has no Rust toolchain to run. What the terms are
+    and what a run may write is not stood in for anywhere.
+
+    The revision gate reads the real git state, so a checkout with edits cannot
+    publish; CI checks out a clean tree and drives it unpatched. Where a tracked file
+    is modified — a working checkout, or a proof that mutates this file on purpose —
+    the status the gate reads is stood in for and the case says so, because the gate
+    itself is not what these cases hold.
+    """
+
+    SYNTHETIC = {'contracts': [{'id': 'SUITE/other-contract',
+                               'applicable_platforms': ['Suite One', 'Suite Two'],
+                               'stop_conditions': ['suite: a thing ended the run'],
+                               'measurements': [{'name': name, 'unit': 's', 'maximum': 1.0}
+                                                for name in (
+                                                    'workload_process_tree_pss_mib',
+                                                    'unattributed_process_tree_memory_percent',
+                                                    'orphaned_processes_after_cancel',
+                                                    'orphaned_listening_ports_after_cancel',
+                                                    'suite_unseen_measurement')]}]}
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.app = self.root / 'probe'
+        self.app.write_text(MARKED_APP)
+        self.app.chmod(0o755)
+        self.publish = self.root / 'publish'
+        self.dossier = self.root / 'desktop-shell.json'
+        self.contract = run_proof.Contract.read(run_proof.REPO / run_proof.CONTRACTS_PATH)
+        self.runtime = self.root / 'runtime'
+        self.session = RecordedSession(kind='wayland', name='suite compositor', process=Ended(),
+                                       env=dict(os.environ), log=Closes(), runtime=self.runtime)
+
+    def start(self, arguments, artifacts):
+        """The session the driver starts, with the files the real one would leave.
+
+        ``start_wayland`` opens ``kwin.log`` for the compositor and creates its private
+        runtime directory, and ``start_xvfb`` opens ``xvfb.log``; this stands in for the
+        compositor itself, not for those, so it creates them where the real ones do
+        before returning.
+        """
+        (artifacts / ('xvfb.log' if arguments.session == 'xvfb' else 'kwin.log')).write_text('')
+        if arguments.session == 'wayland':
+            self.runtime.mkdir(mode=0o700, exist_ok=True)
+        return self.session
+
+    def arguments(self, *extra, results=True, session='wayland', contract=None,
+                  unobservable=None, stop_condition=None):
+        """The command line this case drives, naming no contract and no platform.
+
+        Those two terms are the ones an invocation may leave out; a case that wants
+        different terms names them through ``extra``, exactly as an operator would.
+        """
+        contract = contract or self.contract
+        unobservable = unobservable or [f'{name}=this case measures nothing'
+                                        for name in contract.measurement_names]
+        argv = ['--session', session, '--binary', str(self.app), '--seconds', '1',
+                '--cancel-after', '0',
+                '--stop-condition', stop_condition or contract.stop_conditions[0],
+                '--unobservable', *unobservable]
+        if results:
+            argv += ['--publish', str(self.publish), '--results', str(self.dossier),
+                     '--contract-sha256', run_proof.sha256_of(
+                         run_proof.REPO / run_proof.CONTRACTS_PATH)]
+        return argv + list(extra)
+
+    def clean_status(self):
+        """Stand in for the git status the revision gate reads, on a dirty checkout.
+
+        A status that names a modified tracked file is the gate doing its job, and a
+        case that mutates this file to prove a rule would otherwise only ever see
+        that refusal. On a clean tree — CI, and this repository when it is committed —
+        nothing is stood in for and the gate reads the tree itself.
+        """
+        if TREE_IS_COMMITTED:
+            return contextlib.nullcontext()
+        real = subprocess.run
+
+        def run(command, *args, **kwargs):
+            if 'status' in command and '--porcelain' in command:
+                return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+            return real(command, *args, **kwargs)
+        return mock.patch.object(run_proof.subprocess, 'run', side_effect=run)
+
+    def drive(self, argv, authorized=True):
+        before = committed_tree()
+        environment = dict(os.environ)
+        environment.pop('SYMBIOTE_PROOF_AUTHORIZED', None)
+        if authorized:
+            environment['SYMBIOTE_PROOF_AUTHORIZED'] = '1'
+        printed = io.StringIO()
+        with mock.patch.object(sys, 'argv', ['run-proof.py'] + argv), \
+             mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch.object(run_proof, 'ROOT', self.root), \
+             mock.patch.object(run_proof, 'open_session', side_effect=self.start), \
+             mock.patch.object(run_proof, 'ledger_refusals', return_value=[]), \
+             self.clean_status():
+            with contextlib.redirect_stdout(printed):
+                run_proof.main()
+        self.assertEqual(committed_tree(), before,
+                         'a run through the entry point must not touch a committed file')
+        return printed.getvalue()
+
+    def records(self):
+        """What the run wrote under the artifacts root it was given, by file name."""
+        return sorted(path.name for path in (self.root / 'artifacts').rglob('*') if path.is_file())
+
+    def test_the_gate_variable_is_refused_before_anything_is_written(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments(), authorized=False)
+        self.assertIn('SYMBIOTE_PROOF_AUTHORIZED', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started without the gate')
+        self.assertFalse(self.publish.exists())
+        self.assertFalse(self.dossier.exists())
+
+    def test_the_x11_entry_point_writes_only_its_own_records(self):
+        self.drive(self.arguments(results=False, session='xvfb'))
+        self.assertIn('process-tree.json', self.records())
+        self.assertIn('app.log', self.records())
+        self.assertFalse(self.publish.exists(), 'an artifact directory was published')
+        self.assertFalse(self.dossier.exists(), 'a dossier was written')
+
+    def test_a_document_that_names_no_contract_is_refused_through_main(self):
+        empty = self.root / 'empty-contracts.json'
+        empty.write_text(json.dumps({'contracts': []}))
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments('--contracts', str(empty), results=False, session='xvfb'))
+        self.assertIn('names no contract', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started with no terms to answer')
+
+    def test_a_term_the_contract_does_not_answer_is_refused_through_main(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments(unobservable=['not_predeclared=this case']))
+        self.assertIn('not_predeclared', str(caught.exception))
+        self.assertFalse(self.publish.exists(), 'an artifact directory was published')
+        self.assertFalse(self.dossier.exists(), 'a dossier was written')
+
+    def test_a_recorded_revision_that_is_not_the_tree_is_refused_through_main(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments('--commit', 'b' * 40))
+        self.assertIn('the run would record revision', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started under a revision it cannot stand on')
+        self.assertFalse(self.publish.exists())
+        self.assertFalse(self.dossier.exists())
+
+    def test_an_invocation_that_names_no_terms_takes_the_documents_own(self):
+        """The terms an invocation leaves out come from the document it was pointed at."""
+        path = self.root / 'spike-contracts.json'
+        path.write_text(json.dumps(self.SYNTHETIC))
+        synthetic = run_proof.Contract.read(path)
+        self.drive(self.arguments('--contracts', str(path), contract=synthetic,
+                                  unobservable=['suite_unseen_measurement=this case']))
+        document = json.loads(self.dossier.read_text())
+        self.assertEqual(document['contract'], 'SUITE/other-contract')
+        self.assertEqual([row['platform'] for row in document['runs']], ['Suite One', 'Suite One'])
+        self.assertEqual(document['untested_platforms'], ['Suite Two'])
+
+    def test_a_run_that_supports_its_result_publishes_it_through_main(self):
+        printed = self.drive(self.arguments())
+        self.assertIn(f'wrote {self.dossier}', printed)
+        document = json.loads(self.dossier.read_text())
+        self.assertEqual(document['contract'], self.contract.id)
+        self.assertEqual([row['platform'] for row in document['runs']],
+                         [self.contract.default_platform()] * 2)
+        self.assertEqual(document['untested_platforms'],
+                         list(self.contract.applicable_platforms[1:]))
+        published = [item for row in document['runs'] for item in row['artifacts']]
+        self.assertTrue(published, 'a published run cites the artifacts it stands on')
+        for item in published:
+            path = Path(item['artifact'])
             self.assertTrue(path.exists(), f"{item['artifact']} is cited and not published")
             self.assertEqual(run_proof.sha256_of(path), item['sha256'])
 
