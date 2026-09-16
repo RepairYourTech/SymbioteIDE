@@ -39,7 +39,7 @@ pub(crate) fn require(condition: bool, message: impl Into<String>) -> Result<()>
         Err(ContractError(message.into()))
     }
 }
-fn text(value: &str) -> bool {
+pub(crate) fn text(value: &str) -> bool {
     !value.trim().is_empty()
 }
 fn next(revision: u64) -> Result<u64> {
