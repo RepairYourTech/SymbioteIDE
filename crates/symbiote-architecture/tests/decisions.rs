@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use symbiote_architecture::checks::{Problem, problems};
 use symbiote_architecture::ledger::{LEDGER_PATH, Ledger};
 use symbiote_architecture::repository::{Workspace, hash};
+use symbiote_architecture::spike::{CONTRACTS_PATH, Contracts};
 use symbiote_architecture::{DecisionState, GateStatus, workspace_root};
 
 /// 2026-09-08 UTC, the day ADR-0001 and its ledger were recorded.
@@ -23,6 +24,14 @@ fn root() -> PathBuf {
     workspace_root()
 }
 
+/// A contract document that holds nothing: these fixtures are about the ledger.
+fn no_contracts() -> Contracts {
+    Contracts {
+        schema_version: 1,
+        contracts: Vec::new(),
+    }
+}
+
 fn ledger() -> Ledger {
     Ledger::read(&root().join(LEDGER_PATH)).expect("the committed decision ledger")
 }
@@ -31,8 +40,12 @@ fn workspace() -> Workspace {
     Workspace::read(&root()).expect("cargo reports this workspace")
 }
 
+fn contracts() -> Contracts {
+    Contracts::read(&root().join(CONTRACTS_PATH)).expect("the committed spike contracts")
+}
+
 fn real_problems() -> Vec<Problem> {
-    problems(&ledger(), &workspace(), &root(), NOW)
+    problems(&ledger(), &contracts(), &workspace(), &root(), NOW)
 }
 
 #[test]
@@ -284,6 +297,7 @@ fn a_member_cargo_reports_but_the_ledger_does_not_is_refused() {
     let fixture = Fixture::new(fixture_ledger());
     let found = problems(
         &fixture.ledger(),
+        &no_contracts(),
         &fixture.workspace_with(&[("crates/member", &[]), ("crates/newcomer", &[])]),
         &fixture.root,
         NOW,
@@ -373,6 +387,7 @@ fn a_member_that_declares_a_provisional_choice_without_recording_it_is_refused()
     let fixture = Fixture::new(value);
     let found = problems(
         &fixture.ledger(),
+        &no_contracts(),
         &fixture.workspace_with(&[
             ("crates/member", &["tauri"]),
             ("crates/desktop", &["tauri"]),
@@ -620,6 +635,7 @@ impl Fixture {
     fn problems(&self) -> Vec<Problem> {
         problems(
             &self.ledger(),
+            &no_contracts(),
             &self.workspace_with(&[("crates/member", &[])]),
             &self.root,
             NOW,

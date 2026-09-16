@@ -1,6 +1,6 @@
 # Linux Tauri shell proof — #38
 
-Status: experimental fixture, **not shell selection**. The integrating engineer authorized execution after independently reviewed foundation PR #473 merged at `a15368c1744fdff3c186dda11f24714d738c7efe` with stable/MSRV/roadmap checks passing. This isolated spike does not alter the production workspace. Baseline: merged #472 and ADR-0001. It is a deliberately partial workload; an Xvfb run cannot pass the complete #38 contract.
+Status: experimental fixture, **not shell selection**. The integrating engineer authorized execution after independently reviewed foundation PR #473 merged at `a15368c1744fdff3c186dda11f24714d738c7efe` with stable/MSRV/roadmap checks passing. This isolated spike does not alter the production workspace. Baseline: merged #472 and ADR-0001. It is a deliberately partial workload; an Xvfb run cannot pass the complete #38 contract, which is committed as data in [`spike-contracts.json`](../architecture/spike-contracts.json) with its predeclared ceilings, stop conditions and cleanup. Nothing here is that run.
 
 ## Reproduce
 

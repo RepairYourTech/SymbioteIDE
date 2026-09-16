@@ -86,6 +86,7 @@
       "record": "docs/architecture/adr-0001-technology-direction.md",
       "record_sha256": "876741f3c6c66982385f9c0372c1c133ce242d143d9758876f21779f0701d990",
       "blocking_issue": 38,
+      "proof_contract": "#38/desktop-shell-representative-workload",
       "proposed_dependencies": ["tauri", "tauri-build"]
     },
     {

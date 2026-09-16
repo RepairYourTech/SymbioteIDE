@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "contracts": [
+    {
+      "schema_version": 1,
+      "id": "#38/desktop-shell-representative-workload",
+      "decision": "ADR-0001/DESKTOP-SHELL",
+      "hypothesis": "Tauri 2, with the components the Linux fixture already pins, runs the representative workload below inside every predeclared ceiling on the reference configuration while keeping Preview untrusted and the shell free of canonical state. A hard requirement that fails is evidence for a documented non-Electron alternative, never for reducing Preview scope; and running the same scripted workload on another eligible candidate can falsify this hypothesis.",
+      "workload": [
+        "#38: four concurrent agent streams, dispatched and supervised at once",
+        "#38: three active terminal tabs with bounded scrollback in real PTYs",
+        "#38: an editor with diffs, mapped back to the sources it opens",
+        "#38: a live integrated Preview of the run's own output",
+        "#38: floating chat and voice controls over the Preview surface",
+        "#38: Project switch and restoration, including the drafts each Project owns",
+        "#38: cancellation of the whole process tree, then restart",
+        "#38: crash and client reconnect that recover canonical state without the transcript",
+        "#38: a second desktop client controlling a headless Linux Host, including controller handoff",
+        "#38: the same scripted workload on every eligible non-Electron candidate, rerun so its results are reproducible",
+        "#38: Preview origins, localhost included, that inherit neither workbench nor Host authority and reach the app only through validated bridge operations",
+        "#38: the desktop framework holding no canonical project or agent state, evidenced by authorized headless work surviving shell exit",
+        "#38: whole-process-tree attribution for shell, renderers, Preview, language servers, the database, analyzers, SDK bridges and agents",
+        "#38: Linux Wayland, Linux X11, Windows and macOS exercised as applicable, with platform-specific compromises and fallbacks recorded"
+      ],
+      "platform": "Applicable: Linux Wayland on the reference compositor, Linux X11, Windows 11 x86_64, macOS 14 arm64. Applicability is recorded per run rather than assumed: a platform whose packaging or shell behavior was not exercised is listed untested, and an untested platform keeps this choice from settling.",
+      "hardware": "Predeclared reference configuration: four physical cores at 3.0 GHz, 16 GiB RAM, integrated graphics with an accelerated Linux Wayland compositor, solid-state storage; the per-platform reference (Windows 11 x86_64, macOS 14 arm64) is recorded with each run. The existing Xvfb, software-rendered, debug-build observations are not this configuration and cannot pass these ceilings.",
+      "method": "Each candidate runs the scripted workload in its own disposable session under one driver: spikes/linux-shell/run-proof.py is the Linux entry point, extended for real agent streams and per-component attribution, and the driver issues the workload, samples the process tree at 100 ms, and publishes app, process-tree, cleanup and display logs. cold start is monotonic seconds from process start to the first frame, and to the workbench reporting ready. memory is the summed proportional set size of the candidate's own process tree, sampled idle and under load, attributed by descending from the candidate root, with the unattributed share reported as a percentage of tree PSS. starvation is the longest interval in which an input the driver issues is not acknowledged. cancellation counts the tree members, listening ports and secret-bearing processes that survive the cancellation request. the crash figure is the number of journal events the canonical store loses across a SIGKILL and restart, diffed against the pre-crash snapshot. installer size is the packaged artifact for the platform, and build time is a clean locked build on the reference configuration with warmed toolchains. Every run records commit, platform and version, hardware, the contract fingerprint, raw artifacts and failures in the result artifact, and each run is repeated so the figures are reproducible rather than single-shot.",
+      "measurements": [
+        { "name": "cold_start_to_first_frame_seconds", "unit": "s", "maximum": 3.0 },
+        { "name": "cold_start_to_workbench_ready_seconds", "unit": "s", "maximum": 8.0 },
+        { "name": "idle_process_tree_pss_mib", "unit": "MiB", "maximum": 700.0 },
+        { "name": "workload_process_tree_pss_mib", "unit": "MiB", "maximum": 2560.0 },
+        { "name": "unattributed_process_tree_memory_percent", "unit": "%", "maximum": 5.0 },
+        { "name": "worst_input_starvation_ms", "unit": "ms", "maximum": 250.0 },
+        { "name": "orphaned_processes_after_cancel", "unit": "processes", "maximum": 0.0 },
+        { "name": "orphaned_listening_ports_after_cancel", "unit": "ports", "maximum": 0.0 },
+        { "name": "journal_events_lost_across_crash", "unit": "events", "maximum": 0.0 },
+        { "name": "installer_size_mib", "unit": "MiB", "maximum": 150.0 },
+        { "name": "clean_locked_build_seconds", "unit": "s", "maximum": 900.0 }
+      ],
+      "stop_conditions": [
+        "#38: a candidate that cannot build or launch on an applicable platform, or that exits nonzero, stops with a recorded failure rather than a verdict",
+        "#38: Preview content that reaches workbench or Host authority, or a native command allowed from Preview, ends that candidate",
+        "#38: processes, listening ports or secret-bearing processes that survive cancellation end that candidate",
+        "#38: a measurement the instrument cannot observe stops the run and is reported unknown, never counted as met",
+        "#38: a candidate whose only resource figures come from a blank window stops without a verdict",
+        "#38: an untested platform stays pending and keeps the choice from settling",
+        "#38: a failing hard requirement stops dependent shell implementation and requires a recorded non-Electron alternative",
+        "#38: running more than one candidate at a time on the reference configuration voids the comparison"
+      ],
+      "result_artifact": "docs/proofs/results/desktop-shell.json",
+      "cleanup": "Per run the driver removes the disposable display or session it started; kills only the process identities it observed itself, by PID birth ticks; verifies that no tree member, listening port or secret-bearing process it knows of survives; writes the run's logs into the ignored spike artifact directory and commits the artifacts the result cites, so their hashes can be re-checked; and leaves no user-display use, no system or global package change and no lingering worktree. A stopped or failed run is cleaned by the same path and publishes its failure."
+    }
+  ]
+}

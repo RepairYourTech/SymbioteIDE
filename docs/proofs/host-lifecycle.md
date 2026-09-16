@@ -1,6 +1,6 @@
 # Linux Host lifetime probe — bounded #38 evidence
 
-Owner: #38. This standalone experiment is in `spikes/host-lifecycle`; it does not select production persistence or protocol, replace #43/#181/#180, or implement the canonical Host. The binary launches only its own fixed root → child → grandchild workload. It accepts no command, path, credential, provider or remote network target from a client.
+Owner: #38. What would settle #38's shell choice — predeclared ceilings, stop conditions, cleanup and the run that publishes them — is committed as data in [`spike-contracts.json`](../architecture/spike-contracts.json); this probe is one candidate's partial evidence, not that run. This standalone experiment is in `spikes/host-lifecycle`; it does not select production persistence or protocol, replace #43/#181/#180, or implement the canonical Host. The binary launches only its own fixed root → child → grandchild workload. It accepts no command, path, credential, provider or remote network target from a client.
 
 ## Mechanism and demonstrated boundary
 
