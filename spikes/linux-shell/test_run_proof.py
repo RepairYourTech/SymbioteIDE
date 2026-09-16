@@ -1237,38 +1237,59 @@ class CommittedResult(unittest.TestCase):
 class ConcernMap(unittest.TestCase):
     """The map from concerns to modules has one owner, and cannot go stale.
 
-    It is `run-proof.py`'s docstring — which is also what the command line prints —
-    and nothing else states it. Both directions are held here: every module of the
-    package is named there, and every module it names is a module of the package, so
-    adding or renaming one is a single edit and a map that has stopped describing the
-    package fails here rather than being read as true. The limit is stated rather than
-    left implicit: this holds the map's own form, so a second list of the modules
-    written in another form would not be caught by it.
+    Its owner is the entry point's docstring, which `argparse` prints as the description
+    of `--help` — so the map a reader gets is the map held here: what `--help` prints is
+    checked to name every module of the package, and the map's own form is checked to
+    appear nowhere else the fixture owns — not in the package, not elsewhere in the
+    entry point, and not in the document that describes the fixture. A module added,
+    moved or renamed is then one edit, and a map that has stopped describing the package
+    fails rather than being read as true. The limits are measured, not implied: a second
+    list written in another form (a Python constant, a table) is caught by neither case,
+    and neither is one in a document other than the fixture's own.
     """
 
     FIXTURE = Path(__file__).resolve().parent
+    DOCUMENT = FIXTURE.parents[1] / 'docs/proofs/linux-shell.md'
     MAP = re.compile(r'``shellproof/([a-z_]+)\.py``')
 
     def modules(self):
         return {path.stem for path in (self.FIXTURE / 'shellproof').glob('*.py')
                 if path.stem != '__init__'}
 
-    def files(self):
-        return [self.FIXTURE / 'run-proof.py'] + sorted((self.FIXTURE / 'shellproof').glob('*.py'))
+    def printed(self):
+        """The map as a reader gets it: the description of `--help`, driven through main."""
+        printed = io.StringIO()
+        with mock.patch.object(sys, 'argv', ['run-proof.py', '--help']), \
+                contextlib.redirect_stdout(printed):
+            with self.assertRaises(SystemExit):
+                run_proof.main()
+        return printed.getvalue()
 
     def test_the_concern_map_names_every_module_of_the_package(self):
-        named = {match.group(1)
-                 for match in self.MAP.finditer((self.FIXTURE / 'run-proof.py').read_text())}
+        named = {match.group(1) for match in self.MAP.finditer(self.printed())}
         self.assertTrue(self.modules(), 'the package holds no module for the map to name')
         self.assertEqual(named, self.modules(),
-                         'the concern map in run-proof.py and the package disagree: a module added '
-                         'or renamed is one edit there')
+                         'the concern map `--help` prints and the package disagree: a module added '
+                         'or renamed is one edit in the entry point docstring the reader sees')
 
     def test_the_concern_map_is_stated_once(self):
-        carriers = [path.name for path in self.files() if self.MAP.search(path.read_text())]
-        self.assertEqual(carriers, ['run-proof.py'],
-                         'the concern map is the entry point docstring in run-proof.py; a second '
-                         'list of the modules is the copy that goes stale')
+        docstring = run_proof.__doc__ or ''
+        entry = (self.FIXTURE / 'run-proof.py').read_text()
+        elsewhere = []
+        for path in [self.FIXTURE / 'run-proof.py'] + sorted(
+                (self.FIXTURE / 'shellproof').glob('*.py')):
+            if path.name == 'run-proof.py':
+                text = entry.replace(docstring, '', 1)
+            else:
+                text = path.read_text()
+            if self.MAP.search(text):
+                elsewhere.append(path.name)
+        if self.MAP.search(self.DOCUMENT.read_text()):
+            elsewhere.append(str(self.DOCUMENT.relative_to(self.FIXTURE.parents[1])))
+        self.assertEqual(elsewhere, [],
+                         'the concern map is the entry point docstring, which `--help` prints; the '
+                         'same form anywhere else — in the package, in the entry point around it, '
+                         'or in the fixture document — is the second list that goes stale')
 
 
 if __name__ == '__main__':
