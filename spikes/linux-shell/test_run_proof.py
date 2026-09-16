@@ -1111,8 +1111,21 @@ class SessionRecordVersion(unittest.TestCase):
                                     log=None, runtime=self.root / 'runtime')
         self.written = run_proof.session_record(session, binary, 0, None)
 
+    # A name no version carries, so a future shape cannot take it; the case checks that
+    # for itself before it uses it.
+    UNNAMED = 'a_field_no_version_names'
+
     def without(self, *fields):
         return {key: value for key, value in self.written.items() if key not in fields}
+
+    def version_zero(self):
+        """Version 0's record, in the shape the table gives that version.
+
+        Subtracting what version 1 added from the writer's output was a second statement of
+        that shape, and it stopped being version 0 as soon as a version was added.
+        """
+        return {key: value for key, value in self.written.items()
+                if key in run_proof.SESSION_SHAPES[0]}
 
     def read(self, record):
         path = self.root / 'session.json'
@@ -1128,21 +1141,23 @@ class SessionRecordVersion(unittest.TestCase):
         self.assertEqual(self.read(self.written), self.written)
 
     def test_a_version_this_reader_does_not_know_is_refused_by_name(self):
-        with self.assertRaises(SystemExit) as caught:
-            self.read({**self.written, 'schema_version': run_proof.SESSION_SCHEMA_VERSION + 1})
-        self.assertIn('declares schema version 2', str(caught.exception))
-        self.assertIn(str(sorted(run_proof.SESSION_SHAPES)), str(caught.exception))
+        for unknown in (max(run_proof.SESSION_SHAPES) + 1, -1):
+            with self.subTest(unknown=unknown):
+                with self.assertRaises(SystemExit) as caught:
+                    self.read({**self.written, 'schema_version': unknown})
+                self.assertIn(f'declares schema version {unknown}', str(caught.exception))
+                self.assertIn(str(sorted(run_proof.SESSION_SHAPES)), str(caught.exception))
 
-    def test_a_version_of_the_wrong_type_is_refused_naming_the_value(self):
-        """A version is a number: `"1"`, `null` and `true` are not it, and say so."""
-        for value in ('1', None, True):
+    def test_a_version_of_another_type_is_refused_naming_the_value(self):
+        """A version is an integer of a known one: `"1"`, `null`, `true` and `1.0` are not."""
+        for value in ('1', None, True, 1.0, f'{run_proof.SESSION_SCHEMA_VERSION}'):
             with self.subTest(value=value):
                 with self.assertRaises(SystemExit) as caught:
                     self.read({**self.written, 'schema_version': value})
                 self.assertIn(f'declares schema version {value!r}', str(caught.exception))
 
     def test_a_record_declaring_no_version_is_read_as_the_shape_before_it(self):
-        before = self.without('schema_version', 'display', 'system')
+        before = self.version_zero()
         self.assertEqual(self.read(before), before,
                          'the committed run\'s record is this shape, and is read')
 
@@ -1152,11 +1167,16 @@ class SessionRecordVersion(unittest.TestCase):
         self.assertIn("'system'", str(caught.exception))
 
     def test_a_record_carrying_a_field_its_version_does_not_name_is_refused(self):
+        named = {field for shape in run_proof.SESSION_SHAPES.values() for field in shape}
+        self.assertNotIn(self.UNNAMED, named,
+                         'this case needs a name no version carries; a version that took this '
+                         'one would have to rename the fixture rather than fail here for the '
+                         'wrong reason')
         with self.assertRaises(SystemExit) as caught:
-            self.read({**self.written, 'gpu': 'a field the shape does not name'})
-        self.assertIn("'gpu'", str(caught.exception))
+            self.read({**self.written, self.UNNAMED: 'a field the shape does not name'})
+        self.assertIn(f"'{self.UNNAMED}'", str(caught.exception))
         with self.assertRaises(SystemExit) as caught:
-            self.read({**self.without('schema_version', 'display', 'system'), 'display': 'Wayland'})
+            self.read({**self.version_zero(), 'display': 'Wayland'})
         self.assertIn("'display'", str(caught.exception))
 
     def test_a_record_that_is_not_a_record_is_refused_by_name(self):
