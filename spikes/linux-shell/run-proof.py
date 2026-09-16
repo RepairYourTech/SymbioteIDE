@@ -71,6 +71,8 @@ Where each concern lives, so a change lands in one place:
 * ``measure`` — the sequence both entry points share: run it, sample it, clean up
   after it, read its own log;
 * ``result_problems`` — what a result may not claim, asked of the contract;
+* ``unconsumed_options`` — what the path an invocation selected would never read, so
+  an option cannot be accepted and silently dropped;
 * ``fingerprint_problems`` — whether the value an invocation supplies could be the
   contract's fingerprint, which is all this driver can decide about it;
 * ``merged_runs`` / ``publish`` / ``build_record`` — how this run's entries and the
@@ -787,6 +789,54 @@ def revision_problems(commit, head, status):
     return problems
 
 
+def unconsumed_options(args):
+    """Options the path this invocation selected never reads, each named.
+
+    Three defects in this driver were one class: an invocation that exited successfully
+    while silently dropping what it asked for — evidence copied before a subscript
+    crashed, a dossier published and then refused by the ledger, and an X11 run that
+    satisfied `--results` and wrote no dossier at all. Every option belongs to
+    something: the session that runs, the result that is published, or the Wayland
+    path's own records. One the selected path never reads is refused here by name,
+    before the git gate, before the artifacts directory exists and before any session
+    starts, rather than being accepted and dropped.
+
+    It is asked of what the invocation named, before `named_defaults` fills the terms it
+    left out: an option nobody passed is not an option that was dropped. Two options are
+    on no path: `--interact` promises input driving and screenshot capture and this driver
+    does neither, so it is refused instead of lengthening a run and calling that
+    inspection; and `--contracts`, which names the document itself, keeps its default and
+    is read only where a term has to be derived or a result judged, which is stated here
+    rather than checked because a default cannot be told from an option an invocation
+    passed.
+    """
+    problems = []
+    if args.interact:
+        problems.append('--interact promises input driving and screenshot capture, and this driver '
+                        'does neither: it takes no screenshot and issues no input, so the option is '
+                        'refused rather than lengthening the run and calling that inspection')
+    if not args.results:
+        for option, value in (('--publish', args.publish), ('--platform', args.platform),
+                              ('--contract-sha256', args.contract_sha256),
+                              ('--stop-condition', args.stop_condition),
+                              ('--unobservable', args.unobservable), ('--limitation', args.limitation)):
+            if value:
+                problems.append(f'{option} says what a result records, and this invocation asks for '
+                                'no result: add --results or drop it')
+    if args.session == 'xvfb':
+        for option, value in (('--cancel-after', args.cancel_after is not None),
+                              ('--build-seconds', args.build_seconds is not None),
+                              ('--build-log', args.build_log), ('--contract', args.contract)):
+            if value:
+                problems.append(f'{option} belongs to the Wayland entry point: the X11 entry point '
+                                'prints one measured lifetime and records no build, revision or '
+                                'contract, so nothing here would read it')
+    if args.commit and not (args.results or args.build_log):
+        problems.append('--commit says which revision a run records, and this invocation records '
+                        'neither a result nor a build log: add --results or --build-log')
+    return problems
+
+
 def fingerprint_problems(fingerprint, document):
     """Why the value an invocation supplies cannot be the contract's fingerprint.
 
@@ -929,8 +979,7 @@ def run_xvfb(args, artifacts, binary):
     session = open_session(args, artifacts)
     measured = None
     try:
-        measured = measure(session, artifacts, binary, 'app.log',
-                           35 if args.interact else args.seconds, 0, trace=False)
+        measured = measure(session, artifacts, binary, 'app.log', args.seconds, 0, trace=False)
         probes_denied = all(f'PROOF_PREVIEW_REPORT {command}: denied' in measured['text']
                             for command in ['snapshot', 'stop_ptys'])
         summary = {
@@ -1095,8 +1144,8 @@ def run_wayland(args, artifacts, binary, commit):
 
         # Run 2: the same workload, cancelled from under the driver, so the
         # cancellation figures are about a live tree rather than a reaped one.
-        second = measure(session, artifacts, binary, 'app-2.log', 300, args.cancel_after,
-                         trace=False)
+        second = measure(session, artifacts, binary, 'app-2.log', 300,
+                         args.cancel_after if args.cancel_after is not None else 25, trace=False)
         figures, peak = figures_of(second['samples'], second['cancellation'], None, None)
         (artifacts / 'process-tree-2.json').write_text(json.dumps(
             {'session': session.name, 'run': 2, 'app_exit': second['code'],
@@ -1172,11 +1221,12 @@ def main():
     parser.add_argument('--session', choices=['xvfb', 'wayland'], default='xvfb',
                         help='the disposable session to run in (default: xvfb)')
     parser.add_argument('--interact', action='store_true',
-                        help='X11 only: drive input and capture screenshots for inspection')
+                        help='refused: this driver drives no input and captures no screenshot, so '
+                             'there is nothing for this option to ask for')
     parser.add_argument('--seconds', type=int, default=20,
                         help='seconds run 1 lets the app run before it exits on its own')
-    parser.add_argument('--cancel-after', type=int, default=25,
-                        help='Wayland: seconds into run 2 to request cancellation')
+    parser.add_argument('--cancel-after', type=int, default=None,
+                        help='Wayland: seconds into run 2 to request cancellation (default: 25)')
     parser.add_argument('--binary', default=None, help='the built app to run')
     parser.add_argument('--build-seconds', type=float, default=None,
                         help='a clean locked build of this candidate, measured separately')
@@ -1206,10 +1256,13 @@ def main():
                         help='measurement=reason pairs this run reports unknown rather than met')
     parser.add_argument('--limitation', nargs='*', default=[],
                         help='what this instrument cannot show, recorded with every run')
-    args = named_defaults(parser.parse_args())
+    args = parser.parse_args()
+    problems = unconsumed_options(args)
+    if problems:
+        raise SystemExit('refusing to run: this invocation asks for something the path it selected '
+                         'never reads, and:\n  ' + '\n  '.join(problems))
+    args = named_defaults(args)
 
-    if args.interact and (not shutil.which('xdotool') or not shutil.which('import')):
-        raise SystemExit('Interaction capture requires installed xdotool and ImageMagick; no packages are installed automatically')
     if os.environ.get('SYMBIOTE_PROOF_AUTHORIZED') != '1':
         raise SystemExit('Execution gate: root must establish #170/#173 prerequisites and set SYMBIOTE_PROOF_AUTHORIZED=1.')
     binary = Path(args.binary) if args.binary else next(

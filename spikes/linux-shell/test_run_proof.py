@@ -670,14 +670,19 @@ class MainEntryPoint(unittest.TestCase):
         about it.
         """
         contract = contract or self.contract
-        unobservable = unobservable or [f'{name}=this case measures nothing'
-                                        for name in contract.measurement_names]
-        argv = ['--session', session, '--binary', str(self.app), '--seconds', '1',
-                '--cancel-after', '0',
-                '--stop-condition', stop_condition or contract.stop_conditions[0],
-                '--unobservable', *unobservable]
+        # The line is built the way the driver classifies its options: the session's own,
+        # then the second run's cancellation, then what a result records. An invocation
+        # that asks for no result carries none of the third group, which is what the
+        # driver refuses an option from that group for.
+        argv = ['--session', session, '--binary', str(self.app), '--seconds', '1']
+        if session == 'wayland':
+            argv += ['--cancel-after', '0']
         if results:
-            argv += ['--publish', str(self.publish), '--results', str(self.dossier),
+            unobservable = unobservable or [f'{name}=this case measures nothing'
+                                            for name in contract.measurement_names]
+            argv += ['--stop-condition', stop_condition or contract.stop_conditions[0],
+                     '--unobservable', *unobservable,
+                     '--publish', str(self.publish), '--results', str(self.dossier),
                      '--contract-sha256', fingerprint]
         return argv + list(extra)
 
@@ -798,6 +803,69 @@ class MainEntryPoint(unittest.TestCase):
         self.assertEqual(self.records(), [], 'an Xvfb run started before it was refused')
         self.assertFalse(self.publish.exists(), 'an artifact directory was published')
         self.assertFalse(self.dossier.exists(), 'a dossier was written')
+
+    def test_result_options_without_a_result_are_refused(self):
+        """An option that says what a result records, on a run that asks for none.
+
+        Every one of these is read by the publication block and nowhere else, so an
+        invocation naming one without `--results` used to have it accepted and dropped.
+        """
+        for option, value in (('--publish', str(self.publish)), ('--platform', self.contract.id),
+                              ('--contract-sha256', COMMITTED_FINGERPRINT),
+                              ('--stop-condition', self.contract.stop_conditions[0]),
+                              ('--unobservable', 'cold_start_to_first_frame_seconds=nothing'),
+                              ('--limitation', 'nothing')):
+            with self.subTest(option=option):
+                case = self.__class__('test_a_run_that_supports_its_result_publishes_it_through_main')
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                with self.assertRaises(SystemExit) as caught:
+                    case.drive(case.arguments(option, value, results=False))
+                self.assertIn(option, str(caught.exception))
+                self.assertEqual(case.records(), [], f'a run started with {option} and no result')
+                self.assertFalse(case.publish.exists())
+                self.assertFalse(case.dossier.exists())
+
+    def test_a_wayland_option_on_the_x11_path_is_refused(self):
+        """The X11 entry point prints one lifetime: no cancellation, build, or contract."""
+        for option, value in (('--cancel-after', '5'), ('--build-seconds', '1.0'),
+                              ('--build-log', '/tmp/this-case-builds-nothing.log'),
+                              ('--contract', self.contract.id)):
+            with self.subTest(option=option):
+                case = self.__class__('test_a_run_that_supports_its_result_publishes_it_through_main')
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                with self.assertRaises(SystemExit) as caught:
+                    case.drive(case.arguments(option, value, results=False, session='xvfb'))
+                self.assertIn(option, str(caught.exception))
+                self.assertEqual(case.records(), [], f'an Xvfb run started with {option}')
+
+    def test_a_revision_without_a_record_is_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments('--commit', 'b' * 40, results=False))
+        self.assertIn('--commit', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started with a revision it records nowhere')
+
+    def test_interaction_capture_is_refused_rather_than_promised(self):
+        """The option used to lengthen the run while taking no screenshot and driving nothing."""
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments('--interact', results=False))
+        self.assertIn('no screenshot', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started under an unimplemented option')
+
+    def test_results_without_a_publish_root_is_refused(self):
+        argv = self.arguments()
+        with self.assertRaises(SystemExit) as caught:
+            self.drive([a for a in argv if a != '--publish' and a != str(self.publish)])
+        self.assertIn('--results needs --publish', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started without the root it would publish into')
+        self.assertFalse(self.dossier.exists())
+
+    def test_a_binary_that_does_not_exist_is_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(self.arguments('--binary', str(self.root / 'not-built'), results=False))
+        self.assertIn('Build first', str(caught.exception))
+        self.assertEqual(self.records(), [], 'a run started with no binary to run')
 
     def test_the_x11_entry_point_writes_only_its_own_records(self):
         self.drive(self.arguments(results=False, session='xvfb'))
