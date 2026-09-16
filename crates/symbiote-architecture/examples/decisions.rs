@@ -1,5 +1,7 @@
 //! The published decision map of this repository (#173): every recorded
-//! decision, every artifact that pins one, and every refusal the ledger meets.
+//! decision, every artifact that pins one, every predeclared spike contract and
+//! the run that would settle the choice it belongs to, and every refusal the
+//! ledger meets.
 //!
 //! ```sh
 //! cargo run -p symbiote-architecture --example decisions
@@ -13,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use symbiote_architecture::checks::problems;
 use symbiote_architecture::ledger::{LEDGER_PATH, Ledger};
 use symbiote_architecture::repository::Workspace;
+use symbiote_architecture::spike::{CONTRACTS_PATH, Contracts};
 use symbiote_architecture::workspace_root;
 
 fn main() -> ExitCode {
@@ -28,6 +31,13 @@ fn main() -> ExitCode {
         Ok(registry) => registry,
         Err(error) => {
             eprintln!("the decision ledger does not replay: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let contracts = match Contracts::read(&root.join(CONTRACTS_PATH)) {
+        Ok(contracts) => contracts,
+        Err(error) => {
+            eprintln!("{error}");
             return ExitCode::FAILURE;
         }
     };
@@ -85,14 +95,31 @@ fn main() -> ExitCode {
         );
     }
 
-    let found = problems(&ledger, &workspace, &root, now);
+    for contract in &contracts.contracts {
+        let run = if root.join(&contract.result_artifact).exists() {
+            "recorded"
+        } else {
+            "not run"
+        };
+        println!(
+            "contract {} settles {}: {} predeclared measurements, {} stop conditions, run {} {run}",
+            contract.id,
+            contract.decision,
+            contract.measurements.len(),
+            contract.stop_conditions.len(),
+            contract.result_artifact,
+        );
+    }
+
+    let found = problems(&ledger, &contracts, &workspace, &root, now);
     for problem in &found {
         println!("refused {}: {}", problem.subject, problem.detail);
     }
     println!(
-        "{} decisions, {} artifacts, {} workspace members, {} refusals",
-        ledger.decisions.len(),
-        ledger.artifacts.len(),
+        "{}, {}, {}, {} workspace members, {} refusals",
+        counted(ledger.decisions.len(), "decision"),
+        counted(ledger.artifacts.len(), "artifact"),
+        counted(contracts.contracts.len(), "contract"),
         workspace.paths().count(),
         found.len(),
     );
@@ -100,6 +127,14 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn counted(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
     }
 }
 

@@ -4,8 +4,10 @@
 //! [`ledger`] holds this repository's own decisions as data and replays them
 //! through the registry below, so the states, pins and evidence the tree claims
 //! are the ones these rules produce rather than statements to be believed.
-//! [`repository`] reads what cargo reports about the workspace and [`checks`]
-//! joins the two into the refusals the repository must survive.
+//! [`spike`] holds this repository's own proof contracts and the result
+//! artifacts that would settle the choices they belong to. [`repository`] reads
+//! what cargo reports about the workspace and [`checks`] joins the three into
+//! the refusals the repository must survive.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +16,7 @@ use std::path::{Path, PathBuf};
 pub mod checks;
 pub mod ledger;
 pub mod repository;
+pub mod spike;
 
 /// The repository this ledger belongs to.
 pub fn workspace_root() -> PathBuf {

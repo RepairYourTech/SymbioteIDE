@@ -3,16 +3,19 @@
 //! Each rule exists because the ledger could otherwise claim something the tree
 //! does not support: that a record is still what it was accepted from, that a
 //! workspace member needs no decision, that a choice under proof is settled,
-//! that an unresolved choice has an owner, or that a dependency a provisional
-//! choice names reached implementation unrecorded.
+//! that an unresolved choice has an owner, that a dependency a provisional
+//! choice names reached implementation unrecorded, or that a choice was settled
+//! by a run that never met the contract it was measured against.
 //!
 //! A rule that cannot see what it is checking refuses rather than passes: a
-//! record whose file is missing, a member cargo could not report and a fact
-//! whose validity lapsed are findings, not silence.
+//! record whose file is missing, a member cargo could not report, a fact whose
+//! validity lapsed and a run that cannot be read are findings, not silence.
 
 use crate::ledger::{DecisionRecord, Ledger};
 use crate::repository::{Workspace, hash};
-use crate::{DecisionRegistry, DecisionState, GateStatus};
+use crate::spike::{Contracts, Results, fingerprint};
+use crate::{DecisionRegistry, DecisionState, GateStatus, SpikeContract};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// One thing this ledger must not claim, and what is wrong with it.
@@ -31,9 +34,16 @@ impl Problem {
     }
 }
 
-/// Every refusal the committed ledger meets, in ledger order. An empty result
-/// is the only passing answer.
-pub fn problems(ledger: &Ledger, workspace: &Workspace, root: &Path, now: u64) -> Vec<Problem> {
+/// Every refusal the committed ledger meets, in ledger order, then every
+/// refusal its committed spike contracts meet. An empty result is the only
+/// passing answer.
+pub fn problems(
+    ledger: &Ledger,
+    contracts: &Contracts,
+    workspace: &Workspace,
+    root: &Path,
+    now: u64,
+) -> Vec<Problem> {
     let registry = match ledger.registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -61,6 +71,7 @@ pub fn problems(ledger: &Ledger, workspace: &Workspace, root: &Path, now: u64) -
     }
     status_problems(&registry, ledger, now, &mut problems);
     coverage_problems(ledger, workspace, &mut problems);
+    contract_problems(ledger, contracts, root, &mut problems);
     problems
 }
 
@@ -228,6 +239,193 @@ fn coverage_problems(ledger: &Ledger, workspace: &Workspace, problems: &mut Vec<
                     ),
                 ));
             }
+        }
+    }
+}
+
+/// A contract is predeclared, owned by the issues the decision names, and
+/// carries the run that settles it. A decision published accepted stands on a
+/// complete in-threshold run of that contract, cited as its own evidence.
+fn contract_problems(
+    ledger: &Ledger,
+    contracts: &Contracts,
+    root: &Path,
+    problems: &mut Vec<Problem>,
+) {
+    for contract in &contracts.contracts {
+        let subject = format!("contract {}", contract.id);
+        let Some(record) = ledger.decision(&contract.decision) else {
+            problems.push(Problem::new(
+                subject,
+                format!(
+                    "it settles {}, which this ledger does not hold, so nothing owns the choice it is written for",
+                    contract.decision
+                ),
+            ));
+            continue;
+        };
+        if record.proof_contract.as_deref() != Some(contract.id.as_str()) {
+            problems.push(Problem::new(
+                subject.clone(),
+                format!(
+                    "{} does not name this contract as its proof, so nothing would settle it by this run",
+                    record.draft.id
+                ),
+            ));
+        }
+        clause_problems(contract, record, &subject, problems);
+        run_problems(contract, record, root, &subject, problems);
+    }
+    for record in &ledger.decisions {
+        let Some(id) = &record.proof_contract else {
+            continue;
+        };
+        if !contracts.holds(id) {
+            problems.push(Problem::new(
+                format!("{}: proof contract", record.draft.id),
+                format!("it is settled by {id}, which this repository does not hold"),
+            ));
+        }
+    }
+}
+
+/// Every obligation a contract records names the issue it belongs to, and every
+/// issue the decision names is addressed by one: an obligation nobody owns, or
+/// an owner the contract never addresses, is the same gap one level down.
+fn clause_problems(
+    contract: &SpikeContract,
+    record: &DecisionRecord,
+    subject: &str,
+    problems: &mut Vec<Problem>,
+) {
+    let owned: BTreeSet<String> = record
+        .draft
+        .issue_refs
+        .iter()
+        .map(|issue| format!("#{issue}"))
+        .collect();
+    let mut cited: BTreeSet<&str> = BTreeSet::new();
+    for (kind, entry) in contract
+        .workload
+        .iter()
+        .map(|entry| ("workload", entry))
+        .chain(
+            contract
+                .stop_conditions
+                .iter()
+                .map(|entry| ("stop condition", entry)),
+        )
+    {
+        match entry.split_once(':').map(|(tag, _)| tag.trim()) {
+            Some(tag) if owned.contains(tag) => {
+                cited.insert(tag);
+            }
+            _ => problems.push(Problem::new(
+                subject,
+                format!(
+                    "the {kind} {entry:?} names no clause of {}, so nothing owns it (it belongs to one of {})",
+                    record.draft.id,
+                    owned.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+            )),
+        }
+    }
+    for issue in &owned {
+        if !cited.contains(issue.as_str()) {
+            problems.push(Problem::new(
+                subject,
+                format!(
+                    "the contract addresses no obligation to {issue}, which {} names as its own",
+                    record.draft.id
+                ),
+            ));
+        }
+    }
+}
+
+/// The run a contract points at: the committed artifact is the one it names,
+/// and while the choice is not decided its identity alone holds. A decided
+/// choice needs the run to be there, complete, within every predeclared
+/// threshold, with nothing left untested — and cited as the record's evidence.
+fn run_problems(
+    contract: &SpikeContract,
+    record: &DecisionRecord,
+    root: &Path,
+    subject: &str,
+    problems: &mut Vec<Problem>,
+) {
+    let decided = matches!(
+        record.published.state,
+        DecisionState::Accepted | DecisionState::Superseded
+    );
+    if decided
+        && !record
+            .draft
+            .evidence
+            .iter()
+            .any(|evidence| evidence.artifact == contract.result_artifact)
+    {
+        problems.push(Problem::new(
+            subject,
+            format!(
+                "the record settles the choice on {} and does not cite it as its own evidence",
+                contract.result_artifact
+            ),
+        ));
+    }
+    let committed = root.join(&contract.result_artifact);
+    let results = match Results::read(&committed) {
+        Ok(results) => Some(results),
+        Err(error) => {
+            if decided {
+                problems.push(Problem::new(
+                    subject,
+                    format!(
+                        "the choice is {} and no run settles it: {error}",
+                        status_name(&record.published.state)
+                    ),
+                ));
+            } else if committed.exists() {
+                problems.push(Problem::new(
+                    subject,
+                    format!(
+                        "the run it points at, {}, cannot be read: {error}",
+                        contract.result_artifact
+                    ),
+                ));
+            }
+            None
+        }
+    };
+    let Some(results) = results else {
+        return;
+    };
+    let fingerprint = fingerprint(contract);
+    let unmet = if decided {
+        results.unmet(contract, &fingerprint)
+    } else {
+        results.identity_unmet(contract, &fingerprint)
+    };
+    for detail in unmet {
+        problems.push(Problem::new(subject, detail));
+    }
+    for cited in &results.artifacts {
+        match hash(root, &cited.artifact) {
+            None => problems.push(Problem::new(
+                subject,
+                format!(
+                    "the run cites raw artifact {}, which is not in the tree",
+                    cited.artifact
+                ),
+            )),
+            Some(actual) if actual != cited.sha256 => problems.push(Problem::new(
+                subject,
+                format!(
+                    "the raw artifact {} has changed since the run cited it: it is {actual}, the result recorded {}",
+                    cited.artifact, cited.sha256
+                ),
+            )),
+            Some(_) => {}
         }
     }
 }

@@ -32,6 +32,28 @@ Refusals, each naming its subject:
 
 `cargo test -p symbiote-architecture` runs the ledger suite, and `cargo run -p symbiote-architecture --example decisions` prints the published map — every decision with its state, revision and owners, every artifact with its status, pins, reasons and blocking issue — and exits non-zero while a refusal stands.
 
+## The repository's own spike contract
+
+#38's proof obligations are committed as data in [`spike-contracts.json`](../architecture/spike-contracts.json), because a bar that lives only in prose is a bar chosen after the measurement. One contract, `#38/desktop-shell-representative-workload`, settles `ADR-0001/DESKTOP-SHELL`: its hypothesis, the representative workload, the reference hardware, the measurement plan, eleven predeclared ceilings, the stop conditions and the cleanup, with every obligation tagged by the issue that owns it. The decision record names the contract back, so the choice and its proof cannot drift apart silently, and the contract points at the run that would settle it — `docs/proofs/results/desktop-shell.json`, deliberately absent today because nothing has been measured.
+
+A run is data too: `Results` records the contract identity, the contract's fingerprint when the run happened, the outcome, any platform left untested, one observation per predeclared measurement, and the raw artifacts it published with their SHA-256.
+
+Refusals, each naming its subject:
+
+| Refusal | Why it exists |
+| --- | --- |
+| a contract document of a schema this loader does not read, an unknown field, or no contract at all | a contract document that cannot be read is not a checked one |
+| a contract that settles a decision this ledger does not hold, or a decision that names a contract this repository does not hold | a contract nobody owns settles nothing, and an unresolved choice must point at the proof that would settle it |
+| a contract and its decision that do not name each other | the path from `investigating` to `accepted` has one owner on each side |
+| an obligation that names no clause of the decision, or an issue the decision names that no obligation addresses | every obligation belongs to an owner, and every owner is addressed |
+| a decided choice with no run, or a run that cannot be read | a result with nothing in it settles nothing |
+| a result measured under another contract, or under another fingerprint | a threshold cannot move under a result measured against it |
+| a run that ended on a stop condition, left a platform untested, omitted a predeclared measurement, observed above its maximum, or observed something the contract never predeclared | a choice is settled by evidence that meets the contract, not by evidence that is near it |
+| a decided choice that does not cite its own run as evidence | the acceptance rests on the measured data, content-addressed with the record |
+| a raw artifact a run cites that is not in the tree, or has changed since | published raw data is content-addressed, not described |
+
+What this does not claim: the ceilings are this repository's predeclaration for #38's spike, written before any candidate run so no measurement can choose its own bar — #38's owner may amend them while no result exists, and the fingerprint ties each result to the thresholds it was measured under, which proves the bar did not move rather than that the numbers are the right ones; whether a cited clause is the right clause for an obligation is human judgement; a record may name no contract at all, so a future pass could unlink the shell proof as quietly as it could delete the contract, and nothing here forbids that; a run's figures are self-reported, so the ledger records that a run met the contract, not that the world was measured; and no candidate has been run against this contract yet.
+
 What this does not claim: the member list and the dependency names are what cargo reports, so a dependency reached transitively through another member, or under a package name a record does not list, is not seen; a record's `draft` is the machine-readable summary of the text it pins, and the check compares that text's hash rather than the summary against it; an issue reference names the canonical owner without resolving its live state offline; `reviewer` records who stands behind an observation, and no independent review of these records exists in this repository; and the Host does not consult this ledger at run time yet.
 
 ## Trust and applicability
@@ -43,6 +65,8 @@ Pure contract tests cover normal transitions, rejected worker acceptance, high-c
 ## Acceptance accounting
 
 Implemented foundational #173 scope: decision/authority/alternative/constraint/evidence/reversal/supersession schemas; proof contract; fresh version pins; refusal gate; machine-readable affected artifacts; draft and accepted lineage behavior. Source/issue/requirement/graph/deployment links are representable.
+
+Now enforced for the shell choice: its proof obligations are a committed contract with predeclared ceilings, a run of that contract is the only thing that can settle it, and an untested platform or a triggered stop condition keeps it open.
 
 Now enforced in this repository: ADR-0001's decisions are recorded as data — `ADR-0001/HOST-STACK` accepted on explicit client authority, `ADR-0001/DESKTOP-SHELL` and `ADR-0001/GRAPH-STORAGE` investigating under #38 and #233 — the accepted text and the client instruction that authorized it are content-addressed, every workspace member is recorded and pins the accepted stack constraint, and the one artifact that reaches a choice still under proof (`crates/symbiote-desktop`, through `tauri` and `tauri-build`) publishes `provisional` rather than `settled`. A provisional choice cannot reach a member unrecorded, and a new workspace member cannot be added without a record. No compatibility fact is recorded, because ADR-0001 certifies no version: #38 and #233 own the measurements that would create one, and a fact must be fresh and verified wherever it is pinned.
 

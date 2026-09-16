@@ -67,6 +67,13 @@ pub struct DecisionRecord {
     /// owner is the state this ledger exists to prevent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_issue: Option<u64>,
+    /// The spike contract that says what this choice would be settled *by*, by
+    /// identity. Naming one is what gives the choice a path from `investigating`
+    /// to `accepted` that this repository can check: the contract and the record
+    /// must name each other, and the run it points at must stand before the
+    /// choice can be published accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_contract: Option<String>,
     /// The dependency names a dependent implementation would express this
     /// choice with, as cargo reports them. A workspace member that declares one
     /// of these must pin this decision, and a member that pins it must declare
