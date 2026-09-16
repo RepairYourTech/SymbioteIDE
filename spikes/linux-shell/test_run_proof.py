@@ -1095,7 +1095,9 @@ class CommittedResult(unittest.TestCase):
     now applies: the platform it names is one the session record beside it substantiates.
     That record predates the ``system`` field, so the operating-system side is read from
     the machine this suite runs on — Linux here and in CI — while the display side is
-    read from the record itself.
+    read from the record itself. The record predates both fields, and the paragraph in
+    ``docs/proofs/linux-shell.md`` says which fields it does carry instead; the pin below
+    is what makes those two sentences move together rather than drift apart.
     """
 
     def test_the_committed_platform_is_one_its_session_record_substantiates(self):
@@ -1109,6 +1111,12 @@ class CommittedResult(unittest.TestCase):
             session = json.loads(records[0].read_text())
             self.assertTrue(session.get('wayland_display'),
                             'the record shows the display server the platform has to name')
+            for field in ('display', 'system'):
+                self.assertNotIn(
+                    field, session,
+                    f'the committed record predates the {field!r} field the runner now writes, and '
+                    'the paragraph in docs/proofs/linux-shell.md says which fields it carries '
+                    'instead: a re-recording has to move that paragraph with this pin')
             self.assertEqual(
                 run_proof.platform_problems(row['platform'], 'wayland',
                                             session.get('system', run_proof.host_system())),
