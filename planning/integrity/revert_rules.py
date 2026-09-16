@@ -1,28 +1,42 @@
 #!/usr/bin/env python3
-"""Revert every refusal rule of the architecture governance crate alone, in place,
-and watch the case that holds it fail; restore each file byte-identically.
+"""Revert each refusal rule of the architecture governance crate alone, in a
+throwaway copy of this working tree, and watch the case that holds it fail.
 
-The table below is the proof's single home: one row per rule, keyed by the case
-that must fail when the rule is removed. It was four scripts under `/tmp` (a bar
-driver, a run/coverage driver, a spike driver and a merger of the three); a proof
-that lives outside the repository cannot be re-run by anyone else, so it lives
-here. `test_revert_rules.py` holds the table to the tree — every anchor occurs
-exactly once and every named case is one the suite runs — so a renamed case or a
-moved anchor fails that test instead of becoming a row this driver skips.
+The table below holds one row for each refusal this repository has proved by
+reversion: the text that holds the rule, the text that removes it, and the case
+that must fail. What it does **not** claim is completeness — nothing here relates
+the rows to the crate's refusal sites, so a rule added without a row runs unproved
+and the driver still reports every row it has as biting. The rows are also the
+only place a rule's proof is recorded: `test_revert_rules.py` holds each row's
+anchor to the tree and each row's case to a case the suite runs, so a moved anchor
+or a renamed case fails that test rather than becoming a row this driver skips.
 
-Run it from a clean tree; each row costs one `cargo test`. In a worktree, give
-the build its own `CARGO_TARGET_DIR`: a shared one has made a probe here read the
-main checkout's artifacts and pass for the wrong reason.
+The live tree is never touched. The driver copies this working tree (everything
+cargo needs, without `.git/`, `target/` or caches) into a temporary directory,
+mutates the copy, runs each case there with the copy's own target directory, and
+removes it — then re-reads the live tree's files and fails if any byte of them
+moved. That is why it can be run beside another build: the version before this one
+mutated the live tree in place, and a concurrent `cargo test` reported failures
+that were only its mutations.
+
+A third refusal is not a row here: a listed non-case the crate's source does not
+carry needs the document and the list edited together to fail, and no single-file
+mutation that still compiles reaches it, so that direction is proved by hand when
+the list changes and the assertion states it in place.
 """
 from __future__ import annotations
 
+import hashlib
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-CRATE = ROOT / "crates/symbiote-architecture"
-DOCUMENT = ROOT / "docs/contracts/architecture.md"
+SOURCES = ("crates/symbiote-architecture/src", "crates/symbiote-architecture/tests")
+DOCUMENT = "docs/contracts/architecture.md"
+IGNORED = shutil.ignore_patterns(".git", "target", ".freebuff", "__pycache__", "node_modules")
 
 # Each row: the rule, the text that holds it, the text that removes it, and the
 # case that fails when it is removed.
@@ -431,15 +445,27 @@ RULES: list[tuple[str, str, str, str]] = [
         'a_contract_document_that_names_one_identity_twice_is_refused',
     ),
     (
-        "the contract document cites a case this crate's suite runs",
+        "the document cites a case this crate's suite runs",
         '`the_committed_choice_names_the_section_its_bar_comes_from`',
-        '`the_committed_choice_names_the_section_its_bar_comes_from_the_record`',
+        '`nonexistent_case_2`',
         'the_contract_document_names_only_cases_this_crate_holds',
     ),
     (
-        "the contract document's citation is a case, not a helper",
+        "the document's citation is a case, not a helper",
         '`the_committed_choice_names_the_section_its_bar_comes_from`',
         '`pre_bar_move_contract`',
+        'the_contract_document_names_only_cases_this_crate_holds',
+    ),
+    (
+        'a listed non-case must still be cited by the document',
+        '    "require_ready",',
+        '    "phantom_field_here",',
+        'the_contract_document_names_only_cases_this_crate_holds',
+    ),
+    (
+        'a name the document cites as not a case must be listed',
+        '`require_ready` refuses provisional',
+        '`require_ready_moved` refuses provisional',
         'the_contract_document_names_only_cases_this_crate_holds',
     ),
     (
@@ -482,71 +508,82 @@ RULES: list[tuple[str, str, str, str]] = [
 ]
 
 
-def anchor_in(anchor: str) -> pathlib.Path | None:
+def scanned(tree: pathlib.Path) -> list[pathlib.Path]:
+    """Every file a row can be held in, under the tree the driver mutates."""
+    files = [tree / DOCUMENT]
+    for source in SOURCES:
+        files.extend(sorted((tree / source).rglob("*.rs")))
+    return files
+
+
+def anchor_in(anchor: str, tree: pathlib.Path) -> pathlib.Path | None:
     """The one file holding the anchor, or None when it is moved or ambiguous."""
-    found = [
-        path
-        for path in (
-            *sorted((CRATE / "src").rglob("*.rs")),
-            *sorted((CRATE / "tests").rglob("*.rs")),
-            DOCUMENT,
-        )
-        if path.read_text().count(anchor) == 1
-    ]
+    found = [path for path in scanned(tree) if path.read_text().count(anchor) == 1]
     return found[0] if len(found) == 1 else None
 
 
-def case_target(case: str) -> tuple[str, str] | None:
+def case_target(case: str, tree: pathlib.Path) -> tuple[str, str] | None:
     """The package and test target defining the case, or None when nothing does."""
-    for path in sorted((ROOT / "crates").glob("*/tests/*.rs")):
+    for path in sorted((tree / "crates").glob("*/tests/*.rs")):
         if f"fn {case}(" in path.read_text():
             return path.parent.parent.name, path.stem
     return None
 
 
-def main() -> int:
-    bit, missing, stale, silent = [], [], [], []
-    for rule, anchor, removal, case in RULES:
-        package_target = case_target(case)
-        if package_target is None:
-            missing.append((rule, case))
-            print(f"TEST MISSING: {case}")
-            continue
-        path = anchor_in(anchor)
-        if path is None:
-            stale.append((rule, "anchor moved or ambiguous"))
-            print(f"ANCHOR MOVED OR AMBIGUOUS: {rule}")
-            continue
-        package, target = package_target
-        original = path.read_bytes()
-        path.write_text(path.read_text().replace(anchor, removal))
-        run = subprocess.run(
-            [
-                "cargo", "test", "--locked", "-q", "-p", package,
-                "--test", target, case, "--", "--exact",
-            ],
-            cwd=ROOT, capture_output=True, text=True,
-        )
-        path.write_bytes(original)
-        if path.read_bytes() != original:
-            print(f"NOT RESTORED: {path}")
-            return 1
-        output = run.stdout + run.stderr
-        if "error[E" in output or "could not compile" in output:
-            stale.append((rule, "no compile"))
-            print(f"INVALID (no compile): {rule}")
-        elif run.returncode != 0 and "FAILED" in output:
-            bit.append(rule)
-            print(f"BITES: {case}")
-        else:
-            silent.append((rule, case))
-            print(f"SILENT: {rule} ({case})")
+def digest(files: list[pathlib.Path]) -> dict[str, str]:
+    return {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
 
+
+def main() -> int:
+    before = digest(scanned(ROOT))
+    bit, missing, stale, silent = [], [], [], []
+    scratch = tempfile.mkdtemp(prefix="revert-rules-")
+    try:
+        tree = pathlib.Path(scratch) / "tree"
+        shutil.copytree(ROOT, tree, ignore=IGNORED)
+        for rule, anchor, removal, case in RULES:
+            target = case_target(case, tree)
+            if target is None:
+                missing.append((rule, case))
+                print(f"TEST MISSING: {case}")
+                continue
+            path = anchor_in(anchor, tree)
+            if path is None:
+                stale.append((rule, "anchor moved or ambiguous"))
+                print(f"ANCHOR MOVED OR AMBIGUOUS: {rule}")
+                continue
+            package, target_name = target
+            original = path.read_bytes()
+            path.write_text(path.read_text().replace(anchor, removal))
+            run = subprocess.run(
+                [
+                    "cargo", "test", "--locked", "-q", "-p", package,
+                    "--test", target_name, case, "--", "--exact",
+                ],
+                cwd=tree, capture_output=True, text=True,
+            )
+            path.write_bytes(original)
+            output = run.stdout + run.stderr
+            if "error[E" in output or "could not compile" in output:
+                stale.append((rule, "no compile"))
+                print(f"INVALID (no compile): {rule}")
+            elif run.returncode != 0 and "FAILED" in output:
+                bit.append(rule)
+                print(f"BITES: {case}")
+            else:
+                silent.append((rule, case))
+                print(f"SILENT: {rule} ({case})")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    after = digest(scanned(ROOT))
+    moved = [name for name in before if after.get(name) != before[name]]
     print(
         f"\n{len(bit)}/{len(RULES)} rules bit; {len(missing)} missing tests; "
-        f"{len(stale)} stale anchors; {len(silent)} silent"
+        f"{len(stale)} stale anchors; {len(silent)} silent; "
+        f"{len(moved)} files of the live tree moved ({', '.join(moved) or 'none'})"
     )
-    return 1 if missing or stale or silent else 0
+    return 1 if missing or stale or silent or moved else 0
 
 
 if __name__ == "__main__":

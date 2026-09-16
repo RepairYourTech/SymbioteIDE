@@ -23,12 +23,10 @@ Five habits, each of them checked rather than asserted:
   rule about a document with the component that owns the document.
 - **A refusal rule is proved by reverting it.**
   [`planning/integrity/revert_rules.py`](../planning/integrity/revert_rules.py)
-  holds one row per rule of the architecture governance crate and the contract
-  document: it removes the rule alone, watches the case that holds it fail, and
-  restores the file byte-identically.
-  `planning/integrity/test_revert_rules.py` holds that table to the tree — every
-  anchor is held once, every named case is one a suite runs — so a moved anchor or
-  a renamed case fails in a second instead of becoming a row the driver skips.
+  removes each rule of the architecture governance crate alone, in a throwaway copy
+  of the tree, and watches the case that holds it fail; its table, what that table
+  does and does not claim, and the test that holds it to the tree are described in
+  [the integrity README](../planning/integrity/README.md).
 - **A generated artifact is guarded, not trusted.** Each committed artifact has a
   `--check` path plus a case that diffs the emitted bytes, so the artifact cannot
   drift from the tree silently.
@@ -95,6 +93,25 @@ them.
   preventive-isolation chain (#174/#191/#218) and the runtime/environment
   integrations; the desktop workbench and both native and external agent execution
   are not implemented. Nothing here is release-ready.
+
+## Provenance of this work
+
+This repository was taken over on 2026-09-08 from `772fe844`: its checkout then
+held planning/import scripts, encoded historical payloads and issue templates, and
+no application, manifests, tests or accepted ADRs. The batch that started from it
+recorded the accepted direction in the
+[constitution](architecture/product-constitution.md) and
+[ADR-0001](architecture/adr-0001-technology-direction.md); amended the issue bodies
+whose stated candidates or scope that direction had moved — the Electron candidate
+wording among them, removed from #38 and #336 — reading each body back after the
+write; made the historical roadmap importers refuse before loading a payload,
+disabled their workflow jobs and removed their issue-write permissions; and left a
+dated amendment marker in
+[the technology amendment](../planning/technology-amendment.md) recording its
+precedence over the earlier baseline. Canonical owners from that point: #170 for
+the constitution, #470 for roadmap integrity, #173 and #38 for governance and
+proof. Captures taken then were local evidence and are not authority — recapture
+rather than trusting one. The per-pass record this file replaces is in git history.
 
 ## Working facts worth carrying
 
