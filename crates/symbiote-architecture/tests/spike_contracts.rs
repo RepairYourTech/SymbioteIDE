@@ -386,11 +386,58 @@ fn defines_a_case(suite: &str, name: &str) -> bool {
     })
 }
 
-/// Long snake_case names in code spans of the contract document are case names of
-/// this crate: a citation is a claim, and this holds each of them against a case
-/// the suite actually runs, so a rename fails a case here rather than leaving the
-/// document pointing at a name nobody can run or at a helper that can never fail.
-/// The two names the constitution ledger's catalog also binds are held twice,
+/// A lower-case name carrying an underscore: what this document writes in a code
+/// span when it names something, as opposed to a path, a command, a type or a
+/// sentence. Digits are part of a name, so a citation cannot escape by carrying
+/// one. This is the whole of what the check below reads, and the sentence it
+/// serves says the same thing in the same words.
+fn is_identifier_name(span: &str) -> bool {
+    span.contains('_')
+        && span
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// The names the document writes in code spans that are not cases of this suite:
+/// the crate's own fields, methods and functions, under which no case can be run.
+/// A name here must be carried by the crate's source *and* still cited by the
+/// document, so the list cannot excuse a name that exists nowhere and cannot
+/// outlive the sentence that needed it.
+const NOT_CASES: [&str; 8] = [
+    "blocking_issue",
+    "contract_sha256",
+    "proof_contract",
+    "proof_section",
+    "proposed_dependencies",
+    "record_sha256",
+    "require_ready",
+    "workspace_root",
+];
+
+/// Every `.rs` file under a directory, so a name may live in a submodule.
+fn rust_sources(directory: &std::path::Path) -> String {
+    let mut text = String::new();
+    let mut directories = vec![directory.to_path_buf()];
+    while let Some(next) = directories.pop() {
+        let entries = std::fs::read_dir(&next).expect("a source directory");
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path.extension().is_some_and(|kind| kind == "rs") {
+                text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+    }
+    text
+}
+
+/// Names the contract document writes in code spans are names of this crate: a
+/// citation is a claim, so every one of them is held either to a case the suite
+/// actually runs or to the exception list above, which is held back to the crate
+/// and to the document. A rename therefore fails a case here, a name nothing
+/// defines cannot be written down, and a helper cannot stand in for a case. The
+/// two names the constitution ledger's catalog also binds are held twice,
 /// deliberately: that binding belongs to the catalog's evidence, this one to the
 /// document's own citations. What it does not read is a name the document writes
 /// outside a code span, or whether the case it finds is the one the citing
@@ -404,30 +451,40 @@ fn the_contract_document_names_only_cases_this_crate_holds() {
         0,
         "the document's code spans are balanced, so a citation can be read out of it"
     );
-    let suite: String = std::fs::read_dir(root().join("crates/symbiote-architecture/tests"))
-        .expect("the crate's test files")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| std::fs::read_to_string(entry.path()).unwrap_or_default())
-        .collect();
-    let mut cited = 0;
+    let crate_root = root().join("crates/symbiote-architecture");
+    let suite = rust_sources(&crate_root.join("tests"));
+    let source = rust_sources(&crate_root.join("src"));
+    let mut cases = 0;
     for (index, span) in document.split('`').enumerate() {
-        if index % 2 == 0 {
+        if index % 2 == 0 || !is_identifier_name(span) {
             continue;
         }
-        if span.matches('_').count() < 2
-            || !span.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-        {
+        if defines_a_case(&suite, span) {
+            cases += 1;
             continue;
         }
-        cited += 1;
         assert!(
-            defines_a_case(&suite, span),
-            "the contract document names {span} as a case of this crate, and the suite runs no case by that name"
+            NOT_CASES.contains(&span),
+            "the contract document names {span} in a code span, and it is neither a case this crate runs nor one of the names listed as not cases"
+        );
+        assert!(
+            source.contains(span),
+            "{span} is listed as not a case, and this crate's source carries no such name"
+        );
+    }
+    for name in NOT_CASES {
+        assert!(
+            document
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .any(|span| span == name),
+            "{name} is listed as not a case, and the contract document no longer cites it"
         );
     }
     assert!(
-        cited >= 5,
-        "the document cites the cases its claims rest on: {cited}"
+        cases >= 5,
+        "the document cites the cases its claims rest on: {cases}"
     );
 }
 
