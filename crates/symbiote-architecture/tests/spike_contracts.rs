@@ -33,16 +33,12 @@ const CLAUSE_STANDARD: &str = "the standard its runs are held to";
 const CLAUSE_METHOD: &str = "the method a run follows.";
 const CLAUSE_WIDER: &str = "the wider acceptance this contract is not.";
 
-fn root() -> PathBuf {
-    workspace_root()
-}
-
 fn ledger() -> Ledger {
-    Ledger::read(&root().join(LEDGER_PATH)).expect("the committed decision ledger")
+    Ledger::read(&workspace_root().join(LEDGER_PATH)).expect("the committed decision ledger")
 }
 
 fn contracts() -> Contracts {
-    Contracts::read(&root().join(CONTRACTS_PATH)).expect("the committed spike contracts")
+    Contracts::read(&workspace_root().join(CONTRACTS_PATH)).expect("the committed spike contracts")
 }
 
 fn real_problems() -> Vec<Problem> {
@@ -50,8 +46,8 @@ fn real_problems() -> Vec<Problem> {
     problems(
         &ledger(),
         &contracts,
-        &Workspace::read(&root()).expect("cargo reports this workspace"),
-        &root(),
+        &Workspace::read(&workspace_root()).expect("cargo reports this workspace"),
+        &workspace_root(),
         NOW,
     )
 }
@@ -84,7 +80,7 @@ fn the_shell_choice_names_the_contract_that_would_settle_it() {
     assert_eq!(contract.decision, record.draft.id);
     assert_eq!(record.blocking_issue, Some(38));
     assert!(
-        !root().join(&contract.result_artifact).exists(),
+        !workspace_root().join(&contract.result_artifact).exists(),
         "nothing has been measured yet, so the run the contract points at is absent"
     );
 }
@@ -375,7 +371,8 @@ fn the_committed_choice_names_the_section_its_bar_comes_from() {
         Some("Proof contract and stop conditions"),
         "the choice names where its bar lives"
     );
-    let accepted = std::fs::read_to_string(root().join(ADR)).expect("the accepted record");
+    let accepted =
+        std::fs::read_to_string(workspace_root().join(ADR)).expect("the accepted record");
     let body = symbiote_architecture::spike::section(
         &accepted,
         record.proof_section.as_deref().expect("a named section"),

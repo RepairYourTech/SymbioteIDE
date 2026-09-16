@@ -8,12 +8,8 @@
 //! maintainer looking for the rule finds it, and so neither file grows the
 //! other's concern.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use symbiote_architecture::workspace_root;
-
-fn root() -> PathBuf {
-    workspace_root()
-}
 
 /// Whether the suite defines `name` as a case it runs: a `fn name(` whose
 /// attribute block carries `#[test]`, rather than any function of that name.
@@ -53,12 +49,14 @@ fn is_identifier_name(span: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// Whether the crate's source carries `name` as a name: an occurrence that is
-/// not part of a longer one, so the source that carries `blocking_issue` does
-/// not carry `blocking_iss`. A `contains` test here would let the document cite
-/// a name nothing defines, as long as it is a fragment of something that exists.
-/// What it holds is that the crate names it somewhere — a definition, a string,
-/// a comment — not that it defines it: that reading is the reader's.
+/// Whether the crate's library sources carry `name` as a name: an occurrence
+/// that is not part of a longer one, so the file that carries `blocking_issue`
+/// does not carry `blocking_iss`. A `contains` test here would let the document
+/// cite a name nothing defines, as long as it is a fragment of something that
+/// exists. What it holds is that the crate's `src/` names it somewhere — a
+/// definition, a string, a comment — not that it defines it: that reading is the
+/// reader's, and `tests/`, `examples/` and `benches/` are not read, so a name
+/// that lives only there is refused rather than excused.
 fn carries_name(source: &str, name: &str) -> bool {
     let bytes = source.as_bytes();
     let inside =
@@ -71,7 +69,7 @@ fn carries_name(source: &str, name: &str) -> bool {
 
 /// The names the document writes in code spans that are not cases of this
 /// suite: the crate's own fields, methods and functions, under which no case can
-/// be run. A name here must be carried by the crate's source — as a name, not as
+/// be run. A name here must be one the crate's `src/` carries — as a name, not as
 /// a fragment — and must still be cited by the document, so the list cannot
 /// excuse a name that exists nowhere and cannot outlive the sentence that used
 /// it.
@@ -116,14 +114,14 @@ fn rust_sources(directory: &Path) -> String {
 /// sentence needed: it holds the name, not the claim.
 #[test]
 fn the_contract_document_names_only_cases_this_crate_holds() {
-    let document = std::fs::read_to_string(root().join("docs/contracts/architecture.md"))
+    let document = std::fs::read_to_string(workspace_root().join("docs/contracts/architecture.md"))
         .expect("the contract document");
     assert_eq!(
         document.matches('`').count() % 2,
         0,
         "the document's code spans are balanced, so a citation can be read out of it"
     );
-    let crate_root = root().join("crates/symbiote-architecture");
+    let crate_root = workspace_root().join("crates/symbiote-architecture");
     let suite = rust_sources(&crate_root.join("tests"));
     let source = rust_sources(&crate_root.join("src"));
     let mut cases = 0;
@@ -141,7 +139,7 @@ fn the_contract_document_names_only_cases_this_crate_holds() {
         );
         assert!(
             carries_name(&source, span),
-            "{span} is listed as not a case, and this crate's source carries no such name"
+            "{span} is listed as not a case, and the crate's own src/ carries no such name"
         );
     }
     for name in NOT_CASES {
