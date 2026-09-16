@@ -102,21 +102,21 @@ import time
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# The names this file publishes: what the entry points below use, plus the ones the
-# fixture's own suite reads through this module, because `test_run_proof.py` loads this
-# file rather than the package. Each is defined in the concern that owns it.
-from shellproof.checks import (ATTESTED_BY, attested, fingerprint_problems, platform_problems,
-                               result_problems, revision_problems, uncommitted,
-                               unconsumed_options, untested_platforms)
+# What this file binds is what its own entry points read, and nothing else: a name from
+# another concern is that concern's, and a reader of a rule belongs in the module that
+# owns it rather than here. The one exception is deliberate and is the reason these are
+# module-level names at all — the suite drives the entry points with `open_session`,
+# `ledger_refusals` and `ROOT` replaced, so those three have to be read from this
+# module's namespace for a stand-in to reach the code that uses them.
+from shellproof.checks import (attested, fingerprint_problems, platform_problems, result_problems,
+                               revision_problems, unconsumed_options, untested_platforms)
 from shellproof.contract import CONTRACTS_PATH, REPO, ROOT, Contract
 from shellproof.measure import measure
-from shellproof.observation import (EXITED_STATES, cleanup, processes, survivors_of, trace_stats,
-                                    unreaped_of)
-from shellproof.publication import (build_record, figures_of, ledger_refusals, logged_revision,
-                                    merged_runs, peak_note, publish, publish_slug, result_runs)
-from shellproof.records import (SESSION_SCHEMA_VERSION, SESSION_SHAPES, UNKEPT_PATHS, hardware_of,
-                                host_system, read_session_record, session_record, sha256_of)
-from shellproof.session import Session, open_session
+from shellproof.observation import trace_stats
+from shellproof.publication import (build_record, figures_of, ledger_refusals, merged_runs,
+                                    peak_note, publish, publish_slug, result_runs)
+from shellproof.records import hardware_of, host_system, session_record
+from shellproof.session import open_session
 
 
 def run_xvfb(args, artifacts, binary):

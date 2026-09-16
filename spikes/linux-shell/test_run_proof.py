@@ -1,6 +1,6 @@
 """The runner's own rules: what a run may publish, and what it must refuse.
 
-These hold the parts of ``run-proof.py`` that decide what the result artifact is
+These hold the parts of the driver that decide what the result artifact is
 allowed to claim — the terms it reads from the contract document, the attestation
 read from the fixture's log, the contract coverage of its measurements, the
 citations it publishes, the revision it records, the paths it does not keep and the
@@ -20,6 +20,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,18 @@ RUNNER = Path(__file__).resolve().parent / 'run-proof.py'
 spec = importlib.util.spec_from_file_location('run_proof', RUNNER)
 run_proof = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run_proof)
+
+# The names these cases read from the concern that owns each one. The entry point binds
+# only what its own entry points read, so a rule is taken from its module rather than
+# through `run_proof`; `run-proof.py`'s load above is what put this directory on the
+# import path.
+from shellproof.checks import ATTESTED_BY, uncommitted  # noqa: E402
+from shellproof.observation import (EXITED_STATES, cleanup, processes, survivors_of,  # noqa: E402
+                                    unreaped_of)
+from shellproof.publication import logged_revision  # noqa: E402
+from shellproof.records import (SESSION_SCHEMA_VERSION, SESSION_SHAPES, UNKEPT_PATHS,  # noqa: E402
+                                read_session_record, sha256_of)
+from shellproof.session import Session  # noqa: E402
 
 # A contract of this suite's own, built as the driver reads the committed one. It
 # is deliberately not the committed contract's terms: the driver has to answer
@@ -94,7 +107,7 @@ class Attestation(unittest.TestCase):
         self.assertEqual(run_proof.attested(''), [])
 
     def test_an_obligation_the_fixture_cannot_show_cannot_be_attested(self):
-        for obligation, _, _ in run_proof.ATTESTED_BY:
+        for obligation, _, _ in ATTESTED_BY:
             self.assertNotEqual(obligation, self.STREAMS)
         text = self.log(3, 2) + 'synthetic_streams=4\n'
         self.assertNotIn(self.STREAMS, run_proof.attested(text),
@@ -240,9 +253,9 @@ class Publication(unittest.TestCase):
 
     def test_untracked_files_are_not_a_reason_to_refuse(self):
         status = '?? docs/proofs/results/desktop-shell.json\n?? .freebuff/\n'
-        self.assertEqual(run_proof.uncommitted(status), [])
-        self.assertEqual(len(run_proof.uncommitted(status + ' M spikes/linux-shell/run-proof.py\n')), 1)
-        self.assertEqual(len(run_proof.uncommitted('M  crates/symbiote-architecture/src/lib.rs\n')), 1)
+        self.assertEqual(uncommitted(status), [])
+        self.assertEqual(len(uncommitted(status + ' M spikes/linux-shell/run-proof.py\n')), 1)
+        self.assertEqual(len(uncommitted('M  crates/symbiote-architecture/src/lib.rs\n')), 1)
 
 
 FINGERPRINT = 'f' * 64
@@ -283,13 +296,13 @@ MARKED_APP = ('#!/bin/sh\n'
 def committed_tree():
     """Every committed recorded file by its bytes: what a run must leave alone."""
     root = run_proof.REPO / 'docs/proofs/results'
-    return {path: run_proof.sha256_of(path) for path in sorted(root.rglob('*')) if path.is_file()}
+    return {path: sha256_of(path) for path in sorted(root.rglob('*')) if path.is_file()}
 
 
 # The revision gate reads the real git state, so the cases that publish need a tree
 # with no modified tracked file. CI checks out one; a case skipped here is skipped for
 # that reason and says so, rather than failing for a reason it does not hold.
-TREE_IS_COMMITTED = not run_proof.uncommitted(subprocess.run(
+TREE_IS_COMMITTED = not uncommitted(subprocess.run(
     ['git', '-C', str(run_proof.REPO), 'status', '--porcelain'],
     capture_output=True, text=True).stdout)
 
@@ -370,7 +383,7 @@ class Revision(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / 'build.log'
             log.write_text('+ npm run build\n   Compiling symbiote v0.1.0\n    Finished\n')
-            self.assertIsNone(run_proof.logged_revision(log.read_text()))
+            self.assertIsNone(logged_revision(log.read_text()))
             arguments = argparse.Namespace(build_log=str(log), build_seconds=1.0, publish=None,
                                            platform='Linux X11')
             with self.assertRaises(SystemExit):
@@ -398,16 +411,16 @@ class Survivors(unittest.TestCase):
 
     def test_a_process_that_has_exited_is_not_a_survivor(self):
         for state in 'SR':
-            self.assertEqual(run_proof.survivors_of({7: 42}, self.row(state)), [7])
-        for state in run_proof.EXITED_STATES:
-            self.assertEqual(run_proof.survivors_of({7: 42}, self.row(state)), [],
+            self.assertEqual(survivors_of({7: 42}, self.row(state)), [7])
+        for state in EXITED_STATES:
+            self.assertEqual(survivors_of({7: 42}, self.row(state)), [],
                              f'a process in state {state} has exited and runs nothing')
-            self.assertEqual(run_proof.unreaped_of({7: 42}, self.row(state)), [7],
+            self.assertEqual(unreaped_of({7: 42}, self.row(state)), [7],
                              'and is named rather than lost')
 
     def test_a_pid_the_kernel_reused_is_not_the_process_this_run_saw(self):
-        self.assertEqual(run_proof.survivors_of({7: 42}, self.row('S', ticks=43)), [])
-        self.assertEqual(run_proof.unreaped_of({7: 42}, self.row('S', ticks=43)), [])
+        self.assertEqual(survivors_of({7: 42}, self.row('S', ticks=43)), [])
+        self.assertEqual(unreaped_of({7: 42}, self.row('S', ticks=43)), [])
 
     @unittest.skipUnless(hasattr(os, 'fork'), 'needs a /proc to ask')
     def test_a_child_never_reaped_is_not_counted_as_running(self):
@@ -417,15 +430,15 @@ class Survivors(unittest.TestCase):
             os._exit(0)
         try:
             deadline = time.monotonic() + 10
-            table = run_proof.processes()
+            table = processes()
             while time.monotonic() < deadline and table.get(pid, {}).get('state') != 'Z':
                 time.sleep(0.01)
-                table = run_proof.processes()
+                table = processes()
             self.assertEqual(table.get(pid, {}).get('state'), 'Z',
                              'the child exited and this process never reaped it')
             seen = {pid: table[pid]['start_ticks']}
-            self.assertEqual(run_proof.survivors_of(seen, table), [])
-            self.assertEqual(run_proof.unreaped_of(seen, table), [pid])
+            self.assertEqual(survivors_of(seen, table), [])
+            self.assertEqual(unreaped_of(seen, table), [pid])
         finally:
             os.waitpid(pid, 0)
 
@@ -438,11 +451,11 @@ class Survivors(unittest.TestCase):
         try:
             table, deadline = None, time.monotonic() + 10
             while time.monotonic() < deadline:
-                table = run_proof.processes()
+                table = processes()
                 if table.get(pid, {}).get('state') == 'Z':
                     break
                 time.sleep(0.01)
-            record = run_proof.cleanup({pid: table[pid]['start_ticks']}, [])
+            record = cleanup({pid: table[pid]['start_ticks']}, [])
             self.assertEqual(record['survivors_after_cancel_request'], 0,
                              'nothing is running, however many entries /proc lists')
             self.assertEqual(record['unreaped_observed_pids'], [pid])
@@ -472,7 +485,7 @@ class Closes:
         self.closes += 1
 
 
-class RecordedSession(run_proof.Session):
+class RecordedSession(Session):
     """A session that counts being closed: one nobody closes was never cleaned up."""
 
     def __init__(self, **fields):
@@ -612,7 +625,7 @@ class Publishing(unittest.TestCase):
         for item in published:
             path = run_proof.REPO / item['artifact']
             self.assertTrue(path.exists(), f"{item['artifact']} is cited and not published")
-            self.assertEqual(run_proof.sha256_of(path), item['sha256'])
+            self.assertEqual(sha256_of(path), item['sha256'])
 
 
 class MainEntryPoint(unittest.TestCase):
@@ -777,7 +790,7 @@ class MainEntryPoint(unittest.TestCase):
                          'the committed result is of another contract')
         self.assertEqual(COMMITTED_FINGERPRINT, COMMITTED_RESULT['contract_sha256'])
         self.assertNotEqual(COMMITTED_FINGERPRINT,
-                            run_proof.sha256_of(run_proof.REPO / run_proof.CONTRACTS_PATH),
+                            sha256_of(run_proof.REPO / run_proof.CONTRACTS_PATH),
                             'the fingerprint is the document file\'s hash, not the contract\'s')
         argv = self.arguments()
         supplied = argv[argv.index('--contract-sha256') + 1]
@@ -786,7 +799,7 @@ class MainEntryPoint(unittest.TestCase):
 
     def test_a_fingerprint_that_is_the_documents_hash_is_refused(self):
         """The value an operator reaches for, refused by name before anything is written."""
-        document = run_proof.sha256_of(run_proof.REPO / run_proof.CONTRACTS_PATH)
+        document = sha256_of(run_proof.REPO / run_proof.CONTRACTS_PATH)
         with self.assertRaises(SystemExit) as caught:
             self.drive(self.arguments(fingerprint=document))
         self.assertIn('the document file', str(caught.exception))
@@ -904,8 +917,8 @@ class MainEntryPoint(unittest.TestCase):
         sessions = [Path(item['artifact']) for item in document['runs'][0]['artifacts']
                     if item['artifact'].endswith('session.json')]
         self.assertTrue(sessions, 'the run cites the session record it was measured in')
-        record = run_proof.read_session_record(sessions[0])
-        self.assertEqual(record['schema_version'], run_proof.SESSION_SCHEMA_VERSION,
+        record = read_session_record(sessions[0])
+        self.assertEqual(record['schema_version'], SESSION_SCHEMA_VERSION,
                          'the record declares which shape it is, in the record')
         self.assertEqual(record['display'], 'Wayland')
         self.assertEqual(record['system'], run_proof.host_system())
@@ -933,7 +946,7 @@ class MainEntryPoint(unittest.TestCase):
         record = json.loads(sessions[0].read_text())
         self.assertEqual(record['build']['seconds'], 12.5)
         self.assertEqual(record['build']['revision'], head)
-        self.assertEqual(record['build']['log_sha256'], run_proof.sha256_of(log))
+        self.assertEqual(record['build']['log_sha256'], sha256_of(log))
 
     def test_interaction_capture_is_refused_rather_than_promised(self):
         """The option used to lengthen the run while taking no screenshot and driving nothing."""
@@ -1013,7 +1026,7 @@ class MainEntryPoint(unittest.TestCase):
         for item in published:
             path = Path(item['artifact'])
             self.assertTrue(path.exists(), f"{item['artifact']} is cited and not published")
-            self.assertEqual(run_proof.sha256_of(path), item['sha256'])
+            self.assertEqual(sha256_of(path), item['sha256'])
 
 
 class UnkeptPaths(unittest.TestCase):
@@ -1038,7 +1051,7 @@ class UnkeptPaths(unittest.TestCase):
         arguments = argparse.Namespace(build_log=str(self.log), build_seconds=1.0,
                                        publish=str(root / 'publish'), platform=WAYLAND)
         self.record = run_proof.session_record(
-            run_proof.Session(kind='wayland', name='kwin 6.7.5 --virtual 1440x960',
+            Session(kind='wayland', name='kwin 6.7.5 --virtual 1440x960',
                               process=None, env={'WAYLAND_DISPLAY': 'symbiote-proof'},
                               log=None, runtime=root / 'runtime'),
             self.binary, 0, run_proof.build_record(arguments, 'a' * 40))
@@ -1058,19 +1071,19 @@ class UnkeptPaths(unittest.TestCase):
         return found
 
     def test_each_unkept_path_says_what_outlives_it(self):
-        for dotted in run_proof.UNKEPT_PATHS:
+        for dotted in UNKEPT_PATHS:
             container, _, field = dotted.rpartition('.')
             holder = self.record['build'] if container else self.record
             self.assertIn(field, holder, f'{dotted} is declared unkept and is not recorded')
             self.assertTrue(holder.get(f'{field}_note'),
                             f'{dotted} is recorded and not kept, and says nothing about it')
-        self.assertEqual(self.record['binary_sha256'], run_proof.sha256_of(self.binary))
-        self.assertEqual(self.record['build']['log_sha256'], run_proof.sha256_of(self.published),
+        self.assertEqual(self.record['binary_sha256'], sha256_of(self.binary))
+        self.assertEqual(self.record['build']['log_sha256'], sha256_of(self.published),
                          'the hash names the bytes of the copy that is kept')
         self.assertEqual(self.record['build']['published_log'], str(self.published))
 
     def test_a_session_with_no_runtime_directory_is_refused_by_name(self):
-        session = run_proof.Session(kind='xvfb', name='Xvfb :9', process=Ended(), env={},
+        session = Session(kind='xvfb', name='Xvfb :9', process=Ended(), env={},
                                     log=Closes(), runtime=None)
         with self.assertRaises(SystemExit) as caught:
             run_proof.session_record(session, self.binary, 0, None)
@@ -1084,8 +1097,8 @@ class UnkeptPaths(unittest.TestCase):
         self.assertFalse(self.binary.exists())
         for dotted, value in self.paths():
             located = Path(value) if value.startswith('/') else run_proof.REPO / value
-            self.assertEqual(dotted in run_proof.UNKEPT_PATHS, not located.exists(),
-                             f'{dotted} = {value}: declared unkept={dotted in run_proof.UNKEPT_PATHS}, '
+            self.assertEqual(dotted in UNKEPT_PATHS, not located.exists(),
+                             f'{dotted} = {value}: declared unkept={dotted in UNKEPT_PATHS}, '
                              f'and it can be read={located.exists()}')
 
 
@@ -1106,7 +1119,7 @@ class SessionRecordVersion(unittest.TestCase):
         self.root = Path(self.directory.name)
         binary = self.root / 'symbiote-linux-shell-proof'
         binary.write_bytes(b'the candidate this run exercised')
-        session = run_proof.Session(kind='wayland', name='kwin 6.7.5 --virtual 1440x960',
+        session = Session(kind='wayland', name='kwin 6.7.5 --virtual 1440x960',
                                     process=None, env={'WAYLAND_DISPLAY': 'symbiote-proof'},
                                     log=None, runtime=self.root / 'runtime')
         self.written = run_proof.session_record(session, binary, 0, None)
@@ -1125,32 +1138,32 @@ class SessionRecordVersion(unittest.TestCase):
         that shape, and it stopped being version 0 as soon as a version was added.
         """
         return {key: value for key, value in self.written.items()
-                if key in run_proof.SESSION_SHAPES[0]}
+                if key in SESSION_SHAPES[0]}
 
     def read(self, record):
         path = self.root / 'session.json'
         path.write_text(json.dumps(record))
-        return run_proof.read_session_record(path)
+        return read_session_record(path)
 
     def test_the_writer_writes_the_shape_of_the_version_it_declares(self):
         version = self.written['schema_version']
-        self.assertEqual(version, run_proof.SESSION_SCHEMA_VERSION)
-        self.assertEqual(set(self.written), set(run_proof.SESSION_SHAPES[version]),
+        self.assertEqual(version, SESSION_SCHEMA_VERSION)
+        self.assertEqual(set(self.written), set(SESSION_SHAPES[version]),
                          'a field added or removed without a version change is a shape this table '
                          'does not name')
         self.assertEqual(self.read(self.written), self.written)
 
     def test_a_version_this_reader_does_not_know_is_refused_by_name(self):
-        for unknown in (max(run_proof.SESSION_SHAPES) + 1, -1):
+        for unknown in (max(SESSION_SHAPES) + 1, -1):
             with self.subTest(unknown=unknown):
                 with self.assertRaises(SystemExit) as caught:
                     self.read({**self.written, 'schema_version': unknown})
                 self.assertIn(f'declares schema version {unknown}', str(caught.exception))
-                self.assertIn(str(sorted(run_proof.SESSION_SHAPES)), str(caught.exception))
+                self.assertIn(str(sorted(SESSION_SHAPES)), str(caught.exception))
 
     def test_a_version_of_another_type_is_refused_naming_the_value(self):
         """A version is an integer of a known one: `"1"`, `null`, `true` and `1.0` are not."""
-        for value in ('1', None, True, 1.0, f'{run_proof.SESSION_SCHEMA_VERSION}'):
+        for value in ('1', None, True, 1.0, f'{SESSION_SCHEMA_VERSION}'):
             with self.subTest(value=value):
                 with self.assertRaises(SystemExit) as caught:
                     self.read({**self.written, 'schema_version': value})
@@ -1167,7 +1180,7 @@ class SessionRecordVersion(unittest.TestCase):
         self.assertIn("'system'", str(caught.exception))
 
     def test_a_record_carrying_a_field_its_version_does_not_name_is_refused(self):
-        named = {field for shape in run_proof.SESSION_SHAPES.values() for field in shape}
+        named = {field for shape in SESSION_SHAPES.values() for field in shape}
         self.assertNotIn(self.UNNAMED, named,
                          'this case needs a name no version carries; a version that took this '
                          'one would have to rename the fixture rather than fail here for the '
@@ -1207,7 +1220,7 @@ class CommittedResult(unittest.TestCase):
             records = [run_proof.REPO / item['artifact'] for item in row['artifacts']
                        if item['artifact'].endswith('session.json')]
             self.assertTrue(records, 'a run cites the session record it was measured in')
-            session = run_proof.read_session_record(records[0])
+            session = read_session_record(records[0])
             self.assertTrue(session.get('wayland_display'),
                             'the record shows the display server the platform has to name')
             self.assertNotIn(
@@ -1219,6 +1232,43 @@ class CommittedResult(unittest.TestCase):
                 run_proof.platform_problems(row['platform'], 'wayland',
                                             session.get('system', run_proof.host_system())),
                 [], f"{row['platform']} is not one the session record beside it substantiates")
+
+
+class ConcernMap(unittest.TestCase):
+    """The map from concerns to modules has one owner, and cannot go stale.
+
+    It is `run-proof.py`'s docstring — which is also what the command line prints —
+    and nothing else states it. Both directions are held here: every module of the
+    package is named there, and every module it names is a module of the package, so
+    adding or renaming one is a single edit and a map that has stopped describing the
+    package fails here rather than being read as true. The limit is stated rather than
+    left implicit: this holds the map's own form, so a second list of the modules
+    written in another form would not be caught by it.
+    """
+
+    FIXTURE = Path(__file__).resolve().parent
+    MAP = re.compile(r'``shellproof/([a-z_]+)\.py``')
+
+    def modules(self):
+        return {path.stem for path in (self.FIXTURE / 'shellproof').glob('*.py')
+                if path.stem != '__init__'}
+
+    def files(self):
+        return [self.FIXTURE / 'run-proof.py'] + sorted((self.FIXTURE / 'shellproof').glob('*.py'))
+
+    def test_the_concern_map_names_every_module_of_the_package(self):
+        named = {match.group(1)
+                 for match in self.MAP.finditer((self.FIXTURE / 'run-proof.py').read_text())}
+        self.assertTrue(self.modules(), 'the package holds no module for the map to name')
+        self.assertEqual(named, self.modules(),
+                         'the concern map in run-proof.py and the package disagree: a module added '
+                         'or renamed is one edit there')
+
+    def test_the_concern_map_is_stated_once(self):
+        carriers = [path.name for path in self.files() if self.MAP.search(path.read_text())]
+        self.assertEqual(carriers, ['run-proof.py'],
+                         'the concern map is the entry point docstring in run-proof.py; a second '
+                         'list of the modules is the copy that goes stale')
 
 
 if __name__ == '__main__':
