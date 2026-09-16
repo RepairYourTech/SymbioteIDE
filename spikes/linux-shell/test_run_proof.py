@@ -888,23 +888,25 @@ class MainEntryPoint(unittest.TestCase):
 
         The refusal rule, the help text and the group cases all take their rows from these
         declarations, so an option added to the command line without one would be an option
-        nothing refuses and nothing labels. Both directions are asked of the parser itself:
-        every option it carries is declared, and the label it prints for an option is its
-        declared row's.
+        nothing refuses and nothing labels. Both directions are asked of the parser: every
+        option string it prints has a row, and every row's label is printed once for it.
         """
         parser, declared = run_proof.build_parser()
-        self.assertEqual([entry['option'] for entry in declared],
-                         re.findall(r'--[a-z][a-z0-9-]*', parser.format_usage()),
-                         'the parser carries an option the matrix does not declare')
+        # The option lines of `--help` are where every option string the parser carries is
+        # written down: the usage line and the parsed namespace each show one form per action,
+        # so an alias and a second action sharing a destination would be invisible in them.
         help_text = parser.format_help()
-        entries = [re.search(rf'^  {re.escape(entry["option"])}[ \n]', help_text, re.M)
-                   for entry in declared]
-        self.assertNotIn(None, entries, 'an option is missing from --help')
-        starts = [found.start() for found in entries] + [len(help_text)]
-        for entry, start, end in zip(declared, starts, starts[1:]):
-            with self.subTest(option=entry['option']):
-                self.assertIn(run_proof.READS_LABEL[entry['reads']], help_text[start:end],
-                              'the label --help prints is not the declared row\u2019s')
+        listed = [re.split(r'\s{2,}', line.strip(), 1)[0] for line in help_text.splitlines()
+                  if line.startswith('  -')]
+        printed = set(re.findall(r'-{1,2}[a-z][a-z0-9-]*', ' '.join(listed))) - {'-h', '--help'}
+        spelled = {flag for entry in declared for flag in entry['flags']}
+        self.assertEqual(sorted(printed), sorted(spelled),
+                         'the parser carries an option the matrix does not declare')
+        labels = [run_proof.READS_LABEL[entry['reads']] for entry in declared]
+        for label in sorted(set(labels) - {''}):
+            with self.subTest(label=label):
+                self.assertEqual(help_text.count(label), labels.count(label),
+                                 'the labels --help prints are not the rows\u2019 own')
 
     def test_a_revision_without_a_record_is_refused(self):
         with self.assertRaises(SystemExit) as caught:
