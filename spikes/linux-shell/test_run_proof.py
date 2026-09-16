@@ -906,7 +906,7 @@ class MainEntryPoint(unittest.TestCase):
         self.assertTrue(sessions, 'the run cites the session record it was measured in')
         record = run_proof.read_session_record(sessions[0])
         self.assertEqual(record['schema_version'], run_proof.SESSION_SCHEMA_VERSION,
-                         'the record declares the shape it is, so a reader reads it there')
+                         'the record declares which shape it is, in the record')
         self.assertEqual(record['display'], 'Wayland')
         self.assertEqual(record['system'], run_proof.host_system())
         self.assertEqual(run_proof.platform_problems(platform, 'wayland', record['system']), [])
@@ -1090,12 +1090,13 @@ class UnkeptPaths(unittest.TestCase):
 
 
 class SessionRecordVersion(unittest.TestCase):
-    """A session record's shape is the version it declares, not what a reader assumes.
+    """The record's declared version names its shape, and the writer is held to it.
 
     The committed record's fields used to be dated by a paragraph in the shell proof,
-    and a re-recording would have had to move that paragraph by hand. The version is
-    in the artifact now: this holds both directions — a shape that is not the one it
-    names is refused, and a version this reader does not know is refused by name —
+    and a re-recording would have had to move that paragraph by hand. ``SESSION_SHAPES``
+    holds the fields of each version now: the case below holds the writer's own output to
+    the entry for the version it declares, so a field added or removed without a version
+    change fails here, and the reader holds every record to the entry its version names,
     while a record written before there was a version still reads.
     """
 
@@ -1103,43 +1104,60 @@ class SessionRecordVersion(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        binary = self.root / 'symbiote-linux-shell-proof'
+        binary.write_bytes(b'the candidate this run exercised')
+        session = run_proof.Session(kind='wayland', name='kwin 6.7.5 --virtual 1440x960',
+                                    process=None, env={'WAYLAND_DISPLAY': 'symbiote-proof'},
+                                    log=None, runtime=self.root / 'runtime')
+        self.written = run_proof.session_record(session, binary, 0, None)
 
-    def written(self):
-        """The shape the driver writes: what version 1 added, plus its declaration."""
-        return {'schema_version': run_proof.SESSION_SCHEMA_VERSION, 'display': 'Wayland',
-                'system': 'Linux'}
+    def without(self, *fields):
+        return {key: value for key, value in self.written.items() if key not in fields}
 
     def read(self, record):
         path = self.root / 'session.json'
         path.write_text(json.dumps(record))
         return run_proof.read_session_record(path)
 
-    def test_the_record_declares_the_shape_it_is(self):
-        self.assertEqual(self.read(self.written())['schema_version'],
-                         run_proof.SESSION_SCHEMA_VERSION)
+    def test_the_writer_writes_the_shape_of_the_version_it_declares(self):
+        version = self.written['schema_version']
+        self.assertEqual(version, run_proof.SESSION_SCHEMA_VERSION)
+        self.assertEqual(set(self.written), set(run_proof.SESSION_SHAPES[version]),
+                         'a field added or removed without a version change is a shape this table '
+                         'does not name')
+        self.assertEqual(self.read(self.written), self.written)
 
     def test_a_version_this_reader_does_not_know_is_refused_by_name(self):
         with self.assertRaises(SystemExit) as caught:
-            self.read({**self.written(), 'schema_version': run_proof.SESSION_SCHEMA_VERSION + 1})
+            self.read({**self.written, 'schema_version': run_proof.SESSION_SCHEMA_VERSION + 1})
         self.assertIn('declares schema version 2', str(caught.exception))
-        self.assertIn(f'reads version {run_proof.SESSION_SCHEMA_VERSION}', str(caught.exception))
+        self.assertIn(str(sorted(run_proof.SESSION_SHAPES)), str(caught.exception))
+
+    def test_a_version_of_the_wrong_type_is_refused_naming_the_value(self):
+        """A version is a number: `"1"`, `null` and `true` are not it, and say so."""
+        for value in ('1', None, True):
+            with self.subTest(value=value):
+                with self.assertRaises(SystemExit) as caught:
+                    self.read({**self.written, 'schema_version': value})
+                self.assertIn(f'declares schema version {value!r}', str(caught.exception))
 
     def test_a_record_declaring_no_version_is_read_as_the_shape_before_it(self):
-        before = {'wayland_display': 'symbiote-proof', 'session': 'kwin 6.7.5 --virtual'}
-        self.assertEqual(self.read(before), before, 'the committed run\'s record is this shape')
+        before = self.without('schema_version', 'display', 'system')
+        self.assertEqual(self.read(before), before,
+                         'the committed run\'s record is this shape, and is read')
 
-    def test_a_record_missing_what_the_version_it_declares_added_is_refused(self):
-        short = {'schema_version': run_proof.SESSION_SCHEMA_VERSION, 'display': 'Wayland'}
+    def test_a_record_missing_a_field_its_version_names_is_refused(self):
         with self.assertRaises(SystemExit) as caught:
-            self.read(short)
+            self.read(self.without('system'))
         self.assertIn("'system'", str(caught.exception))
 
-    def test_a_record_carrying_what_a_later_version_added_is_refused(self):
-        """The shape a version names is not a number to stamp on any record."""
-        carrying = {'wayland_display': 'symbiote-proof', 'display': 'Wayland', 'system': 'Linux'}
+    def test_a_record_carrying_a_field_its_version_does_not_name_is_refused(self):
         with self.assertRaises(SystemExit) as caught:
-            self.read(carrying)
-        self.assertIn('which version 1 added', str(caught.exception))
+            self.read({**self.written, 'gpu': 'a field the shape does not name'})
+        self.assertIn("'gpu'", str(caught.exception))
+        with self.assertRaises(SystemExit) as caught:
+            self.read({**self.without('schema_version', 'display', 'system'), 'display': 'Wayland'})
+        self.assertIn("'display'", str(caught.exception))
 
     def test_a_record_that_is_not_a_record_is_refused_by_name(self):
         with self.assertRaises(SystemExit) as caught:
@@ -1154,7 +1172,7 @@ class CommittedResult(unittest.TestCase):
     be the invocation's word alone. This holds the committed one to the rule the driver
     now applies: the platform it names is one the session record beside it substantiates.
     That record declares no schema version, so it is the shape written before version 1
-    added ``display`` and ``system``: the operating-system side is read from the machine
+    added ``schema_version``, ``display`` and ``system``: the operating-system side is read from the machine
     this suite runs on — Linux here and in CI — and the display side from the record
     itself, read through the driver's own reader rather than from a shape this test
     assumes. The pin on the declaration is what makes the paragraph in
@@ -1174,9 +1192,9 @@ class CommittedResult(unittest.TestCase):
                             'the record shows the display server the platform has to name')
             self.assertNotIn(
                 'schema_version', session,
-                'the committed record declares no schema version, so it is the shape written '
-                'before version 1 added display and system: a re-recording declares version 1 '
-                'instead, and the paragraph in docs/proofs/linux-shell.md moves with this pin')
+                'the committed record declares no schema version, so it is version 0 in '
+                'SESSION_SHAPES; a re-recording declares the current version instead, and the '
+                'paragraph in docs/proofs/linux-shell.md moves with this pin')
             self.assertEqual(
                 run_proof.platform_problems(row['platform'], 'wayland',
                                             session.get('system', run_proof.host_system())),

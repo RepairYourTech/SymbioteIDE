@@ -77,8 +77,8 @@ Where each concern lives, so a change lands in one place:
 * ``platform_problems`` / ``session_record`` — whether the platform a result records
   is one the session it starts can be, and the facts about that session a reader
   checks that claim against;
-* ``read_session_record`` — the shape a session record declares about itself, so a
-  reader reads the version rather than dating the fields against prose;
+* ``read_session_record`` — the shape each version of a session record carries, so a
+  record is held to the version it declares rather than dated against prose;
 * ``unconsumed_options`` — what the path an invocation selected would never read, so
   an option cannot be accepted and silently dropped;
 * ``fingerprint_problems`` — whether the value an invocation supplies could be the
@@ -124,18 +124,26 @@ _RENDERERS = {}
 # read back has to be declared.
 UNKEPT_PATHS = ('runtime_dir', 'binary', 'build.log')
 
-# The shape a session record declares about itself, and what each version of it
-# added. A shape change is then stated by the artifact a reader holds rather than
-# dated in a paragraph: ``read_session_record`` holds a record to the version it
-# names, in both directions, and refuses a version it does not know. Version 0 is
-# the shape written before this record carried a version at all, and is not
-# refused: the committed run's report is one, and a frozen artifact cannot be
-# re-recorded to gain a field.
-SESSION_SCHEMA_VERSION = 1
-SESSION_VERSION_FIELDS = {
-    0: (),  # the shape before the record declared a version: the committed run's own
-    SESSION_SCHEMA_VERSION: ('display', 'system'),
+# The shape of a session record, one entry per version: the fields that version
+# carries, and where the shape is declared. ``session_record`` declares
+# ``SESSION_SCHEMA_VERSION`` and a case holds the keys it writes to that version's
+# entry, so a field added or removed without a version change fails there; the reader
+# holds every record to the entry its version names, so the artifact and this table
+# cannot drift. Version 0 is the shape written before the record carried a version,
+# held by the committed run's report, which is read rather than refused because a
+# frozen artifact cannot be re-recorded to gain a field.
+SESSION_SHAPES = {
+    0: ('session', 'runtime_dir', 'runtime_dir_note', 'wayland_display', 'display_unset',
+        'egl_vendor_icd_pinned', 'egl_icd_reason', 'compositor_log_bytes', 'compositor_log_note',
+        'binary', 'binary_sha256', 'binary_note', 'rustc', 'cargo', 'hardware', 'build'),
+    1: ('schema_version', 'display', 'system', 'session', 'runtime_dir', 'runtime_dir_note',
+        'wayland_display', 'display_unset', 'egl_vendor_icd_pinned', 'egl_icd_reason',
+        'compositor_log_bytes', 'compositor_log_note', 'binary', 'binary_sha256', 'binary_note',
+        'rustc', 'cargo', 'hardware', 'build'),
 }
+# The version the writer writes: the newest shape in the table, so a shape change is one
+# edit above and nothing else to remember.
+SESSION_SCHEMA_VERSION = max(SESSION_SHAPES)
 
 # The display server each session this driver starts provides, and the operating
 # systems a platform can name. A platform a result records is a claim about a
@@ -638,8 +646,7 @@ def session_record(session, binary, compositor_log_bytes, build):
     ``display`` and ``system`` are what the platform a result records is held to: the
     display server this session provides and the operating system it ran on, recorded
     beside the figures so a reader checks the label rather than trusting it. They are
-    what version 1 of this record added, declared here so a reader reads the version
-    rather than dating the fields against prose.
+    part of what ``SESSION_SHAPES`` says version 1 added to the shape written before it.
     """
     if session.runtime is None:
         raise SystemExit(f'refusing to record {session.name!r}: it has no private runtime '
@@ -692,35 +699,33 @@ def read_document(path, what):
 
 
 def read_session_record(path):
-    """The session record at *path*, the one place a record is read.
+    """The session record at *path*, held to the shape the version it declares names.
 
-    The record says which shape it is, so a reader does not date its fields against
-    prose: version 1 is the shape ``session_record`` writes, and a record that
-    declares no version is the shape written before there was one — the committed
-    run's report — and is read as that shape rather than refused, because a frozen
-    artifact cannot be re-recorded to gain a field. Both directions are held, because
-    a version is a claim about a shape: a record declaring a version this reader does
-    not know is refused by name rather than guessed at, one naming a version whose
-    fields are not all there is refused, and one that names earlier than a field it
-    carries is refused too — a version is not a number to stamp on any shape.
+    A reader does not date the record's fields against prose: ``SESSION_SHAPES`` is the
+    shape each version carries, and a record whose fields are not the ones its version
+    names is refused — a key added or removed without a version change is a different
+    shape, and saying so is what keeps the artifact and the table from drifting. A
+    version this reader does not know is refused by name rather than guessed at. A
+    record that declares no version is version 0, the shape written before this record
+    carried a version — the committed run's report — and is read for the same reason a
+    frozen artifact is not re-recorded to gain a field.
     """
     record = read_document(path, 'the session record')
     if not isinstance(record, dict):
         raise SystemExit(f'the session record {path} holds a {type(record).__name__}, not a record')
     declared = record.get('schema_version', 0)
-    if declared not in SESSION_VERSION_FIELDS:
-        raise SystemExit(f'the session record {path} declares schema version {declared}, and this '
-                         f'reader reads version {SESSION_SCHEMA_VERSION}: it refuses to read a '
-                         'shape it does not know')
-    for version, added in SESSION_VERSION_FIELDS.items():
-        for field in added:
-            if version <= declared and field not in record:
-                raise SystemExit(f'the session record {path} declares version {declared}, which '
-                                 f'carries {field!r}, and it is not there')
-            if version > declared and field in record:
-                raise SystemExit(f'the session record {path} declares version {declared} and '
-                                 f'carries {field!r}, which version {version} added: a record is '
-                                 'the shape it declares')
+    shape = None if isinstance(declared, bool) else SESSION_SHAPES.get(declared)
+    if shape is None:
+        raise SystemExit(f'the session record {path} declares schema version {declared!r}, and this '
+                         f'reader reads {sorted(SESSION_SHAPES)}: it refuses to read a shape it '
+                         'does not know')
+    if set(shape) - set(record):
+        raise SystemExit(f'the session record {path} declares version {declared} and does not carry '
+                         f'{sorted(set(shape) - set(record))}, which that shape names')
+    if set(record) - set(shape):
+        raise SystemExit(f'the session record {path} declares version {declared} and carries '
+                         f'{sorted(set(record) - set(shape))}, which that shape does not name: a '
+                         'shape change belongs in SESSION_SHAPES')
     return record
 
 
