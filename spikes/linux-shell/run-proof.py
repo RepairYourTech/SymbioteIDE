@@ -85,8 +85,9 @@ alone. Where each concern lives:
   fingerprint;
 * ``shellproof/publication.py`` — how this run's entries and the evidence they cite
   reach the tree, and which revision they belong to;
-* this file — the terms an invocation left out, the two entry points and the gate: the
-  concern a reader reaches for when the run itself is what changed.
+* this file — the terms an invocation left out, the row each option declares for the
+  paths that read it, the two entry points and the gate: the concern a reader reaches
+  for when the run itself is what changed.
 """
 import argparse
 import json
@@ -249,56 +250,99 @@ def named_defaults(args):
     return args
 
 
-def main():
+# Where each option is read, stated once, beside the option itself: `unconsumed_options`
+# refuses an option the path this invocation selected never reads by reading these
+# declarations, and the label `--help` prints for an option is drawn from the same word, so
+# the rule, the help text and the suite's groups cannot disagree about where one belongs.
+READS_LABEL = {'both': '', 'result': 'Result only: ', 'wayland': 'Wayland only: ',
+               'record': 'Recorded runs only: ', 'none': ''}
+
+
+def declared(parser, *flags, reads, help, named='truthy', needs=None, refusal=None, **kwargs):
+    """One option, and where it is read, declared in one place.
+
+    `reads` is this option's row of the option→path matrix: 'both' (either entry point
+    reads it, so nothing is refused for it), 'result' (only where a result is published),
+    'wayland' (only the Wayland entry point reads it), 'record' (only where something is
+    recorded), 'none' (no path reads it, and `refusal` says why the option is here at all).
+    `named` is how an invocation is seen to have asked for it: 'set' where a zero is an
+    answer (a cancellation at 0 seconds, a build measured at 0), 'truthy' otherwise.
+    `needs` names another option that has to be given with this one, and `refusal` is the
+    sentence the refusal adds after this option's name.
+    """
+    action = parser.add_argument(*flags, help=READS_LABEL[reads] + help, **kwargs)
+    return {'option': flags[0], 'dest': action.dest, 'reads': reads, 'named': named,
+            'needs': needs, 'refusal': refusal}
+
+
+def build_parser():
+    """The command line, and every row of the option→path matrix."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--session', choices=['xvfb', 'wayland'], default='xvfb',
-                        help='the disposable session to run in (default: xvfb)')
-    parser.add_argument('--interact', action='store_true',
-                        help='refused: this driver drives no input and captures no screenshot, so '
-                             'there is nothing for this option to ask for')
-    parser.add_argument('--seconds', type=int, default=20,
-                        help='seconds run 1 lets the app run before it exits on its own')
-    parser.add_argument('--cancel-after', type=int, default=None,
-                        help='Wayland: seconds into run 2 to request cancellation (default: 25)')
-    parser.add_argument('--binary', default=None, help='the built app to run')
-    parser.add_argument('--build-seconds', type=float, default=None,
-                        help='a clean locked build of this candidate, measured separately; needs '
-                             '--build-log, which is what bears the figure')
-    parser.add_argument('--build-log', default=None,
-                        help='where that build wrote its log, which has to name the revision it built')
-    parser.add_argument('--commit', default=None, help='the revision the binary was built from')
-    parser.add_argument('--platform', default=None,
-                        help='the contract platform this run exercised, which the contract has to '
-                             'apply to and the session it starts has to be able to be (it may not '
-                             'name another display server or operating system); the rest are '
-                             'derived as untested (default: the first platform the contract '
-                             'document applies to)')
-    parser.add_argument('--publish', default=None,
-                        help='repository-relative root to publish the cited artifacts under, in a '
-                             'directory per platform, so a second platform cannot overwrite the first')
-    parser.add_argument('--results', default=None,
-                        help='repository-relative result artifact to write (a Wayland run; the X11 '
-                             'entry point prints its figures and publishes none)')
-    parser.add_argument('--contracts', default=CONTRACTS_PATH,
-                        help='the committed contract document this run was measured against')
-    parser.add_argument('--contract', default=None,
-                        help='the contract in the committed document this run was measured '
-                             'against (default: the document\'s own first contract)')
-    parser.add_argument('--contract-sha256', default=None,
-                        help="the contract's fingerprint, which the ledger holds: the crate's "
-                             "SHA-256 of the contract's own canonical JSON, not the document "
-                             "file's, and not this driver's to derive")
-    parser.add_argument('--stop-condition', default=None,
-                        help='the condition this invocation declares ended the run, which the '
-                             'contract has to declare; each run entry records it as declared, '
-                             'beside the exits, cleanup, unknowns and untested platforms a reader '
-                             'compares it against')
-    parser.add_argument('--unobservable', nargs='*', default=[],
-                        help='measurement=reason pairs this run reports unknown rather than met')
-    parser.add_argument('--limitation', nargs='*', default=[],
-                        help='what this instrument cannot show, recorded with every run')
+    options = [
+        declared(parser, '--session', reads='both', choices=['xvfb', 'wayland'], default='xvfb',
+                 help='the disposable session to run in (default: xvfb)'),
+        declared(parser, '--interact', reads='none', action='store_true',
+                 refusal='promises input driving and screenshot capture, and this driver does '
+                         'neither: it takes no screenshot and issues no input, so the option is '
+                         'refused rather than lengthening the run and calling that inspection',
+                 help='refused: this driver drives no input and captures no screenshot, so there '
+                      'is nothing for this option to ask for'),
+        declared(parser, '--seconds', reads='both', type=int, default=20,
+                 help='seconds run 1 lets the app run before it exits on its own'),
+        declared(parser, '--cancel-after', reads='wayland', type=int, default=None, named='set',
+                 help='seconds into run 2 to request cancellation (default: 25)'),
+        declared(parser, '--binary', reads='both', default=None, help='the built app to run'),
+        declared(parser, '--build-seconds', reads='wayland', type=float, default=None, named='set',
+                 needs='--build-log',
+                 refusal="states a clean locked build's time and this invocation names no "
+                         '--build-log: the log is the only thing that can bear that figure, and '
+                         'this driver measures no build itself',
+                 help='a clean locked build of this candidate, measured separately; needs '
+                      '--build-log, which is what bears the figure'),
+        declared(parser, '--build-log', reads='wayland', default=None,
+                 help='where that build wrote its log, which has to name the revision it built'),
+        declared(parser, '--commit', reads='record', default=None,
+                 help='the revision the binary was built from'),
+        declared(parser, '--platform', reads='result', default=None,
+                 help='the contract platform this run exercised, which the contract has to '
+                      'apply to and the session it starts has to be able to be (it may not '
+                      'name another display server or operating system); the rest are '
+                      'derived as untested (default: the first platform the contract '
+                      'document applies to)'),
+        declared(parser, '--publish', reads='result', default=None,
+                 help='repository-relative root to publish the cited artifacts under, in a '
+                      'directory per platform, so a second platform cannot overwrite the first'),
+        # Read on either path — the X11 one reads it only to refuse it — so the matrix says
+        # nothing about it and the gate below is where its sentence and its position come
+        # from, rather than this row.
+        declared(parser, '--results', reads='both', default=None,
+                 help='repository-relative result artifact to write'),
+        declared(parser, '--contracts', reads='both', default=CONTRACTS_PATH,
+                 help='the committed contract document this run was measured against'),
+        declared(parser, '--contract', reads='wayland', default=None,
+                 help='the contract in the committed document this run was measured '
+                      'against (default: the document\'s own first contract)'),
+        declared(parser, '--contract-sha256', reads='result', default=None,
+                 help="the contract's fingerprint, which the ledger holds: the crate's "
+                      "SHA-256 of the contract's own canonical JSON, not the document "
+                      "file's, and not this driver's to derive"),
+        declared(parser, '--stop-condition', reads='result', default=None,
+                 help='the condition this invocation declares ended the run, which the '
+                      'contract has to declare; each run entry records it as declared, '
+                      'beside the exits, cleanup, unknowns and untested platforms a reader '
+                      'compares it against'),
+        declared(parser, '--unobservable', reads='result', nargs='*', default=[],
+                 help='measurement=reason pairs this run reports unknown rather than met'),
+        declared(parser, '--limitation', reads='result', nargs='*', default=[],
+                 help='what this instrument cannot show, recorded with every run'),
+    ]
+    return parser, options
+
+
+def main():
+    parser, options = build_parser()
     args = parser.parse_args()
-    problems = unconsumed_options(args)
+    problems = unconsumed_options(args, options)
     if problems:
         raise SystemExit('refusing to run: this invocation asks for something the path it selected '
                          'never reads, and:\n  ' + '\n  '.join(problems))
