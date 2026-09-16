@@ -644,7 +644,7 @@ impl Results {
         }
         if self.contract_sha256 != fingerprint {
             unmet.push(format!(
-                "the result records contract {} and the committed contract fingerprints {fingerprint}, so its thresholds have moved since the run",
+                "the result records contract {} and the committed contract fingerprints {fingerprint}, so the contract it was measured against has changed since the run — its thresholds, its answers or both",
                 self.contract_sha256
             ));
         }
