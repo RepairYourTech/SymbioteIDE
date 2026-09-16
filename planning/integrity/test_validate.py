@@ -65,12 +65,13 @@ class IntegrityTests(unittest.TestCase):
                 self.assertEqual(by_number[entry["number"]].get(field), entry.get(field))
 
     def test_registry_records_acceptance_items_as_a_count_and_never_as_text(self):
-        """An entry pins the body it was generated from and how many acceptance items
-        that body states — never the item text. Registrations that live in an issue's
-        own thread are therefore invisible to this artifact and to every reader of it,
-        which is what the architecture contract's bar registration relies on: #173's
-        entry holds the count and the body hash, so the two items registered on that
-        issue cannot be found here, and a later pass has to read the issue."""
+        """No entry field carries an issue's acceptance criteria as their text: an entry
+        records how many such items the body states and pins the body by hash, so a
+        collection appears only where the roadmap itself defines one. That is what makes
+        a registration in an issue's own thread invisible to this artifact and to every
+        reader of it, and it is the shape #173's entry — the one the architecture
+        contract's bar registration names — is held to, so the two items registered on
+        that issue cannot be found here and a later pass has to read the issue."""
         expected = json.loads((Path(__file__).parent / "generated/registry.json").read_text())
         # Fields whose value is a collection by design rather than item text.
         structural = {"labels", "dependencies", "children", "program_entry"}
@@ -88,9 +89,10 @@ class IntegrityTests(unittest.TestCase):
                     f"#{entry['number']} carries item text in {field}")
         bar = next(entry for entry in expected["entries"] if entry["number"] == 173)
         self.assertEqual(bar["key"], "A04")
-        self.assertIsInstance(bar["acceptance_items"], int, "the bar's entry records a count")
-        self.assertIsInstance(bar["body_sha256"], str)
-        self.assertIsInstance(bar["revision"], str)
+        self.assertIsInstance(bar.get("acceptance_items"), int,
+                              "the bar's entry records the count, not the items")
+        self.assertIsInstance(bar.get("body_sha256"), str)
+        self.assertIsInstance(bar.get("revision"), str)
 
     def test_every_snapshot_issue_belongs_to_one_counted_class(self):
         """No issue may disappear into a class the counts do not name."""
