@@ -92,60 +92,54 @@ def platform_problems(platform, session, system):
     return problems
 
 
-def unconsumed_options(args):
+def unconsumed_options(args, declared):
     """Options the path this invocation selected never reads, each named.
 
     Three defects in this driver were one class: an invocation that exited successfully
     while silently dropping what it asked for — evidence copied before a subscript
     crashed, a dossier published and then refused by the ledger, and an X11 run that
-    satisfied `--results` and wrote no dossier at all. Every option belongs to
-    something: the session that runs, the result that is published, or the Wayland
-    path's own records. One the selected path never reads is refused here by name,
-    before the git gate, before the artifacts directory exists and before any session
-    starts, rather than being accepted and dropped.
+    satisfied `--results` and wrote no dossier at all. One the selected path never reads
+    is refused here by name, before the git gate, before the artifacts directory exists
+    and before any session starts, rather than being accepted and dropped.
+
+    Where an option is read is not decided here. Each option declares its own row of the
+    option→path matrix beside itself in the parser — the paths that read it, how an
+    invocation is seen to have named it, what it needs to be borne, and the sentence to
+    refuse it with — and this reads those declarations, so an option added to the command
+    line is refused by its own declaration or not at all, and the label `--help` prints
+    for it is drawn from the same word.
 
     It is asked of what the invocation named, before `named_defaults` fills the terms it
-    left out: an option nobody passed is not an option that was dropped. Two options are
-    on no path: `--interact` promises input driving and screenshot capture and this driver
-    does neither, so it is refused instead of lengthening a run and calling that
-    inspection; and `--contracts`, which names the document itself, keeps its default and
-    is read only where a term has to be derived or a result judged, which is stated here
-    rather than checked because a default cannot be told from an option an invocation
-    passed.
-
-    One option is consumed only where something bears it: `--build-seconds` states a clean
-    locked build's time, which the invocation itself supplies because nothing here builds,
-    so the log is the only thing that can bear the number and a figure supplied without
-    `--build-log` is refused rather than recorded as an observation nothing observed.
+    left out: an option nobody passed is not an option that was dropped. `--contracts`,
+    which names the document itself, keeps its default and is read by both paths, so no
+    path is refused it; a default cannot be told from an option an invocation passed, which
+    is why the terms it carries are judged rather than checked.
     """
+    def named(entry):
+        value = getattr(args, entry['dest'])
+        return value is not None if entry['named'] == 'set' else bool(value)
+
+    rows = {entry['option']: entry for entry in declared}
     problems = []
-    if args.interact:
-        problems.append('--interact promises input driving and screenshot capture, and this driver '
-                        'does neither: it takes no screenshot and issues no input, so the option is '
-                        'refused rather than lengthening the run and calling that inspection')
-    if args.build_seconds is not None and not args.build_log:
-        problems.append('--build-seconds states a clean locked build\'s time and this invocation '
-                        'names no --build-log: the log is the only thing that can bear that figure, '
-                        'and this driver measures no build itself')
-    if not args.results:
-        for option, value in (('--publish', args.publish), ('--platform', args.platform),
-                              ('--contract-sha256', args.contract_sha256),
-                              ('--stop-condition', args.stop_condition),
-                              ('--unobservable', args.unobservable), ('--limitation', args.limitation)):
-            if value:
-                problems.append(f'{option} says what a result records, and this invocation asks for '
-                                'no result: add --results or drop it')
-    if args.session == 'xvfb':
-        for option, value in (('--cancel-after', args.cancel_after is not None),
-                              ('--build-seconds', args.build_seconds is not None),
-                              ('--build-log', args.build_log), ('--contract', args.contract)):
-            if value:
-                problems.append(f'{option} belongs to the Wayland entry point: the X11 entry point '
-                                'prints one measured lifetime and records no build, revision or '
-                                'contract, so nothing here would read it')
-    if args.commit and not (args.results or args.build_log):
-        problems.append('--commit says which revision a run records, and this invocation records '
-                        'neither a result nor a build log: add --results or --build-log')
+    for entry in declared:
+        if not named(entry):
+            continue
+        option = entry['option']
+        if entry['needs'] and not named(rows[entry['needs']]):
+            problems.append(f"{option} {entry['refusal']}")
+        reads = entry['reads']
+        if reads == 'none':
+            problems.append(f"{option} {entry['refusal']}")
+        elif reads == 'result' and not args.results:
+            problems.append(f'{option} says what a result records, and this invocation asks for '
+                            'no result: add --results or drop it')
+        elif reads == 'wayland' and args.session != 'wayland':
+            problems.append(f'{option} belongs to the Wayland entry point: the X11 entry point '
+                            'prints one measured lifetime and records no build, revision or '
+                            'contract, so nothing here would read it')
+        elif reads == 'record' and not (args.results or args.build_log):
+            problems.append(f'{option} says which revision a run records, and this invocation '
+                            'records neither a result nor a build log: add --results or --build-log')
     return problems
 
 

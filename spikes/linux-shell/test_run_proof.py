@@ -80,6 +80,12 @@ def run(figures, exercised):
             'exercised': exercised}
 
 
+def declared_options(reads):
+    """The options the parser declares as read only there, from its own rows."""
+    return sorted(entry['option'] for entry in run_proof.build_parser()[1]
+                  if entry['reads'] == reads)
+
+
 class Attestation(unittest.TestCase):
     PTY = '#38: three active terminal tabs with bounded scrollback in real PTYs'
     PREVIEW = "#38: a live integrated Preview of the run's own output"
@@ -695,10 +701,10 @@ class MainEntryPoint(unittest.TestCase):
         about it.
         """
         contract = contract or self.contract
-        # The line is built the way the driver classifies its options: the session's own,
-        # then the second run's cancellation, then what a result records. An invocation
-        # that asks for no result carries none of the third group, which is what the
-        # driver refuses an option from that group for.
+        # The line an operator would give: the session's own options, then the ones a
+        # Wayland result run carries. Which of them the selected path reads is not
+        # restated here — the parser declares each option's row and the cases below drive
+        # that rule one option at a time.
         argv = ['--session', session, '--binary', str(self.app), '--seconds', '1']
         if session == 'wayland':
             argv += ['--cancel-after', '0']
@@ -834,12 +840,17 @@ class MainEntryPoint(unittest.TestCase):
 
         Every one of these is read by the publication block and nowhere else, so an
         invocation naming one without `--results` used to have it accepted and dropped.
+        Which options those are comes from the parser's own rows, so the case cannot pass
+        while the rule and this list disagree about the group.
         """
-        for option, value in (('--publish', str(self.publish)), ('--platform', self.contract.id),
-                              ('--contract-sha256', COMMITTED_FINGERPRINT),
-                              ('--stop-condition', self.contract.stop_conditions[0]),
-                              ('--unobservable', 'cold_start_to_first_frame_seconds=nothing'),
-                              ('--limitation', 'nothing')):
+        values = {'--publish': str(self.publish), '--platform': self.contract.id,
+                  '--contract-sha256': COMMITTED_FINGERPRINT,
+                  '--stop-condition': self.contract.stop_conditions[0],
+                  '--unobservable': 'cold_start_to_first_frame_seconds=nothing',
+                  '--limitation': 'nothing'}
+        self.assertEqual(sorted(values), declared_options('result'),
+                         'the driver declares a different set of result options than this case drives')
+        for option, value in sorted(values.items()):
             with self.subTest(option=option):
                 case = self.__class__('test_a_run_that_supports_its_result_publishes_it_through_main')
                 case.setUp()
@@ -852,10 +863,17 @@ class MainEntryPoint(unittest.TestCase):
                 self.assertFalse(case.dossier.exists())
 
     def test_a_wayland_option_on_the_x11_path_is_refused(self):
-        """The X11 entry point prints one lifetime: no cancellation, build, or contract."""
-        for option, value in (('--cancel-after', '5'), ('--build-seconds', '1.0'),
-                              ('--build-log', '/tmp/this-case-builds-nothing.log'),
-                              ('--contract', self.contract.id)):
+        """The X11 entry point prints one lifetime: no cancellation, build, or contract.
+
+        The group is the parser's own; this case only says what value to give each option
+        it declares as the Wayland path's.
+        """
+        values = {'--cancel-after': '5', '--build-seconds': '1.0',
+                  '--build-log': '/tmp/this-case-builds-nothing.log',
+                  '--contract': self.contract.id}
+        self.assertEqual(sorted(values), declared_options('wayland'),
+                         'the driver declares a different set of Wayland options than this case drives')
+        for option, value in sorted(values.items()):
             with self.subTest(option=option):
                 case = self.__class__('test_a_run_that_supports_its_result_publishes_it_through_main')
                 case.setUp()
@@ -864,6 +882,29 @@ class MainEntryPoint(unittest.TestCase):
                     case.drive(case.arguments(option, value, results=False, session='xvfb'))
                 self.assertIn(option, str(caught.exception))
                 self.assertEqual(case.records(), [], f'an Xvfb run started with {option}')
+
+    def test_every_option_declares_which_paths_read_it(self):
+        """The option→path matrix is the parser's, and every option has a row in it.
+
+        The refusal rule, the help text and the group cases all take their rows from these
+        declarations, so an option added to the command line without one would be an option
+        nothing refuses and nothing labels. Both directions are asked of the parser itself:
+        every option it carries is declared, and the label it prints for an option is its
+        declared row's.
+        """
+        parser, declared = run_proof.build_parser()
+        self.assertEqual([entry['option'] for entry in declared],
+                         re.findall(r'--[a-z][a-z0-9-]*', parser.format_usage()),
+                         'the parser carries an option the matrix does not declare')
+        help_text = parser.format_help()
+        entries = [re.search(rf'^  {re.escape(entry["option"])}[ \n]', help_text, re.M)
+                   for entry in declared]
+        self.assertNotIn(None, entries, 'an option is missing from --help')
+        starts = [found.start() for found in entries] + [len(help_text)]
+        for entry, start, end in zip(declared, starts, starts[1:]):
+            with self.subTest(option=entry['option']):
+                self.assertIn(run_proof.READS_LABEL[entry['reads']], help_text[start:end],
+                              'the label --help prints is not the declared row\u2019s')
 
     def test_a_revision_without_a_record_is_refused(self):
         with self.assertRaises(SystemExit) as caught:
