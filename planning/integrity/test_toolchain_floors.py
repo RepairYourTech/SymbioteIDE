@@ -1,27 +1,17 @@
 """Hold every toolchain floor a job names against the toolchains that job runs.
 
-A crate states the Rust it supports in its own manifest — `[package] rust-version`, or
-`[workspace.package]` where the crate inherits it — and the job that builds it states the
-toolchains it runs. Those are two statements of one fact, and for the two spikes nothing
-related them: dropping or retargeting an `1.85.0` leg, moving a spike's declared floor in
-its manifest alone, or losing the leg a job's own steps are gated on left every case green.
-(The one pair that *was* held is the workspace's, and `test_handoff.py` holds it because
-`docs/engineering-handoff.md` names the minimum itself: a document's claim, not a job's.)
+A crate states the Rust it supports in its manifest — `[package] rust-version`, or
+`[workspace.package]` where it inherits it — and the job that builds it states the toolchains
+it runs. For the two spikes nothing related them: dropping or retargeting an `1.85.0` leg,
+moving a crate's declared floor in its manifest alone, or losing the leg a job's own steps are
+gated on (`if: matrix.toolchain == 'stable'`, which leaves those steps unrun) left every case
+green. The workspace's own pair is `test_handoff.py`'s, because the handoff names that minimum
+itself: a document's claim, not a job's, and a job naming no manifest — the `--workspace` jobs
+— is that case's subject.
 
-What this file holds is the pair a job makes: the crate a job names by `--manifest-path`
-declares a floor, and that floor must be one of the toolchains the job runs — as must every
-leg the job's own steps are gated on (`if: matrix.toolchain == 'stable'`), since losing such
-a leg leaves those steps unrun while the job stays green. A job naming no manifest — the
-workspace jobs, which run `--workspace` — is the handoff case's subject.
-
-Where each fact is read from, and every spelling a run states it in, is `toolchains.py`'s
-own docstring: that module reads both facts for both rules, so a reformat is one file's
-business and no spelling is read as nothing. A path this tree does not hold, a crate
-declaring no floor, and a manifest that is not TOML are refused or named by the cases below
-rather than read past in silence.
-
+Both facts are read by `toolchains.py` for both rules, so a reformat is one file's business.
 What nothing here decides is whether a crate *compiles* on the floor a leg names: a leg is a
-promise to run and only CI answers it.
+promise to run, and only CI answers it.
 """
 from __future__ import annotations
 
@@ -80,14 +70,13 @@ class DeclaredToolchainFloors(unittest.TestCase):
 
 
 class EverySpellingOfOneStatement(unittest.TestCase):
-    """The readers hold each fact however a run states it, which each state below was
-    measured against before it was widened: a crate named only as `--manifest-path=X` was
-    not found at all, a floor written `rust-version="1.85.0"` read as none, an inherited
-    floor was read from whichever table came first in the wrong manifest, a matrix written
-    as a block sequence was read as running no toolchain, a table header carrying a comment
-    read as no table at all, one step's directory decided every other step and a templated
-    one silently meant the repository root, and a step installing one toolchain beside a
-    matrix hid it.
+    """Each state below was measured against a reader that read it wrong before it was held
+    here: a crate named only as `--manifest-path=X` was not found at all, a floor written
+    `rust-version="1.85.0"` read as none, an inherited floor came from the wrong manifest's
+    table, a matrix written as a block sequence read as running no toolchain, a commented
+    table header read as no table, one step's directory decided every other step, a templated
+    one silently meant the repository root, and a step installing a toolchain beside a matrix
+    hid it.
     """
 
     def test_a_crate_is_read_however_its_path_is_spelled(self):
