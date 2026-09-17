@@ -10,8 +10,10 @@ titled, or reference-style, whose path lives in the definition and is held wheth
 not a label uses it — resolves inside this repository; every code span that begins a
 command names targets that exist, wherever the document writes it; every code span
 naming a repository path exists; and the minimum toolchain it names is the one
-`Cargo.toml` declares and CI's matrix runs. The document must still carry citations at
-all, so an emptied one cannot pass by naming nothing.
+`Cargo.toml` declares and the job that runs the workspace proves. That last pair is read
+through `toolchains.py`, the same reader `test_toolchain_floors.py` holds the spikes' pairs
+with, so a reformat cannot red one rule here and pass the other there. The document must
+still carry citations at all, so an emptied one cannot pass by naming nothing.
 
 What nothing here decides, and nothing in this repository can: whether a sentence's
 meaning is true, which issue owns what work, any claim about a thread that lives off
@@ -28,8 +30,11 @@ import pathlib
 import re
 import unittest
 
+import toolchains
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DOCUMENT = ROOT / "docs/engineering-handoff.md"
+WORKFLOW = ROOT / ".github/workflows/rust-contracts.yml"
 COMMAND = re.compile(r"(cargo|python3?|symbiote)\b")
 
 
@@ -123,17 +128,17 @@ class HandoffCitations(unittest.TestCase):
     def test_the_minimum_toolchain_it_names_is_the_declared_and_proven_one(self):
         named = re.search(r"Rust (\d+\.\d+)", text())
         self.assertIsNotNone(named, "the handoff no longer names a minimum toolchain")
-        manifest = (ROOT / "Cargo.toml").read_text()
-        declared = re.search(r'rust-version = "([^"]+)"', manifest)
-        self.assertIsNotNone(declared, "Cargo.toml declares no rust-version, so the handoff's "
-                                       "minimum has nothing to be held against")
-        self.assertEqual(named.group(1), declared.group(1),
+        declared = toolchains.declared(ROOT / "Cargo.toml", "workspace.package")
+        self.assertIsNotNone(declared, "Cargo.toml declares no rust-version in "
+                                       "[workspace.package], so the handoff's minimum has "
+                                       "nothing to be held against")
+        self.assertEqual(named.group(1), declared,
                          "the handoff's minimum is not the one Cargo.toml declares")
-        matrix = re.search(r"toolchain: \[([^\]]+)\]",
-                           (ROOT / ".github/workflows/rust-contracts.yml").read_text())
-        self.assertIsNotNone(matrix, "CI no longer declares a toolchain matrix")
-        proven = [entry.strip().strip('"') for entry in matrix.group(1).split(",")]
-        self.assertIn(f"{declared.group(1)}.0", proven,
+        job = toolchains.jobs(WORKFLOW.read_text()).get("contracts")
+        self.assertIsNotNone(job, "rust-contracts.yml no longer has the contracts job "
+                                  "that runs and proves the workspace")
+        proven = toolchains.legs(job)
+        self.assertIn(toolchains.version(declared), proven,
                       f"CI does not run the declared minimum: {proven}")
         self.assertIn("stable", proven, f"CI does not run stable: {proven}")
 
