@@ -84,7 +84,11 @@ them.
   target](../crates/symbiote-architecture/tests/document.rs), which also requires
   every measurement the committed run observed to have a ceiling stated there. The
   other two copies restate the obligations rather than a threshold, and nothing
-  compares them.
+  compares their wording — with the one measured exception that the clause setting
+  applicability is compared family for family: the answer carrying it, the
+  obligation answering it and the declared platform data must name one set of
+  platforms, so a contract applying to a platform the bar never named is refused
+  naming both sides ([`architecture.md`](contracts/architecture.md)).
   A contract document carrying both old shapes at once is refused naming both moves:
   the field the loader cannot place is one of the moves it names, so the halfway
   document a partial rewrite leaves — `answers` arrived, `obligations` not yet gone —
