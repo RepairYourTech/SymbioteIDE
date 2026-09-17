@@ -1,15 +1,109 @@
-//! The contract document's own citations (#173): every name `docs/contracts/`
-//! `architecture.md` writes in a code span is held to something this crate has,
-//! so a rename fails a case here rather than leaving the document citing a name
-//! nobody can run.
+//! What this repository's documents claim about its contract (#173), held to the
+//! crate that owns the facts: every name `docs/contracts/architecture.md` writes in a
+//! code span is something this crate has, and every ceiling `docs/proofs/linux-shell.md`
+//! states for a measurement is the maximum the committed contract predeclares. A rename,
+//! or a threshold the contract moves, fails a case here rather than leaving a document
+//! citing a name nobody can run or a bar the machine no longer enforces — the bar's
+//! content is written in three prose copies, and the copy that states its numbers is
+//! what this file compares with the contract.
 //!
 //! This lived in `spike_contracts.rs`, which is about #38's proof contract and
 //! has nothing to do with reading a document. It is its own target so a
-//! maintainer looking for the rule finds it, and so neither file grows the
+//! maintainer looking for the rules finds them, and so neither file grows the
 //! other's concern.
 
 use std::path::Path;
+use symbiote_architecture::spike::{CONTRACTS_PATH, Contracts, Results, SpikeContract};
 use symbiote_architecture::workspace_root;
+
+/// The proof record of the shell spike (#38): the run's figures and the bar it states
+/// beside them, which is the copy of the bar this file holds to the contract.
+const PROOF_RECORD: &str = "docs/proofs/linux-shell.md";
+
+/// One statement a paragraph of the record makes about the bar: a measurement it
+/// names in a code span, or a ceiling it writes as `of a 3.0 ceiling`.
+#[derive(Debug, PartialEq)]
+enum BarStatement {
+    Name(String),
+    Ceiling(f64),
+}
+
+/// The ceiling phrase at the start of `text` — `of a 3.0 ceiling`, `of 0 ceilings` —
+/// with the number it states and how far the phrase reaches. `None` for the word `of`
+/// in any other sentence, so the record's prose about a method is read as prose and a
+/// figure of its own is not mistaken for a threshold.
+fn ceiling_phrase(text: &str) -> Option<(f64, usize)> {
+    let rest = text
+        .strip_prefix("of a ")
+        .or_else(|| text.strip_prefix("of "))?;
+    let digits: String = rest
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect();
+    if digits.is_empty() || digits == "." {
+        return None;
+    }
+    let number: f64 = digits.parse().ok()?;
+    let tail = &rest[digits.len()..];
+    let after = tail
+        .strip_prefix(" ceilings")
+        .or_else(|| tail.strip_prefix(" ceiling"))?;
+    if after.starts_with(|character: char| character.is_ascii_alphanumeric() || character == '_') {
+        return None;
+    }
+    Some((number, text.len() - after.len()))
+}
+
+/// What a paragraph states, in the order it writes it: every measurement name it
+/// writes in a code span, and every ceiling phrase it writes. A code span that is not
+/// a lower-case identifier — a path, a command, a type, a sentence — is not a name
+/// here, and only a ceiling phrase is a threshold, so neither the record's prose nor
+/// its figures are read as statements of the bar.
+fn statements(paragraph: &str) -> Vec<BarStatement> {
+    let mut found = Vec::new();
+    let mut rest = paragraph;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('`') {
+            if let Some(end) = after.find('`') {
+                let span = &after[..end];
+                if is_identifier_name(span) {
+                    found.push(BarStatement::Name(span.to_string()));
+                }
+                rest = &after[end + 1..];
+                continue;
+            }
+        }
+        if let Some((number, reached)) = ceiling_phrase(rest) {
+            found.push(BarStatement::Ceiling(number));
+            rest = &rest[reached..];
+            continue;
+        }
+        let step = rest.chars().next().map_or(1, char::len_utf8);
+        rest = &rest[step..];
+    }
+    found
+}
+
+/// The block of lines a paragraph is, so a statement is read beside the names its own
+/// paragraph writes rather than beside a neighbouring bullet's.
+fn paragraphs(record: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in record.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                found.push(current.join("\n"));
+                current.clear();
+            }
+        } else {
+            current.push(line);
+        }
+    }
+    if !current.is_empty() {
+        found.push(current.join("\n"));
+    }
+    found
+}
 
 /// Whether the suite defines `name` as a case it runs: a `fn name(` whose
 /// attribute block carries `#[test]`, rather than any function of that name.
@@ -156,4 +250,98 @@ fn the_contract_document_names_only_cases_this_crate_holds() {
         cases >= 5,
         "the document cites the cases its claims rest on: {cases}"
     );
+}
+
+/// The bar the proof record states is the contract's own data (#173): every ceiling it
+/// writes is the predeclared maximum of the measurements named before it in the same
+/// paragraph, every measurement the committed run observed has its ceiling stated where
+/// a reader looks, and no ceiling is stated for a name the contract does not predeclare.
+///
+/// The bar's content is written in prose in three copies, and this is the one that states
+/// numbers: the record's ceiling for each measurement is answered to the contract rather
+/// than kept in step by hand, so a maximum that moves fails a case here instead of leaving
+/// a reader with a bar the machine no longer enforces, and a measurement the record stops
+/// stating is caught by the run that observed it.
+///
+/// The contract is the one with the committed run — the contract whose own
+/// `result_artifact` reads back a dossier naming it — because that is the run the record
+/// describes. A document holding two such runs fails here rather than comparing the
+/// record against a contract it may not be about.
+///
+/// The form it reads, and what that form costs: a ceiling is stated after the
+/// measurements it belongs to, so a paragraph that names something else before it — a
+/// field, a path — is refused rather than read past, and a ceiling written as bare prose
+/// with no measurement before it is refused too. What it does not read is a name written
+/// outside a code span, and the figures themselves: those are the run's data, and the
+/// artifact the run cites is what holds them.
+#[test]
+fn the_proof_record_states_the_contracts_own_bar() {
+    let root = workspace_root();
+    let record = std::fs::read_to_string(root.join(PROOF_RECORD)).expect("the proof record");
+    let contracts =
+        Contracts::read(&root.join(CONTRACTS_PATH)).expect("the committed contract document");
+    let with_a_run: Vec<&SpikeContract> = contracts
+        .contracts
+        .iter()
+        .filter(|contract| {
+            Results::read(&root.join(&contract.result_artifact))
+                .is_ok_and(|results| results.contract == contract.id)
+        })
+        .collect();
+    assert_eq!(
+        with_a_run.len(),
+        1,
+        "the record describes the one contract with a committed run, and this document holds {} of them",
+        with_a_run.len()
+    );
+    let contract = with_a_run[0];
+    let results = Results::read(&root.join(&contract.result_artifact)).expect("the committed run");
+    let maximum = |name: &str| {
+        contract
+            .measurements
+            .iter()
+            .find(|measurement| measurement.name == name)
+            .map(|measurement| measurement.maximum)
+    };
+
+    let mut stated: Vec<String> = Vec::new();
+    for paragraph in paragraphs(&record) {
+        let mut named: Vec<String> = Vec::new();
+        for statement in statements(&paragraph) {
+            match statement {
+                BarStatement::Name(name) => named.push(name),
+                BarStatement::Ceiling(number) => {
+                    assert!(
+                        !named.is_empty(),
+                        "the record states a ceiling of {number} with no measurement named before it in the same paragraph, so nothing can be compared with the contract"
+                    );
+                    for name in named.drain(..) {
+                        let predeclared = maximum(&name).unwrap_or_else(|| {
+                            panic!(
+                                "the record states a {number} ceiling for {name}, and the committed contract predeclares no such measurement"
+                            )
+                        });
+                        assert_eq!(
+                            number, predeclared,
+                            "the record states a {number} ceiling for {name}, and the committed contract predeclares {predeclared}"
+                        );
+                        stated.push(name);
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        !stated.is_empty(),
+        "the record states the bar the committed run was measured against"
+    );
+    for run in &results.runs {
+        for observation in &run.observations {
+            assert!(
+                stated.contains(&observation.measurement),
+                "the committed run observed {}, and the record states no ceiling for it, so the bar it was measured against is not stated where a reader looks",
+                observation.measurement
+            );
+        }
+    }
 }
