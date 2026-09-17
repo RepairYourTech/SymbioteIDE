@@ -107,3 +107,7 @@ The live tree is never touched. The driver copies this working tree into a tempo
 ## Holding the handoff's citations
 
 [`docs/engineering-handoff.md`](../../docs/engineering-handoff.md) is the summary a maintainer reads first, and until `test_handoff.py` nothing read it: its links, the commands it prints and the one figure it states were prose. What is held there, and what nothing in this repository can decide, are stated once in that case's own docstring — this section does not repeat them, so the rule has one statement to keep true rather than three.
+
+## Declared toolchain floors
+
+A crate declares the Rust it supports in its manifest and the job that builds it declares the toolchains it runs — two statements of one fact, and for the two spikes nothing related them until `test_toolchain_floors.py`. What the rule holds, the drift it was measured to let through, where a floor is read from, which job is not its subject, and what nothing there decides are stated once in that file's own docstring; this section does not repeat them.
