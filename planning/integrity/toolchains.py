@@ -15,19 +15,21 @@ for. Three guesses at that text went away with the parser, and a manifest that i
 is named rather than left as a decode error.
 
 A workflow is read as text, because the standard library holds no YAML parser: a job's
-toolchains are the union of what its own block states — a matrix's legs as a flow list or
-as a block sequence at any indentation, plus the one toolchain a step installs (`with:
-toolchain: stable`) — so which of those lines comes first decides nothing, and a `${{ … }}`
-template names nothing comparable. Reading one form as nothing reports a job as running
+toolchains are the union of what its own block states — a matrix's legs as a flow sequence
+on one line or across several, or as a block sequence at any indentation, plus the one
+toolchain a step installs (`with: toolchain: stable`) — so which of those lines comes first
+decides nothing, and a `${{ … }}` template names nothing comparable. Reading one form as nothing reports a job as running
 none, which is how a job with a commented or a same-indent matrix was read before this.
 A manifest is resolved the way CI runs the command that names it: against the
 `working-directory` of its own step, else the job's own default, else the repository root —
 not against the first such line in the block, which is what let one step's directory decide
-every other step, and not against the root when the line was a template. Only
-`${{ github.workspace }}` is read as that root, because that is what GitHub resolves it to;
-any other template names a directory this file cannot see and is refused by name. A floor
-and a leg are compared as versions rather than as strings, so that normalisation (`1.85` and
-`1.85.0` are one version) has one home here too.
+every other step, and not against the root when the line was a template. The workspace
+template is read as that root — and so is every path under it — because that is what GitHub
+resolves it to; any other template names a directory this file cannot see and is refused by
+name. A crate's workspace is the root it names itself, else the nearest one above it, which
+is the root cargo would inherit a floor from. A floor and a leg are compared as versions
+rather than as strings, so that normalisation (`1.85` and `1.85.0` are one version) has one
+home here too.
 
 What nothing here decides: whether a crate compiles on the floor it declares (a leg is a
 promise to run, and only CI answers it), and which job a rule should be asking about.
@@ -43,7 +45,8 @@ WORKFLOWS = ROOT / ".github/workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 FLAG = re.compile(r"--manifest-path[= ](\S+)")
 TOOLCHAIN = re.compile(r"^(\s*)toolchain:(.*)$")
-ITEM = re.compile(r"^(\s*)-\s*(\S.*?)\s*$")
+# a sequence item, whose content may sit on the next line instead of after the dash
+ITEM = re.compile(r"^(\s*)-(?:\s+(\S.*?))?\s*$")
 GATED = re.compile(r"matrix\.toolchain == '([^']+)'")
 # a step's first key sits after its `- `, a job's own default does not
 DIRECTORY = re.compile(r"^(\s*)(?:-\s+)?working-directory:(.*)$", re.M)
@@ -80,9 +83,10 @@ def jobs(workflow: str) -> dict[str, str]:
 def parts(block: str) -> tuple[list[str], str]:
     """A job's steps, and the job's own text outside them; block order decides nothing.
 
-    A job's steps are the items of the shallowest `- ` sequence under its `steps:` key, so
-    what is left is the job's own text — where its default `working-directory` sits, before
-    or after the steps, in whichever order the job writes them.
+    A job's steps are the items of the shallowest `-` sequence under its `steps:` key — an
+    item whose keys are indented under a bare dash is a step like any other — so what is
+    left is the job's own text, where its default `working-directory` sits, before or after
+    the steps, in whichever order the job writes them.
     """
     lines = block.splitlines(keepends=True)
     head = next((index for index, line in enumerate(lines) if STEPS.match(line)), None)
@@ -106,13 +110,18 @@ def parts(block: str) -> tuple[list[str], str]:
 
 
 def directory(text: str, where: str) -> pathlib.Path | None:
-    """The `working-directory` a block states, resolved; None when it states none."""
+    """The `working-directory` a block states, resolved; None when it states none.
+
+    The workspace template is the repository root — that is what GitHub resolves it to —
+    and so is every path under it; any other template names a directory this file cannot
+    see, and is refused rather than read as one.
+    """
     stated = DIRECTORY.search(text)
     if not stated:
         return None
     value = stated.group(2).split("#")[0].strip().strip("\"'")
-    if value == WORKSPACE:
-        return ROOT
+    if value.startswith(WORKSPACE):
+        return ROOT / value[len(WORKSPACE):].strip("/")
     if "${{" in value:
         raise AssertionError(f"{where} runs in {value}, which this tree cannot resolve")
     return ROOT / value
@@ -142,8 +151,9 @@ def pairs() -> list[tuple[str, str, str, pathlib.Path]]:
 def legs(block: str) -> list[str]:
     """Every toolchain a job's own block states, as the union of the ways it states them.
 
-    A matrix states its legs as a flow list or as a block sequence, and a step may install
-    one toolchain beside that; a job that does both runs what both name. A `${{ … }}`
+    A matrix states its legs as a flow sequence — on one line or across several — or as a
+    block sequence, and a step may install one toolchain beside that; a job that does both
+    runs what both name. A block scalar is read as the value under its key, and a `${{ … }}`
     template names nothing comparable and states no leg.
     """
     lines = block.splitlines()
@@ -153,17 +163,22 @@ def legs(block: str) -> list[str]:
         if not key:
             continue
         indent, tail = len(key.group(1)), key.group(2).split("#")[0].strip()
-        if tail.startswith("[") and tail.endswith("]"):
-            stated.extend(leg.strip().strip("\"'") for leg in tail[1:-1].split(",") if leg.strip())
-        elif tail:
-            if "${{" not in tail:
-                stated.append(tail.strip("\"'"))
+        if tail.startswith("["):
+            while "]" not in tail and index + 1 < len(lines):
+                index += 1
+                tail += " " + lines[index].split("#")[0].strip()
+            stated.extend(leg.strip().strip("\"'") for leg in tail.strip("[]").split(",")
+                          if leg.strip())
+        elif tail[:1] in ("|", ">"):
+            stated.append(next((under.strip() for under in lines[index + 1:] if under.strip()), ""))
+        elif tail and "${{" not in tail:  # a template names no leg
+            stated.append(tail.strip("\"'"))
         else:
             for following in lines[index + 1:]:
                 item = ITEM.match(following)
                 if not item or len(item.group(1)) < indent:
                     break
-                stated.append(item.group(2).split("#")[0].strip().strip("\"'"))
+                stated.append((item.group(2) or "").split("#")[0].strip().strip("\"'"))
     return list(dict.fromkeys(leg for leg in stated if leg))
 
 
@@ -200,7 +215,21 @@ def inherits(manifest: pathlib.Path) -> bool:
 
 
 def workspace_of(manifest: pathlib.Path) -> pathlib.Path | None:
-    """The nearest manifest above this one that declares a workspace."""
+    """The manifest that is this crate's workspace, as cargo resolves it.
+
+    A crate may name the root itself (`[package] workspace = ".."`), and cargo honours
+    that over the directory the crate sits in, so the named root is read first — a crate
+    pinning a root above a nested `[workspace]` inherits from the root it names. Failing
+    that, the nearest manifest above it that declares a workspace.
+    """
+    package = parsed(manifest).get("package")
+    named = package.get("workspace") if isinstance(package, dict) else None
+    if isinstance(named, str):
+        root = (manifest.parent / named).resolve() / "Cargo.toml"
+        if not root.is_file():
+            raise AssertionError(f"{manifest} names its workspace {named}, "
+                                 f"which holds no Cargo.toml")
+        return root
     for directory in manifest.parents:
         candidate = directory / "Cargo.toml"
         if candidate.is_file() and "workspace" in parsed(candidate):
