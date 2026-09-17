@@ -294,31 +294,42 @@ impl Contracts {
     }
 }
 
-/// A contract document of the shape this loader read before the bar moved, named
-/// rather than reported as the field it is missing.
+/// The move a contract made when it stopped carrying the section it answers: the
+/// section belongs to the choice's record, which names it as `proof_section`, and
+/// what answers each clause of it stayed as the contract's `answers`.
+const BAR_MOVED: &str = "a contract carrying `obligations`: the section moved to the choice's record as \
+     `proof_section`, and what answers each clause is now the contract's `answers`, while version 1 absorbs \
+     that move because no contract document exists outside this repository, so rewrite the document rather \
+     than expecting a second version";
+
+/// The move a contract made when an answer stopped naming its clause by a number.
+const CLAUSE_MOVED: &str = "answers carrying a `clause` number: a clause is now identified by the accepted \
+     section's words, which the ledger pins by SHA-256, so an answer names the clause it answers rather than a \
+     position in a split the record's punctuation can renumber, while version 1 absorbs that move for the same \
+     reason the section's move was absorbed, so rewrite each answer's `clause` to carry that clause's own words";
+
+/// Every move this document shows, named rather than reported as the field it is
+/// missing: the shape a loader read before the bar moved, the shape it read before a
+/// clause was named by its own words, or both at once.
 ///
-/// A contract no longer carries the section it answers: the section belongs to
-/// the choice's record, which names it as `proof_section`, and what answers each
-/// clause of it stayed here as `answers`. Version 1 absorbs that move rather than
-/// pretending to a history — no contract document exists outside this repository
-/// and only this crate reads the one in it, so there is nothing to migrate — the
-/// same reconciliation the result schema recorded when its own shape changed.
+/// Version 1 absorbs these moves rather than pretending to a history — no contract
+/// document exists outside this repository and only this crate reads the one in it,
+/// so there is nothing to migrate — the same reconciliation the result schema
+/// recorded when its own shape changed.
+///
+/// They are detected one by one and all of them are named, because one document can
+/// carry both: the old `obligations` field left beside `answers` is what a partial
+/// rewrite produces, and stopping at the first move found would answer that document
+/// with the field list, which names the field it cannot place and says nothing about
+/// where the section went.
 fn moved_shape(source: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(source).ok()?;
     let contracts = value.get("contracts")?.as_array()?;
-    if contracts
+    // The field is the move, whether or not `answers` has arrived beside it yet.
+    let before_the_bar_moved = contracts
         .iter()
-        .any(|contract| contract.get("obligations").is_some() && contract.get("answers").is_none())
-    {
-        return Some(
-            "it is the shape this loader read before the bar moved — a contract carrying `obligations` and no \
-             `answers`: the section moved to the choice's record as `proof_section`, and what answers each clause \
-             is now the contract's `answers`, while version 1 absorbs that move because no contract document \
-             exists outside this repository, so rewrite the document rather than expecting a second version"
-                .to_string(),
-        );
-    }
-    let numbered = contracts.iter().any(|contract| {
+        .any(|contract| contract.get("obligations").is_some());
+    let before_a_clause_had_its_words = contracts.iter().any(|contract| {
         contract
             .get("answers")
             .and_then(|answers| answers.as_array())
@@ -330,14 +341,29 @@ fn moved_shape(source: &str) -> Option<String> {
                 })
             })
     });
-    numbered.then(|| {
-        "it is the shape this loader read before a clause was named by its own words — answers carrying a \
-         `clause` number: a clause is now identified by the accepted section's words, which the ledger pins by \
-         SHA-256, so an answer names the clause it answers rather than a position in a split the record's \
-         punctuation can renumber, while version 1 absorbs that move for the same reason the section's move was \
-         absorbed, so rewrite each answer's `clause` to carry that clause's own words"
-            .to_string()
-    })
+    let mut moved: Vec<(&str, &str)> = Vec::new();
+    if before_the_bar_moved {
+        moved.push(("before the bar moved", BAR_MOVED));
+    }
+    if before_a_clause_had_its_words {
+        moved.push(("before a clause was named by its own words", CLAUSE_MOVED));
+    }
+    if moved.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "it is the shape this loader read {} — {}",
+        moved
+            .iter()
+            .map(|(shape, _)| *shape)
+            .collect::<Vec<_>>()
+            .join(" and "),
+        moved
+            .iter()
+            .map(|(_, detail)| *detail)
+            .collect::<Vec<_>>()
+            .join("; ")
+    ))
 }
 
 /// How one run ended against the contract it was measured under.

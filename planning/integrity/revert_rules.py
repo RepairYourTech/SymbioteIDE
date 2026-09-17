@@ -124,8 +124,13 @@ RULES: list[tuple[str, str, str, str]] = [
     ),
     (
         'a contract document of the shape before the bar moved is refused naming what moved',
-        '        .any(|contract| contract.get("obligations").is_some() && contract.get("answers").is_none())',
-        '        .any(|contract| contract.get("obligations").is_some() && contract.get("answers").is_some())',
+        """    let before_the_bar_moved = contracts
+        .iter()
+        .any(|contract| contract.get("obligations").is_some());""",
+        """    let before_the_bar_moved = false
+        && contracts
+            .iter()
+            .any(|contract| contract.get("obligations").is_some());""",
         'a_contract_document_of_the_shape_before_the_bar_moved_is_refused_naming_what_moved',
     ),
     (
@@ -501,13 +506,9 @@ RULES: list[tuple[str, str, str, str]] = [
     ),
     (
         'a clause named by its number is the shape before the move',
-        """    let numbered = contracts.iter().any(|contract| {
-        contract
-            .get("answers")""",
-        """    let numbered = false
-        && contracts.iter().any(|contract| {
-        contract
-            .get("answers")""",
+        '    let before_a_clause_had_its_words = contracts.iter().any(|contract| {',
+        """    let before_a_clause_had_its_words = false
+        && contracts.iter().any(|contract| {""",
         'a_contract_document_that_names_a_clause_by_its_number_is_refused_naming_what_moved',
     ),
     (
@@ -521,6 +522,28 @@ RULES: list[tuple[str, str, str, str]] = [
         '**`cold_start_to_first_frame_seconds` 0.353**',
         '**`cold_start_to_first_frame_second` 0.353**',
         'the_proof_record_states_the_contracts_own_bar',
+    ),
+    (
+        'the stale field is a move this loader names beside the answers beside it',
+        """    let before_the_bar_moved = contracts
+        .iter()
+        .any(|contract| contract.get("obligations").is_some());""",
+        """    let before_the_bar_moved = contracts
+        .iter()
+        .any(|contract| {
+            contract.get("obligations").is_some() && contract.get("answers").is_none()
+        });""",
+        'a_contract_document_holding_the_old_field_beside_its_answers_names_the_move',
+    ),
+    (
+        'a document carrying both moves is told about both',
+        """    if before_a_clause_had_its_words {
+        moved.push(("before a clause was named by its own words", CLAUSE_MOVED));
+    }""",
+        """    if before_a_clause_had_its_words && false {
+        moved.push(("before a clause was named by its own words", CLAUSE_MOVED));
+    }""",
+        'a_contract_document_carrying_both_old_shapes_at_once_names_both',
     ),
 ]
 
