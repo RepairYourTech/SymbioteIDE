@@ -234,14 +234,16 @@ fn preview_server(
                     }
                     let request = String::from_utf8_lossy(&request[..used]);
                     let report = request.starts_with("POST /report ");
-                    if report && let Some((_, body)) = request.split_once("\r\n\r\n") {
-                        let body: String =
-                            body.chars().filter(|c| !c.is_control()).take(128).collect();
-                        println!("PROOF_PREVIEW_REPORT {body}");
-                        if let Ok(mut reports) = reports.lock()
-                            && reports.len() < 16
-                        {
-                            reports.push(body);
+                    if report {
+                        if let Some((_, body)) = request.split_once("\r\n\r\n") {
+                            let body: String =
+                                body.chars().filter(|c| !c.is_control()).take(128).collect();
+                            println!("PROOF_PREVIEW_REPORT {body}");
+                            if let Ok(mut reports) = reports.lock() {
+                                if reports.len() < 16 {
+                                    reports.push(body);
+                                }
+                            }
                         }
                     }
                     let body = if report { "ok" } else { PREVIEW };

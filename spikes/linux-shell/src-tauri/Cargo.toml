@@ -3,6 +3,11 @@ name = "symbiote-linux-shell-proof"
 version = "0.0.0"
 edition = "2024"
 publish = false
+# The floor this fixture is built and tested on, which CI holds in a matrix the
+# way it holds the host-lifetime spike's. It is declared rather than assumed:
+# without it cargo's resolver picks the newest dependencies and clippy suggests
+# `let` chains, both of which are newer than the toolchain the workspace pins.
+rust-version = "1.85.0"
 
 [workspace]
 
