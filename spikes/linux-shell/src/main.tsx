@@ -25,6 +25,11 @@ function Workbench() {
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
+    // The workbench reports its own readiness, once it has committed and the browser is about to paint: the shell's `PROOF_READY` comes from the Rust setup that adds the WebViews, before any frame, so it cannot stand for this. Only this WebView's label is authorized for the command, and a refusal is shown rather than swallowed.
+    const frame = requestAnimationFrame(() => void invoke('workbench_ready').catch((e: unknown) => setError(String(e))));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  useEffect(() => {
     let disposed = false;
     let busy = false;
     const timer = setInterval(() => {
