@@ -85,9 +85,11 @@ them.
   every measurement the committed run observed to have a ceiling stated there. The
   other two copies restate the obligations rather than a threshold, and nothing
   compares them.
-  A contract document carrying both old shapes at once is refused by serde's field
-  list rather than by name. The message the pre-#602 wrapper printed is not
-  reproducible from this tree, which the case that quotes it says in place.
+  A contract document carrying both old shapes at once is refused naming both moves:
+  the field the loader cannot place is one of the moves it names, so the halfway
+  document a partial rewrite leaves — `answers` arrived, `obligations` not yet gone —
+  no longer reaches serde's field list. The message the pre-#602 wrapper printed is
+  not reproducible from this tree, which the case that quotes it says in place.
 - **#38 — the shell proof.** Platform coverage, representative budgets, Preview
   authority isolation, signed updates, installer size and the rest of the
   contract's ceilings stay unmeasured; see [the Linux shell record](proofs/linux-shell.md)

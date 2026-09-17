@@ -953,6 +953,55 @@ fn a_contract_document_of_the_shape_before_the_bar_moved_is_refused_naming_what_
 }
 
 #[test]
+fn a_contract_document_holding_the_old_field_beside_its_answers_names_the_move() {
+    // The state a partial rewrite leaves: `answers` has arrived and `obligations` has
+    // not gone. Measured before this rule: serde's field list, which names the field it
+    // cannot place and says nothing about where the section went, while the same
+    // document without `answers` was given that sentence — so the one field nothing
+    // named was the field a reader was most likely to still be holding.
+    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
+    let mut value = json!({ "schema_version": 1, "contracts": [fixture_contract()] });
+    let answered = value["contracts"][0]["answers"].clone();
+    value["contracts"][0]["obligations"] = json!({ "section": SECTION, "answered": answered });
+    fixture.write(CONTRACTS_PATH, &value);
+    let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
+        .expect_err("the old field beside the answers is refused by name");
+    assert!(
+        error
+            .0
+            .contains("the section moved to the choice's record as `proof_section`"),
+        "{error}"
+    );
+    assert!(error.0.contains("version 1 absorbs that move"), "{error}");
+    assert!(
+        !error.0.contains("unknown field `obligations`"),
+        "the field list is not what answers this document: {error}"
+    );
+}
+
+#[test]
+fn a_contract_document_carrying_both_old_shapes_at_once_names_both() {
+    // Measured before this rule: the detection returned on the first move it found, so
+    // a document still carrying `obligations` while its answers named clauses by number
+    // was told about the clause's move alone, and the reader who fixed that met the
+    // field list for the field nothing had named.
+    let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
+    let mut value = pre_bar_move_contract();
+    value["contracts"][0]["answers"] = json!([{ "clause": 1, "obligation": OBLIGATION }]);
+    fixture.write(CONTRACTS_PATH, &value);
+    let error = Contracts::read(&fixture.path(CONTRACTS_PATH))
+        .expect_err("a document carrying both old shapes is refused");
+    assert!(
+        error
+            .0
+            .contains("the section moved to the choice's record as `proof_section`"),
+        "{error}"
+    );
+    assert!(error.0.contains("`clause` number"), "{error}");
+    assert!(!error.0.contains("unknown field"), "{error}");
+}
+
+#[test]
 fn a_contract_document_with_an_unknown_field_or_no_contract_is_refused() {
     let fixture = Fixture::new(fixture_ledger(), vec![fixture_contract()], None);
     fixture.write(
