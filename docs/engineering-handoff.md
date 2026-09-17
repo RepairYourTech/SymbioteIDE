@@ -92,8 +92,11 @@ them.
   A contract document carrying both old shapes at once is refused naming both moves:
   the field the loader cannot place is one of the moves it names, so the halfway
   document a partial rewrite leaves — `answers` arrived, `obligations` not yet gone —
-  no longer reaches serde's field list. The message the pre-#602 wrapper printed is
-  not reproducible from this tree, which the case that quotes it says in place.
+  no longer reaches serde's field list. The message the shape before the bar moved
+  printed — the removed field named first, the section's replacement buried in the
+  list of expected fields — is held by
+  `the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field`, which
+  asserts the derive's own words for it rather than restating them here.
 - **#38 — the shell proof.** Platform coverage, representative budgets, Preview
   authority isolation, signed updates, installer size and the rest of the
   contract's ceilings stay unmeasured; see [the Linux shell record](proofs/linux-shell.md)

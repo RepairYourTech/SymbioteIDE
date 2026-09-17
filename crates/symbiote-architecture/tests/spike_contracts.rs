@@ -980,19 +980,25 @@ fn a_contract_document_of_an_unknown_schema_version_is_refused() {
 
 #[test]
 fn the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field() {
-    // The message #601 printed was the derive's, not a rule's: `deny_unknown_fields`
-    // rejects `obligations` and the section's replacement appears only in the list of
-    // expected fields. The handoff quotes that message as the reason the read path was
-    // taught to name the shape, and the #602 wrapper that formatted it no longer
-    // exists, so this holds the quotation against the deserializer that produced it.
-    // (Nothing here can run the pre-#602 loader itself: the line that formatted the
-    // message is gone from the tree.)
+    // The message the shape #601 left behind printed, in the derive's own words and
+    // held here rather than quoted anywhere else:
+    //   unknown field `obligations`, expected one of `schema_version`, …, `answers`
+    // The removed field is named first and the section's replacement appears only
+    // inside the list of expected fields, so a caller holding the old document was
+    // told which field no longer exists and nothing about where the section went —
+    // which is why the read path was taught to name the shape. The pre-#602 loader's
+    // own line that formatted that message is gone from the tree; the words are held
+    // against the deserializer that produced them, and measured against the pre-#602
+    // loader, the two print the same text for the same document (the path in front
+    // being the loader's own prefix).
     let error = serde_json::from_str::<Contracts>(&pre_bar_move_contract().to_string())
         .expect_err("the shape #601 read is refused by the type, not by a rule");
     let message = error.to_string();
-    assert!(message.contains("unknown field `obligations`"), "{message}");
-    assert!(message.contains("expected one of"), "{message}");
-    assert!(message.contains("`answers`"), "{message}");
+    assert!(
+        message.starts_with("unknown field `obligations`, expected one of `"),
+        "{message}"
+    );
+    assert!(message.contains("`answers` at line "), "{message}");
 }
 
 #[test]
