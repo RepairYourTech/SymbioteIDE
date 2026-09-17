@@ -101,8 +101,9 @@ class EverySpellingOfOneStatement(unittest.TestCase):
 
     def test_a_manifest_is_read_in_the_directory_its_own_step_runs_in(self):
         """The fixture's own shape: the job's default (written after its steps, since no
-        order of a job's own keys decides this), a step's own override, and the one template
-        GitHub resolves to the workspace; any other template is refused by name.
+        order of a job's own keys decides this), a step's own override, a comment between
+        the steps, a step written as a flow mapping, and the one template GitHub resolves to
+        the workspace; a step naming its crate through anything else is refused by name.
         """
         job = ("    steps:\n"
                "      - run: cargo test --manifest-path src-tauri/Cargo.toml\n"
@@ -114,16 +115,23 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                "      -\n"
                "        working-directory: ${{ github.workspace }}/crates\n"
                "        run: cargo test --manifest-path tree/Cargo.toml\n"
+               "      # a comment between the steps names no step and ends none\n"
+               "      - {run: cargo test --manifest-path four/Cargo.toml}\n"
                "    defaults:\n      run:\n        working-directory: spikes/linux-shell\n")
         self.assertEqual(manifests("w.yml", "job", job),
                          [ROOT / "spikes/linux-shell/src-tauri/Cargo.toml",
                           ROOT / "crates/examples/one/Cargo.toml",
                           ROOT / "two/Cargo.toml",
-                          ROOT / "crates/tree/Cargo.toml"])
-        with self.assertRaisesRegex(AssertionError, "cannot resolve"):
-            manifests("w.yml", "job",
-                      "    steps:\n      - working-directory: ${{ runner.temp }}/x\n"
-                      "        run: cargo test --manifest-path a/Cargo.toml\n")
+                          ROOT / "crates/tree/Cargo.toml",
+                          ROOT / "spikes/linux-shell/four/Cargo.toml"])
+        for refused in ("    steps:\n      - working-directory: ${{ runner.temp }}/x\n"
+                        "        run: cargo test --manifest-path a/Cargo.toml\n",
+                        "    steps:\n      - run: cargo test --manifest-path ${{ matrix.crate }}"
+                        "/Cargo.toml\n",
+                        "    steps:\n      - run: cargo test --manifest-path \"$DIR/Cargo.toml\"\n"):
+            with self.subTest(refused=refused):
+                with self.assertRaisesRegex(AssertionError, "cannot resolve"):
+                    manifests("w.yml", "job", refused)
 
     def test_a_floor_is_read_from_the_table_that_declares_it(self):
         """Written in any spelling, declared under a header with a comment or inner spaces,
@@ -171,6 +179,9 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                 self.assertIsNone(floor(member),
                                   "cargo refuses a crate whose workspace states no floor in "
                                   "[workspace.package], so there is nothing to hold it against")
+            with self.subTest(missing="a manifest this tree does not hold"):
+                with self.assertRaisesRegex(AssertionError, "is not a manifest this tree holds"):
+                    floor(nested / "member" / "Ghost.toml")
 
     def test_a_job_runs_the_toolchain_it_states_however_it_states_it(self):
         matrix = "    strategy:\n      matrix:\n"
@@ -198,9 +209,14 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                 (step + "          toolchain: |\n            stable\n", ["stable"]),
                 # an item whose content is on the next line states no leg of its own
                 (matrix + "        toolchain:\n          -\n", []),
+                # a matrix written inline as a flow mapping states the same legs
+                ('    strategy:\n      matrix: {toolchain: ["1.85.0", stable]}\n',
+                 ["1.85.0", "stable"]),
                 ("    steps:\n      - uses: actions/checkout@v4\n", [])):
             with self.subTest(block=block):
                 self.assertEqual(legs(block), running)
+        with self.assertRaisesRegex(AssertionError, "never closes"):
+            legs("    strategy:\n      matrix:\n        toolchain: [\n")
 
 
 if __name__ == "__main__":
