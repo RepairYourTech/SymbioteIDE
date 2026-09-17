@@ -14,8 +14,8 @@ committed report, a suite's own output, a workflow — and is pointed at from he
 It cites no case name either: where a check matters it names the file or the
 document that owns it, and the crate doc holds its own citations against its suite.
 Its own citations are held the same way, by
-[the integrity suite's handoff case](../planning/integrity/test_handoff.py): the paths
-and commands it prints, and the minimum toolchain it names.
+[the integrity suite's handoff case](../planning/integrity/test_handoff.py), whose own
+docstring states what it holds and what nothing there can.
 
 ## How a claim is held here
 

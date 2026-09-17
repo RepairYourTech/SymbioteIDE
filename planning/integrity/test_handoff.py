@@ -1,21 +1,26 @@
 """Hold the engineering handoff's citations to the tree.
 
-`docs/engineering-handoff.md` is the summary a maintainer reads first, and until now
-nothing read it: its links, the commands it prints and the one figure it states were
-prose, so a moved file or a renamed example target would have left the document
-naming something this tree does not have. What is held here is the decidable part of
-that — every local path it names resolves, every command's own targets exist, and the
-minimum toolchain it names is the one `Cargo.toml` declares and CI runs — plus the
-guard that the document still carries citations at all, so an emptied one cannot pass
-by naming nothing.
+`docs/engineering-handoff.md` is the summary a maintainer reads first, and until this
+file nothing read it: its links, the commands it prints and the one figure it states
+were prose, so a moved file or a renamed example target would have left the document
+naming something this tree does not have.
+
+What is held, all of it the decidable part of that: every link it writes — inline,
+titled, or reference-style, whose path lives in the definition and is held whether or
+not a label uses it — resolves inside this repository; every code span that begins a
+command names targets that exist, wherever the document writes it; every code span
+naming a repository path exists; and the minimum toolchain it names is the one
+`Cargo.toml` declares and CI's matrix runs. The document must still carry citations at
+all, so an emptied one cannot pass by naming nothing.
 
 What nothing here decides, and nothing in this repository can: whether a sentence's
-meaning is true, which issue owns what work, and any claim about a thread that lives
-off this tree. The document's own convention that it cites no case name is prose too,
-and measurably not holdable as a rule: of the seven identifier-like spans it writes,
-`apply` and `document` are themselves case names of the suites this repository runs
-(701 of them), so a rule refusing any span a suite runs would refuse two legitimate
-words rather than the citation it means.
+meaning is true, which issue owns what work, any claim about a thread that lives off
+this tree, and a second copy of these facts in another document — the rule reads this
+one. The document's own convention that it cites no case name is prose here too, and
+not holdable as this file holds things: refusing a span that is a name a suite's
+source defines would refuse `apply` and `document`, two English words the handoff
+writes and two suites define as helpers, so the rule would bite the words rather than
+the citation it means.
 """
 from __future__ import annotations
 
@@ -25,34 +30,45 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DOCUMENT = ROOT / "docs/engineering-handoff.md"
+COMMAND = re.compile(r"(cargo|python3?|symbiote)\b")
 
 
 def text() -> str:
     return DOCUMENT.read_text()
 
 
-def local_links(document: str) -> list[str]:
-    """The link targets naming a path in this repository: no scheme, no anchor."""
-    return [target for target in re.findall(r"\[[^\]]*\]\(([^)\s]+)\)", document)
-            if "://" not in target and not target.startswith("#")]
+def code_spans(document: str) -> list[str]:
+    """Every code span the document writes, in order; the one reader the others share."""
+    return re.findall(r"`([^`\n]+)`", document)
+
+
+def link_targets(document: str) -> list[str]:
+    """Every path the document cites, in either link form: no scheme, no anchor.
+
+    An inline target may carry a title (`(path "title")`) or angle brackets; a
+    reference link's path is its definition, so every definition is held whether or
+    not a label uses it. A bracketed word with no definition is not a link in
+    markdown, so it is not one here.
+    """
+    found = []
+    for inside in re.findall(r"\]\(([^)]*)\)", document):
+        found.append(inside[1:].split(">")[0] if inside.startswith("<")
+                     else inside.split()[0])
+    found += re.findall(r"^\[[^\]]+\]:\s*(\S+)", document, re.M)
+    return [target for target in found
+            if not re.match(r"[a-z][a-z0-9+.-]*:", target) and not target.startswith("#")]
 
 
 def commands(document: str) -> list[str]:
-    """Every command the document prints: the battery's lines and the table's check cells."""
-    printed = [line.strip() for block in re.findall(r"```(?:sh)?\n(.*?)```", document, re.S)
-               for line in block.strip().splitlines()]
-    for line in document.splitlines():
-        if not line.startswith("|") or line.startswith(("| ---", "| Claim")):
-            continue
-        for cell in line.strip("|").split("|")[2:]:
-            printed += [span for span in re.findall(r"`([^`]+)`", cell)
-                        if re.match(r"(cargo|python3?|symbiote)\b", span)]
-    return printed
+    """Every command the document prints: a fenced line or a code span, wherever written."""
+    fenced = [line.strip() for block in re.findall(r"```(?:sh)?\n(.*?)```", document, re.S)
+              for line in block.strip().splitlines()]
+    return [line for line in fenced + code_spans(document) if COMMAND.match(line)]
 
 
 def path_spans(document: str) -> list[str]:
     """The code spans naming a repository path: a `/`, no space or placeholder, not absolute."""
-    return sorted({span for span in re.findall(r"`([^`\n]+)`", document)
+    return sorted({span for span in code_spans(document)
                    if "/" in span and not any(c in span for c in " …<>*'\"")
                    and not span.startswith("/")})
 
@@ -73,7 +89,7 @@ def example_target(package: str, target: str) -> bool:
 
 class HandoffCitations(unittest.TestCase):
     def test_every_local_link_resolves_inside_this_repository(self):
-        links = local_links(text())
+        links = link_targets(text())
         self.assertTrue(links, "the handoff names no path at all")
         for target in links:
             with self.subTest(target=target):
@@ -107,7 +123,10 @@ class HandoffCitations(unittest.TestCase):
     def test_the_minimum_toolchain_it_names_is_the_declared_and_proven_one(self):
         named = re.search(r"Rust (\d+\.\d+)", text())
         self.assertIsNotNone(named, "the handoff no longer names a minimum toolchain")
-        declared = re.search(r'rust-version = "([^"]+)"', (ROOT / "Cargo.toml").read_text())
+        manifest = (ROOT / "Cargo.toml").read_text()
+        declared = re.search(r'rust-version = "([^"]+)"', manifest)
+        self.assertIsNotNone(declared, "Cargo.toml declares no rust-version, so the handoff's "
+                                       "minimum has nothing to be held against")
         self.assertEqual(named.group(1), declared.group(1),
                          "the handoff's minimum is not the one Cargo.toml declares")
         matrix = re.search(r"toolchain: \[([^\]]+)\]",
