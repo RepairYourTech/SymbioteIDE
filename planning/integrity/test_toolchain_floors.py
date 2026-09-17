@@ -111,11 +111,15 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                "      - working-directory: ${{ github.workspace }}\n"
                "        run: cargo test --manifest-path two/Cargo.toml\n"
                "      - uses: actions/checkout@v4\n"
+               "      -\n"
+               "        working-directory: ${{ github.workspace }}/crates\n"
+               "        run: cargo test --manifest-path tree/Cargo.toml\n"
                "    defaults:\n      run:\n        working-directory: spikes/linux-shell\n")
         self.assertEqual(manifests("w.yml", "job", job),
                          [ROOT / "spikes/linux-shell/src-tauri/Cargo.toml",
                           ROOT / "crates/examples/one/Cargo.toml",
-                          ROOT / "two/Cargo.toml"])
+                          ROOT / "two/Cargo.toml",
+                          ROOT / "crates/tree/Cargo.toml"])
         with self.assertRaisesRegex(AssertionError, "cannot resolve"):
             manifests("w.yml", "job",
                       "    steps:\n      - working-directory: ${{ runner.temp }}/x\n"
@@ -150,6 +154,17 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                 self.assertEqual(floor(member), "1.88",
                                  "a crate inherits its own workspace's [workspace.package], "
                                  "not that workspace root's own [package] floor")
+            with self.subTest(inherited="a root the crate names itself"):
+                inner = nested / "inner"
+                (inner / "pinned").mkdir(parents=True)
+                (inner / "Cargo.toml").write_text('[workspace]\nmembers = []\n\n'
+                                                   '[workspace.package]\nrust-version = "1.77"\n')
+                pinned = inner / "pinned" / "Cargo.toml"
+                pinned.write_text('[package]\nname = "pinned"\nworkspace = "../.."\n'
+                                  'rust-version.workspace = true\n')
+                self.assertEqual(floor(pinned), "1.88",
+                                 "cargo honours the root a crate names itself over the "
+                                 "nested [workspace] above it")
             with self.subTest(inherited="no [workspace.package] floor"):
                 nested_manifest.write_text(root.replace('[ workspace.package ]  # what members '
                                                         'inherit\nrust-version = "1.88"\n', ""))
@@ -177,6 +192,12 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                 # a step installing one toolchain beside a matrix: the job runs both
                 (matrix + '        toolchain: ["1.85.0", stable]\n' + step
                  + "          toolchain: nightly\n", ["1.85.0", "stable", "nightly"]),
+                # a flow sequence may span lines, and a block scalar states one value
+                (matrix + '        toolchain: [\n          "1.85.0",\n          stable,\n        ]\n',
+                 ["1.85.0", "stable"]),
+                (step + "          toolchain: |\n            stable\n", ["stable"]),
+                # an item whose content is on the next line states no leg of its own
+                (matrix + "        toolchain:\n          -\n", []),
                 ("    steps:\n      - uses: actions/checkout@v4\n", [])):
             with self.subTest(block=block):
                 self.assertEqual(legs(block), running)
