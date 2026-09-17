@@ -31,10 +31,17 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SOURCES = ("crates/symbiote-architecture/src", "crates/symbiote-architecture/tests")
 # The subjects a row's anchor may live in: the contract document the crate's own
-# citations are read from, and the proof record its document target compares the
-# bar against. Both are read by a case, so a rule about either is proved by moving
-# the text one of them holds.
-DOCUMENTS = ("docs/contracts/architecture.md", "docs/proofs/linux-shell.md")
+# citations are read from, the proof record its document target compares the bar
+# against, and the committed contract data a case reads its platforms, thresholds
+# and clauses out of. Each is read by a case, so a rule about any of them is
+# proved by moving the text it holds — and a rule comparing two of those facts
+# needs the document moved rather than the comparison reverted, since a
+# comparison two honestly agreeing sides satisfy stays green when it is removed.
+DOCUMENTS = (
+    "docs/contracts/architecture.md",
+    "docs/proofs/linux-shell.md",
+    "docs/architecture/spike-contracts.json",
+)
 IGNORED = shutil.ignore_patterns(".git", "target", ".freebuff", "__pycache__", "node_modules")
 
 # Each row: the rule, the text that holds it, the text that removes it, and the
@@ -544,6 +551,30 @@ RULES: list[tuple[str, str, str, str]] = [
         moved.push(("before a clause was named by its own words", CLAUSE_MOVED));
     }""",
         'a_contract_document_carrying_both_old_shapes_at_once_names_both',
+    ),
+    (
+        'a platform family is a word the reading names rather than nothing',
+        '.then(|| word.to_lowercase())',
+        '.then(String::new)',
+        'the_committed_contract_names_the_platforms_its_own_clause_names_and_its_prose_defers_to_them',
+    ),
+    (
+        'a contract applies to no platform the clause that sets applicability does not name',
+        '"macOS 14 arm64"',
+        '"FreeBSD 14 amd64"',
+        'the_committed_contract_names_the_platforms_its_own_clause_names_and_its_prose_defers_to_them',
+    ),
+    (
+        "a clause that opens on a word naming nothing is not read as naming a platform",
+        '        .skip(usize::from(opens_a_sentence))',
+        '        .skip(0)',
+        'the_committed_contract_names_the_platforms_its_own_clause_names_and_its_prose_defers_to_them',
+    ),
+    (
+        'the clause that sets applicability is the one naming a platform the contract applies to',
+        '        .find(|answer| !named_platforms(&answer.clause, true).is_disjoint(&declared))',
+        '        .find(|_| true)',
+        'the_committed_contract_names_the_platforms_its_own_clause_names_and_its_prose_defers_to_them',
     ),
 ]
 

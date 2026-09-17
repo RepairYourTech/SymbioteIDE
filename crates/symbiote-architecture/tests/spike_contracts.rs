@@ -8,6 +8,7 @@
 //! rules are proved to be walkable and not only restrictive.
 
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use symbiote_architecture::checks::{Problem, problems};
@@ -741,17 +742,78 @@ fn a_contract_that_names_one_applicable_platform_twice_is_refused() {
     assert!(error.0.contains("must be named once each"), "{error}");
 }
 
+/// The platform names a piece of text states: every word carrying a capital
+/// letter — `Linux`, `X11`, `macOS` — which is how the accepted clause and the
+/// contract's own platform strings write a platform family, and which is why
+/// `x86_64` is a word of a label rather than a family of its own. The clause
+/// opens on a word that names nothing (`Cover`), so a sentence's first word is
+/// not read as one.
+fn named_platforms(text: &str, opens_a_sentence: bool) -> BTreeSet<String> {
+    text.split_whitespace()
+        .skip(usize::from(opens_a_sentence))
+        .filter_map(|word| {
+            let word = word.trim_matches(|c: char| !(c.is_alphanumeric() || c == '#'));
+            word.chars()
+                .any(char::is_uppercase)
+                .then(|| word.to_lowercase())
+        })
+        .collect()
+}
+
 #[test]
-fn the_committed_contract_names_the_platforms_it_applies_to_and_its_prose_defers_to_them() {
+fn the_committed_contract_names_the_platforms_its_own_clause_names_and_its_prose_defers_to_them() {
+    // The applicable platforms are this repository's data, and the bar that says
+    // what they are is the clause that sets applicability — the accepted record's
+    // own words, which the ledger pins by SHA-256 and the answers carry rather
+    // than restate. So the families are read out of that clause by the clause
+    // that answers it, which is found by the platforms the contract declares
+    // itself, rather than kept here as a list or a count: a contract that applies
+    // to a platform the bar does not name, or stops applying to one it does, is
+    // refused naming both directions instead of passing while four strings remain
+    // four.
     let contract = contracts()
         .contract(SHELL_CONTRACT)
         .expect("the shell contract")
         .clone();
+    let declared: BTreeSet<String> = contract
+        .applicable_platforms
+        .iter()
+        .flat_map(|platform| named_platforms(platform, false))
+        .collect();
+    let answer = contract
+        .answers
+        .iter()
+        .find(|answer| !named_platforms(&answer.clause, true).is_disjoint(&declared))
+        .unwrap_or_else(|| {
+            panic!(
+                "no answered clause names a platform this contract applies to, and it applies to \
+                 {declared:?}: which platforms the bar covers is the clause's own words"
+            )
+        });
+    let named = named_platforms(&answer.clause, true);
+    // Both sides of the comparison below come out of one reading, so a reading
+    // that named nothing would compare nothing and pass: measured, a reader
+    // returning an empty word for every word left this case green while the
+    // contract applied to platforms no clause named.
+    assert!(
+        !declared.contains("") && !named.contains(""),
+        "a family is a word: the contract applies to {declared:?} and the clause names {named:?}"
+    );
+    let named_and_not_applied_to: Vec<_> = named.difference(&declared).cloned().collect();
+    let applied_to_and_not_named: Vec<_> = declared.difference(&named).cloned().collect();
+    assert!(
+        named_and_not_applied_to.is_empty() && applied_to_and_not_named.is_empty(),
+        "the contract applies to {declared:?} while the clause that sets applicability names \
+         {named:?}: {named_and_not_applied_to:?} are named by the bar and unaccounted for here, \
+         and {applied_to_and_not_named:?} are applied to and named by no clause — the clause \
+         the bar is read from is {:?}",
+        answer.clause
+    );
     assert_eq!(
-        contract.applicable_platforms.len(),
-        4,
-        "the four platforms the contract applies to belong in data: {:?}",
-        contract.applicable_platforms
+        named_platforms(answer.obligation.as_deref().unwrap_or_default(), true),
+        named,
+        "the obligation answering that clause ({:?}) names the platforms the clause names",
+        answer.obligation
     );
     assert!(
         contract.platform.contains("applicable_platforms"),
