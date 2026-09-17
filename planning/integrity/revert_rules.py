@@ -30,7 +30,11 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SOURCES = ("crates/symbiote-architecture/src", "crates/symbiote-architecture/tests")
-DOCUMENT = "docs/contracts/architecture.md"
+# The subjects a row's anchor may live in: the contract document the crate's own
+# citations are read from, and the proof record its document target compares the
+# bar against. Both are read by a case, so a rule about either is proved by moving
+# the text one of them holds.
+DOCUMENTS = ("docs/contracts/architecture.md", "docs/proofs/linux-shell.md")
 IGNORED = shutil.ignore_patterns(".git", "target", ".freebuff", "__pycache__", "node_modules")
 
 # Each row: the rule, the text that holds it, the text that removes it, and the
@@ -506,12 +510,24 @@ RULES: list[tuple[str, str, str, str]] = [
             .get("answers")""",
         'a_contract_document_that_names_a_clause_by_its_number_is_refused_naming_what_moved',
     ),
+    (
+        "the record's stated ceiling is the contract's own maximum",
+        '0.353** of a 3.0 ceiling',
+        '0.353** of a 3.1 ceiling',
+        'the_proof_record_states_the_contracts_own_bar',
+    ),
+    (
+        "a ceiling is stated for a measurement the committed run observed",
+        '**`cold_start_to_first_frame_seconds` 0.353**',
+        '**`cold_start_to_first_frame_second` 0.353**',
+        'the_proof_record_states_the_contracts_own_bar',
+    ),
 ]
 
 
 def scanned(tree: pathlib.Path) -> list[pathlib.Path]:
     """Every file a row can be held in, under the tree the driver mutates."""
-    files = [tree / DOCUMENT]
+    files = [tree / document for document in DOCUMENTS]
     for source in SOURCES:
         files.extend(sorted((tree / source).rglob("*.rs")))
     return files

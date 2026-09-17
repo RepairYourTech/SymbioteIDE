@@ -77,8 +77,14 @@ them.
   its instrument could not, and the artifacts behind every figure are the
   artifact's own — this file does not restate them; the run and how it was built
   are described in [the Linux shell record](proofs/linux-shell.md). The bar's content is
-  still written in three prose copies (ADR-0001's proof contract, the technology
-  amendment, the Linux shell proof record) against the one the contract answers.
+  written in three prose copies (ADR-0001's proof contract, the technology
+  amendment, the Linux shell proof record); the copy that states its numbers — the
+  ceilings the record writes beside its figures — is now compared with the
+  contract's predeclared maximums by [the crate's `document`
+  target](../crates/symbiote-architecture/tests/document.rs), which also requires
+  every measurement the committed run observed to have a ceiling stated there. The
+  other two copies restate the obligations rather than a threshold, and nothing
+  compares them.
   A contract document carrying both old shapes at once is refused by serde's field
   list rather than by name. The message the pre-#602 wrapper printed is not
   reproducible from this tree, which the case that quotes it says in place.
