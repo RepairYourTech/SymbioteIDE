@@ -13,6 +13,7 @@ from pathlib import Path
 
 from shellproof.checks import unknown_of
 from shellproof.contract import REPO, platform_key, read_document
+from shellproof.observation import MARKS
 from shellproof.records import repo_path, sha256_of
 
 
@@ -105,7 +106,7 @@ def publish(paths, publish_dir):
     return published
 
 
-def figures_of(samples, cleaned, stats, build_seconds, memory=True):
+def figures_of(samples, cleaned, stats, build_seconds, memory=True, marks=None):
     """The predeclared measurements this run's instrument observed, and no others.
 
     A traced run reports the timing figure only: its client logs every protocol
@@ -113,7 +114,9 @@ def figures_of(samples, cleaned, stats, build_seconds, memory=True):
     Each name below is the computation that produces it — the contract predeclares
     the names, not the arithmetic — and ``result_problems`` refuses a name the
     contract does not predeclare before anything is written, so this copy cannot go
-    stale silently.
+    stale silently. The marks the app's own log gave are read through ``observation``'s
+    table, so the measurement a marker bears and the figure recorded for it cannot be
+    stated in two places.
     """
     peak = max(samples, key=lambda row: row['sum_pss_kib'], default={})
     pss = peak.get('sum_pss_kib', 0)
@@ -122,6 +125,9 @@ def figures_of(samples, cleaned, stats, build_seconds, memory=True):
     if stats and stats['first_frame_seconds'] is not None:
         figures.append({'measurement': 'cold_start_to_first_frame_seconds',
                         'observed': stats['first_frame_seconds']})
+    for marker, measurement in MARKS:
+        if measurement and (marks or {}).get(marker) is not None:
+            figures.append({'measurement': measurement, 'observed': marks[marker]})
     if memory:
         figures.append({'measurement': 'workload_process_tree_pss_mib',
                         'observed': round(pss / 1024, 3)})

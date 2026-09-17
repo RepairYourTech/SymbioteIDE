@@ -24,6 +24,23 @@ SAMPLE_SECONDS = 0.1
 # it instead of letting a survivor count either absorb it or lose it.
 EXITED_STATES = 'ZX'
 
+# The markers a run stamps from the app's own log, and the measurement each one bears.
+# A marker is the fixture reporting a fact about itself; a measurement name is the
+# contract's, so this is where the two are tied and nothing else states either side of
+# it. ``PROOF_WORKBENCH_READY`` is the workbench's own report that it has rendered, which
+# is what the contract's method times a cold start to; ``PROOF_READY`` is the shell
+# process's, printed by the setup that adds the WebViews before any frame, and bears no
+# measurement. A mark is stamped with the driver's monotonic clock reading when the
+# driver reads the line — within one sample of the moment it was printed, so it can
+# overstate a cold start by that much and never understate it — and a mark carries no
+# measurement unless the table gives it one, so a fixture that never reports ready leaves
+# the measurement unobserved rather than recording a figure beside its own mark.
+MARKS = (
+    ('PROOF_WORKBENCH_READY', 'cold_start_to_workbench_ready_seconds'),
+    ('PROOF_READY', None),
+    ('PROOF_EXIT', None),
+)
+
 
 def processes():
     """Every process this run can see: parentage, identity, name and state, one read each.
@@ -179,7 +196,7 @@ def observe_app(env, log_path, binary, seconds, cancel_after, trace):
                     chunk = open_log.read()
                     offset += len(chunk.encode())
                 text, tail = tail + chunk, chunk[-64:]
-                for marker in ('PROOF_READY', 'PROOF_EXIT'):
+                for marker, _ in MARKS:
                     if marker not in marks and marker in text:
                         marks[marker] = round(time.monotonic() - started, 3)
                 if cancel_after and time.monotonic() - started > cancel_after:
@@ -198,7 +215,7 @@ def observe_app(env, log_path, binary, seconds, cancel_after, trace):
         finally:
             pass
     text = log_path.read_text()
-    for marker in ('PROOF_READY', 'PROOF_EXIT'):
+    for marker, _ in MARKS:
         if marker not in marks and marker in text:
             marks[marker] = round(time.monotonic() - started, 3)
     return app.returncode, round(time.monotonic() - started, 3), samples, seen, marks

@@ -94,26 +94,36 @@ and the three obligations `exercised` are unchanged, while every figure the run
 observed is this run's own.
 
 What it could not observe, reported unknown rather than met: idle-state PSS (this
-fixture has no idle state), workbench readiness (its `PROOF_READY` marker precedes
-the first frame and every WebKit helper, so it is not a workbench-ready signal),
-input starvation (this driver issues no input on Wayland), journal loss across a
+fixture has no idle state), workbench readiness (the build this run measured had no
+signal of its own for it: the only readiness marker was the shell's `PROOF_READY`,
+printed by the setup that adds the three child WebViews before the first frame and
+every WebKit helper — the fixture reports readiness itself now, and a run of it
+observes that measurement, as the section below says), input starvation (this driver
+issues no input on Wayland), journal loss across a
 crash (the fixture has no canonical store) and installer size (nothing here
 packages an installer). No frames were captured in this session: the runner takes no screenshot on either
 path, so the rendering evidence is the client's own protocol log and the app's logs.
 
 ### What each unobserved measurement would take
 
-Each of the five is unobserved because the fixture lacks the capability it needs, not
-because the run chose not to look. Measured on this tree, the smallest change that
-would observe each is:
+Each of the five was unobserved because the build the run measured lacked the
+capability it needs, not because the run chose not to look. Measured on this tree, the
+smallest change that would observe each is below; the first has since been made, and
+the other four stand as measured:
 
-- `cold_start_to_workbench_ready_seconds` — the workbench never reports ready: the
-  only readiness marker is the shell's own `PROOF_READY`, printed by the Rust setup
-  that adds the three child WebViews (`spikes/linux-shell/src-tauri/src/main.rs`)
-  before the first frame and every WebKit helper, and the driver records a mark only
-  for the markers it knows. Observing it needs a signal from the workbench itself —
-  Tauri does not forward a WebView's console to the process, so that means a native
-  command the workbench invokes once it renders — which is new fixture capability.
+- `cold_start_to_workbench_ready_seconds` — **the workbench reports ready itself now**,
+  so this one no longer waits on the fixture. The workbench component
+  (`spikes/linux-shell/src/main.tsx`) invokes a native command once it has committed and
+  the browser is about to paint, and that command
+  (`spikes/linux-shell/src-tauri/src/main.rs`, behind the same WebView-label and trusted
+  origin gate as every other custom command, so neither Preview nor Lead can report in
+  its name) prints `PROOF_WORKBENCH_READY`, which the runner stamps on its own monotonic
+  clock (`shellproof/observation.py`) and records as this measurement
+  (`shellproof/publication.py`). The committed run above predates the signal, so its
+  unknown stands as what the build it measured showed; a run of the current fixture
+  observes the figure, timed from process start as the method asks. What it records is
+  the workbench reporting its own surface ready — not a frame a compositor confirmed,
+  and not the workload behind it being busy.
 - `idle_process_tree_pss_mib` — the fixture has no idle state: its three terminal
   PTYs start in that same `main.rs` setup and its four synthetic streams start when
   the workbench mounts (`spikes/linux-shell/src/main.tsx`), so every 100 ms sample is
@@ -143,10 +153,10 @@ would observe each is:
 The result attests only what the fixture's own log shows. `exercised` is derived
 from the app's markers — three `PROOF_PTY_START`, one `PROOF_READY
 preview_origin=`, two `PROOF_PREVIEW_REPORT` denials — so four concurrent agent
-streams are absent from it even though the fixture starts four synthetic ones. The
-runner refuses to publish a result whose platform the contract does not apply to,
+streams are absent from it even though the fixture starts four synthetic ones.The runner refuses to publish a result whose platform the contract does not apply to,
 whose stop condition the contract does not declare, which leaves a predeclared
-measurement neither observed nor named with its reason, or which attests an
+measurement neither observed nor named with its reason, which names a measurement both
+observed and unknown, or which attests an
 obligation no marker supports; the platforms this run did not exercise are derived
 from the runs the dossier holds rather than typed; and the artifact it wrote was
 read back by the ledger's own map, which reported no refusals for it. Two of those

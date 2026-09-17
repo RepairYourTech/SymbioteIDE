@@ -199,8 +199,8 @@ def result_problems(args, contract, runs):
     Checked before anything is published: a platform the contract does not apply
     to, a stop condition it does not declare, a measurement it predeclares that is
     neither observed nor named unknown, an unknown or an observation the contract
-    never declared, and an obligation answered here with no marker in the run's
-    own log.
+    never declared, a measurement the run both observed and named unknown, and an
+    obligation answered here with no marker in the run's own log.
     """
     problems = []
     if not contract.applies_to(args.platform):
@@ -215,6 +215,10 @@ def result_problems(args, contract, runs):
         problems.append(f'{name} is named unobservable and the contract does not predeclare it')
     for name in sorted(observed - set(predeclared)):
         problems.append(f'{name} is observed and the contract does not predeclare it')
+    for name in sorted(observed & set(unknown)):
+        problems.append(f'{name} is both observed in this run and named unobservable: a result '
+                        'records the figure it saw or the reason it could not see it, and a run '
+                        'that saw it cannot report it unknown')
     for name in predeclared:
         if name not in observed and name not in unknown:
             problems.append(f'{name} is predeclared and neither observed nor named unobservable, '

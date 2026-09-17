@@ -123,6 +123,16 @@ fn stop_ptys(webview: Webview, state: tauri::State<'_, ProofState>) -> Result<()
     authorize(&webview, &state)?;
     state.stop()
 }
+// The workbench reporting ready itself, once it has rendered. `PROOF_READY` cannot stand
+// for this: the setup below prints it after adding the WebViews, before any of them has
+// drawn a frame. Only the `workbench` label and the trusted origin `authorize` checks can
+// reach this, so neither the Preview nor the Lead surface can report on its behalf.
+#[tauri::command]
+fn workbench_ready(webview: Webview, state: tauri::State<'_, ProofState>) -> Result<(), String> {
+    authorize(&webview, &state)?;
+    println!("PROOF_WORKBENCH_READY");
+    Ok(())
+}
 
 fn terminals() -> Result<Vec<Terminal>, Box<dyn std::error::Error>> {
     let mut terminals = Vec::new();
@@ -257,7 +267,11 @@ fn preview_server(
 
 fn main() {
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![snapshot, stop_ptys])
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            stop_ptys,
+            workbench_ready
+        ])
         .setup(|app| {
             let reports = Arc::new(Mutex::new(Vec::new()));
             let shutdown = Arc::new(AtomicBool::new(false));

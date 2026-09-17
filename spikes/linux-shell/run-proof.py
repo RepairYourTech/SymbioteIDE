@@ -165,7 +165,8 @@ def run_wayland(args, artifacts, binary, commit):
         # hardware, so run 1 records and cites it.
         first = measure(session, artifacts, binary, 'app-1.log', args.seconds, 0, trace=True)
         stats = trace_stats(first['log'])
-        figures, peak = figures_of(first['samples'], None, stats, args.build_seconds, memory=False)
+        figures, peak = figures_of(first['samples'], None, stats, args.build_seconds, memory=False,
+                                   marks=first['marks'])
         (artifacts / 'process-tree-1.json').write_text(json.dumps(
             {'schema_version': record_version('process-tree-1'),
              'session': session.name, 'run': 1, 'app_exit': first['code'],

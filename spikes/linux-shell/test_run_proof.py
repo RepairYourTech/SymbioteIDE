@@ -39,8 +39,8 @@ spec.loader.exec_module(run_proof)
 # through `run_proof`; `run-proof.py`'s load above is what put this directory on the
 # import path.
 from shellproof.checks import ATTESTED_BY, uncommitted  # noqa: E402
-from shellproof.observation import (EXITED_STATES, cleanup, processes, survivors_of,  # noqa: E402
-                                    unreaped_of)
+from shellproof.observation import (EXITED_STATES, MARKS, cleanup, processes,  # noqa: E402
+                                    survivors_of, unreaped_of)
 from shellproof.publication import logged_revision  # noqa: E402
 from shellproof.records import (CANCELLATION_FIELDS, RECORD_SHAPES, SAMPLE_FIELDS,  # noqa: E402
                                 UNKEPT_PATHS, read_record, record_version, sha256_of)
@@ -229,6 +229,21 @@ class ResultRules(unittest.TestCase):
         found = self.problems(unobservable=['worst_input_starvation_ms=no input', 'idle_pss=no idle'])
         self.assertTrue(any('idle_pss' in problem for problem in found), found)
 
+    def test_a_measurement_both_observed_and_named_unobservable_is_refused(self):
+        """One name cannot be a figure and a refusal in the same result.
+
+        Reachable since the fixture began reporting the workbench ready: an invocation
+        written before that signal names the measurement unobservable, and a run of the
+        current fixture observes it, so the result would report the figure and disown it
+        at once. Every other predeclared name is answered here, so this is the only
+        problem the result has.
+        """
+        found = self.problems(unobservable=[
+            'cold_start_to_first_frame_seconds=this case says it cannot see it',
+            'worst_input_starvation_ms=no input'])
+        self.assertEqual(len(found), 1, found)
+        self.assertIn('both observed', found[0])
+
     def test_a_run_attesting_nothing_is_refused(self):
         found = self.problems(runs=[run(['cold_start_to_first_frame_seconds'], [])])
         self.assertTrue(any('attests no obligation' in problem for problem in found), found)
@@ -267,6 +282,11 @@ class Publication(unittest.TestCase):
 FINGERPRINT = 'f' * 64
 WAYLAND = 'Linux Wayland on the reference compositor'
 
+# The marker the fixture's workbench reports itself ready with, and the measurement the
+# contract predeclares for it, read from the driver's own table rather than restated, so a
+# marker moved in that table is one edit and not a second one here.
+WORKBENCH_MARKER, WORKBENCH_READY = next(pair for pair in MARKS if pair[1])
+
 # The fingerprint the ledger holds for the committed contract, taken from the result
 # it accepted rather than computed here. The crate's fingerprint is
 # `fingerprint(contract)`: the SHA-256 of the contract's own canonical JSON
@@ -297,6 +317,16 @@ MARKED_APP = ('#!/bin/sh\n'
               'echo "PROOF_READY preview_origin=http://127.0.0.1:5173"\n'
               'echo "PROOF_PREVIEW_REPORT snapshot: denied"\n'
               'echo "PROOF_PREVIEW_REPORT stop_ptys: denied"\n')
+
+# What a run of ``MARKED_APP`` produces through ``figures_of``: its second lifetime always
+# yields the memory and cancellation figures, and its first yields a timing figure only
+# where the app reports one. The invocations these cases write name unobservable the
+# predeclared measurements the run they drive does not produce, because the driver refuses a
+# result that names a figure it saw: a case that gives the app another marker drops that
+# name from its list, and a figure ``figures_of`` starts producing makes these cases refuse
+# loudly rather than let one stand for both.
+MARKED_APP_SHOWS = ('workload_process_tree_pss_mib', 'unattributed_process_tree_memory_percent',
+                    'orphaned_processes_after_cancel', 'orphaned_listening_ports_after_cancel')
 
 
 def committed_tree():
@@ -553,6 +583,28 @@ class EntryPoint(unittest.TestCase):
         self.assertEqual(measured['survivors_before_cleanup'], [])
         self.assertEqual(measured['cancellation']['survivors_after_cancel_request'], 0)
 
+    @unittest.skipUnless(Path('/bin/sh').exists(), 'needs a shell for the stand-in app')
+    def test_the_marks_a_run_stamps_are_the_markers_the_driver_declares(self):
+        """The marker table has one owner, and the sampling loop is what reads it.
+
+        A stand-in app reports every marker the table names and then stays alive, so the
+        stamps come from the loop that samples a running app rather than from the log read
+        after it exited — a stamp taken there would be the length of the run instead of the
+        moment the app reported. Every marker the table names is stamped, and none beside it.
+        """
+        app = self.artifacts / 'all-markers'
+        app.write_text('#!/bin/sh\n' + ''.join(f'echo {marker}\n' for marker, _ in MARKS)
+                       + 'sleep 3\n')
+        app.chmod(0o755)
+        measured = run_proof.measure(self.session, self.artifacts, app, 'app.log', 3, 0,
+                                     trace=False)
+        self.assertEqual(sorted(measured['marks']), sorted(marker for marker, _ in MARKS),
+                         'the driver stamps the markers it declares, and only those')
+        self.assertGreater(measured['elapsed'], 2.5, 'the app ran a lifetime of its own')
+        for marker, seconds in measured['marks'].items():
+            self.assertLess(seconds, 1.0, f'{marker} was stamped at the end of the run rather '
+                                          'than when the app reported it')
+
 
 class Publishing(unittest.TestCase):
     """Nothing is published for a run that cannot support its own result.
@@ -587,7 +639,8 @@ class Publishing(unittest.TestCase):
             contract=contract.id, contract_sha256='f' * 64,
             stop_condition=contract.stop_conditions[0], limitation=[],
             unobservable=[f'{name}=this case measures nothing'
-                          for name in contract.measurement_names])
+                          for name in contract.measurement_names
+                          if name not in MARKED_APP_SHOWS])
 
     def drive(self, markers):
         before = committed_tree()
@@ -615,6 +668,28 @@ class Publishing(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             self.drive(MARKED_APP)
         self.assertIn('not_predeclared', str(caught.exception))
+        self.assertFalse(self.publish.exists(), 'an artifact directory was published')
+        self.assertFalse(self.dossier.exists(), 'a dossier was written')
+
+    def test_a_run_whose_workbench_reports_ready_records_that_measurement(self):
+        """The figure is the mark the driver stamped, on the lifetime that measured cold start."""
+        self.arguments.unobservable = [item for item in self.arguments.unobservable
+                                       if not item.startswith(WORKBENCH_READY)]
+        self.drive(MARKED_APP + f'echo {WORKBENCH_MARKER}\n')
+        document = json.loads(self.dossier.read_text())
+        observed = [figure for row in document['runs'] for figure in row['observations']
+                    if figure['measurement'] == WORKBENCH_READY]
+        self.assertEqual(len(observed), 1, 'the cold-start figure belongs to one lifetime')
+        record = json.loads((self.artifacts / 'process-tree-1.json').read_text())
+        self.assertEqual(observed[0]['observed'], record['markers'][WORKBENCH_MARKER],
+                         'the recorded figure is the mark the driver stamped, not a number kept '
+                         'beside it, so a fixture that never reports ready records no figure')
+
+    def test_a_result_that_also_names_the_observed_measurement_unobservable_is_refused(self):
+        """The invocation the fixture's new signal outruns: it says the run cannot see it."""
+        with self.assertRaises(SystemExit) as caught:
+            self.drive(MARKED_APP + f'echo {WORKBENCH_MARKER}\n')
+        self.assertIn(f'{WORKBENCH_READY} is both observed', str(caught.exception))
         self.assertFalse(self.publish.exists(), 'an artifact directory was published')
         self.assertFalse(self.dossier.exists(), 'a dossier was written')
 
@@ -710,7 +785,8 @@ class MainEntryPoint(unittest.TestCase):
             argv += ['--cancel-after', '0']
         if results:
             unobservable = unobservable or [f'{name}=this case measures nothing'
-                                            for name in contract.measurement_names]
+                                            for name in contract.measurement_names
+                                            if name not in MARKED_APP_SHOWS]
             argv += ['--stop-condition', stop_condition or contract.stop_conditions[0],
                      '--unobservable', *unobservable,
                      '--publish', str(self.publish), '--results', str(self.dossier),
@@ -1278,7 +1354,8 @@ class RecordsDeclareTheirShape(unittest.TestCase):
             contract=contract.id, contract_sha256='f' * 64,
             stop_condition=contract.stop_conditions[0], limitation=[],
             unobservable=[f'{name}=this case measures nothing'
-                          for name in contract.measurement_names])
+                          for name in contract.measurement_names
+                          if name not in MARKED_APP_SHOWS])
 
     def drive_both_paths(self):
         """A Wayland run and an X11 run, returning the records they left on disk."""
