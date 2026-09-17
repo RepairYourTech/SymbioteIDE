@@ -125,8 +125,16 @@ RULES: list[tuple[str, str, str, str]] = [
     ),
     (
         "the pre-#602 refusal is the derive's own message for the stale field",
-        '    assert!(message.contains("unknown field `obligations`"), "{message}");',
-        '    assert!(message.contains("unknown field `answers`"), "{message}");',
+        """    assert!(
+        message.starts_with("unknown field `obligations`, expected one of `"),""",
+        """    assert!(
+        message.starts_with("unknown field `answers`, expected one of `"),""",
+        'the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field',
+    ),
+    (
+        'the message names the section\u2019s replacement only inside the list of fields',
+        '    assert!(message.contains("`answers` at line "), "{message}");',
+        '    assert!(message.contains("`obligations` at line "), "{message}");',
         'the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field',
     ),
     (
