@@ -42,8 +42,8 @@ from shellproof.checks import ATTESTED_BY, uncommitted  # noqa: E402
 from shellproof.observation import (EXITED_STATES, cleanup, processes, survivors_of,  # noqa: E402
                                     unreaped_of)
 from shellproof.publication import logged_revision  # noqa: E402
-from shellproof.records import (SESSION_SCHEMA_VERSION, SESSION_SHAPES, UNKEPT_PATHS,  # noqa: E402
-                                read_session_record, sha256_of)
+from shellproof.records import (CANCELLATION_FIELDS, RECORD_SHAPES, SAMPLE_FIELDS,  # noqa: E402
+                                UNKEPT_PATHS, read_record, record_version, sha256_of)
 from shellproof.session import Session  # noqa: E402
 
 # A contract of this suite's own, built as the driver reads the committed one. It
@@ -960,8 +960,8 @@ class MainEntryPoint(unittest.TestCase):
         sessions = [Path(item['artifact']) for item in document['runs'][0]['artifacts']
                     if item['artifact'].endswith('session.json')]
         self.assertTrue(sessions, 'the run cites the session record it was measured in')
-        record = read_session_record(sessions[0])
-        self.assertEqual(record['schema_version'], SESSION_SCHEMA_VERSION,
+        record = read_record(sessions[0], 'session')
+        self.assertEqual(record['schema_version'], record_version('session'),
                          'the record declares which shape it is, in the record')
         self.assertEqual(record['display'], 'Wayland')
         self.assertEqual(record['system'], run_proof.host_system())
@@ -1149,11 +1149,11 @@ class SessionRecordVersion(unittest.TestCase):
     """The record's declared version names its shape, and the writer is held to it.
 
     The committed record's fields used to be dated by a paragraph in the shell proof,
-    and a re-recording would have had to move that paragraph by hand. ``SESSION_SHAPES``
-    holds the fields of each version now: the case below holds the writer's own output to
-    the entry for the version it declares, so a field added or removed without a version
-    change fails here, and the reader holds every record to the entry its version names,
-    while a record written before there was a version still reads.
+    and a re-recording would have had to move that paragraph by hand. ``RECORD_SHAPES``
+    holds the fields of each version of each record now: the case below holds the writer's
+    own output to the entry for the version it declares, so a field added or removed without
+    a version change fails here, and the reader holds every record to the entry its version
+    names, while a record written before there was a version still reads.
     """
 
     def setUp(self):
@@ -1181,32 +1181,32 @@ class SessionRecordVersion(unittest.TestCase):
         that shape, and it stopped being version 0 as soon as a version was added.
         """
         return {key: value for key, value in self.written.items()
-                if key in SESSION_SHAPES[0]}
+                if key in RECORD_SHAPES['session'][0]}
 
     def read(self, record):
         path = self.root / 'session.json'
         path.write_text(json.dumps(record))
-        return read_session_record(path)
+        return read_record(path, 'session')
 
     def test_the_writer_writes_the_shape_of_the_version_it_declares(self):
         version = self.written['schema_version']
-        self.assertEqual(version, SESSION_SCHEMA_VERSION)
-        self.assertEqual(set(self.written), set(SESSION_SHAPES[version]),
+        self.assertEqual(version, record_version('session'))
+        self.assertEqual(set(self.written), set(RECORD_SHAPES['session'][version]),
                          'a field added or removed without a version change is a shape this table '
                          'does not name')
         self.assertEqual(self.read(self.written), self.written)
 
     def test_a_version_this_reader_does_not_know_is_refused_by_name(self):
-        for unknown in (max(SESSION_SHAPES) + 1, -1):
+        for unknown in (max(RECORD_SHAPES['session']) + 1, -1):
             with self.subTest(unknown=unknown):
                 with self.assertRaises(SystemExit) as caught:
                     self.read({**self.written, 'schema_version': unknown})
                 self.assertIn(f'declares schema version {unknown}', str(caught.exception))
-                self.assertIn(str(sorted(SESSION_SHAPES)), str(caught.exception))
+                self.assertIn(str(sorted(RECORD_SHAPES['session'])), str(caught.exception))
 
     def test_a_version_of_another_type_is_refused_naming_the_value(self):
         """A version is an integer of a known one: `"1"`, `null`, `true` and `1.0` are not."""
-        for value in ('1', None, True, 1.0, f'{SESSION_SCHEMA_VERSION}'):
+        for value in ('1', None, True, 1.0, f'{record_version("session")}'):
             with self.subTest(value=value):
                 with self.assertRaises(SystemExit) as caught:
                     self.read({**self.written, 'schema_version': value})
@@ -1223,7 +1223,7 @@ class SessionRecordVersion(unittest.TestCase):
         self.assertIn("'system'", str(caught.exception))
 
     def test_a_record_carrying_a_field_its_version_does_not_name_is_refused(self):
-        named = {field for shape in SESSION_SHAPES.values() for field in shape}
+        named = {field for shape in RECORD_SHAPES['session'].values() for field in shape}
         self.assertNotIn(self.UNNAMED, named,
                          'this case needs a name no version carries; a version that took this '
                          'one would have to rename the fixture rather than fail here for the '
@@ -1239,6 +1239,145 @@ class SessionRecordVersion(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             self.read(['wayland_display'])
         self.assertIn('not a record', str(caught.exception))
+
+
+class RecordsDeclareTheirShape(unittest.TestCase):
+    """Every record a run writes declares its shape, and its writer is held to the table.
+
+    ``RECORD_SHAPES`` names the fields of each version of each record the driver writes
+    from its own observation, and a run declares the version of the shape it wrote. The
+    cases here drive both entry points with a stand-in session and read what they wrote:
+    each record is held to the entry for the version it declares, the rows those records
+    carry — a process-tree sample, the cleanup record a cancellation leaves — to their own
+    declared fields, and the committed records, which declare no version, are read as
+    version 0 rather than refused. Nothing declared these shapes before, and they had
+    drifted: the X11 evidence committed under ``docs/proofs/evidence/linux-shell/`` holds a
+    process-tree record of eight fields and another of twelve, against the eleven the
+    writer wrote before the table, and a cleanup record of two fields against the three it
+    writes now.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.artifacts = self.root / 'artifacts'
+        self.artifacts.mkdir()
+        (self.artifacts / 'kwin.log').write_text('')
+        self.session = RecordedSession(kind='wayland', name='suite compositor',
+                                       process=Ended(), env=dict(os.environ), log=Closes(),
+                                       runtime=self.root / 'runtime')
+        self.app = self.artifacts / 'probe'
+        self.app.write_text(MARKED_APP)
+        self.app.chmod(0o755)
+        contract = run_proof.Contract.read(run_proof.REPO / run_proof.CONTRACTS_PATH)
+        self.arguments = argparse.Namespace(
+            seconds=1, cancel_after=0, build_seconds=None, build_log=None,
+            publish=str(self.root / 'publish'), results=str(self.root / 'desktop-shell.json'),
+            platform=contract.default_platform(), contracts=run_proof.CONTRACTS_PATH,
+            contract=contract.id, contract_sha256='f' * 64,
+            stop_condition=contract.stop_conditions[0], limitation=[],
+            unobservable=[f'{name}=this case measures nothing'
+                          for name in contract.measurement_names])
+
+    def drive_both_paths(self):
+        """A Wayland run and an X11 run, returning the records they left on disk."""
+        with mock.patch.object(run_proof, 'open_session', return_value=self.session), \
+             mock.patch.object(run_proof, 'ledger_refusals', return_value=[]):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_proof.run_wayland(self.arguments, self.artifacts, self.app, 'a' * 40)
+                run_proof.run_xvfb(argparse.Namespace(seconds=1), self.artifacts, self.app)
+        return {name: json.loads((self.artifacts / name).read_text())
+                for name in ('cleanup.json', 'process-tree.json', 'process-tree-1.json',
+                             'process-tree-2.json', 'session.json')}
+
+    def test_every_record_a_run_writes_declares_the_shape_the_table_names(self):
+        written = self.drive_both_paths()
+        for kind, name in (('session', 'session.json'), ('cleanup', 'cleanup.json'),
+                           ('process-tree', 'process-tree.json'),
+                           ('process-tree-1', 'process-tree-1.json'),
+                           ('process-tree-2', 'process-tree-2.json')):
+            with self.subTest(kind=kind):
+                record = written[name]
+                self.assertEqual(record.get('schema_version'), record_version(kind),
+                                 'a record declares the version of the shape it wrote')
+                self.assertEqual(set(record), set(RECORD_SHAPES[kind][record_version(kind)]),
+                                 'a field added or removed without a version change is a shape '
+                                 'the table does not name')
+                self.assertEqual(read_record(self.artifacts / name, kind), record,
+                                 'the run wrote the shape it declares')
+
+    def test_the_rows_a_record_carries_are_held_to_their_declared_fields(self):
+        written = self.drive_both_paths()
+        samples = [row for name in ('process-tree.json', 'process-tree-1.json',
+                                    'process-tree-2.json')
+                   for row in written[name]['samples']]
+        self.assertTrue(samples, 'the records carry the samples the run measured')
+        for row in samples + [written['process-tree-1.json']['peak_sample']]:
+            self.assertEqual(set(row), set(SAMPLE_FIELDS),
+                             'a sample is the measurement the contract predeclares, and its '
+                             'fields are declared beside the records that carry it')
+        for name, key in (('cleanup.json', 'run_1_after_self_exit'),
+                          ('cleanup.json', 'run_2_after_cancel_request'),
+                          ('process-tree-1.json', 'cleaned_after_self_exit'),
+                          ('process-tree-2.json', 'cancellation')):
+            with self.subTest(record=name, key=key):
+                self.assertEqual(set(written[name][key]), set(CANCELLATION_FIELDS),
+                                 'the cleanup record a run embeds is a shape too')
+
+    def test_the_committed_records_read_as_the_shape_written_before_a_version(self):
+        document = json.loads((run_proof.REPO / 'docs/proofs/results/desktop-shell.json')
+                              .read_text())
+        cited = {path.name: path for row in document['runs'] for item in row['artifacts']
+                 for path in [run_proof.REPO / item['artifact']]}
+        for kind in ('cleanup', 'process-tree-1', 'process-tree-2'):
+            with self.subTest(kind=kind):
+                name = f'{kind}.json'
+                self.assertIn(name, cited, 'the committed run cites the record this case reads')
+                record = read_record(cited[name], kind)
+                self.assertNotIn('schema_version', record,
+                                 'the committed record declares no version, so it is the shape '
+                                 'the table gives version 0; a re-recording declares the current '
+                                 'version instead and moves this pin')
+                self.assertEqual(set(record), set(RECORD_SHAPES[kind][0]),
+                                 'the committed record is the shape the table gives version 0')
+
+    def test_a_shape_the_table_does_not_name_is_refused_by_name(self):
+        path = self.artifacts / 'cleanup.json'
+        written = self.drive_both_paths()['cleanup.json']
+        missing = {field: value for field, value in written.items()
+                   if field != 'compositor_terminated_by'}
+        # A name no version of any kind carries, so a future shape cannot take it; the case
+        # checks that for itself before it uses it.
+        unnamed = 'a_field_no_version_names'
+        self.assertNotIn(unnamed, {field for shapes in RECORD_SHAPES.values()
+                                   for shape in shapes.values() for field in shape},
+                         'this case needs a name no version carries; a version that took this '
+                         'one would have to rename the fixture rather than fail here for the '
+                         'wrong reason')
+        for record, expected in (({**written, 'schema_version': 99}, 'declares schema version 99'),
+                                 ({**written, 'schema_version': -1}, 'declares schema version -1'),
+                                 ({**written, 'schema_version': '1'}, "declares schema version '1'"),
+                                 ({**written, 'schema_version': None}, 'declares schema version None'),
+                                 ({**written, 'schema_version': True}, 'declares schema version True'),
+                                 ({**written, unnamed: 1}, unnamed),
+                                 (missing, 'compositor_terminated_by')):
+            with self.subTest(expected=expected):
+                path.write_text(json.dumps(record))
+                with self.assertRaises(SystemExit) as caught:
+                    read_record(path, 'cleanup')
+                self.assertIn(expected, str(caught.exception),
+                              'a shape the table does not name is refused naming what is wrong')
+        path.write_text(json.dumps({**written, 'schema_version': 99}))
+        with self.assertRaises(SystemExit) as caught:
+            read_record(path, 'cleanup')
+        self.assertIn(str(sorted(RECORD_SHAPES['cleanup'])), str(caught.exception),
+                      'the refusal says which versions this reader reads')
+        with self.assertRaises(SystemExit) as caught:
+            read_record(path, 'a-record-nothing-writes')
+        self.assertIn("'a-record-nothing-writes' is not a record this driver writes",
+                      str(caught.exception),
+                      'a kind the table does not declare is refused, not read against another')
 
 
 class CommittedResult(unittest.TestCase):
@@ -1263,13 +1402,13 @@ class CommittedResult(unittest.TestCase):
             records = [run_proof.REPO / item['artifact'] for item in row['artifacts']
                        if item['artifact'].endswith('session.json')]
             self.assertTrue(records, 'a run cites the session record it was measured in')
-            session = read_session_record(records[0])
+            session = read_record(records[0], 'session')
             self.assertTrue(session.get('wayland_display'),
                             'the record shows the display server the platform has to name')
             self.assertNotIn(
                 'schema_version', session,
                 'the committed record declares no schema version, so it is version 0 in '
-                'SESSION_SHAPES; a re-recording declares the current version instead, and the '
+                'RECORD_SHAPES; a re-recording declares the current version instead, and the '
                 'paragraph in docs/proofs/linux-shell.md moves with this pin')
             self.assertEqual(
                 run_proof.platform_problems(row['platform'], 'wayland',
