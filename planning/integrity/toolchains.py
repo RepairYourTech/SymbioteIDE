@@ -3,18 +3,13 @@
 One reader, because two rules compare these facts and a fact with two readers drifts:
 `test_toolchain_floors.py` holds the floor a crate declares against the toolchains the job that
 builds it runs, and `test_handoff.py` holds the minimum the handoff names against what this
-workspace declares and the legs its job proves it on. Both call what is here — measured when
+workspace declares and the legs its job proves it on. Both call what is here — measured: when
 each read the workflow for itself, one reformat of the workspace job's matrix red one rule and
 left the other green.
 
-Each fact is read out of the form it is written in, once: a manifest as the TOML it is, a
-workflow as text (the standard library holds no YAML parser), with `entries` the one reader of
-what a key states and `under` the one rule for what a path is. What cannot be resolved — a
-manifest absent or malformed, a collection that never closes, a value only the runner knows —
-is refused by name rather than read as nothing or as whatever happens to follow it.
-
-What nothing here decides: whether a crate compiles on the floor it declares (a leg is a promise
-to run, and only CI answers it), and which job a rule should be asking about.
+A workflow is read as text (no YAML parser in the standard library) and a manifest as the TOML
+it is; nothing unresolvable is read as nothing — an absent or malformed manifest, a collection
+that never closes, and a value only the runner knows are each refused by name.
 """
 from __future__ import annotations
 
@@ -27,46 +22,32 @@ WORKFLOWS = ROOT / ".github/workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 KEY = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z0-9_.\-]+):(.*)$")
 ITEM = re.compile(r"^(\s*)-\s*(.*?)\s*$")
-FLAG = re.compile(r"--manifest-path[= ](\S+)")
-GATED = re.compile(r"matrix\.toolchain == '([^']+)'")
 FLOW = re.compile(r"^(\s*(?:-\s+)?(?:[A-Za-z0-9_.\-]+:\s*)?)\{(.*)$")
 WORKSPACE = "${{ github.workspace }}"
 ENTRY = tuple[list[str], int, int]  # what an entry states, and the lines it spans
 
 
 def jobs(workflow: str) -> dict[str, str]:
-    """Each job of a workflow, with the text of its own block.
-
-    A job key is indented two spaces under `jobs:` and everything the job holds is indented
-    further, so a job's block ends where a line starts at column zero.
+    """Each job of a workflow, with the text of its own block: a job key is two spaces under
+    `jobs:`, and its block ends where a line starts at column zero.
     """
-    found: dict[str, str] = {}
-    name: str | None = None
-    inside = False
-    for line in workflow.splitlines():
-        if line.startswith("jobs:"):
-            inside = True
-            continue
-        if not inside:
-            continue
-        if line and not line.startswith(" "):
-            break
-        key = JOB.fullmatch(line)
-        if key:
-            name = key.group(1)
-            found[name] = ""
-        elif name is not None:
-            found[name] += line + "\n"
-    return found
+    lines = workflow.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.startswith("jobs:")), None)
+    if start is None:
+        return {}
+    body = [line for line in lines[start + 1:] if not line.startswith("jobs:")]
+    stop = next((n for n, text in enumerate(body) if text and not text.startswith(" ")),
+                len(body))
+    keys = [index for index, line in enumerate(body) if index < stop and JOB.fullmatch(line)]
+    return {JOB.fullmatch(body[key]).group(1): "".join(line + "\n" for line in body[key + 1:end])
+            for key, end in zip(keys, keys[1:] + [stop])}
 
 
 def flow_items(collection: str) -> list[str]:
-    """The top-level items a flow collection holds, without its punctuation.
-
-    Commas inside a nested collection, and inside quotes, separate nothing here: a matrix
-    entry is one item however many brackets it carries.
+    """The top-level items a flow collection holds, without its punctuation: a comma inside a
+    nested collection, or inside quotes, separates nothing.
     """
-    items, depth, quote, current = [], 0, "", ""
+    out, depth, quote, current = [], 0, "", ""
     for character in collection.strip()[1:-1]:
         if quote:
             quote = "" if character == quote else quote
@@ -77,48 +58,41 @@ def flow_items(collection: str) -> list[str]:
         elif character in "]}":
             depth -= 1
         elif character == "," and not depth:
-            items.append(current)
+            out.append(current)
             current = ""
             continue
         current += character
-    items.append(current)
-    return [item.strip() for item in items if item.strip()]
+    return [item.strip() for item in (*out, current) if item.strip()]
 
 
-def expanded(block: str, where: str) -> str:
-    """The block with every flow mapping on one line put into the block form it means.
+def unfolded(block: str, where: str) -> str:
+    """The block with every flow mapping written on one line put into the block form it means.
 
-    YAML lets a mapping be written inline (`matrix: {toolchain: [a, b]}`, `- {run: …}`), so it
-    is unfolded before anything reads the block, and a key written either way is found where
-    the job wrote it.
+    A mapping written inline (`matrix: {toolchain: [a, b]}`, `- {run: …}`) is unfolded before
+    anything reads the lines, so a key written either way is found where the job wrote it.
     """
-    out: list[str] = []
-    for line in block.splitlines():
-        opened = FLOW.match(line)
-        if not opened:
-            out.append(line)
-            continue
-        prefix, body = opened.group(1), opened.group(2)
+    def splice(match: re.Match[str]) -> str:
+        prefix, body = match.group(1), match.group(2)
         if not body.rstrip().endswith("}"):
-            raise AssertionError(f"{where} writes {line.strip()}, a mapping this reader does "
-                                 f"not read across lines")
+            raise AssertionError(f"{where} writes {match.group(0).strip()}, a mapping this "
+                                 f"reader does not read across lines")
         items = flow_items("{" + body)
-        if prefix.rstrip().endswith(":"):
-            out.append(prefix.rstrip())
-        else:
-            out.append((prefix + items[0]).rstrip())  # a step: its first key stays on the dash
-            items = items[1:]
-        out.extend(" " * (len(prefix) - len(prefix.lstrip()) + 2) + item for item in items)
-    return "\n".join(out)
+        head, rest = prefix.rstrip(), items
+        if not head.endswith(":"):  # a step: its first key stays on the dash
+            head, rest = (prefix + items[0]).rstrip(), items[1:]
+        indent = " " * (len(prefix) - len(prefix.lstrip()) + 2)
+        return head + "".join("\n" + indent + item for item in rest)
+    return "\n".join(FLOW.sub(splice, line) for line in block.splitlines())
 
 
 def entries(block: str, name: str, where: str) -> list[ENTRY]:
     """Every entry a block states under `name`: what it says, and the lines it spans.
 
-    The forms YAML allows: the text after the key, a flow collection on one line or across
-    several, a block sequence whose items are at its own indentation, or a block scalar.
+    One pass reads the forms a value is written in: the text after the key, a flow collection on
+    one line or across several, a block scalar, and a block sequence, whose items are one entry
+    each — so removing the step lines leaves the job's own text.
     """
-    lines = expanded(block, where).splitlines()
+    lines = unfolded(block, where).splitlines()
     found: list[ENTRY] = []
     index = 0
     while index < len(lines):
@@ -126,27 +100,25 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
         if not key or key.group(2) != name:
             index += 1
             continue
-        indent, tail = len(key.group(1)), key.group(3).split("#")[0].strip()
-        first, index = index, index + 1
+        first, indent = index, len(key.group(1))
+        tail, index = key.group(3).split("#")[0].strip(), index + 1
         if tail.startswith("["):
             while not tail.endswith("]"):
-                if index >= len(lines):
+                if index == len(lines):
                     raise AssertionError(f"{where} states {tail}, which never closes")
                 tail += " " + lines[index].split("#")[0].strip()
                 index += 1
-            found.append(([item.strip().strip("\"'") for item in flow_items(tail)],
-                          first, index - 1))
+            found.append(([item.strip("\"'") for item in flow_items(tail)], first, index - 1))
         elif tail[:1] in ("|", ">"):
-            body: list[str] = []
+            words: list[str] = []
             while index < len(lines) and (not lines[index].strip() or len(lines[index])
                                           - len(lines[index].lstrip()) > indent):
-                body.extend(lines[index].split())
-                index += 1
-            found.append((body, first, index - 1))
+                words, index = words + lines[index].split(), index + 1
+            found.append((words, first, index - 1))
         elif tail:
             found.append(([tail.strip("\"'")], first, first))
         else:
-            while index < len(lines):
+            while index < len(lines):  # a block sequence: one entry per item
                 if not lines[index].strip() or lines[index].lstrip().startswith("#"):
                     index += 1  # a comment between the items states no item and ends none
                     continue
@@ -157,32 +129,17 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
                 while end < len(lines) and (not lines[end].strip() or len(lines[end])
                                             - len(lines[end].lstrip()) > len(item.group(1))):
                     end += 1
-                stated = (item.group(2) or "").split("#")[0].strip().strip("\"'")
+                stated = item.group(2).split("#")[0].strip().strip("\"'")
                 found.append(([stated] if stated else [], index, end - 1))
                 index = end
     return found
 
 
-def parts(block: str, where: str) -> tuple[list[str], str]:
-    """A job's steps, and the job's own text outside them.
-
-    An item whose keys are indented under a bare dash is a step like any other, so what is
-    left of the block is the job's own text — where its default `working-directory` sits,
-    before or after the steps, in whichever order the job writes its keys.
-    """
-    lines = expanded(block, where).splitlines(keepends=True)
-    spans = entries(block, "steps", where)
-    inside = {line for _, first, last in spans for line in range(first, last + 1)}
-    return (["".join(lines[first:last + 1]) for _, first, last in spans],
-            "".join(line for index, line in enumerate(lines) if index not in inside))
-
-
 def under(base: pathlib.Path, value: str, where: str, what: str) -> pathlib.Path:
     """The path a workflow states: against the directory it runs in, or this repository.
 
-    The workspace template is this checkout, and a value carrying a template or a shell
-    variable names something only the runner knows — refused rather than read as a path this
-    tree would then be checked against.
+    `${{ github.workspace }}` is this checkout; any other template, or a shell variable, names
+    something only the runner knows — refused by name rather than read as a path here.
     """
     if value.startswith(WORKSPACE):
         return ROOT / value[len(WORKSPACE):].strip("/")
@@ -200,21 +157,27 @@ def directory(text: str, where: str) -> pathlib.Path | None:
 def manifests(workflow: str, job: str, block: str) -> list[pathlib.Path]:
     """The manifests a job's own text names, each against the directory its step runs in.
 
-    A job names its crate in every cargo step it runs; one crate is one pair.
+    A job names its crate in every cargo step it runs; a step's own `working-directory` decides
+    for that step, and the job's default — written before or after the steps, in whichever order
+    the job writes its keys — for the rest.
     """
     where = f"{workflow}: the job {job}"
-    steps, outside = parts(block, where)
-    default = directory(outside, where)
+    lines = unfolded(block, where).splitlines(keepends=True)
+    spans = entries(block, "steps", where)
+    inside = {line for _, first, last in spans for line in range(first, last + 1)}
+    default = directory("".join(line for index, line in enumerate(lines)
+                                if index not in inside), where)
+    steps = ["".join(lines[first:last + 1]) for _, first, last in spans]
     found = [under(directory(step, f"{where}, step {number}") or default or ROOT,
                    named.strip("\"'"), f"{where}, step {number}", "its crate")
-             for number, step in enumerate(steps, 1) for named in FLAG.findall(step)]
+             for number, step in enumerate(steps, 1)
+             for named in re.findall(r"--manifest-path[= ](\S+)", step)]
     return list(dict.fromkeys(found))
 
 
 def pairs() -> list[tuple[str, str, str, pathlib.Path]]:
     """(workflow, job, the job's own block, the manifest it names) for every job."""
-    return [(path.name, job, block, manifest)
-            for path in sorted(WORKFLOWS.glob("*.yml"))
+    return [(path.name, job, block, manifest) for path in sorted(WORKFLOWS.glob("*.yml"))
             for job, block in jobs(path.read_text()).items()
             for manifest in manifests(path.name, job, block)]
 
@@ -222,9 +185,8 @@ def pairs() -> list[tuple[str, str, str, pathlib.Path]]:
 def legs(block: str, where: str = "a job") -> list[str]:
     """Every toolchain a job's own block states, as the union of the ways it states them.
 
-    A matrix states its legs as a flow or block sequence and a step may install one toolchain
-    beside that; a job that does both runs what both name. A `${{ … }}` template names nothing
-    comparable and states no leg.
+    A matrix states its legs as a flow or block sequence, a step may install one toolchain
+    beside that, and a `${{ … }}` template states no leg.
     """
     stated = [leg for values, _, _ in entries(block, "toolchain", where) for leg in values]
     return list(dict.fromkeys(leg.strip("\"'") for leg in stated if leg and "${{" not in leg))
@@ -232,19 +194,17 @@ def legs(block: str, where: str = "a job") -> list[str]:
 
 def gated(block: str) -> list[str]:
     """The legs a job's own steps are gated on (`if: matrix.toolchain == 'stable'`)."""
-    return list(dict.fromkeys(GATED.findall(block)))
+    return list(dict.fromkeys(re.findall(r"matrix\.toolchain == '([^']+)'", block)))
 
 
 def parsed(manifest: pathlib.Path) -> dict:
     """A manifest's TOML, naming an absent or malformed one rather than raising for it."""
     try:
-        text = manifest.read_text()
-    except OSError as error:
-        raise AssertionError(f"{manifest} is not a manifest this tree holds: {error}") from error
-    try:
-        return tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise AssertionError(f"{manifest} is not TOML: {error}") from error
+        return tomllib.loads(manifest.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        what = ("not TOML" if isinstance(error, tomllib.TOMLDecodeError)
+                else "not a manifest this tree holds")
+        raise AssertionError(f"{manifest} is {what}: {error}") from error
 
 
 def declared(manifest: pathlib.Path, table: str) -> str | None:
@@ -258,9 +218,8 @@ def declared(manifest: pathlib.Path, table: str) -> str | None:
 def workspace_of(manifest: pathlib.Path) -> pathlib.Path | None:
     """The manifest that is this crate's workspace, as cargo resolves it.
 
-    A crate may name the root itself (`[package] workspace = ".."`), and cargo honours that
-    over the directory it sits in, so the named root is read first; failing that, the nearest
-    manifest above it that declares a workspace.
+    A crate may name the root itself (`[package] workspace = ".."`), which cargo honours over
+    the directory it sits in; failing that, the nearest manifest above it declaring a workspace.
     """
     package = parsed(manifest).get("package")
     named = package.get("workspace") if isinstance(package, dict) else None
@@ -270,20 +229,18 @@ def workspace_of(manifest: pathlib.Path) -> pathlib.Path | None:
             raise AssertionError(f"{manifest} names its workspace {named}, "
                                  f"which holds no Cargo.toml")
         return root
-    for directory in manifest.parents:
-        candidate = directory / "Cargo.toml"
-        if candidate.is_file() and "workspace" in parsed(candidate):
-            return candidate
-    return None
+    return next((parent / "Cargo.toml" for parent in manifest.parents
+                 if (parent / "Cargo.toml").is_file()
+                 and "workspace" in parsed(parent / "Cargo.toml")), None)
 
 
 def floor(manifest: pathlib.Path) -> str | None:
     """The floor a manifest declares, or the one its own workspace declares.
 
-    Only a string under `[package]` is the crate's own floor — that workspace root's own
-    `[package]` floor is not the member's. A crate inheriting one (`rust-version.workspace =
-    true`) takes its workspace's `[workspace.package]` floor, and a crate inheriting one its
-    workspace does not state is one cargo refuses to build, so there is nothing to hold.
+    Only a string under `[package]` is the crate's own floor — a workspace root's own
+    `[package]` floor is not its member's. A crate inheriting one (`rust-version.workspace =
+    true`) takes its workspace's `[workspace.package]` floor, and one whose workspace states
+    none is a crate cargo refuses to build, so nothing has to hold it.
     """
     package = parsed(manifest).get("package")
     own = package.get("rust-version") if isinstance(package, dict) else None
