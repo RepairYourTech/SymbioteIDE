@@ -101,6 +101,45 @@ crash (the fixture has no canonical store) and installer size (nothing here
 packages an installer). No frames were captured in this session: the runner takes no screenshot on either
 path, so the rendering evidence is the client's own protocol log and the app's logs.
 
+### What each unobserved measurement would take
+
+Each of the five is unobserved because the fixture lacks the capability it needs, not
+because the run chose not to look. Measured on this tree, the smallest change that
+would observe each is:
+
+- `cold_start_to_workbench_ready_seconds` — the workbench never reports ready: the
+  only readiness marker is the shell's own `PROOF_READY`, printed by the Rust setup
+  that adds the three child WebViews (`spikes/linux-shell/src-tauri/src/main.rs`)
+  before the first frame and every WebKit helper, and the driver records a mark only
+  for the markers it knows. Observing it needs a signal from the workbench itself —
+  Tauri does not forward a WebView's console to the process, so that means a native
+  command the workbench invokes once it renders — which is new fixture capability.
+- `idle_process_tree_pss_mib` — the fixture has no idle state: its three terminal
+  PTYs start in that same `main.rs` setup and its four synthetic streams start when
+  the workbench mounts (`spikes/linux-shell/src/main.tsx`), so every 100 ms sample is
+  a loaded one. Observing it needs the fixture to run without its workload and a
+  sampling window over that state, which the contract's blank-window stop condition
+  still has to admit.
+- `worst_input_starvation_ms` — neither path issues input: the driver's `--interact`
+  option is refused rather than promising a capture it does not take, and the fixture
+  emits no marker for input it receives. Observing it needs an input path into the
+  session the run starts and a marker the fixture emits when that input arrives; the
+  host's `ydotool` and `/dev/uinput` drive the user's own session, which this driver
+  never touches.
+- `journal_events_lost_across_crash` — the shell keeps no canonical store, which the
+  contract requires of it, so there is no journal a crash could lose events from; the
+  only journal in this tree belongs to the separate host-lifetime probe
+  (`spikes/host-lifecycle`). Observing it is that component's acceptance, not this
+  fixture's.
+- `installer_size_mib` — nothing here packages an installer, but the mechanism is not
+  blocked by tooling: the Tauri CLI this host carries (`tauri-cli 2.11.2`) packages
+  this fixture today with no code change (`cargo tauri bundle --debug --bundles deb
+  --config '{"bundle":{"active":true}}'` measured a 47.89 MiB debug package on this
+  host, which `dpkg-deb` unpacks to the binary and an icon). That figure is a debug
+  package for scale, not the contract's installer figure: the honest artifact is the
+  release package, and the contract answers the packaging clause as #38's own
+  acceptance beyond this workload, so producing one stays outside this fixture.
+
 The result attests only what the fixture's own log shows. `exercised` is derived
 from the app's markers — three `PROOF_PTY_START`, one `PROOF_READY
 preview_origin=`, two `PROOF_PREVIEW_REPORT` denials — so four concurrent agent

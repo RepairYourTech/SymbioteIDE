@@ -102,8 +102,10 @@ them.
   which asserts the derive's own words for it rather than restating them here.
 - **#38 — the shell proof.** Platform coverage, representative budgets, Preview
   authority isolation, signed updates, installer size and the rest of the
-  contract's ceilings stay unmeasured; see [the Linux shell record](proofs/linux-shell.md)
-  and [ADR-0001](architecture/adr-0001-technology-direction.md).
+  contract's ceilings stay unmeasured, each blocked by a capability the fixture does
+  not have; what each would take is stated once, in
+  [the Linux shell record](proofs/linux-shell.md). The scope is
+  [ADR-0001](architecture/adr-0001-technology-direction.md).
 - **#170 and #36 — broader acceptance.** The machinery is in place and checked;
   the production capabilities the criteria name are owned by the issues they route.
 - **#470 and #443 — roadmap mutations.** The registry, the index and the coverage
