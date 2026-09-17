@@ -13,6 +13,9 @@ states no figure of its own. A number lives in the artifact that produces it —
 committed report, a suite's own output, a workflow — and is pointed at from here.
 It cites no case name either: where a check matters it names the file or the
 document that owns it, and the crate doc holds its own citations against its suite.
+Its own citations are held the same way, by
+[the integrity suite's handoff case](../planning/integrity/test_handoff.py): the paths
+and commands it prints, and the minimum toolchain it names.
 
 ## How a claim is held here
 
@@ -94,9 +97,9 @@ them.
   document a partial rewrite leaves — `answers` arrived, `obligations` not yet gone —
   no longer reaches serde's field list. The message the shape before the bar moved
   printed — the removed field named first, the section's replacement buried in the
-  list of expected fields — is held by
-  `the_shape_before_the_bar_moved_is_the_derive_refusing_the_stale_field`, which
-  asserts the derive's own words for it rather than restating them here.
+  list of expected fields — is held by a case in
+  [the contract suite](../crates/symbiote-architecture/tests/spike_contracts.rs),
+  which asserts the derive's own words for it rather than restating them here.
 - **#38 — the shell proof.** Platform coverage, representative budgets, Preview
   authority isolation, signed updates, installer size and the rest of the
   contract's ceilings stay unmeasured; see [the Linux shell record](proofs/linux-shell.md)
