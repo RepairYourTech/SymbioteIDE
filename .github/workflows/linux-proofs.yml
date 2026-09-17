@@ -27,6 +27,9 @@ jobs:
         run: cargo clippy --locked --manifest-path spikes/host-lifecycle/Cargo.toml --all-targets -- -D warnings
   shell-client-build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["1.85.0", stable]
     defaults:
       run:
         working-directory: spikes/linux-shell
@@ -37,7 +40,7 @@ jobs:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
       - name: The fixture's Tauri crate needs the WebKitGTK system stack to compile
         run: |
@@ -50,6 +53,14 @@ jobs:
       # `spikes/linux-shell/src-tauri` is its own workspace, so no `--workspace` job
       # compiles it and a change that broke its build, test, formatting or lints passed
       # every check. The frontend build above is what its `tauri-build` embeds.
+      #
+      # The crate declares `rust-version = "1.85.0"` and builds there, so this job runs
+      # the matrix `host-lifetime` runs: the fixture's Rust is the same Rust on the
+      # pinned toolchain as on stable. Its lockfile holds the newest dependency versions
+      # that declare support for that floor; a `cargo update` past them fails the 1.85.0
+      # run by name. Formatting and lints run where CI reads them, on stable.
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
-      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - if: matrix.toolchain == 'stable'
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - if: matrix.toolchain == 'stable'
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
