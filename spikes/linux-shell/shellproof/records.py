@@ -1,11 +1,14 @@
-"""What a run records about itself, and the shape each version of that record carries.
+"""What a run records about itself, and the shape each version of each record carries.
 
 ``session_record`` is what a session was, so the figures carry their stack and its
-compromises, and ``read_session_record`` is the one place a record is read: a record
-is held to the shape the version it declares names rather than dated against prose.
-``hardware_of`` reads the machine the run happened on, ``host_system`` names the
-operating system the way a platform does, and ``sha256_of``/``repo_path`` say how a
-record cites the bytes it kept.
+compromises, and ``read_record`` is the one place a record is read: a record is held to
+the shape the version it declares names rather than dated against prose. ``RECORD_SHAPES``
+names the fields of every version of every record a run writes from its own observation —
+the session, the cleanup record and the three process-tree records — and of the rows those
+records carry. ``record_version`` is the version a writer declares; the entry points write
+it beside the figures. ``hardware_of`` reads the machine the run happened on, ``host_system``
+names the operating system the way a platform does, and ``sha256_of``/``repo_path`` say how
+a record cites the bytes it kept.
 """
 import hashlib
 import os
@@ -31,28 +34,77 @@ OPERATING_SYSTEMS = {'Linux': 'Linux', 'Darwin': 'macOS', 'macOS': 'macOS', 'Win
 # read back has to be declared.
 UNKEPT_PATHS = ('runtime_dir', 'binary', 'build.log')
 
-# The shape of a session record, one entry per version: the fields that version
-# carries, and where the shape is declared. ``session_record`` declares
-# ``SESSION_SCHEMA_VERSION`` and a case holds the keys it writes to that version's
-# entry, so a field added or removed without a version change fails there; the reader
-# holds every record to the entry its version names, so the artifact and this table
-# cannot drift. Version 0 is the shape written before the record carried a version,
-# held by the committed run's report, which is read rather than refused because a
-# frozen artifact cannot be re-recorded to gain a field.
-SESSION_SHAPES = {
-    0: ('session', 'runtime_dir', 'runtime_dir_note', 'wayland_display', 'display_unset',
-        'egl_vendor_icd_pinned', 'egl_icd_reason', 'compositor_log_bytes', 'compositor_log_note',
-        'binary', 'binary_sha256', 'binary_note', 'rustc', 'cargo', 'hardware', 'build'),
-    1: ('schema_version', 'display', 'system', 'session', 'runtime_dir', 'runtime_dir_note',
-        'wayland_display', 'display_unset', 'egl_vendor_icd_pinned', 'egl_icd_reason',
-        'compositor_log_bytes', 'compositor_log_note', 'binary', 'binary_sha256', 'binary_note',
-        'rustc', 'cargo', 'hardware', 'build'),
+# The shape of every record a run writes from its own observation, one entry per kind
+# and version: the fields that version carries. A kind is the record's own name — the file
+# it is written as — so a reader finds the entry for the record it holds. Versions are per
+# kind. Version 0 is the shape the writer wrote immediately before that record declared a
+# version, which is what the committed result artifact holds, and is read rather than
+# refused because a frozen artifact cannot be re-recorded to gain a field. Each writer
+# declares ``record_version(kind)`` and a case holds the keys it writes to that entry, so a
+# field added or removed without a version change fails there; ``read_record`` holds every
+# record to the entry its declared version names, so the artifact and this table cannot
+# drift.
+#
+# The dossier a run publishes is not a kind here, because its shape is the crate's rather
+# than this driver's: ``Results`` in ``crates/symbiote-architecture/src/spike.rs`` reads it
+# with ``deny_unknown_fields`` and refuses a version it does not read. The records this
+# table declares are the ones nothing else reads, which is why their shape needs stating
+# here: it has drifted in this tree before without anything declaring it — the X11 evidence
+# under ``docs/proofs/evidence/linux-shell/`` holds eight fields in one process-tree record
+# and twelve in another, against the eleven the writer wrote before this table, and two
+# cleanup fields against the three it writes now. Those records predate the versioned
+# writer and are cited evidence rather than read by it.
+RECORD_SHAPES = {
+    'session': {
+        0: ('session', 'runtime_dir', 'runtime_dir_note', 'wayland_display', 'display_unset',
+            'egl_vendor_icd_pinned', 'egl_icd_reason', 'compositor_log_bytes', 'compositor_log_note',
+            'binary', 'binary_sha256', 'binary_note', 'rustc', 'cargo', 'hardware', 'build'),
+        1: ('schema_version', 'display', 'system', 'session', 'runtime_dir', 'runtime_dir_note',
+            'wayland_display', 'display_unset', 'egl_vendor_icd_pinned', 'egl_icd_reason',
+            'compositor_log_bytes', 'compositor_log_note', 'binary', 'binary_sha256', 'binary_note',
+            'rustc', 'cargo', 'hardware', 'build'),
+    },
+    'cleanup': {
+        0: ('run_1_after_self_exit', 'run_2_after_cancel_request', 'compositor_terminated_by'),
+        1: ('schema_version', 'run_1_after_self_exit', 'run_2_after_cancel_request',
+            'compositor_terminated_by'),
+    },
+    'process-tree': {
+        0: ('platform', 'session', 'app_exit', 'elapsed_seconds', 'markers',
+            'preview_self_reported_denials', 'max_sum_rss_kib', 'max_sum_pss_kib', 'rss_caveat',
+            'observed_survivors_before_cleanup', 'samples'),
+        1: ('schema_version', 'platform', 'session', 'app_exit', 'elapsed_seconds', 'markers',
+            'preview_self_reported_denials', 'max_sum_rss_kib', 'max_sum_pss_kib', 'rss_caveat',
+            'observed_survivors_before_cleanup', 'samples'),
+    },
+    'process-tree-1': {
+        0: ('session', 'run', 'app_exit', 'elapsed_seconds', 'markers', 'trace', 'peak_sample',
+            'samples', 'cleaned_after_self_exit'),
+        1: ('schema_version', 'session', 'run', 'app_exit', 'elapsed_seconds', 'markers', 'trace',
+            'peak_sample', 'samples', 'cleaned_after_self_exit'),
+    },
+    'process-tree-2': {
+        0: ('session', 'run', 'app_exit', 'elapsed_seconds', 'markers', 'cancellation',
+            'peak_sample', 'samples'),
+        1: ('schema_version', 'session', 'run', 'app_exit', 'elapsed_seconds', 'markers',
+            'cancellation', 'peak_sample', 'samples'),
+    },
 }
-# The version the writer writes: the newest shape in the table, so a shape change is the
-# entry above plus the field it names in ``session_record``. Nothing in the suite has to
-# move with it: the cases that read a shape take each version's fields, which versions
-# exist and the version 0 shape from this table rather than from the writer's output.
-SESSION_SCHEMA_VERSION = max(SESSION_SHAPES)
+
+# The shape of the rows the records above carry rather than write as files of their own:
+# one sample of the process tree — the measurement the contract's method names, taken every
+# 100 ms — and the cleanup record one run's cancellation leaves, which ``cleanup.json`` and
+# both Wayland process-tree records embed. They declare no version of their own, because the
+# record carrying them does; a case holds a run's own written rows to these fields, so a
+# key added to a sample or to the cleanup record is a shape change like any other.
+SAMPLE_FIELDS = ('seconds', 'members', 'sum_rss_kib', 'sum_pss_kib', 'pss_by_class_kib')
+CANCELLATION_FIELDS = ('survivors_after_cancel_request', 'listening_ports_after_cancel_request',
+                       'killed_observed_pids', 'remaining_observed_pids', 'unreaped_observed_pids')
+
+
+def record_version(kind):
+    """The version a writer declares for *kind*: the newest shape this table gives it."""
+    return max(RECORD_SHAPES[kind])
 
 
 def sha256_of(path):
@@ -115,7 +167,8 @@ def session_record(session, binary, compositor_log_bytes, build):
     ``display`` and ``system`` are what the platform a result records is held to: the
     display server this session provides and the operating system it ran on, recorded
     beside the figures so a reader checks the label rather than trusting it. They are
-    part of what ``SESSION_SHAPES`` says version 1 added to the shape written before it.
+    part of what ``RECORD_SHAPES['session']`` says version 1 added to the shape written
+    before it.
     """
     if session.runtime is None:
         raise SystemExit(f'refusing to record {session.name!r}: it has no private runtime '
@@ -128,7 +181,7 @@ def session_record(session, binary, compositor_log_bytes, build):
         except (OSError, IndexError, subprocess.SubprocessError):
             return 'not reported'
     return {
-        'schema_version': SESSION_SCHEMA_VERSION,
+        'schema_version': record_version('session'),
         'session': session.name,
         'display': SESSION_DISPLAY[session.kind],
         'system': host_system(),
@@ -150,34 +203,38 @@ def session_record(session, binary, compositor_log_bytes, build):
     }
 
 
-def read_session_record(path):
-    """The session record at *path*, held to the shape the version it declares names.
+def read_record(path, kind):
+    """The *kind* record at *path*, held to the shape the version it declares names.
 
-    A reader does not date the record's fields against prose: ``SESSION_SHAPES`` is the
-    shape each version carries, and a record whose fields are not the ones its version
-    names is refused — a key added or removed without a version change is a different
-    shape, and saying so is what keeps the artifact and the table from drifting. A
-    version this reader does not know is refused by name rather than guessed at, and a
+    A reader does not date the record's fields against prose: ``RECORD_SHAPES`` is the
+    shape each version of each kind carries, and a record whose fields are not the ones its
+    version names is refused — a key added or removed without a version change is a
+    different shape, and saying so is what keeps the artifact and the table from drifting.
+    A version this reader does not know is refused by name rather than guessed at, and a
     version that is not an integer of one of those versions is no version at all: ``1.0``
     is not ``1`` here, whatever a dict lookup would say. A record that declares no version
     is version 0, the shape written before this record carried a version — the committed
-    run's report — and is read for the same reason a frozen artifact is not re-recorded to
+    run's records — and is read for the same reason a frozen artifact is not re-recorded to
     gain a field.
     """
-    record = read_document(path, 'the session record')
+    shapes = RECORD_SHAPES.get(kind)
+    if shapes is None:
+        raise SystemExit(f'{kind!r} is not a record this driver writes, so there is no shape '
+                         f'to read it against: RECORD_SHAPES declares {sorted(RECORD_SHAPES)}')
+    record = read_document(path, f'the {kind} record')
     if not isinstance(record, dict):
-        raise SystemExit(f'the session record {path} holds a {type(record).__name__}, not a record')
+        raise SystemExit(f'the {kind} record {path} holds a {type(record).__name__}, not a record')
     declared = record.get('schema_version', 0)
-    shape = SESSION_SHAPES.get(declared) if type(declared) is int else None
+    shape = shapes.get(declared) if type(declared) is int else None
     if shape is None:
-        raise SystemExit(f'the session record {path} declares schema version {declared!r}, and this '
-                         f'reader reads {sorted(SESSION_SHAPES)}: it refuses to read a shape it '
+        raise SystemExit(f'the {kind} record {path} declares schema version {declared!r}, and this '
+                         f'reader reads {sorted(shapes)}: it refuses to read a shape it '
                          'does not know')
     if set(shape) - set(record):
-        raise SystemExit(f'the session record {path} declares version {declared} and does not carry '
+        raise SystemExit(f'the {kind} record {path} declares version {declared} and does not carry '
                          f'{sorted(set(shape) - set(record))}, which that shape names')
     if set(record) - set(shape):
-        raise SystemExit(f'the session record {path} declares version {declared} and carries '
+        raise SystemExit(f'the {kind} record {path} declares version {declared} and carries '
                          f'{sorted(set(record) - set(shape))}, which that shape does not name: a '
-                         'shape change belongs in SESSION_SHAPES')
+                         'shape change belongs in RECORD_SHAPES')
     return record

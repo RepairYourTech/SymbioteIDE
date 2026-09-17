@@ -116,7 +116,7 @@ from shellproof.measure import measure
 from shellproof.observation import trace_stats
 from shellproof.publication import (build_record, figures_of, ledger_refusals, merged_runs,
                                     peak_note, publish, publish_slug, result_runs)
-from shellproof.records import hardware_of, host_system, session_record
+from shellproof.records import hardware_of, host_system, record_version, session_record
 from shellproof.session import open_session
 
 
@@ -129,6 +129,7 @@ def run_xvfb(args, artifacts, binary):
         probes_denied = all(f'PROOF_PREVIEW_REPORT {command}: denied' in measured['text']
                             for command in ['snapshot', 'stop_ptys'])
         summary = {
+            'schema_version': record_version('process-tree'),
             'platform': 'Linux Xvfb X11 only',
             'session': session.name,
             'app_exit': measured['code'],
@@ -166,7 +167,8 @@ def run_wayland(args, artifacts, binary, commit):
         stats = trace_stats(first['log'])
         figures, peak = figures_of(first['samples'], None, stats, args.build_seconds, memory=False)
         (artifacts / 'process-tree-1.json').write_text(json.dumps(
-            {'session': session.name, 'run': 1, 'app_exit': first['code'],
+            {'schema_version': record_version('process-tree-1'),
+             'session': session.name, 'run': 1, 'app_exit': first['code'],
              'elapsed_seconds': first['elapsed'], 'markers': first['marks'], 'trace': stats,
              'peak_sample': peak, 'samples': first['samples'],
              'cleaned_after_self_exit': first['cancellation']}, indent=2) + '\n')
@@ -182,7 +184,8 @@ def run_wayland(args, artifacts, binary, commit):
                          args.cancel_after if args.cancel_after is not None else 25, trace=False)
         figures, peak = figures_of(second['samples'], second['cancellation'], None, None)
         (artifacts / 'process-tree-2.json').write_text(json.dumps(
-            {'session': session.name, 'run': 2, 'app_exit': second['code'],
+            {'schema_version': record_version('process-tree-2'),
+             'session': session.name, 'run': 2, 'app_exit': second['code'],
              'elapsed_seconds': second['elapsed'], 'markers': second['marks'],
              'cancellation': second['cancellation'], 'peak_sample': peak,
              'samples': second['samples']}, indent=2) + '\n')
@@ -197,7 +200,8 @@ def run_wayland(args, artifacts, binary, commit):
             session_record(session, binary, (artifacts / 'kwin.log').stat().st_size,
                            build_record(args, commit) if args.build_log else None), indent=2) + '\n')
         (artifacts / 'cleanup.json').write_text(json.dumps(
-            {'run_1_after_self_exit': runs[0]['cancellation'],
+            {'schema_version': record_version('cleanup'),
+             'run_1_after_self_exit': runs[0]['cancellation'],
              'run_2_after_cancel_request': runs[1]['cancellation'],
              'compositor_terminated_by': 'the driver, on the compositor process group it started'}, indent=2) + '\n')
         print(json.dumps([{key: value for key, value in row.items() if key != 'peak'} for row in runs],
