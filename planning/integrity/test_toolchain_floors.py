@@ -1,40 +1,33 @@
 """Hold every toolchain floor a job names against the matrix that job runs.
 
-A crate states the Rust it supports in its own manifest (`rust-version`) and the job
-that builds it states the toolchains it runs. Those are two statements of one fact, and
-until this file nothing related them for the two spikes. Measured on `78623b3b`, with
-the whole integrity suite in the balance: dropping the `1.85.0` leg from either
-`linux-proofs.yml` job, retargeting that leg to `1.88.0`, raising a spike's declared
-floor in its manifest alone, or lowering it, left all 172 cases green. The one pair
-that was held is the workspace's, and `test_handoff.py` holds that one because the
-handoff document itself names the minimum — a document's claim about the tree, not a
-job's.
+A crate states the Rust it supports in its own manifest — `[package] rust-version`, or
+`[workspace.package]` where the crate inherits it — and the job that builds it states
+the toolchains it runs. Those are two statements of one fact, and for the two spikes
+nothing related them: dropping or retargeting an `1.85.0` leg, moving a spike's declared
+floor in its manifest alone, or losing the leg a job's own steps are gated on left every
+case green. (The one pair that *was* held is the workspace's, and `test_handoff.py` holds
+it because `docs/engineering-handoff.md` names the minimum itself: a document's claim,
+not a job's.)
 
-What this file holds instead is the pair a job makes. Every job that names a crate by
-`--manifest-path` says which crate it builds, so that crate's declared floor must be
-one of the toolchains the job runs — and so must every leg the job's own steps are
-gated on (`if: matrix.toolchain == 'stable'`), since losing such a leg leaves those
-steps unrun while the job stays green. The floor is the manifest's own `rust-version`,
-or the one its *own* workspace declares where the manifest inherits it
-(`rust-version.workspace = true`): the nearest `[workspace]` above it, which for the
-two spikes is the spike, not the repository root. A manifest inheriting a floor no
-workspace states is one cargo itself refuses to build, so it has no floor to hold.
-A job naming no manifest — the workspace jobs, which run `--workspace` — is the
-handoff case's subject. A crate that declares no floor has no claim to hold and is read
-past; a path a job names that this tree does not hold is refused rather than read past,
-since reading past it would drop the crate from the two cases below without saying so.
+What this file holds is the pair a job makes: the crate a job names by `--manifest-path`
+declares a floor, and that floor must be one of the toolchains the job runs — as must
+every leg the job's own steps are gated on (`if: matrix.toolchain == 'stable'`), since
+losing such a leg leaves those steps unrun while the job stays green. A job naming no
+manifest — the workspace jobs, which run `--workspace` — is the handoff case's subject.
+Each fact is read in every spelling a run states it in, because a spelling read as
+nothing is a job held by nothing: the flag as `--manifest-path PATH` or
+`--manifest-path=PATH`; a floor with or without spaces around `=`, in either quote
+character, in the table that declares it; and a job's toolchains as a flow list, as a
+block sequence under a key with a comment after it, or as the one toolchain a job with
+no matrix names on its setup step, where a `${{ … }}` template names nothing comparable.
+A path this tree does not hold, and a crate declaring no floor, are refused or named by
+the cases below rather than read past in silence.
 
-Each fact is read in every spelling a run may state it in: the flag as
-`--manifest-path PATH` or `--manifest-path=PATH`, a floor with or without spaces around
-`=` and in either quote character, and a matrix as a flow list
-(`toolchain: ["1.85.0", stable]`) or as a block sequence (`toolchain:` and then one
-`- 1.85.0` line per leg). A spelling read as nothing is a job held by nothing, which is
-the drift this file exists to catch, so the readers below are exercised on each.
-
-What nothing here decides is whether a crate *compiles* on the floor a leg names. A leg
-is a promise to run, and only CI answers it: the fixture's `1.85.0` leg answered on the
-pull request that added it, compiling and passing its own test in 3m1s. Nothing here
-reads an installed toolchain, and a matrix is not evidence that its legs succeed.
+What nothing here decides is whether a crate *compiles* on the floor a leg names: a leg
+is a promise to run and only CI answers it. A job's own base is a further limit — it is
+read from the first `working-directory` in the job's block whatever level sets it, and a
+templated one is read as the repository root — left as they are because no job in this
+tree names a manifest from either.
 """
 from __future__ import annotations
 
@@ -42,19 +35,16 @@ import pathlib
 import re
 import tempfile
 import unittest
-from itertools import takewhile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 NAMED = re.compile(r"--manifest-path[= ](\S+)")
-LEGS = re.compile(r"^\s+toolchain: \[([^\]]+)\]", re.M)
-MATRIX = re.compile(r"^\s+toolchain:\s*$")
-SEQUENCE = re.compile(r"^\s+-\s*\S+\s*$")
-SCALAR = re.compile(r"^\s+toolchain:\s*(\S+)\s*$", re.M)
+TOOLCHAIN = re.compile(r"^(\s*)toolchain:(.*)$")
+ITEM = re.compile(r"^(\s*)-\s*(\S+)\s*$")
 GATED = re.compile(r"matrix\.toolchain == '([^']+)'")
 DIRECTORY = re.compile(r"^\s+working-directory: (\S+)\s*$", re.M)
-FLOOR = re.compile(r"^\s*rust-version\s*=\s*['\"]([^'\"]+)['\"]", re.M)
+FLOOR = re.compile(r"^\s*rust-version\s*=\s*['\"]([^'\"]+)['\"]")
 INHERITED = re.compile(r"^\s*rust-version\.workspace\s*=\s*true", re.M)
 WORKSPACE = re.compile(r"^\s*\[workspace[.\]]", re.M)
 
@@ -97,7 +87,9 @@ def pairs() -> list[tuple[str, str, str, pathlib.Path]]:
     """(workflow, job, the job's own text, the manifest it names).
 
     `--manifest-path` is resolved against the job's own `working-directory`, since the
-    fixture's job names `src-tauri/Cargo.toml` from inside `spikes/linux-shell`.
+    fixture's job names `src-tauri/Cargo.toml` from inside `spikes/linux-shell`. Which
+    line decides that, and what a templated one is read as, is the module docstring's
+    limit: the first such line in the block, whatever level sets it.
     """
     found: list[tuple[str, str, str, pathlib.Path]] = []
     for path in sorted(WORKFLOWS.glob("*.yml")):
@@ -110,23 +102,32 @@ def pairs() -> list[tuple[str, str, str, pathlib.Path]]:
 
 
 def legs(block: str) -> list[str]:
-    """The toolchains a job runs, as the job itself declares them.
+    """The toolchains a job runs, as the job itself states them.
 
-    A matrix states its legs as a flow list or as a block sequence; a job with no matrix
-    names one on its setup step instead (`with: toolchain: stable`), which is a leg like
-    any other. Reading only one of those forms would report a job as running none of
-    them, and a template names nothing this reader can compare.
+    A matrix states its legs as a flow list or as a block sequence, and a job with no
+    matrix names one on its setup step (`with: toolchain: stable`), which is a leg like
+    any other; whichever a job uses is read where it is written, with any comment after
+    the key. Reading one of those forms as nothing would report a job as running none.
     """
-    matrix = LEGS.search(block)
-    if matrix:
-        return [leg.strip().strip("\"'") for leg in matrix.group(1).split(",")]
     lines = block.splitlines()
     for index, line in enumerate(lines):
-        if MATRIX.fullmatch(line):
-            run = list(takewhile(SEQUENCE.fullmatch, lines[index + 1:]))
-            return [leg.strip().lstrip("- ").strip("\"'") for leg in run]
-    return [value.strip("\"'") for value in SCALAR.findall(block)
-            if "${{" not in value]
+        key = TOOLCHAIN.match(line)
+        if not key:
+            continue
+        indent, tail = len(key.group(1)), key.group(2).split("#")[0].strip()
+        if tail.startswith("[") and tail.endswith("]"):
+            return [leg.strip().strip("\"'") for leg in tail[1:-1].split(",")]
+        if not tail:
+            run: list[str] = []
+            for following in lines[index + 1:]:
+                item = ITEM.match(following)
+                if not item or len(item.group(1)) <= indent:
+                    break
+                run.append(item.group(2).strip("\"'"))
+            return run
+        if "${{" not in tail:
+            return [tail.strip("\"'")]
+    return []
 
 
 def workspace_of(manifest: pathlib.Path) -> pathlib.Path | None:
@@ -138,21 +139,37 @@ def workspace_of(manifest: pathlib.Path) -> pathlib.Path | None:
     return None
 
 
+def declared_floor(text: str, table: str) -> str | None:
+    """The `rust-version` one table of a manifest states, however it is written.
+
+    Only `[package]` states a crate's own floor and only `[workspace.package]` states
+    the one its members inherit, so the table a line sits in decides what it means.
+    """
+    inside = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            inside = stripped == f"[{table}]"
+        elif inside and (stated := FLOOR.match(line)):
+            return stated.group(1)
+    return None
+
+
 def floor(manifest: pathlib.Path) -> str | None:
     """The floor a manifest declares, or the one its own workspace declares.
 
-    A manifest inheriting a floor that no workspace states is one cargo refuses to
-    build, so there is nothing here for a job to be held against.
+    A manifest inheriting a floor that its workspace's `[workspace.package]` does not
+    state is one cargo refuses to build, so there is nothing here to hold it against -
+    and the workspace root's own `[package]` floor is not the member's.
     """
     text = manifest.read_text()
-    declared = FLOOR.search(text)
+    declared = declared_floor(text, "package")
     if declared:
-        return declared.group(1)
+        return declared
     if not INHERITED.search(text):
         return None
     workspace = workspace_of(manifest)
-    inherited = FLOOR.search(workspace.read_text()) if workspace else None
-    return inherited.group(1) if inherited else None
+    return declared_floor(workspace.read_text(), "workspace.package") if workspace else None
 
 
 def version(declared: str) -> str:
@@ -200,16 +217,11 @@ class DeclaredToolchainFloors(unittest.TestCase):
 
 
 class EverySpellingOfOneStatement(unittest.TestCase):
-    """The readers hold each fact however a run states it.
-
-    A spelling read as nothing is silence rather than a refusal: the job is held by
-    nothing, which is the drift this file exists to catch. Each state below was measured
-    against the readers before they were widened — `--manifest-path=X` and
-    `rust-version="1.85.0"` were read as no crate and no floor at all, an inherited
-    floor was read from the repository root rather than the crate's own workspace, a
-    workspace stating no floor raised `AttributeError` instead of reading as none, and a
-    matrix written as a block sequence — or a job naming its one toolchain on a step —
-    was read as running no toolchain at all.
+    """The readers hold each fact however a run states it, which each state below was
+    measured against before it was widened: a crate named only as `--manifest-path=X`
+    was not found at all, a floor written `rust-version="1.85.0"` read as none, an
+    inherited floor was read from whichever table came first in the wrong manifest, and a
+    matrix written as a block sequence was read as running no toolchain.
     """
 
     def test_a_crate_is_read_however_its_path_is_spelled(self):
@@ -219,56 +231,54 @@ class EverySpellingOfOneStatement(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(named_in(command, ROOT), [ROOT / "src-tauri/Cargo.toml"])
 
-    def test_a_floor_is_read_however_its_spacing_and_quotes_are_written(self):
+    def test_a_floor_is_read_from_the_table_that_declares_it(self):
+        """Written in any spelling, and inherited from `[workspace.package]` alone."""
         with tempfile.TemporaryDirectory() as directory:
-            manifest = pathlib.Path(directory) / "Cargo.toml"
-            for text, declared in (('rust-version = "1.85.0"', "1.85.0"),
-                                   ('rust-version="1.85.0"', "1.85.0"),
-                                   ("rust-version  =  '1.85'", "1.85"),
-                                   ('rust-version = "1.85" # pinned', "1.85")):
-                with self.subTest(text=text):
-                    manifest.write_text(f"[package]\n{text}\n")
-                    self.assertEqual(floor(manifest), declared)
-
-    def test_an_inherited_floor_is_read_from_the_crates_own_workspace(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = pathlib.Path(directory)
-            (base / "Cargo.toml").write_text('[workspace]\nmembers = ["nested"]\n\n'
-                                             '[workspace.package]\nrust-version = "1.90"\n')
-            nested = base / "nested"
+            nested = pathlib.Path(directory) / "nested"
             (nested / "member").mkdir(parents=True)
-            (nested / "Cargo.toml").write_text("[workspace]\n\n[workspace.package]\n"
-                                               'rust-version = "1.88"\n')
+            nested_manifest = nested / "Cargo.toml"
             member = nested / "member" / "Cargo.toml"
-            member.write_text("[package]\nrust-version.workspace = true\n")
-            self.assertEqual(floor(member), "1.88",
-                             "a crate inherits its own workspace's floor, not an outer one's")
-            (nested / "Cargo.toml").write_text("[workspace]\n")
-            self.assertIsNone(floor(member),
-                              "a workspace stating no floor leaves cargo to refuse the crate; "
-                              "there is no floor for a job to be held against")
+            # the workspace root is also a package, whose own floor is not the member's
+            root = ('[package]\nname = "nested"\nversion = "0.1.0"\nrust-version = "1.99"\n'
+                    '\n[workspace]\nmembers = ["member"]\n\n[workspace.package]\n'
+                    'rust-version = "1.88"\n')
+            nested_manifest.write_text(root)
+            for spelling, declared in (('rust-version = "1.85.0"', "1.85.0"),
+                                       ('rust-version="1.85.0"', "1.85.0"),
+                                       ("rust-version  =  '1.85'", "1.85"),
+                                       ('rust-version = "1.85" # pinned', "1.85")):
+                with self.subTest(declared=spelling):
+                    member.write_text(f'[package]\nname = "member"\n{spelling}\n')
+                    self.assertEqual(floor(member), declared)
+            with self.subTest(inherited="[workspace.package]"):
+                member.write_text('[package]\nname = "member"\nrust-version.workspace = true\n')
+                self.assertEqual(floor(member), "1.88",
+                                 "a crate inherits its own workspace's [workspace.package], "
+                                 "not that workspace root's own [package] floor")
+            with self.subTest(inherited="no [workspace.package] floor"):
+                nested_manifest.write_text(root.replace('\n[workspace.package]\n'
+                                                        'rust-version = "1.88"', ""))
+                self.assertIsNone(floor(member),
+                                  "cargo refuses a crate whose workspace states no floor in "
+                                  "[workspace.package], so there is nothing to hold it against")
 
-    def test_a_matrix_is_read_as_a_flow_list_or_as_a_block_sequence(self):
-        flow = ("    strategy:\n      matrix:\n        toolchain: [\"1.85.0\", stable]\n"
-                "    steps:\n      - run: cargo test\n")
-        sequence = ("    strategy:\n      matrix:\n        toolchain:\n"
-                    '          - "1.85.0"\n          - stable\n'
-                    "    steps:\n      - run: cargo test\n")
-        for block in (flow, sequence):
+    def test_a_job_runs_the_toolchain_it_states_however_it_states_it(self):
+        matrix = "    strategy:\n      matrix:\n"
+        step = ("    steps:\n      - uses: dtolnay/rust-toolchain@master\n"
+                "        with:\n")
+        for block, running in (
+                (matrix + '        toolchain: ["1.85.0", stable]\n', ["1.85.0", "stable"]),
+                (matrix + '        toolchain: ["1.85.0", stable]  # the legs\n',
+                 ["1.85.0", "stable"]),
+                (matrix + "        toolchain:\n          - '1.85.0'\n          - stable\n"
+                 "    steps:\n      - run: cargo test\n", ["1.85.0", "stable"]),
+                (matrix + "        toolchain:  # the legs\n          - \"1.85.0\"\n"
+                 "          - stable\n", ["1.85.0", "stable"]),
+                (step + "          toolchain: stable\n", ["stable"]),
+                (step + "          toolchain: ${{ matrix.toolchain }}\n", []),
+                ("    steps:\n      - uses: actions/checkout@v4\n", [])):
             with self.subTest(block=block):
-                self.assertEqual(legs(block), ["1.85.0", "stable"])
-        self.assertEqual(legs("    steps:\n      - uses: actions/checkout@v4\n"), [],
-                         "a job stating no toolchain at all runs no declared leg")
-
-    def test_a_job_stating_one_toolchain_names_it_as_a_leg(self):
-        block = ("    steps:\n      - uses: dtolnay/rust-toolchain@master\n"
-                 "        with:\n          toolchain: stable\n"
-                 "      - run: cargo test\n")
-        self.assertEqual(legs(block), ["stable"],
-                         "a job with no matrix runs the toolchain its own step names")
-        self.assertEqual(legs(block.replace("toolchain: stable",
-                                            "toolchain: ${{ matrix.toolchain }}")), [],
-                         "a template names no toolchain this reader can compare")
+                self.assertEqual(legs(block), running)
 
 
 if __name__ == "__main__":
