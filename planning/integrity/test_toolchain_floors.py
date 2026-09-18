@@ -240,6 +240,16 @@ class EverySpellingOfOneStatement(unittest.TestCase):
         """One command written inline, folded onto the next line (with or without a backslash),
         under `run: |`, in a flow-mapping step, on two lines of a block scalar, split across
         lines with a trailing backslash, or with the step's `name` after it, is one command.
+        A block scalar is the lines deeper than its key's own column rather than the dash's, so
+        a step's own `name`, `if` or `with` is never part of its command, while a line of the
+        scalar's *content* that looks like a key stays content: measured, PyYAML 6.0.3 and
+        ruamel both read `make: all` under `run: |` as part of the command and a sibling `name`
+        as a key of its own, and before the key's column was read instead of the dash's, a
+        sibling `name` carrying the command made a job that only echoes count as proving the
+        workspace. Refused rather than read: a flow mapping written across lines (`- {run:
+        cargo test,` then `name: proofs}`), which both parsers accept and this reader names as
+        "a mapping this reader does not read across lines" — loud, and no workflow in this tree
+        writes one.
         Measured: with the entry's own words matched one at a time instead of joined, the
         `run: |` form finds no proving job; before `entries` read a shell continuation the
         backslash form found none; and before it read a plain scalar's folded continuation a
@@ -252,6 +262,8 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                         "      - run: |\n          cargo test --workspace --locked\n",
                         "      - run: >\n          cargo test --workspace --locked\n",
                         "      - {run: cargo test --workspace --locked}\n",
+                        "      - run: |\n          make: all\n"
+                        "          cargo test --workspace --locked\n",
                         "      - run: |\n          cargo test\n          --workspace --locked\n",
                         "      - run: cargo test \\\n          --workspace --locked\n",
                         "      - run: cargo test \\\n          --workspace \\\n"
@@ -265,7 +277,9 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                                  "a step that runs the workspace's own tests proves the workspace")
         for other in ("      - run: cargo clippy --workspace --all-targets --locked\n",
                       "      - run: cargo clippy --workspace \\\n          --all-targets\n",
-                      "      - run: cargo test --locked\n"):
+                      "      - run: cargo test --locked\n",
+                      "      - run: |\n          echo not the workspace tests\n"
+                      "        name: cargo test --workspace --locked\n"):
             with self.subTest(other=other):
                 self.assertEqual(workspace_jobs(f"jobs:\n  proofs:\n    steps:\n{other}"), [],
                                  "only one entry stating `cargo test` and `--workspace` proves it")

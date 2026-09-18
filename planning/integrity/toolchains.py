@@ -105,7 +105,7 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
         if not key or key.group(2) != name:
             index += 1
             continue
-        first, indent = index, len(key.group(1))
+        first, indent = index, key.start(2)  # the key's own column, not the dash's
         tail, index = key.group(3).split("#")[0].strip(), index + 1
         if tail.startswith("["):
             while not tail.endswith("]"):
