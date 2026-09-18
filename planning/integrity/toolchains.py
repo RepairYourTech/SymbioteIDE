@@ -26,7 +26,7 @@ ITEM = re.compile(r"^(\s*)-\s*(.*?)\s*$")
 FLOW = re.compile(r"^(\s*(?:-\s+)?(?:[A-Za-z0-9_.\-]+:\s*)?)\{(.*)$")
 SEQUENCE = re.compile(r"^(\s*(?:-\s+)?(?:[A-Za-z0-9_.\-]+:\s*)?)\[(.*)\]\s*$")
 ANCHOR = re.compile(r"^(\s*)(?:-\s+)?(?:[A-Za-z0-9_.\-]+):[ \t]*&([A-Za-z0-9_-]+)[ \t]*(.*)$")
-ALIAS = re.compile(r"^(\s*)((?:-\s+)?(?:[A-Za-z0-9_.\-]+:[ \t]*)?)\*([A-Za-z0-9_-]+)[ \t]*$")
+ALIAS = re.compile(r"^(\s*)((?:-\s+)?(?:[A-Za-z0-9_.\-]+:[ \t]*)?)\*([A-Za-z0-9_-]+)[ \t]*(?:#.*)?$")
 MERGE = re.compile(r"^(\s*)((?:-\s+)?)<<:[ \t]*(.*?)[ \t]*$")
 NAMED = re.compile(r"\*([A-Za-z0-9_-]+)")
 WORKSPACE = "${{ github.workspace }}"
@@ -39,9 +39,11 @@ def job_name(line: str) -> tuple[str, str] | None:
     """The job a line names, two spaces under `jobs:`, with the text it states on that line.
 
     A key written the way YAML writes one — bare or quoted, with a trailing comment or an anchor —
-    and an inline block (`build: {runs-on: …}`), which is that job's own mapping, so its text is
-    the mapping rather than the lines under its key. An alias states no block of its own: the job
-    it repeats is the one the anchor is written on, read where that is written.
+    and whatever its key line states: an inline block (`build: {runs-on: …}`) is that job's own
+    mapping, a scalar (`build: *anchored`, once the alias is written out) is the one line it
+    states and no mapping at all, and a job whose block is under its key states nothing there. A
+    tail this does not read is a job named by nothing, so every tail is read: a job key with a
+    value no rule can use is a job no rule checks, silently.
     """
     found = JOB.fullmatch(line)
     if not found:
@@ -50,7 +52,7 @@ def job_name(line: str) -> tuple[str, str] | None:
     tail = found.group(4).strip()
     if tail.startswith(("#", "&", "*")):
         return name, ""
-    return (name, tail) if not tail or tail.startswith("{") else None
+    return name, tail
 
 
 def anchored_keys(text: str) -> list[tuple[str, str]]:
@@ -72,17 +74,24 @@ def anchored_keys(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def written_out(line: str, anchors: dict[str, str], where: str) -> list[str] | None:
+def written_out(line: str, anchors: dict[str, str], open_names: set[str],
+                where: str) -> list[str] | None:
     """One alias line as the anchored text it names, or None when the line is no alias.
 
     An alias names a mapping or a sequence by a name an anchor stated before it, as a parser reads
     it; a name with no anchor before it — a forward reference, another document's anchor, a typo —
-    is refused by name, since what it names is written where this reader cannot see it.
+    is refused by name, since what it names is written where this reader cannot see it. An alias
+    written inside the block it names states nothing of its own, which is what a parser reads: the
+    value is the one being written, and no key of it states itself anew. A one-line anchored value
+    stays on the line the alias writes it on — a parser reads the same value either way, and
+    `job_name` reads a job key's own line as the job's text.
     """
     found = ALIAS.match(line)
     if not found:
         return None
     indent, prefix, name = found.groups()
+    if name in open_names:
+        return []
     if name not in anchors:
         raise AssertionError(f"{where} writes {line.strip()}, and no anchor named {name} is stated "
                              f"before it: an alias this reader cannot resolve where it is written")
@@ -96,11 +105,12 @@ def written_out(line: str, anchors: dict[str, str], where: str) -> list[str] | N
                                                for text in lines[1:]]
 
 
-def merged_in(lines: list[str], index: int, anchors: dict[str, str], taken: dict[int, set[str]],
-              where: str) -> list[str]:
+def merged_in(lines: list[str], index: int, anchors: dict[str, str], open_names: set[str],
+              taken: dict[int, set[str]], where: str) -> list[str]:
     """A merge key as the keys it states: the anchored mapping's, minus the ones the mapping states
     itself and the ones an earlier merge in it already stated — a mapping's own keys win, and the
-    first merge wins over the next, which is what both parsers read.
+    first merge wins over the next, which is what both parsers read. A merge of the mapping it is
+    written in adds nothing: the keys it would bring are that mapping's own.
     """
     found = MERGE.match(lines[index])
     dash = bool(found.group(2))
@@ -123,6 +133,8 @@ def merged_in(lines: list[str], index: int, anchors: dict[str, str], taken: dict
     added = taken.setdefault(start, set())
     out: list[str] = []
     for name in names:
+        if name in open_names:
+            continue
         if name not in anchors:
             raise AssertionError(f"{where} merges {name}, and no anchor named {name} is stated "
                                  f"before it: a merge this reader cannot resolve")
@@ -142,66 +154,97 @@ def merged_in(lines: list[str], index: int, anchors: dict[str, str], taken: dict
     return out
 
 
+def doubled(lines: list[str], where: str) -> None:
+    """Refuse a mapping that states one key twice: a parser reads that document as an error, so
+    reading both values is reading a document no workflow can be.
+
+    A key at one indent is a key of the mapping that indent belongs to, and an item at a shallower
+    indent opens a new one, which is where the keys of the previous item stop applying.
+    """
+    seen: list[tuple[int, str]] = []
+    for line in lines:
+        item = ITEM.match(line)
+        if item and item.group(2):
+            seen = [(depth, key) for depth, key in seen if depth < len(item.group(1))]
+        key = KEY.match(line)
+        if not key:
+            continue
+        depth, name = len(key.group(1)), key.group(2)
+        if (depth, name) in seen:
+            raise AssertionError(f"{where} states {name} twice in one mapping, and a parser reads "
+                                 f"that as an error rather than as one more value")
+        seen = [(number, key) for number, key in seen if number < depth] + [(depth, name)]
+
+
 def resolved(workflow: str, where: str) -> str:
     """The document with its anchors, aliases and merge keys written out.
 
     A job or a step stated as an alias is a job or a step, and a merge states the keys it merges:
     measured, a job whose block is an alias read as a job with no block at all, and a job that
-    inherited its proving step through `<<:` was not counted as proving the workspace. An anchor's
-    own value stays where it is written, and an alias is written out only where an anchor before it
-    states the name — a forward reference, another document's anchor or a typo is refused by name,
-    as both parsers refuse it. A stream of more than one document is refused too.
+    inherited its proving step through `<<:` was not counted as proving the workspace. Each anchored
+    mapping is written out where it is stated, so an alias names one whose own merges are already
+    the keys it states, however deeply it merges or names itself; an alias is written out only
+    where an anchor before it states the name — a forward reference, another document's anchor or a
+    typo is refused by name, as both parsers refuse it. A name stated twice, and a key stated twice
+    in one mapping, are refused by name too, since a parser reads the second as an error. A stream
+    of more than one document is refused.
     """
     stated = workflow.splitlines()
     for number, line in enumerate(stated):
         if line.startswith("---") and any(text.strip() and not text.lstrip().startswith(("#", "---"))
                                            for text in stated[:number]):
             raise AssertionError(f"{where} writes more than one document, and the rule reads one")
-    text = workflow
-    for _ in range(6):  # an alias can name a mapping that itself states a merge
-        anchors: dict[str, str] = {}
-        taken: dict[int, set[str]] = {}
-        lines, out, index, changed = text.splitlines(), [], 0, False
+    anchors: dict[str, str] = {}
+    open_names: set[str] = set()
+
+    def spelled(lines: list[str], depth: int) -> list[str]:
+        """Those lines with the aliases and merges they can name written out."""
+        if depth > 6:
+            raise AssertionError(f"{where} nests anchors deeper than this reader follows")
+        out, index, taken = [], 0, {}
         while index < len(lines):
             line = lines[index]
             found = ANCHOR.match(line)
             if found:
-                changed = True
                 name = found.group(2)
-                rest, depth = found.group(3).strip(), len(found.group(1))
-                block: list[str] = []
-                if rest:  # the anchor's own value is on its line
-                    anchors[name], index = rest, index + 1
-                else:  # the anchor's own value is the block under its key
-                    index += 1
+                if name in anchors:
+                    raise AssertionError(f"{where} states the anchor &{name} twice, and a parser "
+                                         f"reads a name stated twice as an error")
+                rest, indent = found.group(3).split("#")[0].strip(), len(found.group(1))
+                raw: list[str] = []
+                index += 1
+                if not rest:  # the anchor's own value is the block under its key
                     while index < len(lines) and (not lines[index].strip() or len(lines[index])
-                                                  - len(lines[index].lstrip()) > depth):
-                        block.append(lines[index])
+                                                  - len(lines[index].lstrip()) > indent):
+                        raw.append(lines[index])
                         index += 1
-                    while block and not block[-1].strip():
-                        block.pop()
-                    stripped = min((len(text) - len(text.lstrip()) for text in block
-                                    if text.strip()), default=0)
-                    anchors[name] = "\n".join(text[stripped:] if text.strip() else ""
-                                              for text in block)
+                    while raw and not raw[-1].strip():
+                        raw.pop()
+                cut = min((len(text) - len(text.lstrip()) for text in raw if text.strip()),
+                          default=0)
+                block = [rest] if rest else [text[cut:] if text.strip() else "" for text in raw]
+                open_names.add(name)  # its own block may name it, and then states nothing
+                body = spelled(block, depth + 1)
+                open_names.discard(name)
+                anchors[name] = "\n".join(body)
                 out.append(line.replace(f"&{name}", "", 1).rstrip())
-                out.extend(block)  # an anchor's own value stays where it is written
+                if not rest:  # the anchor's own value stays where it is written, merges written out
+                    out.extend(" " * cut + text if text.strip() else text for text in body)
                 continue
-            written = written_out(line, anchors, where)
+            written = written_out(line, anchors, open_names, where)
             if written is not None:
-                changed = True
                 out.extend(written)
             elif MERGE.match(line):
-                changed = True
-                out.extend(merged_in(lines, index, anchors, taken, where))
+                out.extend(merged_in(lines, index, anchors, open_names, taken, where))
             else:
                 out.append(line)
             index += 1
-        once = "\n".join(out)
-        if not changed or once == text:
-            return text
-        text = once
-    raise AssertionError(f"{where} nests anchors deeper than this reader follows")
+        return out
+
+    once = spelled(stated, 0)
+    text = workflow if once == stated else "\n".join(once)
+    doubled(text.splitlines(), where)
+    return text
 
 
 def jobs(workflow: str) -> dict[str, str]:
@@ -460,19 +503,26 @@ def gated(block: str, where: str = "a job") -> list[str]:
 
 
 def workspace_jobs(workflow: str) -> list[str]:
-    """The blocks of the jobs whose steps run the workspace's own tests.
+    """The blocks of the jobs whose own steps run the workspace's own tests.
 
     Which job proves the workspace is a fact of the workflow rather than of a name — measured, one
     job of `rust-contracts.yml` runs `cargo test --workspace`, and renaming it changes nothing about
     what CI proves. A name would also make the answer depend on the order the jobs are written in,
     and reading only the first would ignore a second job that proves the workspace just as much.
     A step's own words are joined before they are read, so a command written inline and the same
-    command under `run: |` are the same command.
+    command under `run: |` are the same command. Only a `run` a job's own steps state counts: a
+    `run` written at the job's own level, which a parser reads and a runner runs nothing of, is not
+    a step, and a job that states no steps runs none.
     """
-    return [block for block in jobs(workflow).values()
-            if any("cargo test" in stated and "--workspace" in stated
-                   for values, _, _, _ in entries(block, "run", "a job")
-                   for stated in [" ".join(values)])]
+    proven = []
+    for block in jobs(workflow).values():
+        spans = [(first, last) for _, first, last, _ in entries(block, "steps", "a job")]
+        inside = {line for first, last in spans for line in range(first, last + 1)}
+        if any("cargo test" in stated and "--workspace" in stated
+               for values, first, _, _ in entries(block, "run", "a job")
+               for stated in [" ".join(values)] if first in inside):
+            proven.append(block)
+    return proven
 
 
 def parsed(manifest: pathlib.Path) -> dict:
