@@ -12,8 +12,9 @@ class, a function written under a guard or an import the reader reads joins the 
 it reaches it, and a reordering costs nothing. The kinds it counts are held by cases over small
 modules of their own, so a narrowing cannot hide behind this tree holding no instance of one.
 The closure follows names, so a helper the reader reaches without one — through `globals()[...]`
-or `getattr` — is not counted (measured green at 91 with a behaviour-preserving helper; by name
-it is 94).
+or `getattr` — is not counted, and that is held by a case of its own rather than stated here
+alone. Nor is what an import reaches: the line the reader pays for `import re` is one, so logic
+moved behind such a name is counted where it is imported, not where it grows.
 The rest of the module is deliberately outside —
 reading which lines belong to a job, resolving a stated path, answering about what was read, and
 the manifest side's TOML may each grow without this case firing, and nothing here holds the
@@ -145,6 +146,13 @@ class CountedKinds(unittest.TestCase):
                 self.assertNotIn(name, spans,
                                  f"{name} is bound by a module-level statement that binds no "
                                  f"assignment or import: {sorted(spans)}")
+
+    def test_a_helper_reached_only_as_a_string_is_not_counted(self):
+        """The closure follows names, not strings: `globals()["helper"]` names no binding."""
+        reached = "def helper(value: str) -> str:\n    return value\n"
+        spans = reader(small_module(reached, 'globals()["helper"](block)'))
+        self.assertNotIn("helper", spans,
+                         f"a string is not a binding the reader reads: {sorted(spans)}")
 
     def test_a_definition_costs_its_decorator_too(self):
         """A definition's span starts at its first decorator, not at `def`."""
