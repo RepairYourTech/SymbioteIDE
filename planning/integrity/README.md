@@ -111,3 +111,7 @@ The live tree is never touched. The driver copies this working tree into a tempo
 ## Declared toolchain floors
 
 A crate declares the Rust it supports in its manifest and the job that builds it declares the toolchains it runs — two statements of one fact, and for the two spikes nothing related them until `test_toolchain_floors.py`. What the rule holds, the drift it was measured to let through, which job is not its subject, and what nothing there decides are stated once in that file's own docstring; where a floor and a job's toolchains are read from, and every spelling a run states them in, is stated once in `toolchains.py`, which this rule and the handoff's share rather than each reading the workflow for itself; this section does not repeat them.
+
+## Holding the reader's own size
+
+The workflow reader those two rules share grew twice (258 → 332 lines) and was read back down by audits and passes rather than by anything this tree runs. `test_reader_size.py` holds the reader's own size — `entries`, where a block's lines become what each key states, and everything it calls or reads — to the count it was read down to, so a spelling the reader must read next either replaces one it reads or moves that number in the change itself, while the rest of the module stays free to grow. What the case holds, how its membership is derived and where it stops are stated once in its own docstring; this section does not repeat them.
