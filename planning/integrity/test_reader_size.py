@@ -1,17 +1,19 @@
 """Run: python3 planning/integrity/test_reader_size.py.
 
 `toolchains.py` is the one reader of the workflow spellings two rules compare, and nothing
-measured the reading itself: the module grew twice (258 → 332 lines) and was read back down by
-audits and passes rather than by anything this tree runs. This holds the reader's own size —
-`entries`, where a block's lines become what each key states, and every module-level definition
-it calls or reads: a function or class wherever a module-level statement writes one, a guard
-included, and the names an assignment or an import binds — so a spelling it must read next
-either replaces one it reads or moves the declaration below in the change itself.
+measured the reading itself. This holds the reader's own size — `entries`, where a block's lines
+become what each key states, and every module-level definition it calls or reads: a function or
+class wherever a module-level statement writes one, a guard included, and the names an
+assignment or an import binds — so a spelling it must read next either replaces one it reads or
+moves the declaration below in the change itself.
 
 Membership is derived from the module's own call and name graph, never listed here: a helper, a
 class, a function written under a guard or an import the reader reads joins the count the moment
 it reaches it, and a reordering costs nothing. The kinds it counts are held by cases over small
 modules of their own, so a narrowing cannot hide behind this tree holding no instance of one.
+The closure follows names, so a helper the reader reaches without one — through `globals()[...]`
+or `getattr` — is not counted (measured green at 91 with a behaviour-preserving helper; by name
+it is 94).
 The rest of the module is deliberately outside —
 reading which lines belong to a job, resolving a stated path, answering about what was read, and
 the manifest side's TOML may each grow without this case firing, and nothing here holds the
@@ -64,7 +66,8 @@ def definitions(tree: ast.Module) -> dict[str, ast.AST]:
 
 def reader(source: str) -> dict[str, int]:
     """The lines each name the reader is occupies: `entries`, everything it calls or reads, and
-    what those state, followed through the module's own call and name graph.
+    what those state, followed through the module's own call and name graph. A definition costs
+    from its first decorator, so a line written above `def` is still the reader's.
     """
     defined = definitions(ast.parse(source))
     spans: dict[str, int] = {}
@@ -74,7 +77,8 @@ def reader(source: str) -> dict[str, int]:
         node = defined.get(name)
         if name in spans or node is None:
             continue
-        spans[name] = node.end_lineno - node.lineno + 1
+        start = min([d.lineno for d in getattr(node, "decorator_list", [])] or [node.lineno])
+        spans[name] = node.end_lineno - start + 1
         pending += [call.func.id for call in ast.walk(node)
                     if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)]
         pending += [read.id for read in ast.walk(node)
@@ -141,6 +145,13 @@ class CountedKinds(unittest.TestCase):
                 self.assertNotIn(name, spans,
                                  f"{name} is bound by a module-level statement that binds no "
                                  f"assignment or import: {sorted(spans)}")
+
+    def test_a_definition_costs_its_decorator_too(self):
+        """A definition's span starts at its first decorator, not at `def`."""
+        decorated = "@staticmethod\ndef helper(value: str) -> str:\n    return value\n"
+        spans = reader(small_module(decorated, "helper(block)"))
+        self.assertEqual(spans.get("helper"), 3,
+                         f"the decorator line is part of what helper costs: {spans}")
 
 
 if __name__ == "__main__":
