@@ -1,29 +1,18 @@
 """Run: python3 planning/integrity/test_reader_size.py.
 
-`toolchains.py` is the one reader of the workflow spellings two rules compare, and nothing
-measured the reading itself. This holds the reader's own size — `entries`, where a block's lines
-become what each key states, and every module-level definition it calls or reads: a function or
-class wherever a module-level statement writes one, a guard included, and the names an
-assignment or an import binds — so a spelling it must read next either replaces one it reads or
-moves the declaration below in the change itself.
+`toolchains.py` is the one reader the two toolchain rules compare, and nothing measured the
+reading itself. This holds the reader's own size: `entries`, where a block's lines become what
+each key states, and every module-level definition it reaches — a function or class wherever a
+module-level statement writes one, a guard included, and the names an assignment or an import
+binds — counted as the lines each spans, from a definition's first decorator onwards. It counts
+the names it reads, so what is reached without one — a string, or the logic behind an imported
+name — is not counted: that is where the membership stops, and the cases below hold its kinds and
+limits over small modules of their own.
 
-Membership is derived from the module's own call and name graph, never listed here: a helper, a
-class, a function written under a guard or an import the reader reads joins the count the moment
-it reaches it, and a reordering costs nothing. The kinds it counts are held by cases over small
-modules of their own, so a narrowing cannot hide behind this tree holding no instance of one.
-The closure follows names, so a helper the reader reaches without one — through `globals()[...]`
-or `getattr` — is not counted, and nor is the logic behind an imported name: the line the reader
-pays for `import re` is one, so what such a name reaches is counted where it is imported, not
-where it grows. Both limits are held by cases of their own rather than stated here alone.
-The rest of the module is deliberately outside —
-reading which lines belong to a job, resolving a stated path, answering about what was read, and
-the manifest side's TOML may each grow without this case firing, and nothing here holds the
-module's own size.
-
-The declaration below equals the reader's size, so a reader read further down moves the number
-too rather than leaving slack — and the measure is lines, so a line grown longer is not what
-this case weighs. This file's own size is declared the same way, so the guard cannot grow without
-the declaration moving in the change that grows it.
+The rest of the module, and the module's own size, are deliberately outside this. The declaration
+below equals the reader's size rather than leaving slack, and the measure is lines, so a line
+grown longer costs nothing; this file's own size is declared the same way, and the case below
+holds it.
 """
 from __future__ import annotations
 
@@ -34,22 +23,18 @@ import unittest
 
 TOOLCHAINS = pathlib.Path(__file__).resolve().parent / "toolchains.py"
 GUARD = pathlib.Path(__file__).resolve()
-# The reader's size at the merge that widened its membership (`dd3dae80`): the three functions and
-# four names it was read down to, plus the `import re` that widening brings in. The case was added
-# declaring 90 (`52e1f224`). Growth is this number moving in a change that says which spelling the
-# reader must now read — or the spelling that goes.
+# The reader's size at the merge that widened its membership (`dd3dae80`); the case was added
+# declaring 90 (`52e1f224`).
 READER_LINES = 91
 SEED = "entries"
-# This guard's own size at the merge that holds it (`4fec3dd0`): its lines, and the cases a loader
-# finds in it. Growing either without moving the declaration reds the case below.
-GUARD_LINES = 197
+# This guard's own size: its lines, and the cases a loader finds in it.
+GUARD_LINES = 175
 GUARD_CASES = 7
 
 
 def definitions(tree: ast.Module) -> dict[str, ast.AST]:
-    """Every name a module-level statement binds: a function or class wherever it is written, a
-    guard included, and the names an assignment or import binds. A definition's own body is not
-    descended into — what it holds is the span of the definition itself.
+    """Every name a module-level statement binds, whichever statement writes it. A definition's own
+    body is not descended into: what the definition holds is its span.
     """
     found: dict[str, ast.AST] = {}
 
@@ -73,10 +58,8 @@ def definitions(tree: ast.Module) -> dict[str, ast.AST]:
 
 
 def reader(source: str) -> dict[str, int]:
-    """The lines each name the reader is occupies: `entries`, everything it calls or reads, and
-    what those state, followed through the module's own call and name graph. A definition costs
-    from its first decorator, so a line written above `def` is still the reader's.
-    """
+    """The lines each name the reader reaches occupies, followed through the module's own call and
+    name graph."""
     defined = definitions(ast.parse(source))
     spans: dict[str, int] = {}
     pending = [SEED]
@@ -101,9 +84,8 @@ def small_module(definition: str, use: str) -> str:
             f"    return {use}\n\n\n{definition}")
 
 
-# The kinds `definitions` counts, each as its own small module: the seed uses the definition, and
-# the definition's name must join the spans. Written here rather than found in `toolchains.py`,
-# so a kind is held while the real module holds no instance of it.
+# The kinds `definitions` counts, each as its own small module: the seed uses the definition and
+# its name must join the spans — written here rather than found in `toolchains.py`.
 COUNTED = (
     ("helper", "def helper(value: str) -> str:\n    return value\n", "helper(block)"),
     ("Spell", 'class Spell:\n    """One spelling."""\n\n    @staticmethod\n'
@@ -113,8 +95,8 @@ COUNTED = (
     ("FORMS", 'FORMS = {"plain": str}\n', 'FORMS["plain"](block)'),
     ("spelling", "import re as spelling\n", 'spelling.sub("", block)'),
 )
-# A binding the mechanism does not count: the docstring above states only assignment and import
-# names, and these three are the boundary that sentence means.
+# Bindings the mechanism does not count: the ways a module-level statement binds a name without an
+# assignment or an import — the boundary the case below holds, rather than one assumed here.
 BOUND_ELSEWHERE = (
     ("BOUND", "for BOUND in (str,):\n    pass\n", "BOUND(block)"),
     ("handle", 'with open("a") as handle:\n    pass\n', "handle"),
@@ -151,9 +133,8 @@ class GuardSize(unittest.TestCase):
 
 
 class CountedKinds(unittest.TestCase):
-    """The derivation's kinds, held by small modules written here rather than by whatever
-    `toolchains.py` happens to contain. A kind deleted from the mechanism reds here alone.
-    """
+    """The kinds the derivation counts, held by small modules written here: a kind deleted from the
+    mechanism reds here alone."""
 
     def test_every_definition_kind_the_reader_reaches_is_counted(self):
         for name, definition, use in COUNTED:
@@ -170,14 +151,12 @@ class CountedKinds(unittest.TestCase):
                                  f"assignment or import: {sorted(spans)}")
 
     def test_a_helper_reached_only_as_a_string_is_not_counted(self):
-        """The closure follows names, not strings: `globals()["helper"]` names no binding."""
         reached = "def helper(value: str) -> str:\n    return value\n"
         spans = reader(small_module(reached, 'globals()["helper"](block)'))
         self.assertNotIn("helper", spans,
                          f"a string is not a binding the reader reads: {sorted(spans)}")
 
     def test_a_helper_reached_through_an_import_is_not_counted(self):
-        """An import costs the line that names it, not the logic behind it."""
         behind = "def tail(value: str) -> str:\n    return value\n"
         spans = reader(small_module("import spelling\n" + behind, "spelling.tail(block)"))
         self.assertEqual(spans.get("spelling"), 1,
@@ -186,7 +165,6 @@ class CountedKinds(unittest.TestCase):
                          f"not the logic an imported name reaches: {sorted(spans)}")
 
     def test_a_definition_costs_its_decorator_too(self):
-        """A definition's span starts at its first decorator, not at `def`."""
         decorated = "@staticmethod\ndef helper(value: str) -> str:\n    return value\n"
         spans = reader(small_module(decorated, "helper(block)"))
         self.assertEqual(spans.get("helper"), 3,
