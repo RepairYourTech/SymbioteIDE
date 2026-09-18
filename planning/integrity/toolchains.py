@@ -90,10 +90,12 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
 
     One pass reads the forms a value is written in: the text after the key, a flow collection on
     one line or across several, a block scalar, and a block sequence, whose items are one entry
-    each — so removing the step lines leaves the job's own text. A value that ends in a shell
-    continuation (`\\`) is continued by the lines it runs onto, which are one entry with it;
-    the marker is not part of what it says, and a line stating a key of its own, or one stating
-    no word (blank, or a comment), is where it ends.
+    each — so removing the step lines leaves the job's own text. A value written over several
+    lines is one entry with them: a plain scalar runs onto every line deeper than its key, which
+    is what a parser folds into one value, and a shell continuation (`\\`) also carries the
+    lines it runs onto where the next line is not deeper. The marker is not part of what it
+    says, and a line stating a key of its own, or one stating no word (blank, or a comment), is
+    where it ends.
     """
     lines = unfolded(block, where).splitlines()
     found: list[ENTRY] = []
@@ -119,12 +121,14 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
                 words, index = words + lines[index].split(), index + 1
             found.append((words, first, index - 1))
         elif tail:
-            said = [tail]  # a shell continuation is part of the entry it is written in
-            while said[-1].rstrip().endswith("\\"):
-                # the marker, and the space before it, are not part of what the entry says
-                said[-1] = said[-1].rstrip()[:-1].rstrip()
-                if index == len(lines) or KEY.match(lines[index]):
-                    break  # nothing it runs onto, or a line stating a key of its own
+            said = [tail]  # a plain scalar runs onto the lines deeper than it, and a marker
+            while index < len(lines) and not KEY.match(lines[index]):
+                marker = said[-1].rstrip().endswith("\\")
+                if not (marker or len(lines[index]) - len(lines[index].lstrip()) > indent):
+                    break  # neither a continuation nor a line the scalar runs onto
+                if marker:
+                    # the marker, and the space before it, are not part of what the entry says
+                    said[-1] = said[-1].rstrip()[:-1].rstrip()
                 stated = lines[index].split("#")[0].strip()
                 if not stated:
                     break  # a blank or commented line states no word, and ends the entry

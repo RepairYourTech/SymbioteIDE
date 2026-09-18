@@ -178,26 +178,28 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                     floor(nested / "member" / "Ghost.toml")
 
     def test_a_directory_is_read_from_the_whole_value_it_states(self):
-        """Measured against the reader before this held it: a `working-directory` continued onto
-        the next line resolved its first word alone, marker and all (`crates/ \\`), while the
-        same entry read by the rule that finds the proving job was joined — two consumers of
-        one stated value disagreeing about what it says, in the one that decides which crate a
-        step builds. A quoted value is never continued; a line stating no word ends the entry.
+        """Measured against the reader before this held it: a `working-directory` written over
+        two lines resolved its first word alone, marker and all (`crates/ \\`), while the same
+        entry read by the rule that finds the proving job was joined — two consumers of one
+        stated value disagreeing about what it says, in the one that decides which crate a
+        step builds. Both PyYAML and ruamel read every value below the way this reads it: a
+        plain scalar runs onto the lines deeper than its key, a quoted one states itself, and
+        a blank line states no word and ends the entry — where a parser breaks the paragraph
+        and carries the newline into the value, which is the reading the last row pins.
         """
-        continued = ("    steps:\n      - working-directory: crates/ \\\n"
-                     "          examples\n        run: cargo test\n")
-        self.assertEqual(directory(continued, "a job"), ROOT / "crates/ examples",
-                         "every word the entry states, folded as a plain scalar folds them")
-        for ended in ("    steps:\n      - working-directory: crates/ \\\n"
-                      "          # a note\n          examples\n",
-                      "    steps:\n      - working-directory: crates/ \\\n\n"
-                      "          examples\n"):
-            with self.subTest(ended=ended):
-                self.assertEqual(directory(ended, "a job"), ROOT / "crates",
-                                 "a line stating no word ends the entry, marker and all")
-        quoted = ('    steps:\n      - working-directory: "crates/ examples"\n'
-                  "        run: cargo test\n")
-        self.assertEqual(directory(quoted, "a job"), ROOT / "crates/ examples")
+        for written in ("      - working-directory: crates/ \\\n          examples\n",
+                        "      - working-directory: crates/\n          examples\n",
+                        '      - working-directory: "crates/ examples"\n'):
+            with self.subTest(written=written):
+                self.assertEqual(directory(f"    steps:\n{written}        run: cargo test\n",
+                                           "a job"),
+                                 ROOT / "crates/ examples",
+                                 "every word the entry states, folded as a scalar folds them")
+        blank = ("    steps:\n      - working-directory: crates/ \\\n\n"
+                 "          examples\n        run: cargo test\n")
+        self.assertEqual(directory(blank, "a job"), ROOT / "crates",
+                         "a blank line states no word and ends the entry, marker and all; both "
+                         "parsers break the paragraph instead and read `crates/ \\\nexamples`")
 
     def test_a_job_runs_the_toolchain_it_states_however_it_states_it(self):
         matrix = "    strategy:\n      matrix:\n"
@@ -235,14 +237,18 @@ class EverySpellingOfOneStatement(unittest.TestCase):
             legs("    strategy:\n      matrix:\n        toolchain: [\n")
 
     def test_a_step_proves_the_workspace_however_its_command_is_written(self):
-        """One command written inline, folded, under `run: |`, in a flow-mapping step, on two
-        lines of a block scalar, split across lines with a trailing backslash, or with the
-        step's `name` after it, is one command. Measured: with the entry's own words matched
-        one at a time instead of joined, the `run: |` form finds no proving job at all, and
-        before `entries` read a shell continuation the backslash form found none either —
-        each reding the handoff's case for a workflow that proves exactly what it always did.
+        """One command written inline, folded onto the next line (with or without a backslash),
+        under `run: |`, in a flow-mapping step, on two lines of a block scalar, split across
+        lines with a trailing backslash, or with the step's `name` after it, is one command.
+        Measured: with the entry's own words matched one at a time instead of joined, the
+        `run: |` form finds no proving job; before `entries` read a shell continuation the
+        backslash form found none; and before it read a plain scalar's folded continuation a
+        command written over two lines found none — each reding the handoff's case for a
+        workflow that proves exactly what it always did.
         """
         for written in ("      - run: cargo test --workspace --locked\n",
+                        "      - run: cargo test --workspace\n          --locked\n",
+                        "      - run: cargo test\n          --workspace --locked\n",
                         "      - run: |\n          cargo test --workspace --locked\n",
                         "      - run: >\n          cargo test --workspace --locked\n",
                         "      - {run: cargo test --workspace --locked}\n",
