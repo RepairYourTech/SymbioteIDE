@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import tempfile
 import unittest
 
 import toolchains
@@ -78,18 +79,33 @@ def path_spans(document: str) -> list[str]:
                    and not span.startswith("/")})
 
 
-def example_target(package: str, target: str) -> bool:
-    """Whether a package carries that example: a manifest that names it, or a file of that name.
+def declares_example(manifest: pathlib.Path, target: str) -> bool:
+    """Whether that manifest declares its example target, read as the TOML it is.
+
+    `toolchains.parsed` is the one place a manifest's TOML is read, so a malformed one is
+    refused here by the same message rather than by a second reader. Searching the manifest's
+    text for `name = "…"` instead, as this did, answers both ways wrong: measured, a
+    single-quoted `name = 'report'` is valid TOML the text does not see, while a comment
+    (`# name = "report"`) and a `[[test]]` table are text it accepts and the manifest
+    declares no example.
+    """
+    return any(example.get("name") == target
+               for example in toolchains.parsed(manifest).get("example", []))
+
+
+def example_target(package: str, target: str, root: pathlib.Path = ROOT) -> bool:
+    """Whether a package carries that example: a manifest that declares it, or a file of that name.
 
     The name is not always the file's: `constitution_report` lives in `examples/report.rs`
     and only the manifest says so, so a file-name-only reading would refuse a command
     that works. Measured both ways while writing this: the handoff's three `--example`
-    commands exist, one of them by declaration rather than by file name.
+    commands exist, one of them by declaration rather than by file name. `root` is where the
+    packages are, so the case below can drive this over its own small crates.
     """
-    manifest = ROOT / "crates" / package / "Cargo.toml"
-    if manifest.is_file() and f'name = "{target}"' in manifest.read_text():
+    manifest = root / "crates" / package / "Cargo.toml"
+    if manifest.is_file() and declares_example(manifest, target):
         return True
-    return (ROOT / "crates" / package / "examples" / f"{target}.rs").is_file()
+    return (root / "crates" / package / "examples" / f"{target}.rs").is_file()
 
 
 class HandoffCitations(unittest.TestCase):
@@ -142,6 +158,54 @@ class HandoffCitations(unittest.TestCase):
             self.assertIn(toolchains.version(declared), proven,
                           f"CI does not run the declared minimum: {proven}")
             self.assertIn("stable", proven, f"CI does not run stable: {proven}")
+
+
+class DeclaredExampleTargets(unittest.TestCase):
+    """The manifest decides, not its text: every state below is one the text search answered
+    the other way, and the last one is refused rather than read as declaring nothing.
+    """
+
+    def test_an_example_is_declared_by_its_own_table_rather_than_named_in_the_text(self):
+        written = (('[[example]]' + "\n" + 'name = "report"' + "\n", True,
+                    "a double-quoted name"),
+                   ("[[example]]" + "\n" + "name = 'report'" + "\n", True,
+                    "a single-quoted name, which TOML allows"),
+                   ("[[example]]" + "\n" + 'path = "examples/report.rs"' + "\n"
+                    + "name = 'report'" + "\n", True, "a name declared beside its path"),
+                   ('# name = "report"' + "\n", False, "the name in a comment"),
+                   ('[[test]]' + "\n" + 'name = "report"' + "\n", False,
+                    "a test table rather than an example"))
+        with tempfile.TemporaryDirectory() as directory:
+            for number, (manifest_text, declared, why) in enumerate(written):
+                manifest = pathlib.Path(directory) / f"{number}.toml"
+                manifest.write_text(manifest_text)
+                with self.subTest(manifest=manifest_text):
+                    self.assertEqual(declares_example(manifest, "report"), declared,
+                                     f"{why}: searched as text this file answers otherwise")
+            broken = pathlib.Path(directory) / "broken.toml"
+            broken.write_text('[[example]]' + "\n" + 'name = "report' + "\n")
+            with self.assertRaisesRegex(AssertionError, "not TOML"):
+                declares_example(broken, "report")
+
+    def test_a_printed_example_is_found_by_its_table_and_not_by_its_name_in_the_text(self):
+        """Through the entry point the command case uses, over crates of its own: each state is
+        one the string search answered the other way, so reverting to it reds this by name.
+        """
+        crates = (("declared", "[[example]]" + "\n" + "name = 'report'" + "\n", True,
+                   "a single-quoted name, which the text search does not see"),
+                  ("commented", '# name = "report"' + "\n", False,
+                   "the name in a comment, which the text search accepts"),
+                  ("tested", '[[test]]' + "\n" + 'name = "report"' + "\n", False,
+                   "a test table, which the text search accepts"))
+        with tempfile.TemporaryDirectory() as directory:
+            for package, manifest_text, carried, why in crates:
+                crate = pathlib.Path(directory) / "crates" / package
+                crate.mkdir(parents=True)
+                (crate / "Cargo.toml").write_text(manifest_text)
+                with self.subTest(package=package):
+                    self.assertEqual(
+                        example_target(package, "report", pathlib.Path(directory)), carried,
+                        f"{why}: no file carries it either, so the manifest decides")
 
 
 if __name__ == "__main__":

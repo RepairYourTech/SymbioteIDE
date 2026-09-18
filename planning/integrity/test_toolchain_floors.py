@@ -24,6 +24,7 @@ from toolchains import (
     directory,
     floor,
     gated,
+    jobs,
     legs,
     manifests,
     pairs,
@@ -34,6 +35,11 @@ from toolchains import (
 
 def relative(path: pathlib.Path) -> str:
     return str(path.relative_to(ROOT))
+
+
+def unrunnable(block: str) -> list[str]:
+    """The legs a job's block gates steps on and does not itself run: this rule's comparison."""
+    return [leg for leg in gated(block) if leg not in legs(block)]
 
 
 def floored() -> list[tuple[str, str, pathlib.Path, str, list[str]]]:
@@ -64,11 +70,63 @@ class DeclaredToolchainFloors(unittest.TestCase):
 
     def test_every_job_runs_the_legs_its_own_steps_are_gated_on(self):
         for workflow, job, block, manifest in pairs():
-            for leg in gated(block):
-                with self.subTest(workflow=workflow, job=job, leg=leg):
-                    self.assertIn(leg, legs(block),
-                                  f"{workflow}: the job {job} gates steps on the {leg} leg "
-                                  f"and runs {legs(block)}, so those steps would never run")
+            with self.subTest(workflow=workflow, job=job):
+                self.assertEqual(unrunnable(block), [],
+                                 f"{workflow}: the job {job} gates steps on a leg it does not "
+                                 f"run {legs(block)}, so those steps would never run")
+
+    def test_a_gate_written_over_two_lines_is_the_gate_the_rule_checks(self):
+        """Measured before the gate was read through the reader: the single-line spelling was
+        seen and the folded one was not, so a job gating on a leg it does not run passed.
+
+        The condition is read off the lines the reader states the entry spans, not off the words
+        it states: those are stripped of their quotes (`'stable'` reads `stable`), which loses
+        the closing quote the pattern needs — the reading that reds this case and the live one.
+        One boundary is stated rather than closed: a line inside a command's own block scalar
+        that is written `if: matrix.toolchain == 'stable'` is read as a gate (measured), where a
+        parser reads it as part of the command — the reader reads text, and the raw text read
+        this shape too, so nothing widened here.
+        """
+        matrix = "    strategy:\n      matrix:\n        toolchain: [1.85.0]\n"
+        for written in ("        if: matrix.toolchain == 'stable'\n",
+                        "        if: matrix.toolchain ==\n          'stable'\n"):
+            with self.subTest(written=written):
+                block = matrix + "    steps:\n      - run: cargo test --workspace\n" + written
+                self.assertEqual(unrunnable(block), ["stable"],
+                                 "the job gates steps on the stable leg and runs "
+                                 f"{legs(block)}, so those steps would never run")
+
+
+class EveryJobAWorkflowWrites(unittest.TestCase):
+    """A job key read as no job is a job no rule checks, silently, and that is what each state
+    below measured: this read a key at two spaces and nothing else, while a parser reads a
+    quoted key, a dotted key, a key with a trailing comment and a key carrying an anchor.
+
+    Two shapes are stated rather than closed, because the block reader is line-based and a job's
+    block is the lines under its key: a jobs mapping written as a flow mapping (`jobs: {build:
+    …}`) and a job whose whole block sits on its key's line each read as no job at all, where
+    PyYAML reads the job — measured, both silently, since the rules only iterate the jobs found.
+
+    A key whose name needs quoting for a `:` or a space in it is read only when it is quoted,
+    and then its quotes are the reader's, not part of the name: `job_name` takes what the quotes
+    hold. An anchor declares the job as any other spelling does; it does not make the anchor's
+    own value the job's text, which no rule here reads.
+    """
+
+    def test_a_job_key_is_read_however_yaml_writes_one(self):
+        for written, name in (("  build:\n", "build"),
+                              ("  build_one:\n", "build_one"),
+                              ("  build-one:\n", "build-one"),
+                              ("  build.one:\n", "build.one"),
+                              ('  "build":\n', "build"),
+                              ("  build: # why\n", "build"),
+                              ("  build: &anchor\n", "build")):
+            with self.subTest(written=written):
+                workflow = "name: w\non: push\njobs:\n" + written + "    runs-on: ubuntu-latest\n"
+                self.assertEqual(list(jobs(workflow)), [name],
+                                 "a job key YAML writes, read as no job when it is not read")
+                self.assertEqual(jobs(workflow)[name], "    runs-on: ubuntu-latest\n",
+                                 "the key's own block is the lines under it")
 
 
 class EverySpellingOfOneStatement(unittest.TestCase):
@@ -77,32 +135,30 @@ class EverySpellingOfOneStatement(unittest.TestCase):
     `rust-version="1.85.0"` read as none, an inherited floor came from the wrong manifest's
     table, a matrix written as a block sequence read as running no toolchain, a commented
     table header read as no table, one step's directory decided every other step, a templated
-    one silently meant the repository root, a step installing a toolchain beside a matrix hid
+    one silently meant the repository root,    a step installing a toolchain beside a matrix hid
     it, and a step's command written under `run: |` or split across lines with a trailing
     backslash was read as proving nothing at all. The last case here drives those two one
     level out: the live workflow contains neither shape, which is why they are written in the
-    case rather than taken from the tree.
+    case rather than taken from the tree. A gate written over two lines was read as no gate at
+    all, and a job key YAML writes — quoted, dotted, commented, anchored — as no job.
 
     Whether a value is a command decides three of these readings, all measured against PyYAML
     6.0.3 and ruamel, which agree on every text below. `run` is the only entry a shell runs, and
-    it is read the way a shell reads it: a trailing `\` is a continuation both parsers keep and
-    the shell drops (`'cargo test \ --workspace --locked'` is `cargo test --workspace --locked`
+    it is read the way a shell reads it: a trailing `\\` is a continuation both parsers keep and
+    the shell drops (`'cargo test \\ --workspace --locked'` is `cargo test --workspace --locked`
     to a shell), and a blank line ends the command, since a shell runs the lines either side
     separately (`'cargo test\n--workspace --locked'`). Every value the rules read on its own — a
     matrix leg, a `working-directory` — is read the way a parser states it: the marker is
-    the literal character YAML says it is (`'1.85.0 \ stable'` and `'crates/ \ examples'`, both
+    the literal character YAML says it is (`'1.85.0 \\ stable'` and `'crates/ \\ examples'`, both
     exactly what a parser reads, and each one value rather than a list of words), and a blank
     line is a paragraph break the value goes on past. A `--manifest-path` is a token *of* a
     command, so it is read where a shell passes it: the marker ends the token, and
     `--manifest-path=crates/ \\` with `examples/Cargo.toml` under it reads `crates/` — the word a
     shell passes, and cargo fails to find a manifest for either reading.
 
-    Two residuals are stated rather than closed. A paragraph break reads as a space here, where
+    One residual is stated rather than closed: a paragraph break reads as a space here, where
     both parsers carry a newline (`'crates/ \\nexamples'`), so a directory or a toolchain folded
-    over a blank line is one value either way but not one string. And `gated` reads a job's own
-    text by pattern rather than through this reader, so an `if:` folded across lines is missed:
-    `[]` where both parsers read `matrix.toolchain == 'stable'`, which weakens the leg assertion
-    silently instead of failing it.
+    over a blank line is one value either way but not one string.
 
     The other direction is measured too, because a row asserting a reading for a text no parser
     accepts looks like coverage and is not. Five texts no workflow can contain are read anyway,
@@ -216,14 +272,14 @@ class EverySpellingOfOneStatement(unittest.TestCase):
         stated value disagreeing about what it says, in the one that decides which crate a
         step builds. A path is not a command, so it is read the way both PyYAML and ruamel state
         it: a plain scalar runs onto the lines deeper than its key, a quoted one states itself,
-        a `\` in it is the literal character YAML says it is — the marker row below reads
-        `crates/ \ examples`, which is exactly what both parsers read — and a blank line is a
+        a `\\` in it is the literal character YAML says it is — the marker row below reads
+        `crates/ \\ examples`, which is exactly what both parsers read — and a blank line is a
         paragraph break the value goes on past, where both parsers read
         `'crates/ \\\nexamples'`: the same value with a newline where this joins lines with a
         space, which is the one residual this reads unlike a parser.
         """
         for written, resolved in (("      - working-directory: crates/ \\\n          examples\n",
-                                  ROOT / "crates/ \ examples"),
+                                  ROOT / r"crates/ \ examples"),
                                  ("      - working-directory: crates/\n          examples\n",
                                   ROOT / "crates/ examples"),
                                  ('      - working-directory: "crates/ examples"\n',
@@ -235,7 +291,7 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                                  "every word the entry states, as its own form reads it")
         blank = ("    steps:\n      - working-directory: crates/ \\\n\n"
                  "          examples\n        run: cargo test\n")
-        self.assertEqual(directory(blank, "a job"), ROOT / "crates/ \ examples",
+        self.assertEqual(directory(blank, "a job"), ROOT / r"crates/ \ examples",
                          "a blank line is the paragraph a value goes on past, not its end: both "
                          "parsers read `crates/ \\\nexamples`")
 
@@ -259,7 +315,7 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                 # a toolchain is not a command: a `\` there is the literal YAML says it is, and
                 # the one value both parsers read is one leg rather than its words
                 (matrix + "        toolchain: 1.85.0 \\\n          stable\n",
-                 ["1.85.0 \ stable"]),
+                 [r"1.85.0 \ stable"]),
                 # a step installing one toolchain beside a matrix: the job runs both
                 (matrix + '        toolchain: ["1.85.0", stable]\n' + step
                  + "          toolchain: nightly\n", ["1.85.0", "stable", "nightly"]),
