@@ -22,21 +22,28 @@ module's own size.
 
 The declaration below equals the reader's size, so a reader read further down moves the number
 too rather than leaving slack — and the measure is lines, so a line grown longer is not what
-this case weighs.
+this case weighs. This file's own size is declared the same way, so the guard cannot grow without
+the declaration moving in the change that grows it.
 """
 from __future__ import annotations
 
 import ast
 import pathlib
+import sys
 import unittest
 
 TOOLCHAINS = pathlib.Path(__file__).resolve().parent / "toolchains.py"
+GUARD = pathlib.Path(__file__).resolve()
 # The reader's size at the merge that added this case (`580e41d2`): the three functions and four
 # names it was read down to there, plus the `import re` the widened membership brings in. Growth
 # is this number moving in a change that says which spelling the reader must now read — or the
 # spelling that goes.
 READER_LINES = 91
 SEED = "entries"
+# This guard's own size at the merge that holds it (`8ba067da`): its lines, and the cases a loader
+# finds in it. Growing either without moving the declaration reds the case below.
+GUARD_LINES = 197
+GUARD_CASES = 7
 
 
 def definitions(tree: ast.Module) -> dict[str, ast.AST]:
@@ -126,6 +133,21 @@ class ReaderSize(unittest.TestCase):
                          f"{READER_LINES} is declared: the declaration moves with any change to "
                          f"the reader's size, and a spelling it must now read either replaces "
                          f"one it reads or is the reason this number moved")
+
+
+class GuardSize(unittest.TestCase):
+    """The guard's own size, declared the way the reader's is: growing this file without moving
+    the declaration reds here, and no edit outside this file can.
+    """
+
+    def test_the_guard_is_the_size_declared_for_it(self):
+        lines = len(GUARD.read_text().splitlines())
+        cases = unittest.defaultTestLoader.loadTestsFromModule(
+            sys.modules[__name__]).countTestCases()
+        self.assertEqual((lines, cases), (GUARD_LINES, GUARD_CASES),
+                         f"the guard is {lines} lines and {cases} cases where {GUARD_LINES} and "
+                         f"{GUARD_CASES} are declared: a change that grows it moves them in the "
+                         f"same change")
 
 
 class CountedKinds(unittest.TestCase):
