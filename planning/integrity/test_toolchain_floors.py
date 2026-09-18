@@ -82,6 +82,17 @@ class EverySpellingOfOneStatement(unittest.TestCase):
     backslash was read as proving nothing at all. The last case here drives those two one
     level out: the live workflow contains neither shape, which is why they are written in the
     case rather than taken from the tree.
+
+    The other direction is measured too, because a row asserting a reading for a text no parser
+    accepts looks like coverage and is not. Five texts no workflow can contain are read anyway,
+    silently, since this reads text rather than parsing it — a block scalar whose content sits at
+    its key's own column (the entry states no word), and a comment line inside a folded plain
+    scalar, a folded line carrying `: `, a tab-indented continuation and a continuation less
+    indented than its key (each ends the entry where it sits); PyYAML 6.0.3 and ruamel both
+    refuse all five. No row below asserts a reading for one: sweeping every text this file
+    writes through the reader the suite drives finds exactly one text both parsers refuse — the
+    unclosed `toolchain: [` that this file asserts is *refused*, not read — and no text where
+    the two parsers disagree.
     """
 
     def test_a_crate_is_read_however_its_path_is_spelled(self):
