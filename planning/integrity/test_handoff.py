@@ -10,7 +10,7 @@ titled, or reference-style, whose path lives in the definition and is held wheth
 not a label uses it — resolves inside this repository; every code span that begins a
 command names targets that exist, wherever the document writes it; every code span
 naming a repository path exists; and the minimum toolchain it names is the one
-`Cargo.toml` declares and the job that runs the workspace proves. That last pair is read
+`Cargo.toml` declares and the jobs whose steps run the workspace prove. That last pair is read
 through `toolchains.py`, the same reader `test_toolchain_floors.py` holds the spikes' pairs
 with, so a reformat cannot red one rule here and pass the other there. The document must
 still carry citations at all, so an emptied one cannot pass by naming nothing.
@@ -134,13 +134,14 @@ class HandoffCitations(unittest.TestCase):
                                        "nothing to be held against")
         self.assertEqual(named.group(1), declared,
                          "the handoff's minimum is not the one Cargo.toml declares")
-        job = toolchains.jobs(WORKFLOW.read_text()).get("contracts")
-        self.assertIsNotNone(job, "rust-contracts.yml no longer has the contracts job "
-                                  "that runs and proves the workspace")
-        proven = toolchains.legs(job)
-        self.assertIn(toolchains.version(declared), proven,
-                      f"CI does not run the declared minimum: {proven}")
-        self.assertIn("stable", proven, f"CI does not run stable: {proven}")
+        proving = toolchains.workspace_jobs(WORKFLOW.read_text())
+        self.assertTrue(proving, "rust-contracts.yml has no job whose steps run the workspace's "
+                                 "own tests, so nothing proves the minimum the handoff names")
+        for block in proving:
+            proven = toolchains.legs(block)
+            self.assertIn(toolchains.version(declared), proven,
+                          f"CI does not run the declared minimum: {proven}")
+            self.assertIn("stable", proven, f"CI does not run stable: {proven}")
 
 
 if __name__ == "__main__":

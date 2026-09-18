@@ -197,6 +197,22 @@ def gated(block: str) -> list[str]:
     return list(dict.fromkeys(re.findall(r"matrix\.toolchain == '([^']+)'", block)))
 
 
+def workspace_jobs(workflow: str) -> list[str]:
+    """The blocks of the jobs whose steps run the workspace's own tests.
+
+    Which job proves the workspace is a fact of the workflow rather than of a name — measured, one
+    job of `rust-contracts.yml` runs `cargo test --workspace`, and renaming it changes nothing about
+    what CI proves. A name would also make the answer depend on the order the jobs are written in,
+    and reading only the first would ignore a second job that proves the workspace just as much.
+    A step's own words are joined before they are read, so a command written inline and the same
+    command under `run: |` are the same command.
+    """
+    return [block for block in jobs(workflow).values()
+            if any("cargo test" in stated and "--workspace" in stated
+                   for values, _, _ in entries(block, "run", "a job")
+                   for stated in [" ".join(values)])]
+
+
 def parsed(manifest: pathlib.Path) -> dict:
     """A manifest's TOML, naming an absent or malformed one rather than raising for it."""
     try:
