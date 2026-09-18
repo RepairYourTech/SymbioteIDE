@@ -42,6 +42,11 @@ def unrunnable(block: str) -> list[str]:
     return [leg for leg in gated(block) if leg not in legs(block)]
 
 
+def floors_dropped(workflow: str, declared: str) -> list[str]:
+    """The jobs of a workflow that do not run that floor: this rule's comparison, per job."""
+    return [name for name, block in jobs(workflow).items() if version(declared) not in legs(block)]
+
+
 def floored() -> list[tuple[str, str, pathlib.Path, str, list[str]]]:
     """(workflow, job, manifest, floor, legs) for every job naming a floored crate."""
     return [(workflow, job, manifest, declared, legs(block))
@@ -99,19 +104,58 @@ class DeclaredToolchainFloors(unittest.TestCase):
 
 class EveryJobAWorkflowWrites(unittest.TestCase):
     """A job key read as no job is a job no rule checks, silently, and that is what each state
-    below measured: this read a key at two spaces and nothing else, while a parser reads a
-    quoted key, a dotted key, a key with a trailing comment and a key carrying an anchor.
+    below measured against PyYAML and ruamel, which agree on every text here: a quoted key, a
+    dotted key, a key with a trailing comment and a key carrying an anchor were each read as no
+    job, and so were a whole `jobs:` mapping written on the key's line, a job whose mapping is
+    written on its own key's line, a quoted `jobs:` key, and a step list written in flow form.
 
-    Two shapes are stated rather than closed, because the block reader is line-based and a job's
-    block is the lines under its key: a jobs mapping written as a flow mapping (`jobs: {build:
-    …}`) and a job whose whole block sits on its key's line each read as no job at all, where
-    PyYAML reads the job — measured, both silently, since the rules only iterate the jobs found.
-
-    A key whose name needs quoting for a `:` or a space in it is read only when it is quoted,
-    and then its quotes are the reader's, not part of the name: `job_name` takes what the quotes
-    hold. An anchor declares the job as any other spelling does; it does not make the anchor's
-    own value the job's text, which no rule here reads.
+    Three spellings stay outside a reader of text, each measured, each with what it costs. An
+    alias (`build: *anchored`) names its job here and reads no block, because the block is written
+    where the anchor is: when that anchor is another job under `jobs:` its facts are read there,
+    and when it is elsewhere they are read nowhere — silent for that job. A merge key
+    (`<<: *base`) is read as the key it is, so a step merged in is not read: a job that inherits
+    its proving step that way is not counted as proving the workspace — silent. A job key
+    indented with a tab reads as no job while both parsers refuse the workflow outright, so
+    nothing a parser can read goes unchecked there — loud, twice over. Two keys of one name are
+    read as the last one, which is what PyYAML reads too; ruamel refuses the document. A `jobs:`
+    mapping written across two lines is refused by name where both parsers read it — loud. A job
+    whose value is a list reads as no job, where PyYAML reads the job; a job must be a mapping,
+    so nothing GitHub would run goes unchecked — silent, and unreachable in a workflow that runs.
     """
+
+    def test_a_jobs_mapping_written_on_one_line_states_the_jobs_in_it(self):
+        workflow = ("name: w\non: push\njobs: {build: {runs-on: x, strategy: {matrix: "
+                    "{toolchain: [stable]}}, steps: [{run: cargo test --workspace}]}}\n")
+        self.assertEqual(list(jobs(workflow)), ["build"], "the mapping is the jobs it holds")
+        self.assertEqual(legs(jobs(workflow)["build"]), ["stable"])
+        self.assertEqual(workspace_jobs(workflow), [jobs(workflow)["build"]],
+                         "its flow step list runs the workspace's own tests")
+        self.assertEqual(floors_dropped(workflow, "1.85.0"), ["build"],
+                         "it runs only stable, so the declared minimum is dropped and seen")
+
+    def test_a_job_written_on_its_key_line_is_the_same_job(self):
+        workflow = ("name: w\non: push\njobs:\n  build: {runs-on: x, strategy: {matrix: "
+                    "{toolchain: [stable]}}, steps: [{run: cargo test --workspace}]}\n")
+        self.assertEqual(list(jobs(workflow)), ["build"], "the mapping is written on the key")
+        keeps = workflow.replace("toolchain: [stable]", "toolchain: [1.85.0]")
+        self.assertEqual(floors_dropped(keeps, "1.85.0"), [],
+                         "the leg it runs is the floor it is checked against")
+        self.assertEqual(floors_dropped(workflow, "1.85.0"), ["build"],
+                         "and the floor it drops is seen rather than passed over")
+
+    def test_a_step_list_in_flow_form_states_the_steps_a_parser_reads(self):
+        proving = ("name: w\non: push\njobs:\n  build:\n    runs-on: x\n    steps: [{run: "
+                   "cargo test --workspace}]\n")
+        self.assertTrue(workspace_jobs(proving), "the one step runs the workspace's own tests")
+        self.assertEqual(workspace_jobs(proving.replace("cargo test", "cargo clippy")), [],
+                         "a clippy step proves nothing")
+
+    def test_a_quoted_jobs_key_and_a_quoted_job_name_still_name_the_job(self):
+        workflow = ('name: w\non: push\n"jobs":\n  "build":\n    runs-on: x\n    strategy:\n'
+                    "      matrix:\n        toolchain: [stable]\n")
+        self.assertEqual(list(jobs(workflow)), ["build"])
+        self.assertEqual(floors_dropped(workflow, "1.85.0"), ["build"],
+                         "a quoted key names the same job, whose dropped floor is seen")
 
     def test_a_job_key_is_read_however_yaml_writes_one(self):
         for written, name in (("  build:\n", "build"),
