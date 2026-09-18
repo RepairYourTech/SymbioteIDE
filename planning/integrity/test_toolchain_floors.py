@@ -102,6 +102,90 @@ class DeclaredToolchainFloors(unittest.TestCase):
                                  f"{legs(block)}, so those steps would never run")
 
 
+class EveryWayAJobInheritsItsBlock(unittest.TestCase):
+    """A job or a step stated as an alias is that job or step, and a merge states the keys it
+    merges — read the way both parsers read them, and refused by name where this reader cannot
+    resolve them.
+
+    Measured before this: an alias job named its job and read **no block at all** (its legs, its
+    steps and its floor unchecked), and a merge read as the key it is, so a job that inherited its
+    proving step was not counted as proving the workspace. Both were silent. Every state below is
+    driven through this rule's own comparison, so a spelling that stops being read reds by name
+    rather than passing quietly. A forward reference, another document's anchor and a stream of two
+    documents are refused by name, which is what both parsers do with them.
+    """
+
+    STEPS = "      - run: cargo test --workspace\n"
+
+    def job(self, block: str, name: str = "build") -> str:
+        return "name: w\non: push\njobs:\n" + block
+
+    def test_a_job_stated_as_an_alias_runs_what_its_anchor_runs(self):
+        anchored = ("  other: &o\n    strategy:\n      matrix:\n        toolchain: [1.85.0]\n"
+                    "    steps:\n" + self.STEPS)
+        workflow = self.job(anchored + "  build: *o\n")
+        self.assertEqual(list(jobs(workflow)), ["other", "build"], "the alias names a job")
+        self.assertEqual(legs(jobs(workflow)["build"]), ["1.85.0"],
+                         "a job that inherits a 1.85.0 step runs it")
+        self.assertIn(jobs(workflow)["build"], workspace_jobs(workflow),
+                      "and its inherited step proves the workspace")
+        self.assertEqual(floors_dropped(workflow, "1.85.0"), [], "nothing is dropped here")
+
+    def test_an_alias_job_whose_anchor_drops_the_floor_is_reported(self):
+        anchored = ("  other: &o\n    strategy:\n      matrix:\n        toolchain: [stable]\n"
+                    "    steps:\n" + self.STEPS)
+        workflow = self.job(anchored + "  build: *o\n")
+        self.assertEqual(floors_dropped(workflow, "1.85.0"), ["other", "build"],
+                         "both the anchored job and the alias of it run only stable, "
+                         "and both are seen")
+
+    def test_a_merge_states_the_keys_it_merges_and_the_jobs_own_key_wins(self):
+        base = ("  base: &base\n    strategy:\n      matrix:\n        toolchain: [1.85.0]\n"
+                "    runs-on: x\n")
+        merged = self.job(base + "  build:\n    <<: *base\n    steps:\n" + self.STEPS)
+        self.assertEqual(legs(jobs(merged)["build"]), ["1.85.0"], "the merged leg is run")
+        self.assertIn(jobs(merged)["build"], workspace_jobs(merged),
+                      "a job that inherits its proving step proves the workspace")
+        overridden = self.job(base + "  build:\n    <<: *base\n    strategy:\n      matrix:\n"
+                                     "        toolchain: [stable]\n")
+        self.assertEqual(legs(jobs(overridden)["build"]), ["stable"],
+                         "the job's own key wins over the merge, as both parsers read it")
+        self.assertEqual(floors_dropped(overridden, "1.85.0"), ["build"],
+                         "so the floor it drops is the one it states, and it is seen")
+
+    def test_the_first_merge_of_a_list_wins(self):
+        workflow = self.job(
+            "  a: &a\n    strategy:\n      matrix:\n        toolchain: [1.85.0]\n"
+            "  b: &b\n    strategy:\n      matrix:\n        toolchain: [stable]\n"
+            "  build:\n    <<: [*a, *b]\n    steps:\n" + self.STEPS)
+        self.assertEqual(legs(jobs(workflow)["build"]), ["1.85.0"],
+                         "the earlier mapping's key wins, as both parsers read it")
+
+    def test_a_step_stated_as_a_merge_is_the_step_it_merges(self):
+        workflow = self.job("  build:\n    runs-on: x\n    steps:\n      - <<: *s\n"
+                            ) .replace("jobs:\n", "x-step: &s\n  run: cargo test --workspace\njobs:\n")
+        self.assertIn(jobs(workflow)["build"], workspace_jobs(workflow),
+                      "the merged step is the run the rule reads")
+
+    def test_an_anchor_before_jobs_states_what_its_alias_and_its_merge_inherit(self):
+        held = ("x-base: &b\n  strategy:\n    matrix:\n      toolchain: [1.85.0]\n"
+                "jobs:\n  build:\n    <<: *b\n    steps:\n" + self.STEPS)
+        self.assertEqual(legs(jobs(held)["build"]), ["1.85.0"],
+                         "an anchor written before `jobs:` is one both parsers resolve")
+
+    def test_an_alias_or_a_merge_this_reader_cannot_resolve_is_refused_by_name(self):
+        for block, named in (("  build: *o\n  other: &o\n    runs-on: x\n", "no anchor named o"),
+                             ("  build: *nope\n", "no anchor named nope"),
+                             ("  build:\n    <<: *later\n  later: &later\n    runs-on: x\n",
+                              "no anchor named later")):
+            with self.subTest(block=block):
+                with self.assertRaisesRegex(AssertionError, named):
+                    jobs(self.job(block))
+        across = ("x: &o\n  runs-on: x\n---\njobs:\n  build: *o\n")
+        with self.assertRaisesRegex(AssertionError, "more than one document"):
+            jobs(across)
+
+
 class EveryJobAWorkflowWrites(unittest.TestCase):
     """A job key read as no job is a job no rule checks, silently, and that is what each state
     below measured against PyYAML and ruamel, which agree on every text here: a quoted key, a
