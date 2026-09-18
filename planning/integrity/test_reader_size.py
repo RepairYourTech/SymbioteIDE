@@ -3,15 +3,21 @@
 `toolchains.py` is the one reader the two toolchain rules compare, and nothing measured the
 reading itself. This holds the reading path: every module-level definition that reads text — a
 pattern read by name, an `re`/`tomllib` operation, `read_text`, `splitlines` — and everything such
-a definition reaches. The names the rules read directly are theirs, derived from the rule files
-rather than listed here, and what they reach without the path in between must read no text, so a
-spelling cannot be read by the rules instead of the reader.
+a definition reaches. Reading is *acquiring* text, so a definition that only rearranges a value
+the path states is not a reader, which is why `legs` trades in strings and still sits outside. The
+names the rules read directly are theirs, derived from the rule files rather than listed here, and
+what they reach without the path in between must read no text, so a spelling cannot be read by the
+rules instead of the reader.
+
+No classifier anticipates every spelling, so the operation list is not trusted either: a case reds
+when a definition outside the path calls an operation the classifier does not name, so a reading
+cannot hide outside the path and outside the fence.
 
 The reading path is not the module: the names the rules read that reach nothing in the path —
 measured, `legs`, `workspace_jobs`, `floor`, `declared`, `version`, `workspace_of` — are outside
-it, free to grow, because they choose and compare facts the path states rather than reading text.
-The declaration below equals the path's size rather than leaving slack, and the measure is lines,
-so a line grown longer costs nothing; this file's own size is declared the same way.
+it, free to grow. The declaration below equals the path's size rather than leaving slack, and the
+measure is lines, so a line grown longer costs nothing; this file's own size is declared the same
+way.
 """
 from __future__ import annotations
 
@@ -26,12 +32,18 @@ GUARD = pathlib.Path(__file__).resolve()
 RULES = ("test_toolchain_floors.py", "test_handoff.py")
 # The reading path's size, and this guard's own: its lines, and the cases a loader finds in it.
 READER_LINES = 450
-GUARD_LINES = 285
-GUARD_CASES = 10
+GUARD_LINES = 332
+GUARD_CASES = 11
 # What reading text is, as a shape: these module names, whose operations read it, and the calls
 # that turn a file or a block into lines. A definition holding one of these reads text.
 TEXT_MODULES = frozenset({"re", "tomllib"})
-TEXT_CALLS = frozenset({"read_text", "splitlines"})
+TEXT_CALLS = frozenset({"read_text", "readlines", "read", "splitlines"})
+# Every operation this module calls in a definition the path does not hold, named so a new one
+# reds the case below rather than hiding: `split`/`join`/`strip`/`count` rearrange a value the
+# path stated, the next six touch no text, and the builtins stand for the same claim as a method.
+NOT_READING = frozenset({"split", "join", "strip", "count", "get", "values", "fromkeys",
+                         "append", "is_file", "resolve", "any()", "isinstance()", "list()",
+                         "next()", "range()", "AssertionError()"})
 
 
 def definitions(tree: ast.Module) -> dict[str, ast.AST]:
@@ -150,6 +162,30 @@ def outside(source: str, used: set[str]) -> dict[str, list[str]]:
     return flagged
 
 
+def operations(source: str) -> dict[str, list[str]]:
+    """For each definition the reading path does not hold, the operations it calls that the
+    classifier does not name. A call to a name this module binds is not an operation: that
+    definition is held by the path or by the case that calls this.
+    """
+    defined = definitions(ast.parse(source))
+    held, known = set(reading(source)), TEXT_CALLS | {"compile"}
+
+    def unnamed(node: ast.AST):
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            if isinstance(func, ast.Attribute):
+                if func.attr not in known and not (isinstance(func.value, ast.Name)
+                                                   and func.value.id in TEXT_MODULES):
+                    yield func.attr
+            elif isinstance(func, ast.Name) and func.id not in defined and func.id not in known:
+                yield f"{func.id}()"
+
+    return {name: sorted(set(unnamed(node))) for name, node in defined.items()
+            if name not in held and not isinstance(node, (ast.Import, ast.ImportFrom))}
+
+
 def small_module(definition: str, use: str) -> str:
     """A module whose reading path starts at `spell`: it reads the block a line at a time."""
     return (f"def spell(block: str) -> str:\n"
@@ -201,6 +237,17 @@ class OutsideThePath(unittest.TestCase):
         self.assertEqual(flagged, {},
                          f"these definitions are neither the reading path nor the rules' own, and "
                          f"each reads text or reaches the path: {flagged}")
+
+    def test_every_operation_outside_the_path_is_a_named_one(self):
+        found = operations(TOOLCHAINS.read_text())
+        called = {op for ops in found.values() for op in ops}
+        undeclared = sorted(called ^ NOT_READING)
+        callers = {op: sorted(n for n, ops in found.items() if op in ops) for op in undeclared}
+        self.assertEqual(undeclared, [],
+                         f"these operations are called by definitions the reading path does not "
+                         f"hold and the classifier does not name: {callers} — each belongs in "
+                         f"the classifier as reading or here as named, and a name nothing calls "
+                         f"comes out")
 
     def test_a_definition_that_reads_text_joins_the_path(self):
         source = ('import re\n\n\nPATTERN = re.compile("")\n\n\n'
