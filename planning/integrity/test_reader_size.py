@@ -32,8 +32,12 @@ GUARD = pathlib.Path(__file__).resolve()
 RULES = ("test_toolchain_floors.py", "test_handoff.py")
 # The reading path's size, and this guard's own: its lines, and the cases a loader finds in it.
 READER_LINES = 450
-GUARD_LINES = 332
-GUARD_CASES = 11
+GUARD_LINES = 375
+GUARD_CASES = 12
+# Local modules whose reading is part of the subject. The repo's own files only, and named here
+# rather than followed quietly: a reader that moves reading into a module beside it must say so,
+# and that module's reading then counts in `READER_LINES` like the reader's own.
+LOCAL_IMPORTS: tuple[str, ...] = ()
 # What reading text is, as a shape: these module names, whose operations read it, and the calls
 # that turn a file or a block into lines. A definition holding one of these reads text.
 TEXT_MODULES = frozenset({"re", "tomllib"})
@@ -130,6 +134,37 @@ def reading(source: str) -> dict[str, int]:
     return found
 
 
+def local_chain(folder: pathlib.Path) -> list[str]:
+    """Every repo module the reader reaches through local imports, `toolchains` excluded: a file
+    beside it, never a package path or a stdlib name, so this cannot wander outside the tree.
+    """
+    seen, worklist = set(), ["toolchains"]
+    while worklist:
+        source = (folder / f"{worklist.pop()}.py").read_text()
+        for node in ast.walk(ast.parse(source)):
+            names = ([node.module] if isinstance(node, ast.ImportFrom) and node.module
+                     else [alias.name for alias in node.names]
+                     if isinstance(node, ast.Import) else [])
+            for module in names:
+                if module not in seen and module != "toolchains" \
+                        and (folder / f"{module.replace('.', '/')}.py").is_file():
+                    seen.add(module)
+                    worklist.append(module)
+    return sorted(seen)
+
+
+def reading_path(folder: pathlib.Path) -> dict[str, int]:
+    """The reader's subject: its own reading path, and the reading of every declared local module
+    it imports, keyed `module.name` — a helper the reader calls counts where it lives, so reading
+    cannot leave the subject by changing file.
+    """
+    held = reading((folder / "toolchains.py").read_text())
+    for module in LOCAL_IMPORTS:
+        source = (folder / f"{module}.py").read_text()
+        held |= {f"{module}.{name}": span for name, span in reading(source).items()}
+    return held
+
+
 def rules_read(folder: pathlib.Path) -> set[str]:
     """The names the two rules take from `toolchains`, read from the rule files themselves."""
     names: set[str] = set()
@@ -215,7 +250,7 @@ BOUND_ELSEWHERE = (
 
 class ReaderSize(unittest.TestCase):
     def test_the_reading_path_is_the_size_declared_for_it(self):
-        held = reading(TOOLCHAINS.read_text())
+        held = reading_path(HERE)
         self.assertIn("entries", held, "toolchains.py's reader is no longer reached, so this case "
                                        "no longer knows where the path starts")
         size = sum(held.values())
@@ -224,6 +259,14 @@ class ReaderSize(unittest.TestCase):
                          f"{READER_LINES} is declared: the declaration moves with any change to "
                          f"what reads text, and a definition that reads none of it belongs to the "
                          f"rules or does not belong here")
+
+    def test_no_local_module_the_reader_imports_supplies_reading_uncounted(self):
+        found = local_chain(HERE)
+        self.assertEqual(found, sorted(LOCAL_IMPORTS),
+                         f"the reader reaches these local modules through imports: {found} — "
+                         f"reading behind an import is where the path would otherwise stop, so "
+                         f"each is named in LOCAL_IMPORTS and its reading then counts in "
+                         f"READER_LINES like the reader's own")
 
 
 class OutsideThePath(unittest.TestCase):
