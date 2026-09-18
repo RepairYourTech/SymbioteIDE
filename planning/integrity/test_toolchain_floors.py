@@ -21,6 +21,7 @@ import unittest
 
 from toolchains import (
     ROOT,
+    directory,
     floor,
     gated,
     legs,
@@ -175,6 +176,28 @@ class EverySpellingOfOneStatement(unittest.TestCase):
             with self.subTest(missing="a manifest this tree does not hold"):
                 with self.assertRaisesRegex(AssertionError, "is not a manifest this tree holds"):
                     floor(nested / "member" / "Ghost.toml")
+
+    def test_a_directory_is_read_from_the_whole_value_it_states(self):
+        """Measured against the reader before this held it: a `working-directory` continued onto
+        the next line resolved its first word alone, marker and all (`crates/ \\`), while the
+        same entry read by the rule that finds the proving job was joined — two consumers of
+        one stated value disagreeing about what it says, in the one that decides which crate a
+        step builds. A quoted value is never continued; a line stating no word ends the entry.
+        """
+        continued = ("    steps:\n      - working-directory: crates/ \\\n"
+                     "          examples\n        run: cargo test\n")
+        self.assertEqual(directory(continued, "a job"), ROOT / "crates/ examples",
+                         "every word the entry states, folded as a plain scalar folds them")
+        for ended in ("    steps:\n      - working-directory: crates/ \\\n"
+                      "          # a note\n          examples\n",
+                      "    steps:\n      - working-directory: crates/ \\\n\n"
+                      "          examples\n"):
+            with self.subTest(ended=ended):
+                self.assertEqual(directory(ended, "a job"), ROOT / "crates",
+                                 "a line stating no word ends the entry, marker and all")
+        quoted = ('    steps:\n      - working-directory: "crates/ examples"\n'
+                  "        run: cargo test\n")
+        self.assertEqual(directory(quoted, "a job"), ROOT / "crates/ examples")
 
     def test_a_job_runs_the_toolchain_it_states_however_it_states_it(self):
         matrix = "    strategy:\n      matrix:\n"

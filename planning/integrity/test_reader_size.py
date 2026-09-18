@@ -25,11 +25,12 @@ TOOLCHAINS = pathlib.Path(__file__).resolve().parent / "toolchains.py"
 GUARD = pathlib.Path(__file__).resolve()
 # The reader's size: the three functions and four names it was read down to, plus the `import re`
 # the widened membership brings in. It was 91 from `dd3dae80` until `entries` learned to read a
-# shell continuation, which is the change that moved it to 98.
-READER_LINES = 98
+# shell continuation, and 98 until the marker stopped being part of what an entry states and
+# `directory` read the whole of it, which is what moved it to 105.
+READER_LINES = 105
 SEED = "entries"
 # This guard's own size: its lines, and the cases a loader finds in it.
-GUARD_LINES = 176
+GUARD_LINES = 177
 GUARD_CASES = 7
 
 
