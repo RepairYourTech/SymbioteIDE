@@ -19,22 +19,34 @@ import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
-JOB = re.compile(r"""^  (?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.\-]+)):[ \t]*(?:[&#][^\n]*)?$""")
+JOBS = re.compile(r"""^(?:"jobs"|'jobs'|jobs):[ \t]*(.*)$""")
+JOB = re.compile(r"""^  (?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.\-]+)):(.*)$""")
 KEY = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z0-9_.\-]+):(.*)$")
 ITEM = re.compile(r"^(\s*)-\s*(.*?)\s*$")
 FLOW = re.compile(r"^(\s*(?:-\s+)?(?:[A-Za-z0-9_.\-]+:\s*)?)\{(.*)$")
+SEQUENCE = re.compile(r"^(\s*(?:-\s+)?(?:[A-Za-z0-9_.\-]+:\s*)?)\[(.*)\]\s*$")
 WORKSPACE = "${{ github.workspace }}"
 COMMAND = "run"  # the one entry a shell runs: a marker and a blank line are a shell's there alone
 ENTRY = tuple[list[str], int, int, bool]  # what an entry states, the lines it spans, and whether
 # it is a collection's items rather than one value
 
 
-def job_name(line: str) -> str | None:
-    """The job a line names, two spaces under `jobs:`, or None: a key written the way YAML
-    writes one — bare or quoted, with a trailing comment or an anchor after it.
+def job_name(line: str) -> tuple[str, str] | None:
+    """The job a line names, two spaces under `jobs:`, with the text it states on that line.
+
+    A key written the way YAML writes one — bare or quoted, with a trailing comment or an anchor —
+    and an inline block (`build: {runs-on: …}`), which is that job's own mapping, so its text is
+    the mapping rather than the lines under its key. An alias states no block of its own: the job
+    it repeats is the one the anchor is written on, read where that is written.
     """
     found = JOB.fullmatch(line)
-    return next((name for name in found.groups() if name is not None), None) if found else None
+    if not found:
+        return None
+    name = next((name for name in found.groups()[:3] if name is not None), None)
+    tail = found.group(4).strip()
+    if tail.startswith(("#", "&", "*")):
+        return name, ""
+    return (name, tail) if not tail or tail.startswith("{") else None
 
 
 def jobs(workflow: str) -> dict[str, str]:
@@ -42,21 +54,36 @@ def jobs(workflow: str) -> dict[str, str]:
     `jobs:`, and its block ends where a line starts at column zero.
 
     A key this does not read is a job no rule checks, silently: measured against PyYAML, a
-    quoted key, a dotted key, a key with a trailing comment and a key carrying an anchor were
-    each read as no job at all — the same class of silent weakening as reading a value's text
-    instead of the value.
+    quoted key, a dotted key, a key with a trailing comment and a key carrying an anchor were each
+    read as no job at all — as were a `jobs:` mapping written on the key's own line
+    (`jobs: {build: …}`) and a job whose mapping is written on its key's line. The whole mapping on
+    one line is read here, and the jobs in it are named by their own keys.
     """
     lines = workflow.splitlines()
-    start = next((index for index, line in enumerate(lines) if line.startswith("jobs:")), None)
+    start = next((index for index, line in enumerate(lines) if JOBS.match(line)), None)
     if start is None:
         return {}
-    body = [line for line in lines[start + 1:] if not line.startswith("jobs:")]
+    head = JOBS.match(lines[start]).group(1).strip()
+    if head and not head.startswith("{"):
+        head = head.split("#")[0].strip()  # a comment after the key states no job
+    if head:
+        if not head.endswith("}"):
+            raise AssertionError(f"a workflow writes jobs: {head}, a mapping this reader does not "
+                                 f"read across lines")
+        return {name.strip().strip("\"'") or name: stated.strip()
+                for name, _, stated in (item.partition(":") for item in flow_items(head))}
+    body = [line for line in lines[start + 1:] if not JOBS.match(line)]
     stop = next((n for n, text in enumerate(body) if text and not text.startswith(" ")),
                 len(body))
-    found = [(index, name) for index, line in enumerate(body)
-             if index < stop and (name := job_name(line)) is not None]
-    return {name: "".join(line + "\n" for line in body[key + 1:end])
-            for (key, name), (end, _) in zip(found, found[1:] + [(stop, None)])}
+    found = []
+    for index, line in enumerate(body):
+        if index >= stop:
+            break
+        named = job_name(line)
+        if named is not None:
+            found.append((index, *named))
+    return {name: inline or "".join(line + "\n" for line in body[key + 1:end])
+            for (key, name, inline), (end, _, _) in zip(found, found[1:] + [(stop, "", "")])}
 
 
 def flow_items(collection: str) -> list[str]:
@@ -82,10 +109,10 @@ def flow_items(collection: str) -> list[str]:
 
 
 def unfolded(block: str, where: str) -> str:
-    """The block with every flow mapping written on one line put into the block form it means.
-
-    A mapping written inline (`matrix: {toolchain: [a, b]}`, `- {run: …}`) is unfolded before
-    anything reads the lines, so a key written either way is found where the job wrote it.
+    """The block with every flow mapping, and every list of mappings, put into the block form it
+    means: a mapping written inline (`matrix: {toolchain: [a, b]}`, `- {run: …}`) and a list of
+    mappings (`steps: [{run: …}]`), so a key written either way is found where the job wrote it. A
+    list of values is a value, and stays one — `toolchain: [a, b]` is the two legs it states.
     """
     def splice(match: re.Match[str]) -> str:
         prefix, body = match.group(1), match.group(2)
@@ -98,7 +125,24 @@ def unfolded(block: str, where: str) -> str:
             head, rest = (prefix + items[0]).rstrip(), items[1:]
         indent = " " * (len(prefix) - len(prefix.lstrip()) + 2)
         return head + "".join("\n" + indent + item for item in rest)
-    return "\n".join(FLOW.sub(splice, line) for line in block.splitlines())
+
+    def splice_sequence(match: re.Match[str]) -> str:
+        prefix, body = match.group(1), match.group(2)
+        items = flow_items("[" + body + "]")
+        if not items or not all(item.startswith("{") for item in items):
+            return match.group(0)  # a list of values is a value, not a list of mappings
+        indent = " " * (len(prefix) - len(prefix.lstrip()))
+        return prefix.rstrip() + "".join(
+            f"\n{indent}- {keys[0]}" + "".join(f"\n{indent}  {key}" for key in keys[1:])
+            for keys in (flow_items(item) for item in items))
+
+    for _ in range(3):  # a splice writes the line the other one unfolds
+        once = "\n".join(SEQUENCE.sub(splice_sequence, FLOW.sub(splice, line))
+                         for line in block.splitlines())
+        if once == block:
+            break
+        block = once
+    return block
 
 
 def entries(block: str, name: str, where: str) -> list[ENTRY]:
