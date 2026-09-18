@@ -83,6 +83,27 @@ class EverySpellingOfOneStatement(unittest.TestCase):
     level out: the live workflow contains neither shape, which is why they are written in the
     case rather than taken from the tree.
 
+    Whether a value is a command decides three of these readings, all measured against PyYAML
+    6.0.3 and ruamel, which agree on every text below. `run` is the only entry a shell runs, and
+    it is read the way a shell reads it: a trailing `\` is a continuation both parsers keep and
+    the shell drops (`'cargo test \ --workspace --locked'` is `cargo test --workspace --locked`
+    to a shell), and a blank line ends the command, since a shell runs the lines either side
+    separately (`'cargo test\n--workspace --locked'`). Every value the rules read on its own — a
+    matrix leg, a `working-directory` — is read the way a parser states it: the marker is
+    the literal character YAML says it is (`'1.85.0 \ stable'` and `'crates/ \ examples'`, both
+    exactly what a parser reads, and each one value rather than a list of words), and a blank
+    line is a paragraph break the value goes on past. A `--manifest-path` is a token *of* a
+    command, so it is read where a shell passes it: the marker ends the token, and
+    `--manifest-path=crates/ \\` with `examples/Cargo.toml` under it reads `crates/` — the word a
+    shell passes, and cargo fails to find a manifest for either reading.
+
+    Two residuals are stated rather than closed. A paragraph break reads as a space here, where
+    both parsers carry a newline (`'crates/ \\nexamples'`), so a directory or a toolchain folded
+    over a blank line is one value either way but not one string. And `gated` reads a job's own
+    text by pattern rather than through this reader, so an `if:` folded across lines is missed:
+    `[]` where both parsers read `matrix.toolchain == 'stable'`, which weakens the leg assertion
+    silently instead of failing it.
+
     The other direction is measured too, because a row asserting a reading for a text no parser
     accepts looks like coverage and is not. Five texts no workflow can contain are read anyway,
     silently, since this reads text rather than parsing it — a block scalar whose content sits at
@@ -193,24 +214,30 @@ class EverySpellingOfOneStatement(unittest.TestCase):
         two lines resolved its first word alone, marker and all (`crates/ \\`), while the same
         entry read by the rule that finds the proving job was joined — two consumers of one
         stated value disagreeing about what it says, in the one that decides which crate a
-        step builds. Both PyYAML and ruamel read every value below the way this reads it: a
-        plain scalar runs onto the lines deeper than its key, a quoted one states itself, and
-        a blank line states no word and ends the entry — where a parser breaks the paragraph
-        and carries the newline into the value, which is the reading the last row pins.
+        step builds. A path is not a command, so it is read the way both PyYAML and ruamel state
+        it: a plain scalar runs onto the lines deeper than its key, a quoted one states itself,
+        a `\` in it is the literal character YAML says it is — the marker row below reads
+        `crates/ \ examples`, which is exactly what both parsers read — and a blank line is a
+        paragraph break the value goes on past, where both parsers read
+        `'crates/ \\\nexamples'`: the same value with a newline where this joins lines with a
+        space, which is the one residual this reads unlike a parser.
         """
-        for written in ("      - working-directory: crates/ \\\n          examples\n",
-                        "      - working-directory: crates/\n          examples\n",
-                        '      - working-directory: "crates/ examples"\n'):
+        for written, resolved in (("      - working-directory: crates/ \\\n          examples\n",
+                                  ROOT / "crates/ \ examples"),
+                                 ("      - working-directory: crates/\n          examples\n",
+                                  ROOT / "crates/ examples"),
+                                 ('      - working-directory: "crates/ examples"\n',
+                                  ROOT / "crates/ examples")):
             with self.subTest(written=written):
                 self.assertEqual(directory(f"    steps:\n{written}        run: cargo test\n",
                                            "a job"),
-                                 ROOT / "crates/ examples",
-                                 "every word the entry states, folded as a scalar folds them")
+                                 resolved,
+                                 "every word the entry states, as its own form reads it")
         blank = ("    steps:\n      - working-directory: crates/ \\\n\n"
                  "          examples\n        run: cargo test\n")
-        self.assertEqual(directory(blank, "a job"), ROOT / "crates",
-                         "a blank line states no word and ends the entry, marker and all; both "
-                         "parsers break the paragraph instead and read `crates/ \\\nexamples`")
+        self.assertEqual(directory(blank, "a job"), ROOT / "crates/ \ examples",
+                         "a blank line is the paragraph a value goes on past, not its end: both "
+                         "parsers read `crates/ \\\nexamples`")
 
     def test_a_job_runs_the_toolchain_it_states_however_it_states_it(self):
         matrix = "    strategy:\n      matrix:\n"
@@ -229,6 +256,10 @@ class EverySpellingOfOneStatement(unittest.TestCase):
                  ["1.85.0", "stable"]),
                 (step + "          toolchain: stable\n", ["stable"]),
                 (step + "          toolchain: ${{ matrix.toolchain }}\n", []),
+                # a toolchain is not a command: a `\` there is the literal YAML says it is, and
+                # the one value both parsers read is one leg rather than its words
+                (matrix + "        toolchain: 1.85.0 \\\n          stable\n",
+                 ["1.85.0 \ stable"]),
                 # a step installing one toolchain beside a matrix: the job runs both
                 (matrix + '        toolchain: ["1.85.0", stable]\n' + step
                  + "          toolchain: nightly\n", ["1.85.0", "stable", "nightly"]),
@@ -289,6 +320,9 @@ class EverySpellingOfOneStatement(unittest.TestCase):
         for other in ("      - run: cargo clippy --workspace --all-targets --locked\n",
                       "      - run: cargo clippy --workspace \\\n          --all-targets\n",
                       "      - run: cargo test --locked\n",
+                      # a command is a shell's: a blank line runs the lines either side
+                      # separately, so the second is not part of the command that proves it
+                      "      - run: cargo test\n\n          --workspace --locked\n",
                       "      - run: |\n          echo not the workspace tests\n"
                       "        name: cargo test --workspace --locked\n"):
             with self.subTest(other=other):

@@ -23,15 +23,18 @@ import unittest
 
 TOOLCHAINS = pathlib.Path(__file__).resolve().parent / "toolchains.py"
 GUARD = pathlib.Path(__file__).resolve()
-# The reader's size: the three functions and four names it was read down to, plus the `import re`
+# The reader's size: the three functions and five names it was read down to, plus the `import re`
 # the widened membership brings in. It was 91 from `dd3dae80` until `entries` learned to read a
-# shell continuation, 98 until the marker stopped being part of what an entry states, and 105
-# until it read a plain scalar's folded continuation. Only what `entries` reaches moves this — a
-# consumer outside its reach, `directory` among them, is not a change here.
-READER_LINES = 109
+# shell continuation, 98 until the marker stopped being part of what an entry states, 105 until it
+# read a plain scalar's folded continuation, and 109 until it read a command the way a shell reads
+# it and every other value the way a parser states it — which also made an entry say whether it is
+# a collection's items or one value, and brought `COMMAND` into what the reader reaches. Only what
+# `entries` reaches moves this — a consumer outside its reach, `directory` among them, is not a
+# change here.
+READER_LINES = 118
 SEED = "entries"
 # This guard's own size: its lines, and the cases a loader finds in it.
-GUARD_LINES = 178
+GUARD_LINES = 181
 GUARD_CASES = 7
 
 

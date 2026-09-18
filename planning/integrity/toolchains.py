@@ -24,7 +24,9 @@ KEY = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z0-9_.\-]+):(.*)$")
 ITEM = re.compile(r"^(\s*)-\s*(.*?)\s*$")
 FLOW = re.compile(r"^(\s*(?:-\s+)?(?:[A-Za-z0-9_.\-]+:\s*)?)\{(.*)$")
 WORKSPACE = "${{ github.workspace }}"
-ENTRY = tuple[list[str], int, int]  # what an entry states, and the lines it spans
+COMMAND = "run"  # the one entry a shell runs: a marker and a blank line are a shell's there alone
+ENTRY = tuple[list[str], int, int, bool]  # what an entry states, the lines it spans, and whether
+# it is a collection's items rather than one value
 
 
 def jobs(workflow: str) -> dict[str, str]:
@@ -90,12 +92,14 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
 
     One pass reads the forms a value is written in: the text after the key, a flow collection on
     one line or across several, a block scalar, and a block sequence, whose items are one entry
-    each — so removing the step lines leaves the job's own text. A value written over several
-    lines is one entry with them: a plain scalar runs onto every line deeper than its key, which
-    is what a parser folds into one value, and a shell continuation (`\\`) also carries the
-    lines it runs onto where the next line is not deeper. The marker is not part of what it
-    says, and a line stating a key of its own, or one stating no word (blank, or a comment), is
-    where it ends.
+    each — so removing the step lines leaves the job's own text, and each entry says which it is:
+    a collection's items, or one value.
+
+    `run` is the one entry a shell runs, and it alone is read the way a shell reads it: a
+    trailing `\\` is that shell's continuation, and a blank line ends the command. Every other
+    value is read the way a parser states it: the `\\` is the literal character YAML says it is,
+    a continuation line must be deeper than its key, and a blank line is a paragraph break the
+    value goes on past. A line stating a key of its own, or a comment line, ends any entry.
     """
     lines = unfolded(block, where).splitlines()
     found: list[ENTRY] = []
@@ -113,28 +117,34 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
                     raise AssertionError(f"{where} states {tail}, which never closes")
                 tail += " " + lines[index].split("#")[0].strip()
                 index += 1
-            found.append(([item.strip("\"'") for item in flow_items(tail)], first, index - 1))
+            found.append(([item.strip("\"'") for item in flow_items(tail)], first, index - 1,
+                          True))
         elif tail[:1] in ("|", ">"):
             words: list[str] = []
             while index < len(lines) and (not lines[index].strip() or len(lines[index])
                                           - len(lines[index].lstrip()) > indent):
                 words, index = words + lines[index].split(), index + 1
-            found.append((words, first, index - 1))
+            found.append((words, first, index - 1, False))
         elif tail:
-            said = [tail]  # a plain scalar runs onto the lines deeper than it, and a marker
+            said = [tail]  # a plain scalar runs onto every line deeper than its key
             while index < len(lines) and not KEY.match(lines[index]):
-                marker = said[-1].rstrip().endswith("\\")
+                if not lines[index].strip():
+                    if name == COMMAND:
+                        break  # a blank line ends the command a shell would run
+                    index += 1
+                    continue  # a blank line inside a value is the paragraph a parser keeps
+                marker = name == COMMAND and said[-1].rstrip().endswith("\\")
                 if not (marker or len(lines[index]) - len(lines[index].lstrip()) > indent):
-                    break  # neither a continuation nor a line the scalar runs onto
+                    break  # neither a shell continuation nor a line the scalar runs onto
                 if marker:
-                    # the marker, and the space before it, are not part of what the entry says
+                    # the marker, and the space before it, are not part of what a shell runs
                     said[-1] = said[-1].rstrip()[:-1].rstrip()
                 stated = lines[index].split("#")[0].strip()
                 if not stated:
-                    break  # a blank or commented line states no word, and ends the entry
+                    break  # a comment line states no word, and ends the entry
                 said.append(stated)
                 index += 1
-            found.append(([word.strip("\"'") for word in said], first, index - 1))
+            found.append(([word.strip("\"'") for word in said], first, index - 1, False))
         else:
             while index < len(lines):  # a block sequence: one entry per item
                 if not lines[index].strip() or lines[index].lstrip().startswith("#"):
@@ -148,7 +158,7 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
                                             - len(lines[end].lstrip()) > len(item.group(1))):
                     end += 1
                 stated = item.group(2).split("#")[0].strip().strip("\"'")
-                found.append(([stated] if stated else [], index, end - 1))
+                found.append(([stated] if stated else [], index, end - 1, True))
                 index = end
     return found
 
@@ -188,10 +198,10 @@ def manifests(workflow: str, job: str, block: str) -> list[pathlib.Path]:
     where = f"{workflow}: the job {job}"
     lines = unfolded(block, where).splitlines(keepends=True)
     spans = entries(block, "steps", where)
-    inside = {line for _, first, last in spans for line in range(first, last + 1)}
+    inside = {line for _, first, last, _ in spans for line in range(first, last + 1)}
     default = directory("".join(line for index, line in enumerate(lines)
                                 if index not in inside), where)
-    steps = ["".join(lines[first:last + 1]) for _, first, last in spans]
+    steps = ["".join(lines[first:last + 1]) for _, first, last, _ in spans]
     found = [under(directory(step, f"{where}, step {number}") or default or ROOT,
                    named.strip("\"'"), f"{where}, step {number}", "its crate")
              for number, step in enumerate(steps, 1)
@@ -210,9 +220,12 @@ def legs(block: str, where: str = "a job") -> list[str]:
     """Every toolchain a job's own block states, as the union of the ways it states them.
 
     A matrix states its legs as a flow or block sequence, a step may install one toolchain
-    beside that, and a `${{ … }}` template states no leg.
+    beside that, and a `${{ … }}` template states no leg. An entry that is one value is one leg:
+    a toolchain is not a command, so nothing here is a shell's to join, and a marker inside it
+    is the literal character both parsers read.
     """
-    stated = [leg for values, _, _ in entries(block, "toolchain", where) for leg in values]
+    stated = [leg for values, _, _, items in entries(block, "toolchain", where)
+              for leg in (values if items else [" ".join(values)])]
     return list(dict.fromkeys(leg.strip("\"'") for leg in stated if leg and "${{" not in leg))
 
 
@@ -233,7 +246,7 @@ def workspace_jobs(workflow: str) -> list[str]:
     """
     return [block for block in jobs(workflow).values()
             if any("cargo test" in stated and "--workspace" in stated
-                   for values, _, _ in entries(block, "run", "a job")
+                   for values, _, _, _ in entries(block, "run", "a job")
                    for stated in [" ".join(values)])]
 
 
