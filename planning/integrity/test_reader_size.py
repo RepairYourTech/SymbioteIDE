@@ -10,7 +10,9 @@ either replaces one it reads or moves the declaration below in the change itself
 
 Membership is derived from the module's own call and name graph, never listed here: a helper, a
 class, a function written under a guard or an import the reader reads joins the count the moment
-it reaches it, and a reordering costs nothing. The rest of the module is deliberately outside —
+it reaches it, and a reordering costs nothing. The kinds it counts are held by cases over small
+modules of their own, so a narrowing cannot hide behind this tree holding no instance of one.
+The rest of the module is deliberately outside —
 reading which lines belong to a job, resolving a stated path, answering about what was read, and
 the manifest side's TOML may each grow without this case firing, and nothing here holds the
 module's own size.
@@ -80,6 +82,34 @@ def reader(source: str) -> dict[str, int]:
     return spans
 
 
+def small_module(definition: str, use: str) -> str:
+    """A module whose reader is the seed: the reader uses what `definition` states."""
+    return (f"def {SEED}(block: str) -> str:\n"
+            f'    """The one reader of a small module."""\n'
+            f"    return {use}\n\n\n{definition}")
+
+
+# The kinds `definitions` counts, each as its own small module: the seed uses the definition, and
+# the definition's name must join the spans. Written here rather than found in `toolchains.py`,
+# so a kind is held while the real module holds no instance of it.
+COUNTED = (
+    ("helper", "def helper(value: str) -> str:\n    return value\n", "helper(block)"),
+    ("Spell", 'class Spell:\n    """One spelling."""\n\n    @staticmethod\n'
+              "    def tail(value: str) -> str:\n        return value\n", "Spell.tail(block)"),
+    ("guarded", "if True:  # a guard, such as a platform check\n"
+                "    def guarded(value: str) -> str:\n        return value\n", "guarded(block)"),
+    ("FORMS", 'FORMS = {"plain": str}\n', 'FORMS["plain"](block)'),
+    ("spelling", "import re as spelling\n", 'spelling.sub("", block)'),
+)
+# A binding the mechanism does not count: the docstring above states only assignment and import
+# names, and these three are the boundary that sentence means.
+BOUND_ELSEWHERE = (
+    ("BOUND", "for BOUND in (str,):\n    pass\n", "BOUND(block)"),
+    ("handle", 'with open("a") as handle:\n    pass\n', "handle"),
+    ("error", "try:\n    pass\nexcept Exception as error:\n    pass\n", "error"),
+)
+
+
 class ReaderSize(unittest.TestCase):
     def test_the_reader_is_the_size_declared_for_it(self):
         spans = reader(TOOLCHAINS.read_text())
@@ -91,6 +121,26 @@ class ReaderSize(unittest.TestCase):
                          f"{READER_LINES} is declared: the declaration moves with any change to "
                          f"the reader's size, and a spelling it must now read either replaces "
                          f"one it reads or is the reason this number moved")
+
+
+class CountedKinds(unittest.TestCase):
+    """The derivation's kinds, held by small modules written here rather than by whatever
+    `toolchains.py` happens to contain. A kind deleted from the mechanism reds here alone.
+    """
+
+    def test_every_definition_kind_the_reader_reaches_is_counted(self):
+        for name, definition, use in COUNTED:
+            with self.subTest(kind=name):
+                spans = reader(small_module(definition, use))
+                self.assertIn(name, spans, f"{name} is a kind the reader reaches: {sorted(spans)}")
+
+    def test_a_name_bound_by_a_loop_a_with_or_a_handler_is_not_counted(self):
+        for name, definition, use in BOUND_ELSEWHERE:
+            with self.subTest(binding=name):
+                spans = reader(small_module(definition, use))
+                self.assertNotIn(name, spans,
+                                 f"{name} is bound by a module-level statement that binds no "
+                                 f"assignment or import: {sorted(spans)}")
 
 
 if __name__ == "__main__":
