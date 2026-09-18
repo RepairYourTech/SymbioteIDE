@@ -90,7 +90,9 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
 
     One pass reads the forms a value is written in: the text after the key, a flow collection on
     one line or across several, a block scalar, and a block sequence, whose items are one entry
-    each — so removing the step lines leaves the job's own text.
+    each — so removing the step lines leaves the job's own text. A value that ends in a shell
+    continuation (`\\`) is continued by the lines it runs onto, which are one entry with it
+    and end where a line states a key of its own.
     """
     lines = unfolded(block, where).splitlines()
     found: list[ENTRY] = []
@@ -116,7 +118,12 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
                 words, index = words + lines[index].split(), index + 1
             found.append((words, first, index - 1))
         elif tail:
-            found.append(([tail.strip("\"'")], first, first))
+            said = [tail]  # a shell continuation is part of the entry it is written in
+            while (said[-1].rstrip().endswith("\\") and index < len(lines)
+                   and not KEY.match(lines[index])):
+                said.append(lines[index].split("#")[0].strip())
+                index += 1
+            found.append(([word.strip("\"'") for word in said], first, index - 1))
         else:
             while index < len(lines):  # a block sequence: one entry per item
                 if not lines[index].strip() or lines[index].lstrip().startswith("#"):

@@ -76,11 +76,11 @@ class EverySpellingOfOneStatement(unittest.TestCase):
     `rust-version="1.85.0"` read as none, an inherited floor came from the wrong manifest's
     table, a matrix written as a block sequence read as running no toolchain, a commented
     table header read as no table, one step's directory decided every other step, a templated
-    one silently meant the repository root, and a step installing a toolchain beside a matrix
-    hid it. The last case here drives the same spellings one level out: a step's command is
-    read from the step, and a workflow that wrote it under `run: |` was read as proving
-    nothing — the live workflow does not contain that shape, which is why it is written in
-    the case rather than taken from the tree.
+    one silently meant the repository root, a step installing a toolchain beside a matrix hid
+    it, and a step's command written under `run: |` or split across lines with a trailing
+    backslash was read as proving nothing at all. The last case here drives those two one
+    level out: the live workflow contains neither shape, which is why they are written in the
+    case rather than taken from the tree.
     """
 
     def test_a_crate_is_read_however_its_path_is_spelled(self):
@@ -213,27 +213,30 @@ class EverySpellingOfOneStatement(unittest.TestCase):
 
     def test_a_step_proves_the_workspace_however_its_command_is_written(self):
         """One command written inline, folded, under `run: |`, in a flow-mapping step, on two
-        lines of a block scalar, or with the step's `name` after it is one command. Measured:
-        with the entry's own words matched one at a time instead of joined, the `run: |` form
-        finds no proving job at all, so the handoff's case reds for a workflow that proves
-        exactly what it always did. A command split across lines by a trailing backslash is
-        matched on its first line alone (`cargo test \\` names no `--workspace`), so it finds
-        nothing: the boundary this measures, and does not close.
+        lines of a block scalar, split across lines with a trailing backslash, or with the
+        step's `name` after it, is one command. Measured: with the entry's own words matched
+        one at a time instead of joined, the `run: |` form finds no proving job at all, and
+        before `entries` read a shell continuation the backslash form found none either —
+        each reding the handoff's case for a workflow that proves exactly what it always did.
         """
         for written in ("      - run: cargo test --workspace --locked\n",
                         "      - run: |\n          cargo test --workspace --locked\n",
                         "      - run: >\n          cargo test --workspace --locked\n",
                         "      - {run: cargo test --workspace --locked}\n",
                         "      - run: |\n          cargo test\n          --workspace --locked\n",
+                        "      - run: cargo test \\\n          --workspace --locked\n",
+                        "      - run: cargo test \\\n          --workspace \\\n"
+                        "          --locked\n",
+                        "      - run: cargo test \\\n          --workspace --locked\n"
+                        "        name: proofs\n",
                         "      - run: |\n          cargo test --workspace --locked\n"
                         "        name: proofs\n"):
             with self.subTest(written=written):
                 self.assertEqual(len(workspace_jobs(f"jobs:\n  proofs:\n    steps:\n{written}")), 1,
                                  "a step that runs the workspace's own tests proves the workspace")
-        # what does not prove it, ending with the one shape the reader does not reach
         for other in ("      - run: cargo clippy --workspace --all-targets --locked\n",
-                      "      - run: cargo test --locked\n",
-                      "      - run: cargo test \\\n          --workspace --locked\n"):
+                      "      - run: cargo clippy --workspace \\\n          --all-targets\n",
+                      "      - run: cargo test --locked\n"):
             with self.subTest(other=other):
                 self.assertEqual(workspace_jobs(f"jobs:\n  proofs:\n    steps:\n{other}"), [],
                                  "only one entry stating `cargo test` and `--workspace` proves it")
