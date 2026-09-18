@@ -34,13 +34,13 @@ import unittest
 
 TOOLCHAINS = pathlib.Path(__file__).resolve().parent / "toolchains.py"
 GUARD = pathlib.Path(__file__).resolve()
-# The reader's size at the merge that added this case (`580e41d2`): the three functions and four
-# names it was read down to there, plus the `import re` the widened membership brings in. Growth
-# is this number moving in a change that says which spelling the reader must now read — or the
-# spelling that goes.
+# The reader's size at the merge that widened its membership (`dd3dae80`): the three functions and
+# four names it was read down to, plus the `import re` that widening brings in. The case was added
+# declaring 90 (`52e1f224`). Growth is this number moving in a change that says which spelling the
+# reader must now read — or the spelling that goes.
 READER_LINES = 91
 SEED = "entries"
-# This guard's own size at the merge that holds it (`8ba067da`): its lines, and the cases a loader
+# This guard's own size at the merge that holds it (`4fec3dd0`): its lines, and the cases a loader
 # finds in it. Growing either without moving the declaration reds the case below.
 GUARD_LINES = 197
 GUARD_CASES = 7
