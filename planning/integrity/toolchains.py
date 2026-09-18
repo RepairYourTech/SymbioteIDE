@@ -19,7 +19,7 @@ import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
-JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+JOB = re.compile(r"""^  (?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.\-]+)):[ \t]*(?:[&#][^\n]*)?$""")
 KEY = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z0-9_.\-]+):(.*)$")
 ITEM = re.compile(r"^(\s*)-\s*(.*?)\s*$")
 FLOW = re.compile(r"^(\s*(?:-\s+)?(?:[A-Za-z0-9_.\-]+:\s*)?)\{(.*)$")
@@ -29,9 +29,22 @@ ENTRY = tuple[list[str], int, int, bool]  # what an entry states, the lines it s
 # it is a collection's items rather than one value
 
 
+def job_name(line: str) -> str | None:
+    """The job a line names, two spaces under `jobs:`, or None: a key written the way YAML
+    writes one — bare or quoted, with a trailing comment or an anchor after it.
+    """
+    found = JOB.fullmatch(line)
+    return next((name for name in found.groups() if name is not None), None) if found else None
+
+
 def jobs(workflow: str) -> dict[str, str]:
     """Each job of a workflow, with the text of its own block: a job key is two spaces under
     `jobs:`, and its block ends where a line starts at column zero.
+
+    A key this does not read is a job no rule checks, silently: measured against PyYAML, a
+    quoted key, a dotted key, a key with a trailing comment and a key carrying an anchor were
+    each read as no job at all — the same class of silent weakening as reading a value's text
+    instead of the value.
     """
     lines = workflow.splitlines()
     start = next((index for index, line in enumerate(lines) if line.startswith("jobs:")), None)
@@ -40,9 +53,10 @@ def jobs(workflow: str) -> dict[str, str]:
     body = [line for line in lines[start + 1:] if not line.startswith("jobs:")]
     stop = next((n for n, text in enumerate(body) if text and not text.startswith(" ")),
                 len(body))
-    keys = [index for index, line in enumerate(body) if index < stop and JOB.fullmatch(line)]
-    return {JOB.fullmatch(body[key]).group(1): "".join(line + "\n" for line in body[key + 1:end])
-            for key, end in zip(keys, keys[1:] + [stop])}
+    found = [(index, name) for index, line in enumerate(body)
+             if index < stop and (name := job_name(line)) is not None]
+    return {name: "".join(line + "\n" for line in body[key + 1:end])
+            for (key, name), (end, _) in zip(found, found[1:] + [(stop, None)])}
 
 
 def flow_items(collection: str) -> list[str]:
@@ -229,9 +243,21 @@ def legs(block: str, where: str = "a job") -> list[str]:
     return list(dict.fromkeys(leg.strip("\"'") for leg in stated if leg and "${{" not in leg))
 
 
-def gated(block: str) -> list[str]:
-    """The legs a job's own steps are gated on (`if: matrix.toolchain == 'stable'`)."""
-    return list(dict.fromkeys(re.findall(r"matrix\.toolchain == '([^']+)'", block)))
+def gated(block: str, where: str = "a job") -> list[str]:
+    """The legs a job's own steps are gated on (`if: matrix.toolchain == 'stable'`).
+
+    Read through the one reader rather than off the block's own text: a condition written over
+    two lines is the one condition a parser reads, and reading the text alone saw the
+    single-line spelling and missed the folded one — silently weakening this rule's own
+    assertion, since a gate it does not see is a leg it never checks.
+    """
+    lines = unfolded(block, where).splitlines()
+    spans = [(first, last) for _, first, last, _ in entries(block, "if", where)]
+    return list(dict.fromkeys(
+        leg for first, last in spans
+        for leg in re.findall(r"matrix\.toolchain == '([^']+)'",
+                              " ".join(" ".join(lines[index].split())
+                                       for index in range(first, last + 1)))))
 
 
 def workspace_jobs(workflow: str) -> list[str]:
