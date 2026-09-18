@@ -23,12 +23,13 @@ import unittest
 
 TOOLCHAINS = pathlib.Path(__file__).resolve().parent / "toolchains.py"
 GUARD = pathlib.Path(__file__).resolve()
-# The reader's size at the merge that widened its membership (`dd3dae80`); the case was added
-# declaring 90 (`52e1f224`).
-READER_LINES = 91
+# The reader's size: the three functions and four names it was read down to, plus the `import re`
+# the widened membership brings in. It was 91 from `dd3dae80` until `entries` learned to read a
+# shell continuation, which is the change that moved it to 98.
+READER_LINES = 98
 SEED = "entries"
 # This guard's own size: its lines, and the cases a loader finds in it.
-GUARD_LINES = 175
+GUARD_LINES = 176
 GUARD_CASES = 7
 
 
