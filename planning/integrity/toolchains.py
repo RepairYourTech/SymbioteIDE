@@ -91,8 +91,9 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
     One pass reads the forms a value is written in: the text after the key, a flow collection on
     one line or across several, a block scalar, and a block sequence, whose items are one entry
     each — so removing the step lines leaves the job's own text. A value that ends in a shell
-    continuation (`\\`) is continued by the lines it runs onto, which are one entry with it
-    and end where a line states a key of its own.
+    continuation (`\\`) is continued by the lines it runs onto, which are one entry with it;
+    the marker is not part of what it says, and a line stating a key of its own, or one stating
+    no word (blank, or a comment), is where it ends.
     """
     lines = unfolded(block, where).splitlines()
     found: list[ENTRY] = []
@@ -119,9 +120,15 @@ def entries(block: str, name: str, where: str) -> list[ENTRY]:
             found.append((words, first, index - 1))
         elif tail:
             said = [tail]  # a shell continuation is part of the entry it is written in
-            while (said[-1].rstrip().endswith("\\") and index < len(lines)
-                   and not KEY.match(lines[index])):
-                said.append(lines[index].split("#")[0].strip())
+            while said[-1].rstrip().endswith("\\"):
+                # the marker, and the space before it, are not part of what the entry says
+                said[-1] = said[-1].rstrip()[:-1].rstrip()
+                if index == len(lines) or KEY.match(lines[index]):
+                    break  # nothing it runs onto, or a line stating a key of its own
+                stated = lines[index].split("#")[0].strip()
+                if not stated:
+                    break  # a blank or commented line states no word, and ends the entry
+                said.append(stated)
                 index += 1
             found.append(([word.strip("\"'") for word in said], first, index - 1))
         else:
@@ -156,9 +163,15 @@ def under(base: pathlib.Path, value: str, where: str, what: str) -> pathlib.Path
 
 
 def directory(text: str, where: str) -> pathlib.Path | None:
-    """The `working-directory` a block states, resolved; None when it states none."""
+    """The `working-directory` a block states, resolved; None when it states none.
+
+    Every word the entry states, folded the way a plain scalar folds its line breaks, rather
+    than its first word alone: a directory written over more than one line is one directory,
+    and reading the first word took a continued value with its marker still in it.
+    """
     stated = entries(text, "working-directory", where)
-    return under(ROOT, stated[0][0][0], where, "a directory") if stated and stated[0][0] else None
+    return (under(ROOT, " ".join(stated[0][0]), where, "a directory")
+            if stated and stated[0][0] else None)
 
 
 def manifests(workflow: str, job: str, block: str) -> list[pathlib.Path]:
