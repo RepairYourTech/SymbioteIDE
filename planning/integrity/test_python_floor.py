@@ -18,8 +18,11 @@ both read — the reader-size guard holds nothing if the driver that refuses a g
 runs, and the driver's own refusal is shown against an earlier guard only when the checkout holds
 one. Those three links are `TheChainThatRunsTheseChecks` below, read as the commands a job's steps
 run rather than as the spelling one workflow writes them in, so `-s planning/integrity`,
-`-s ./planning/integrity`, a `cd` into the directory and a preceding `cd` line are one check — and
-`revert_rules.py`'s `HOLDS` rows hold that case in turn, since a case cannot hold its own presence.
+`-s ./planning/integrity`, a `cd` into the directory and a preceding `cd` line are one check. A
+fourth link is that those steps' failures reach the job at all: a step made non-fatal, given a
+condition, or written so another command owns its exit status would leave CI green with the cap
+exceeded, which is the hold undone in one edit. `revert_rules.py`'s `HOLDS` rows hold that case in
+turn, since a case cannot hold its own presence.
 
 Stated with their figures, what this cannot see — each a derivation reading *statements* where the
 answer would take running the effect, which is why no case here closes them:
@@ -95,6 +98,15 @@ START_DIRECTORY = re.compile(r"(?:-s|--start-directory)(?:\s+|=)([^-].*?)(?=\s+-
 VALUED = {"-p", "--pattern", "-k", "-t", "--top-level-directory"}
 RUNS_DRIVER = re.compile(rf"(?:^|\s)(?:python3?\s+)?(?:\S*/)?{re.escape(DRIVER_SCRIPT)}(?:\s|$)")
 JOB = re.compile(r"^  ([A-Za-z0-9_.\-]+):\s*$")
+# A step that runs a check can stop its failure reaching the job two ways, both read from the step's
+# own lines: made non-fatal, or run only when a condition holds. `false` is the one value of
+# `continue-on-error` that keeps the step fatal.
+NONFATAL = re.compile(r"^(?:-\s*)?continue-on-error\s*:\s*(?!false\s*$)\S")
+CONDITIONAL = re.compile(r"^(?:-\s*)?if\s*:")
+# A command after the check that still fails the step, so `… || exit 1` swallows nothing.
+STILL_FAILS = re.compile(r"^exit\s+[1-9][0-9]*$")
+# A step's other keys, which are not commands and may follow its `run:` line.
+KEY_LINE = re.compile(r"^[a-z][a-z0-9_-]*:\s")
 VERSION = re.compile(r"""^\s*python-version:\s*['"]?([0-9]+)\.([0-9]+)['"]?\s*$""")
 COMMENT = re.compile(r"^\s*#")
 # A crate whose tests spawn a tool here: a Rust source naming this directory and starting python.
@@ -309,6 +321,52 @@ def jobs(workflow: pathlib.Path) -> dict[str, list[str]]:
     return found
 
 
+def steps(lines: list[str]) -> list[list[str]]:
+    """A job's steps, each starting at its own `- ` marker, so a step's fatality is read from the
+    step rather than from the job around it.
+    """
+    found: list[list[str]] = []
+    for line in lines:
+        if line.startswith("-") or not found:
+            found.append([])
+        found[-1].append(line)
+    return [step for step in found if step]
+
+
+def unfatal(lines: list[str]) -> list[str]:
+    """The steps of a job that run these checks without a failure reaching the job.
+
+    The cap the suite declares is enforced by that step failing, so a step made non-fatal, given a
+    condition that may not hold, or written so another command owns its exit status (`… || true`,
+    `… ; echo done`) leaves the job green with the cap exceeded — the whole hold undone by one edit
+    that no reading of the check itself can see. Read as the commands a step runs, the way this
+    case reads the discovery, so `cd … && python -m unittest discover` is the check with nothing
+    after it and stays green.
+    """
+    checks = [step for step in steps(lines) if runs_the_suite(step) or runs_the_driver(step)]
+    if not checks:
+        return []
+    found = []
+    # Read over the whole job, so a condition or a `continue-on-error` on the step and the same on
+    # the job are one clause rather than two that can be weakened one at a time.
+    if any(NONFATAL.match(line) for line in lines):
+        found.append("the check is made non-fatal, so its failure would leave this job green")
+    if any(CONDITIONAL.match(line) for line in lines):
+        found.append("the check runs only when a condition holds, so it can be skipped")
+    for step in checks:
+        name = next((line.removeprefix("- ").split(":", 1)[1].strip()
+                     for line in step if line.startswith("- name:")), step[0])
+        ran = commands(step)
+        reached = next((at for at in range(len(ran))
+                        if runs_the_suite(ran[:at + 1]) or runs_the_driver(ran[:at + 1])), None)
+        after = [one for one in ran[(reached + 1 if reached is not None else 0):]
+                 if not KEY_LINE.match(one)]
+        if reached is None or any(not STILL_FAILS.match(one) for one in after):
+            found.append(f"{name} runs the check before `{ran[-1]}`, so that command owns its "
+                         f"exit status")
+    return found
+
+
 def builds(text: str, owed: list[str]) -> bool:
     """Whether a cargo invocation in this text would compile a crate that spawns a tool here: the
     whole workspace, or that crate named on its own.
@@ -395,14 +453,17 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
     full history both read: the cap case reads the tip a push names, the driver an earlier guard.
     Read as the commands a job's steps run, the way the interpreter rule above reads them, not as
     YAML and not as one spelling: whichever way a job writes the discovery, it is the job that runs
-    the check, and this case names it by failing rather than by matching its command.
+    the check, and this case names it by failing rather than by matching its command. The same
+    reading holds that the step's failure is the job's: `unfatal` below refuses a step made
+    non-fatal, one behind a condition, or one whose exit status belongs to a later command.
     """
 
     def test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history(self):
-        ran, without, shallow = [], [], []
+        ran, without, shallow, ignored = [], [], [], []
         for workflow in sorted(WORKFLOWS.glob("*.yml")):
             for job, lines in jobs(workflow).items():
                 named = f"{workflow.name}:{job}"
+                ignored += [f"{named}: {step}" for step in unfatal(lines)]
                 if not runs_the_suite(lines):
                     continue
                 ran.append(named)
@@ -418,6 +479,9 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
         self.assertEqual(shallow, [], f"these jobs run those checks without the history they read "
                                       f"— the cap case reads the tip a push names and the driver "
                                       f"an earlier guard: {shallow}")
+        self.assertEqual(ignored, [],
+                         "these steps run the checks without their failure reaching the job, so a "
+                         f"guard grown past the cap it declares leaves CI green: {ignored}")
 
 
 class TheInterpreterTheJobsProvide(unittest.TestCase):

@@ -17,16 +17,21 @@ the text removes the refusal, so a mutation would watch nothing fail. Each row
 names the refusal, the case that states it, the subject stating it, the text it
 states exactly once, and every way the driver shows it biting — the subject a
 line past the number it declares, the case run against a tip whose guard was
-smaller, or a link taken out of the file it is written in. A row is held when
-every way makes the case fail. A row that names no way, a table that names no
-row, and a checkout too shallow to hold the smaller guard are refused rather than
-passed — the last is why the validation job runs this driver after fetching the
-full history, a link `test_python_floor.py` holds to that workflow. The checker
-proves itself every run too: it is read on inputs built to be refused — one per
-kind of way, and the rows a hold must not hold — so a checker vacated into holding
-everything is caught by the run it would have fooled rather than by a reading of
-its text, and the same negative inputs are driven from `test_revert_rules.py` so
-no single file holds the checker's strength.
+smaller, a link taken out of the file it is written in, or a text in that file
+replaced by a weaker one, which is how a step made non-fatal is driven. A row is
+held when every way makes the case fail. A row that names no way, a table that
+names no row, a kind of way this file does not name, and a checkout too shallow to
+hold the smaller guard are refused rather than passed — the last is why the
+validation job runs this driver after fetching the full history, a link
+`test_python_floor.py` holds to that workflow. The checker proves itself every run
+too: it is read on inputs built to be refused — one per kind of way, and the rows a
+hold must not hold — so a checker vacated into holding everything is caught by the
+run it would have fooled rather than by a reading of its text, and the same
+negative inputs are driven from `test_revert_rules.py` so no single file holds the
+checker's strength. What the rows cannot see is a case this file's own suite holds
+that no row names: those are declared, and the run requires the declaration and the
+rows to account for every case `test_revert_rules.py` collects, so un-naming one is
+refused rather than silent.
 
 The live tree is never touched. The driver copies this working tree (everything
 cargo and those rows need, without `target/` or caches) into a temporary directory,
@@ -38,6 +43,7 @@ that were only its mutations.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -607,14 +613,28 @@ RULES: list[tuple[str, str, str, str]] = [
 ]
 
 
+# The tree texts a hold names and weakens: the step that runs the rule driver, which must stay fatal
+# for the cap the suite declares to mean anything — the suite step is read by its commands rather
+# than by its spelling, so the ways are anchored to the driver step — and the comparison of the live
+# tree before and after the run, which must stay able to see a file move.
+DRIVER_STEP = "        run: python3 planning/integrity/revert_rules.py\n"
+MOVED = ("    after = digest(watched)\n"
+         "    moved = [name for name in before if after.get(name) != before[name]]\n")
+
+# The ways a hold may show its refusal, named once here so the rows, the inputs the checker is
+# proved on and the rule holding both cannot drift apart: `larger` adds lines to `file` until it is
+# past the number it declares after `argument`, `earlier` runs the case against the smallest
+# revision of `file` this checkout holds, `gone` takes `argument` out of `file`, and `weaker`
+# replaces `argument` — a pair of texts — with the second, which is how a step made non-fatal or a
+# check whose result is thrown away is driven.
+WAYS: tuple[str, ...] = ("larger", "earlier", "gone", "weaker")
+
 # Rules held by a case's presence and its refusals rather than by a reversion: the case cannot
 # hold its own presence — renaming it out of collection, deleting the class it sits in or emptying
 # the comparison it makes leaves the suite green and this driver reporting every row it has as
 # biting — so each row names the refusal, the case stating it, the subject stating it, the text the
 # subject states exactly once, and the ways that must make the case fail. A way is `(file, how,
-# argument)`: `larger` adds lines to `file` until it is past the number it declares after
-# `argument`, `earlier` runs the case against the smallest revision of `file` this checkout holds,
-# and `gone` takes `argument` out of `file`. A row with no way, and this table with no row, are
+# argument)`, and `how` is one of `WAYS` above. A row with no way, and this table with no row, are
 # refused rather than passed.
 HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
     (
@@ -654,7 +674,84 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
           "range.\n"
           "          fetch-depth: 0\n"),),
     ),
+    (
+        "the job that runs these checks fails when they fail",
+        "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
+        "planning/integrity/test_python_floor.py",
+        "these steps run the checks without their failure reaching the job",
+        ((".github/workflows/roadmap-integrity.yml", "weaker",
+          (DRIVER_STEP, "        continue-on-error: true\n" + DRIVER_STEP)),
+         (".github/workflows/roadmap-integrity.yml", "weaker",
+          (DRIVER_STEP, "        if: false\n" + DRIVER_STEP)),
+         (".github/workflows/roadmap-integrity.yml", "weaker",
+          (DRIVER_STEP, DRIVER_STEP.removesuffix("\n") + " || true\n"))),
+    ),
+    (
+        "the driver refuses a live file moved while it runs",
+        "test_a_live_file_moved_while_the_driver_runs_is_refused",
+        "planning/integrity/test_revert_rules.py",
+        "the driver did not refuse a file moved while it ran",
+        (("planning/integrity/revert_rules.py", "weaker",
+          (MOVED, "    after = digest(watched)\n    moved = []\n")),),
+    ),
 ]
+
+HOLDER = "planning/integrity/test_revert_rules.py"
+
+# The cases in the hold's own file that no row names: each checks the shape of these tables or of
+# this driver rather than a refusal the repository makes, so losing one is not losing a refusal —
+# declared once here the way the reader-size guard declares what is not reading. The run requires
+# this declaration *and* the rows to account for every case `test_revert_rules.py` collects, both
+# directions: a case named here that the file no longer collects means one was renamed out of it,
+# and a case collected that neither names is one whose loss would be silent.
+SHAPE_CASES = frozenset({
+    "test_the_driver_roots_itself_at_this_repository",
+    "test_the_driver_scans_the_tree_it_is_held_to",
+    "test_every_row_names_a_rule_an_anchor_a_removal_and_a_case",
+    "test_every_anchor_is_held_once_in_the_tree",
+    "test_no_two_rows_are_the_same_proof",
+    "test_every_named_case_is_one_the_suite_runs",
+    "test_the_table_names_rules_at_all",
+    "test_the_hold_table_names_a_rule_a_case_a_subject_and_its_ways",
+    "test_every_hold_row_states_its_refusal_once_and_lays_its_ways_in_the_tree",
+    "test_a_case_no_row_names_and_no_declaration_accounts_for_is_refused",
+})
+
+
+def cases_in(tree: pathlib.Path) -> set[str]:
+    """Every case a loader collects from the hold's own file: the `test…` methods of each class
+    there that extends `unittest.TestCase`, read from its text rather than by importing it.
+    """
+    holder = tree / HOLDER
+    if not holder.is_file():
+        # A deleted file holds no case: the accounting below reports every name it should have
+        # collected rather than raising where a refusal by name belongs.
+        return set()
+    source = holder.read_text()
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if "TestCase" not in {ast.unparse(base).split(".")[-1] for base in node.bases}:
+            continue
+        found |= {child.name for child in node.body
+                  if isinstance(child, ast.FunctionDef) and child.name.startswith("test")}
+    return found
+
+
+def unheld_cases(tree: pathlib.Path) -> str | None:
+    """Why the cases of the hold's own file are not all accounted for, or None when they are."""
+    cases = cases_in(tree)
+    accounted = {row[1] for row in HOLDS if len(row) == 5 and row[2] == HOLDER} | SHAPE_CASES
+    missing = sorted(accounted - cases)
+    extra = sorted(cases - accounted)
+    if missing:
+        return (f"{', '.join(missing)} is named by a row or declared here, and this file collects "
+                f"no such case, so it was renamed out of the suite")
+    if extra:
+        return (f"{', '.join(extra)} is a case no row names and no declaration accounts for, so "
+                f"losing it would be silent")
+    return None
 
 
 def scanned(tree: pathlib.Path) -> list[pathlib.Path]:
@@ -707,11 +804,12 @@ def smaller_revision(tree: pathlib.Path, subject: str) -> str | None:
     return smallest if sizes[smallest] < now else None
 
 
-def shown(subject: pathlib.Path, way: tuple[str, str, str], case: str, tree: pathlib.Path,
-          scratch: pathlib.Path) -> str | None:
+def shown(subject: pathlib.Path, way: tuple[str, str, str | tuple[str, str]], case: str,
+          tree: pathlib.Path, scratch: pathlib.Path) -> str | None:
     """Why this way does not make the case fail, or None when it does: the file is mutated in the
-    copy for the length and removal ways, the case is run against a named tip for the history way,
-    and every way names text this tree holds so the driver cannot be told to mutate nothing.
+    copy for the length, removal and weakening ways, the case is run against a named tip for the
+    history way, and every way names text this tree holds so the driver cannot be told to mutate
+    nothing.
     """
     where, how, argument = way
     target = tree / where
@@ -746,8 +844,15 @@ def shown(subject: pathlib.Path, way: tuple[str, str, str], case: str, tree: pat
             return f"{where} does not carry what the refusal is about exactly once"
         target.write_text(text.replace(argument, ""))
         why, said = case_fails(subject, case, {}), f"with the link taken out of {where}"
+    elif how == "weaker":
+        before, after = argument
+        if text.count(before) != 1:
+            return f"{where} does not carry what the refusal is about exactly once"
+        target.write_text(text.replace(before, after))
+        why, said = case_fails(subject, case, {}), f"with {where} weakened"
     else:
-        return (f"{how!r} is not a way this driver shows a refusal: name larger, earlier or gone")
+        return (f"{how!r} is not a way this driver shows a refusal: name "
+                f"{', '.join(WAYS)}")
     target.write_text(text)
     return None if why is None else f"{why} {said}"
 
@@ -755,10 +860,11 @@ def shown(subject: pathlib.Path, way: tuple[str, str, str], case: str, tree: pat
 # The inputs this driver's own checker must refuse: one crafted way per kind, each built so its case
 # stays green when the way is applied, so a checker reading any of them as held no longer refuses.
 # `main` reads them every run, which is how the hold proves its checker rather than trusting it.
-NEGATIVE: tuple[tuple[str, str, str], ...] = (
+NEGATIVE: tuple[tuple[str, str, str | tuple[str, str]], ...] = (
     ("link.txt", "gone", "a link\n"),
     ("cap.txt", "larger", "CAP = "),
     ("cap.txt", "earlier", ""),
+    ("cap.txt", "weaker", ("CAP = 1", "CAP = 0")),
 )
 
 
@@ -786,6 +892,12 @@ def self_proof(scratch: pathlib.Path) -> str | None:
     rows = [(f"a {way[1]} way that does not bite", stated, (way,)) for way in NEGATIVE]
     rows += [("a row naming no way", stated, ()),
              ("a subject that states no such refusal", "nothing here says this", NEGATIVE[:1])]
+    kinds = {way[1] for row in HOLDS if len(row) == 5 for way in row[4]}
+    refuses = {way[1] for way in NEGATIVE}
+    if kinds != set(WAYS) or refuses != set(WAYS):
+        return (f"the rows name {sorted(kinds)} and the inputs above refuse {sorted(refuses)}, "
+                f"where this file states the ways as {sorted(WAYS)} — a kind no input is built to "
+                f"refuse, or one no row shows, can be added or dropped without this run seeing it")
     for what, states, ways in rows:
         why = holds(("a rule this driver must not hold", "test_ok", "test_negative.py", states, ways),
                     tree, scratch)
@@ -804,7 +916,9 @@ def case_fails(path: pathlib.Path, case: str, env: dict[str, str]) -> str | None
     output = run.stdout + run.stderr
     if f"{case} (" not in output:
         return f"{case} is not a case the suite runs"
-    if run.returncode == 0 or "FAIL" not in output:
+    # The named case has to be the one that failed: a module where something else broke holds this
+    # row for the wrong reason, which is how a way that places nothing would read as biting.
+    if run.returncode == 0 or not any(f"{kind}: {case} (" in output for kind in ("FAIL", "ERROR")):
         return f"{case} passes where the rule forbids that state"
     return None
 
@@ -890,6 +1004,10 @@ def main() -> int:
         if proof is not None:
             unheld.append(("this driver's own checker", proof))
             print(f"NOT HELD: this driver's own checker ({proof})")
+        unaccounted = unheld_cases(tree)
+        if unaccounted is not None:
+            unheld.append(("the hold's own cases", unaccounted))
+            print(f"NOT HELD: the hold's own cases ({unaccounted})")
         for row in HOLDS:
             name = row[0] if row else "a hold row with no name"
             why = holds(row, tree, pathlib.Path(scratch))
