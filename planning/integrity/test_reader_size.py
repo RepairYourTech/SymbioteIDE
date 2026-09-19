@@ -3,14 +3,15 @@
 `toolchains.py` is the reader the two toolchain rules share: this holds the reading path — every
 module-level definition that reads text and all it reaches — against an equal declaration, because
 the path grows as it learns a spelling, a reviewed act. This file's size is the opposite: `GUARD_CAP`
-cannot rise above the guard the commit before it holds, so it comes down. Reading is *acquiring* text,
-not rearranging what the path states, which is why `legs` and the names the rules read that reach nothing
-in it sit outside, free to grow (measured: `workspace_jobs`, `floor`, `declared`, `version`,
-`workspace_of`). The measure is lines, so a guarded definition costs its own lines, not the one above it.
+cannot rise above the guard the tip it lands on held, so it comes down. Reading is *acquiring* text,
+not rearranging what the path states, which is why the names the rules read sit outside, free to
+grow. The measure is lines, so a guarded definition costs its own lines, not the one above it.
 """
 from __future__ import annotations
 
 import ast
+import json
+import os
 import pathlib
 import re
 import subprocess
@@ -20,29 +21,26 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 TOOLCHAINS = HERE / "toolchains.py"
 RULES = ("test_toolchain_floors.py", "test_handoff.py")
-# The reading path's size; this guard's own cap, which may not rise above the guard the commit
-# before it holds; and the cases a loader finds here.
+# The reading path's size; this guard's own cap, which may not rise above the guard the tip this
+# commit lands on held; and the cases a loader finds here.
 READER_LINES = 450
 GUARD_CAP = 365
 GUARD_CASES = 13
-# The repo's own modules whose reading counts with the reader's, named rather than followed quietly:
-# `python_floor` reads no text, so the 450 stands.
+# The repo's own modules whose reading counts with the reader's: `python_floor` reads no text.
 LOCAL_IMPORTS: tuple[str, ...] = ("python_floor",)
 # What reading text is, as a shape: these module names, whose operations read it, and the calls
 # that turn a file or a block into lines. A definition holding one of these reads text.
 TEXT_MODULES = frozenset({"re", "tomllib"})
 TEXT_CALLS = frozenset({"read_text", "readlines", "read", "splitlines"})
-# Every operation this module calls in a definition the path does not hold, named so a new one reds
-# the case below rather than hiding: `split`/`join`/`strip`/`count` rearrange a value the path
-# stated, the next six touch no text, and the builtins stand for the same claim as a method.
+# Every operation this module calls outside the path, so a new one reds rather than hides: the first
+# four rearrange a value the path stated, and the rest touch no text, method and builtin alike.
 NOT_READING = frozenset({"split", "join", "strip", "count", "get", "values", "fromkeys",
                          "append", "is_file", "resolve", "any()", "isinstance()", "list()",
                          "next()", "range()", "AssertionError()"})
 
 
 def definitions(tree: ast.Module) -> dict[str, ast.AST]:
-    """Every name a module-level statement binds, whichever statement writes it — a definition spans
-    its own lines, and no name inside a body counts."""
+    """Every name a module-level statement binds — a definition spans its own lines, not its body's."""
     found: dict[str, ast.AST] = {}
 
     def collect(node: ast.AST) -> None:
@@ -104,8 +102,7 @@ def reachable(defined: dict[str, ast.AST], seeds: set[str]) -> set[str]:
 
 
 def reading(source: str) -> dict[str, int]:
-    """The reading path: every definition that reads text, the lines each occupies, and everything
-    those definitions reach."""
+    """The reading path: every definition that reads text, its lines, and everything it reaches."""
     defined = definitions(ast.parse(source))
     named = patterns(defined)
     seeds = {name for name, node in defined.items() if reads(node, named)}
@@ -118,8 +115,7 @@ def reading(source: str) -> dict[str, int]:
 
 
 def local_chain(folder: pathlib.Path) -> list[str]:
-    """Every repo module the reader reaches through local imports, `toolchains` excluded — a file
-    beside it, never a package path or a stdlib name, so this cannot wander outside the tree."""
+    """The repo modules the reader imports, `toolchains` excluded, never a package or stdlib name."""
     seen, worklist = set(), ["toolchains"]
     while worklist:
         source = (folder / f"{worklist.pop()}.py").read_text()
@@ -136,8 +132,7 @@ def local_chain(folder: pathlib.Path) -> list[str]:
 
 
 def reading_path(folder: pathlib.Path) -> dict[str, int]:
-    """The reader's subject: its own reading path, and the reading of every declared local module it
-    imports, keyed `module.name` — a helper the reader calls counts where it lives."""
+    """The reader's subject: its reading path, and every declared local module's, keyed `module.name`."""
     held = reading((folder / "toolchains.py").read_text())
     for module in LOCAL_IMPORTS:
         source = (folder / f"{module}.py").read_text()
@@ -159,8 +154,7 @@ def rules_read(folder: pathlib.Path) -> set[str]:
 
 
 def outside(source: str, used: set[str]) -> dict[str, list[str]]:
-    """Definitions that are neither the reading path nor the rules' own — what the rules read, and
-    what that reaches before the path takes over — each with what it reads or reaches in the path."""
+    """Neither the path nor the rules' own: each with what it reads, and what the rules reach first."""
     defined = definitions(ast.parse(source))
     held = set(reading(source))
     own = reachable(defined, set(used) & set(defined) - held) - held
@@ -177,8 +171,7 @@ def outside(source: str, used: set[str]) -> dict[str, list[str]]:
 
 
 def operations(source: str) -> dict[str, list[str]]:
-    """For each definition the reading path does not hold, the operations it calls that the
-    classifier does not name; a call to a name this module binds is not an operation."""
+    """For each definition the path does not hold: what it calls that the classifier does not name."""
     defined = definitions(ast.parse(source))
     held, known = set(reading(source)), TEXT_CALLS | {"compile"}
 
@@ -205,8 +198,7 @@ def small_module(definition: str, use: str) -> str:
             f"    return {use}.splitlines()[0]\n\n\n{definition}")
 
 
-# The kinds `definitions` counts, each as its own small module: the reading path reaches the
-# definition and its name must join the spans — written here rather than found in `toolchains.py`.
+# The kinds `definitions` counts, each its own small module: the path reaches it and its name joins.
 COUNTED = (
     ("helper", "def helper(value: str) -> str:\n    return value\n", "helper(block)"),
     ("Spell", 'class Spell:\n    """One spelling."""\n\n    @staticmethod\n'
@@ -216,8 +208,7 @@ COUNTED = (
     ("FORMS", 'FORMS = {"plain": str}\n', 'FORMS["plain"](block)'),
     ("spelling", "import re as spelling\n", 'spelling.sub("", block)'),
 )
-# Bindings the mechanism does not count: the ways a module-level statement binds a name without an
-# assignment or an import.
+# Bindings the mechanism does not count: a module-level statement binds these without an assignment.
 BOUND_ELSEWHERE = (
     ("BOUND", "for BOUND in (str,):\n    pass\n", "BOUND(block)"),
     ("handle", 'with open("a") as handle:\n    pass\n', "handle"),
@@ -309,19 +300,28 @@ class OutsideThePath(unittest.TestCase):
 
 class GuardSize(unittest.TestCase):
     def test_the_guard_is_within_the_cap_it_may_not_raise(self):
+        pushed = os.environ.get("GITHUB_EVENT_NAME") == "push"
+        event = pathlib.Path(os.environ.get("GITHUB_EVENT_PATH", ""))
+        payload = json.loads(event.read_text()) if pushed and event.is_file() else {}
+        # The tip this commit lands on: a push states it (`before`), which bounds any push's length.
+        before = payload.get("before", "")
+        self.assertTrue(not pushed or before.strip("0"),
+                        f"this push names no tip it started from (`before` is {before!r}), so the cap "
+                        f"has nothing to be held against")
+        revision = before or "HEAD^1"
         lines = len(pathlib.Path(__file__).read_text().splitlines())
         cases = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]).countTestCases()
-        done = subprocess.run(["git", "show", f"HEAD^1:./{pathlib.Path(__file__).name}"], cwd=HERE,
+        done = subprocess.run(["git", "show", f"{revision}:./{pathlib.Path(__file__).name}"], cwd=HERE,
                               capture_output=True, text=True)
-        self.assertEqual(done.returncode, 0, f"the commit before this one holds no readable guard "
+        self.assertEqual(done.returncode, 0, f"{revision} holds no readable guard "
                                             f"({done.stderr.strip()}): the cap is its size, so this "
                                             f"case needs that commit")
         parent = len(done.stdout.splitlines())
         self.assertEqual(lines, GUARD_CAP, f"this guard is {lines} lines where {GUARD_CAP} is "
                                           f"declared: the cap is this file's own size and it moves "
                                           f"nowhere but down")
-        self.assertLessEqual(GUARD_CAP, parent, f"the cap is {GUARD_CAP} where the guard before this "
-                                               f"change is {parent}: a larger one is refused here")
+        self.assertLessEqual(GUARD_CAP, parent, f"the cap is {GUARD_CAP} where the guard {revision} "
+                                               f"holds is {parent}: a larger one is refused here")
         self.assertEqual(cases, GUARD_CASES, f"a loader finds {cases} cases, {GUARD_CASES} declared")
 
 
