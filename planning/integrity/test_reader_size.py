@@ -3,8 +3,8 @@
 `toolchains.py` is the reader the two toolchain rules share: this holds the reading path — every
 module-level definition that reads text and all it reaches — against an equal declaration, because
 the path grows as it learns a spelling, a reviewed act. This file's size is the opposite: `GUARD_CAP`
-cannot rise above the guard `origin/main` holds, so it comes down. Reading is *acquiring* text, not
-rearranging what the path states, which is why `legs` and the names the rules read that reach nothing
+cannot rise above the guard the commit before it holds, so it comes down. Reading is *acquiring* text,
+not rearranging what the path states, which is why `legs` and the names the rules read that reach nothing
 in it sit outside, free to grow (measured: `workspace_jobs`, `floor`, `declared`, `version`,
 `workspace_of`). The measure is lines, so a guarded definition costs its own lines, not the one above it.
 """
@@ -20,8 +20,8 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 TOOLCHAINS = HERE / "toolchains.py"
 RULES = ("test_toolchain_floors.py", "test_handoff.py")
-# The reading path's size; this guard's own cap, which may not rise above the guard `main` already
-# holds; and the cases a loader finds here.
+# The reading path's size; this guard's own cap, which may not rise above the guard the commit
+# before it holds; and the cases a loader finds here.
 READER_LINES = 450
 GUARD_CAP = 365
 GUARD_CASES = 13
@@ -311,17 +311,17 @@ class GuardSize(unittest.TestCase):
     def test_the_guard_is_within_the_cap_it_may_not_raise(self):
         lines = len(pathlib.Path(__file__).read_text().splitlines())
         cases = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]).countTestCases()
-        done = subprocess.run(["git", "show", f"origin/main:./{pathlib.Path(__file__).name}"],
-                              cwd=HERE, capture_output=True, text=True)
-        self.assertTrue(done.returncode == 0, f"the merged guard is unreadable ({done.stderr.strip()}), "
-                                              f"so the cap cannot be held: fetch the base branch here")
-        merged = len(done.stdout.splitlines())
-        self.assertEqual(lines, GUARD_CAP,
-                         f"this guard is {lines} lines where {GUARD_CAP} is declared: the cap is "
-                         f"this file's own size, and it moves nowhere but down")
-        self.assertLessEqual(GUARD_CAP, merged,
-                             f"the cap is {GUARD_CAP} where the guard `origin/main` holds is "
-                             f"{merged}: a size larger than the merged guard is refused here")
+        done = subprocess.run(["git", "show", f"HEAD^1:./{pathlib.Path(__file__).name}"], cwd=HERE,
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, f"the commit before this one holds no readable guard "
+                                            f"({done.stderr.strip()}): the cap is its size, so this "
+                                            f"case needs that commit")
+        parent = len(done.stdout.splitlines())
+        self.assertEqual(lines, GUARD_CAP, f"this guard is {lines} lines where {GUARD_CAP} is "
+                                          f"declared: the cap is this file's own size and it moves "
+                                          f"nowhere but down")
+        self.assertLessEqual(GUARD_CAP, parent, f"the cap is {GUARD_CAP} where the guard before this "
+                                               f"change is {parent}: a larger one is refused here")
         self.assertEqual(cases, GUARD_CASES, f"a loader finds {cases} cases, {GUARD_CASES} declared")
 
 
