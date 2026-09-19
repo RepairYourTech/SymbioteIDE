@@ -1,23 +1,15 @@
 """Run: python3 planning/integrity/test_reader_size.py.
 
-`toolchains.py` is the one reader the two toolchain rules compare, and nothing measured the
-reading itself. This holds the reading path: every module-level definition that reads text — a
-pattern read by name, an `re`/`tomllib` operation, `read_text`, `splitlines` — and everything such
-a definition reaches. Reading is *acquiring* text, so a definition that only rearranges a value
-the path states is not a reader, which is why `legs` trades in strings and still sits outside. The
-names the rules read directly are theirs, derived from the rule files rather than listed here, and
-what they reach without the path in between must read no text, so a spelling cannot be read by the
-rules instead of the reader.
+`toolchains.py` is the one reader the two toolchain rules compare. This holds the reading path —
+every module-level definition that reads text, and everything such a definition reaches — against a
+declaration that equals it rather than leaving slack. Reading is *acquiring* text: a definition that
+only rearranges what the path states is not a reader, which is why `legs` answers in strings and
+still sits outside.
 
-No classifier anticipates every spelling, so the operation list is not trusted either: a case reds
-when a definition outside the path calls an operation the classifier does not name, so a reading
-cannot hide outside the path and outside the fence.
-
-The reading path is not the module: the names the rules read that reach nothing in the path —
-measured, `legs`, `workspace_jobs`, `floor`, `declared`, `version`, `workspace_of` — are outside
-it, free to grow. The declaration below equals the path's size rather than leaving slack, and the
-measure is lines, so a line grown longer costs nothing; this file's own size is declared the same
-way.
+The path is not the module: the names the rules read that reach nothing in it — measured, `legs`,
+`workspace_jobs`, `floor`, `declared`, `version`, `workspace_of` — are outside it, free to grow. The
+measure is lines, so a longer line costs nothing and a definition behind a module-level guard costs
+its own lines rather than the statement above it; this file declares its own size the same way.
 """
 from __future__ import annotations
 
@@ -29,15 +21,13 @@ import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 TOOLCHAINS = HERE / "toolchains.py"
-GUARD = pathlib.Path(__file__).resolve()
 RULES = ("test_toolchain_floors.py", "test_handoff.py")
 # The reading path's size, and this guard's own: its lines, and the cases a loader finds in it.
 READER_LINES = 450
-GUARD_LINES = 395
+GUARD_LINES = 365
 GUARD_CASES = 13
-# Local modules whose reading is part of the subject. The repo's own files only, named here
-# rather than followed quietly: one a reader reaches through an import must be declared, and its
-# reading then counts like the reader's own. `python_floor` reads no text, so 450 stands.
+# The repo's own modules whose reading counts with the reader's, named here rather than followed
+# quietly: `python_floor` reads no text, so 450 stands.
 LOCAL_IMPORTS: tuple[str, ...] = ("python_floor",)
 # What reading text is, as a shape: these module names, whose operations read it, and the calls
 # that turn a file or a block into lines. A definition holding one of these reads text.
@@ -52,8 +42,8 @@ NOT_READING = frozenset({"split", "join", "strip", "count", "get", "values", "fr
 
 
 def definitions(tree: ast.Module) -> dict[str, ast.AST]:
-    """Every name a module-level statement binds, whichever statement writes it. A definition's own
-    body is not descended into: what the definition holds is its span.
+    """Every name a module-level statement binds, whichever statement writes it: a definition's
+    span is its own lines, and its body is not descended into for what it holds.
     """
     found: dict[str, ast.AST] = {}
 
@@ -104,10 +94,7 @@ def reachable(defined: dict[str, ast.AST], seeds: set[str]) -> set[str]:
     touched, frontier = set(seeds), list(seeds)
     while frontier:
         name = frontier.pop()
-        node = defined.get(name)
-        if node is None:
-            continue
-        for child in ast.walk(node):
+        for child in ast.walk(defined[name]):
             callee = (child.func.id if isinstance(child, ast.Call)
                       and isinstance(child.func, ast.Name)
                       else child.id if isinstance(child, ast.Name)
@@ -127,9 +114,7 @@ def reading(source: str) -> dict[str, int]:
     seeds = {name for name, node in defined.items() if reads(node, named)}
     found: dict[str, int] = {}
     for name in reachable(defined, seeds):
-        node = defined.get(name)
-        if node is None:
-            continue
+        node = defined[name]
         start = min([d.lineno for d in getattr(node, "decorator_list", [])] or [node.lineno])
         found[name] = node.end_lineno - start + 1
     return found
@@ -156,8 +141,7 @@ def local_chain(folder: pathlib.Path) -> list[str]:
 
 def reading_path(folder: pathlib.Path) -> dict[str, int]:
     """The reader's subject: its own reading path, and the reading of every declared local module
-    it imports, keyed `module.name` — a helper the reader calls counts where it lives, so reading
-    cannot leave the subject by changing file.
+    it imports, keyed `module.name` — a helper the reader calls counts where it lives.
     """
     held = reading((folder / "toolchains.py").read_text())
     for module in LOCAL_IMPORTS:
@@ -200,8 +184,7 @@ def outside(source: str, used: set[str]) -> dict[str, list[str]]:
 
 def operations(source: str) -> dict[str, list[str]]:
     """For each definition the reading path does not hold, the operations it calls that the
-    classifier does not name. A call to a name this module binds is not an operation: that
-    definition is held by the path or by the case that calls this.
+    classifier does not name. A call to a name this module binds is not an operation.
     """
     defined = definitions(ast.parse(source))
     held, known = set(reading(source)), TEXT_CALLS | {"compile"}
@@ -241,7 +224,7 @@ COUNTED = (
     ("spelling", "import re as spelling\n", 'spelling.sub("", block)'),
 )
 # Bindings the mechanism does not count: the ways a module-level statement binds a name without an
-# assignment or an import — the boundary the case below holds, rather than one assumed here.
+# assignment or an import.
 BOUND_ELSEWHERE = (
     ("BOUND", "for BOUND in (str,):\n    pass\n", "BOUND(block)"),
     ("handle", 'with open("a") as handle:\n    pass\n', "handle"),
@@ -262,11 +245,6 @@ class ReaderSize(unittest.TestCase):
                          f"rules or does not belong here")
 
     def test_the_readme_states_the_two_numbers_this_rule_declares(self):
-        """The README restates the path's size and the module's, and prose that restates a
-        measurement drifts: measured, the module's own figure was left one behind by the change
-        that added a single line to it, and nothing read the sentence. Both numbers are read from
-        the README rather than repeated here, so a rewording that drops them fails too.
-        """
         stated = re.search(r"(\d+) lines of the module's (\d+)", (HERE / "README.md").read_text())
         self.assertIsNotNone(stated, "the README no longer states the reading path's size and the "
                                      "module's own, so this case holds nothing")
@@ -290,9 +268,7 @@ class ReaderSize(unittest.TestCase):
 
 
 class OutsideThePath(unittest.TestCase):
-    """What the reading path does not hold: a definition that reads text, or reaches the path,
-    and that neither the rules read nor their own reach — no case, and no number, would say so.
-    """
+    """What the path does not hold and no case would otherwise name."""
 
     def test_nothing_outside_the_path_reads_text_or_reaches_it(self):
         used = rules_read(HERE)
@@ -339,12 +315,8 @@ class OutsideThePath(unittest.TestCase):
 
 
 class GuardSize(unittest.TestCase):
-    """The guard's own size, declared the way the path's is: growing this file without moving the
-    declaration reds here, and no edit outside this file can.
-    """
-
     def test_the_guard_is_the_size_declared_for_it(self):
-        lines = len(GUARD.read_text().splitlines())
+        lines = len(pathlib.Path(__file__).read_text().splitlines())
         cases = unittest.defaultTestLoader.loadTestsFromModule(
             sys.modules[__name__]).countTestCases()
         self.assertEqual((lines, cases), (GUARD_LINES, GUARD_CASES),
@@ -354,9 +326,7 @@ class GuardSize(unittest.TestCase):
 
 
 class CountedKinds(unittest.TestCase):
-    """The kinds the derivation counts, held by small modules written here: a kind deleted from the
-    mechanism reds here alone.
-    """
+    """The kinds the derivation counts, and the bindings it does not, driven over small modules."""
 
     def test_every_definition_kind_the_path_reaches_is_counted(self):
         for name, definition, use in COUNTED:
