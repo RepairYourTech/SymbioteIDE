@@ -19,7 +19,7 @@ runs, and the driver's own refusal is shown against an earlier guard only when t
 one. Those three links are `TheChainThatRunsTheseChecks` below, read as the commands a job's steps
 run rather than as the spelling one workflow writes them in, so `-s planning/integrity`,
 `-s ./planning/integrity`, a `cd` into the directory and a preceding `cd` line are one check — and
-`revert_rules.py`'s `LINKS` rows hold that case in turn, since a case cannot hold its own presence.
+`revert_rules.py`'s `HOLDS` rows hold that case in turn, since a case cannot hold its own presence.
 
 Stated with their figures, what this cannot see — each a derivation reading *statements* where the
 answer would take running the effect, which is why no case here closes them:
