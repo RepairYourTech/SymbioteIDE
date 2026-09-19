@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 import sys
 import unittest
 
@@ -32,8 +33,8 @@ GUARD = pathlib.Path(__file__).resolve()
 RULES = ("test_toolchain_floors.py", "test_handoff.py")
 # The reading path's size, and this guard's own: its lines, and the cases a loader finds in it.
 READER_LINES = 450
-GUARD_LINES = 375
-GUARD_CASES = 12
+GUARD_LINES = 395
+GUARD_CASES = 13
 # Local modules whose reading is part of the subject. The repo's own files only, named here
 # rather than followed quietly: one a reader reaches through an import must be declared, and its
 # reading then counts like the reader's own. `python_floor` reads no text, so 450 stands.
@@ -259,6 +260,25 @@ class ReaderSize(unittest.TestCase):
                          f"{READER_LINES} is declared: the declaration moves with any change to "
                          f"what reads text, and a definition that reads none of it belongs to the "
                          f"rules or does not belong here")
+
+    def test_the_readme_states_the_two_numbers_this_rule_declares(self):
+        """The README restates the path's size and the module's, and prose that restates a
+        measurement drifts: measured, the module's own figure was left one behind by the change
+        that added a single line to it, and nothing read the sentence. Both numbers are read from
+        the README rather than repeated here, so a rewording that drops them fails too.
+        """
+        stated = re.search(r"(\d+) lines of the module's (\d+)", (HERE / "README.md").read_text())
+        self.assertIsNotNone(stated, "the README no longer states the reading path's size and the "
+                                     "module's own, so this case holds nothing")
+        path_lines, module_lines = (int(number) for number in stated.groups())
+        self.assertEqual(path_lines, READER_LINES,
+                         f"the README states {path_lines} lines of reading path where "
+                         f"{READER_LINES} is declared, and this rule is what declares it")
+        actual = len(TOOLCHAINS.read_text().splitlines())
+        self.assertEqual(module_lines, actual,
+                         f"the README states the module is {module_lines} lines and it is "
+                         f"{actual}: a line added to the reader moves this figure in the change "
+                         f"that adds it, the way READER_LINES moves")
 
     def test_no_local_module_the_reader_imports_supplies_reading_uncounted(self):
         found = local_chain(HERE)

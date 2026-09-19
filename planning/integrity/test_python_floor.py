@@ -12,10 +12,24 @@ job that runs this directory and configures no interpreter is what failed in CI:
 runner image, which was 3.10 on `ubuntu-22.04`, and the checker died as `No module named
 'tomllib'` where a refusal naming the floor belongs.
 
-Stated, not implied, what this does not see: the vocabulary below is a statement rather than a
-derivation, so a gated module or name it does not carry is invisible; `feature_version` gates
-syntax only, so an API gate written in older syntax is caught only where the vocabulary names the
-API; and jobs are read as this repository's indentation, not as YAML.
+Stated with their figures, what this cannot see — each a derivation reading *statements* where the
+answer would take running the effect, which is why no case here closes them:
+
+* the vocabulary below is a statement, not a derivation: a gated name it does not carry is
+  invisible;
+* `feature_version` gates syntax, and not all of it — measured, it rejects `match` (3.10),
+  `except*` (3.11) and `type X = …` (3.12), and **accepts** `f"{"a"}"` at 11, so a PEP 701
+  nested-quote f-string (3.12) is invisible;
+* a name reached as a string is found where a call states it (`import_module("tomllib")`,
+  `getattr(module, "batched")`); bound to a variable first and passed on, it is not — measured,
+  `m = "tomllib"` then `import_module(m)` reports nothing, since following a value means running it;
+* a module **outside** this directory reached through `sys.path` that needs a newer Python —
+  measured, a sibling needing 3.12 left the suite at 224 OK, since `closure()` follows the files
+  beside this one and following a run-time path means running it;
+* a step replaced by a **composite action** or reusable workflow — measured, nothing reds, because
+  the marking reads the steps a job states; and a crate path assembled at run time, though an
+  absolute path or one held in a variable is still found;
+* jobs are read as this repository's indentation, not as YAML.
 """
 from __future__ import annotations
 
@@ -47,6 +61,9 @@ GATED = {
 }
 # The versions `ast.parse` can be asked about, oldest first: the syntax oracle.
 CANDIDATES = (8, 9, 10, 11, 12, 13)
+# The bare names of the gated attributes above, which is how `getattr(module, "name")` spells one:
+# a string exactly equal to one of these reaches the feature its qualified name is listed under.
+MEMBERS = {feature.split(".")[-1]: feature for feature in GATED if "." in feature}
 
 JOB = re.compile(r"^  ([A-Za-z0-9_.\-]+):\s*$")
 VERSION = re.compile(r"""^\s*python-version:\s*['"]?([0-9]+)\.([0-9]+)['"]?\s*$""")
@@ -57,20 +74,47 @@ PYTHON = re.compile(r"""Command::new\(\s*"python""")
 
 
 def gated(source: str) -> dict[str, tuple[int, int]]:
-    """Every feature in `GATED` this text uses, by the name it is written with."""
-    found: dict[str, tuple[int, int]] = {}
+    """Every feature in `GATED` this text reaches, and how it reaches it.
+
+    A statement that names the feature is the ordinary way; a **string** that spells it is the
+    other, and it needs the same interpreter. Leaving the second out is how a cause goes unseen:
+    measured, `tomllib = importlib.import_module("tomllib")` dropped the requirement to the syntax
+    floor, which made the declaration look too high and let a lowered floor silence it.
+    """
+    found: dict[str, tuple[tuple[int, int], str]] = {}
     for node in ast.walk(ast.parse(source)):
-        keys: list[str] = []
+        keys: list[tuple[str, str]] = []
         if isinstance(node, ast.Import):
-            keys = [alias.name for alias in node.names]
+            keys = [(alias.name, "import") for alias in node.names]
         elif isinstance(node, ast.ImportFrom) and node.module:
-            keys = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+            keys = [(node.module, "import"),
+                    *((f"{node.module}.{alias.name}", "import") for alias in node.names)]
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            keys = [f"{node.value.id}.{node.attr}"]
-        for key in keys:
-            if key in GATED:
-                found[key] = GATED[key]
+            keys = [(f"{node.value.id}.{node.attr}", "attribute")]
+        elif isinstance(node, ast.Call):
+            # A string the code reaches *with*: `importlib.import_module("tomllib")`, or the same
+            # through `getattr`. Not a string held as data — this rule's own vocabulary is written
+            # as string keys, and reading those as uses made it report itself.
+            given = [*node.args, *(keyword.value for keyword in node.keywords)]
+            keys = [(value.value.strip(), "name") for value in given
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str)]
+        for key, how in keys:
+            feature = key if key in GATED else MEMBERS.get(key)
+            if feature is not None:
+                found[feature] = (GATED[feature], how)
     return found
+
+
+def features(path: pathlib.Path) -> list[str]:
+    """What this module's requirement is made of, its imports included, each with the version it
+    needs, how it was reached and where: the sentence a failure says instead of a bare number.
+    """
+    found = {}
+    for module in closure(path):
+        for feature, (version, how) in gated(module.read_text()).items():
+            found[feature] = (version, how, module.stem)
+    return sorted(f"{feature} needs {version[0]}.{version[1]}, reached by {how} in "
+                  f"{where}.py" for feature, (version, how, where) in found.items())
 
 
 def own(path: pathlib.Path) -> tuple[int, int]:
@@ -78,7 +122,7 @@ def own(path: pathlib.Path) -> tuple[int, int]:
     oldest version its syntax parses at where that is newer.
     """
     text = path.read_text()
-    version = max(gated(text).values(), default=(3, 0))
+    version = max((needed for needed, _ in gated(text).values()), default=(3, 0))
     for minor in CANDIDATES:
         try:
             ast.parse(text, feature_version=minor)
@@ -178,10 +222,12 @@ class TheInterpreterTheCodeNeeds(unittest.TestCase):
         """A module reaching a newer feature than `python_floor.FLOOR` states: the jobs are held to
         the declaration, so a requirement above it means a job could pass that cannot run the code.
         """
-        over = {path.name: needs(path) for path in modules() if needs(path) > python_floor.FLOOR}
+        over = {path.name: features(path) for path in modules()
+                if needs(path) > python_floor.FLOOR}
         self.assertEqual(over, {},
                          f"these modules need more than the declared "
-                         f"{python_floor.FLOOR[0]}.{python_floor.FLOOR[1]}")
+                         f"{python_floor.FLOOR[0]}.{python_floor.FLOOR[1]}, and it is what they "
+                         f"reach that says so: {over}")
 
     def test_the_floor_is_not_above_what_this_directory_needs(self):
         """The other direction: a floor above the newest thing any module reaches is a number no
@@ -208,6 +254,17 @@ class TheInterpreterTheCodeNeeds(unittest.TestCase):
         self.assertEqual(silent, [],
                          "these scripts reach a gated feature without stating the floor, so a "
                          "lower interpreter is an ImportError instead of a refusal by name")
+
+    def test_a_gated_feature_reached_without_a_statement_is_named_as_such(self):
+        """Driven over module texts written here: a feature reached by name is the same
+        requirement as one imported, so it is found and reported with its version and how it was
+        reached — the sentence that makes a lowered declaration fail instead of going quiet.
+        """
+        for text, feature in (('importlib.import_module("tomllib")\n', "tomllib"),
+                              ('getattr(itertools, "batched")\n', "itertools.batched")):
+            with self.subTest(reached=text.strip()):
+                self.assertEqual(gated(text).get(feature), (GATED[feature], "name"),
+                                 "a feature reached as a name is reached")
 
     def test_a_lower_interpreter_is_refused_with_the_floor_and_the_cause(self):
         """The refusal itself, driven rather than read: the floor, the cause, and the version it
