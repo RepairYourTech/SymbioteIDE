@@ -16,7 +16,11 @@ A second table, `HELD`, holds the rules a reversion cannot prove because the rul
 mutation would watch nothing fail. Each of those rows is checked by mutating the
 copy instead — the subject is in the tree, it states the refusal exactly once,
 the case is one the suite runs, and it still refuses in both directions the rule
-forbids: a file larger than its cap, and a tip whose guard was smaller.
+forbids: a file larger than its cap, and a tip whose guard was smaller. That
+second direction reads the subject's own history, so a checkout too shallow to
+hold an earlier guard is refused by name rather than passed — which is why the
+validation job runs this driver after fetching the full history, a link
+`test_python_floor.py` holds to that workflow.
 
 The live tree is never touched. The driver copies this working tree (everything
 cargo and those rows need, without `target/` or caches) into a temporary directory,
@@ -640,14 +644,20 @@ def digest(files: list[pathlib.Path]) -> dict[str, str]:
     return {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
 
 
+def history(tree: pathlib.Path, subject: str) -> list[str]:
+    """Every revision of `subject` this checkout holds, newest first — one alone in a shallow
+    clone, none in a source export."""
+    log = subprocess.run(["git", "log", "--format=%H", "--", subject], cwd=tree,
+                         capture_output=True, text=True)
+    return log.stdout.split()
+
+
 def guard_before(tree: pathlib.Path, subject: str) -> str | None:
     """The revision of `subject` that held the fewest lines, when it held fewer than the tree does
     — the state a rule about the subject's own size must refuse, and the tip a push would name."""
     now = len((tree / subject).read_text().splitlines())
-    log = subprocess.run(["git", "log", "--format=%H", "--", subject], cwd=tree,
-                         capture_output=True, text=True)
     sizes: dict[str, int] = {}
-    for revision in log.stdout.split():
+    for revision in history(tree, subject):
         shown = subprocess.run(["git", "show", f"{revision}:{subject}"], cwd=tree,
                                capture_output=True, text=True)
         if shown.returncode == 0:
@@ -695,6 +705,12 @@ def held_by(subject: str, anchor: str, declares: str, case: str, tree: pathlib.P
         return f"{subject} declares no number after {declares!r}"
     earlier = guard_before(tree, subject)
     if earlier is None:
+        held = history(tree, subject)
+        if len(held) <= 1:
+            return (f"this checkout holds {len(held)} revision of {subject}, so the smaller guard "
+                    f"the refusal is shown against is not in it: a shallow clone or a source "
+                    f"export cannot hold this rule — fetch the history (`fetch-depth: 0`, or "
+                    f"`git fetch --unshallow`)")
         return f"no revision of {subject} holds a smaller guard, so the refusal refuses nothing"
     payload = scratch / f"{path.stem}-before.json"
     payload.write_text(json.dumps({"before": earlier}))
