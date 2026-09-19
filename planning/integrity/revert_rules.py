@@ -11,23 +11,17 @@ only place a rule's proof is recorded: `test_revert_rules.py` holds each row's
 anchor to the tree and each row's case to a case the suite runs, so a moved anchor
 or a renamed case fails that test rather than becoming a row this driver skips.
 
-A second table, `HELD`, holds the rules a reversion cannot prove because the rule
-*is* the refusal being reverted: removing the text removes the refusal, so a
-mutation would watch nothing fail. Each of those rows is checked by mutating the
-copy instead — the subject is in the tree, it states the refusal exactly once,
-the case is one the suite runs, and it still refuses in both directions the rule
-forbids: a file larger than its cap, and a tip whose guard was smaller. That
-second direction reads the subject's own history, so a checkout too shallow to
-hold an earlier guard is refused by name rather than passed — which is why the
-validation job runs this driver after fetching the full history, a link
-`test_python_floor.py` holds to that workflow.
-
-`LINKS` holds the other half of that: the case which holds those links cannot
-hold its own presence, so each row names a refusal the case states, the file the
-refusal is about and the text that is the link — and the driver takes that text
-out of the copy and requires the case to fail. Renaming the case, deleting the
-class it sits in or emptying the comparison it makes leaves the row unheld and
-this run non-zero, rather than the suite green and this report unchanged.
+A second table, `HOLDS`, holds the rules a reversion cannot prove because the
+rule *is* the refusal being reverted, or the link the refusal is about: removing
+the text removes the refusal, so a mutation would watch nothing fail. Each row
+names the refusal, the case that states it, the subject stating it, the text it
+states exactly once, and every way the driver shows it biting — the subject a
+line past the number it declares, the case run against a tip whose guard was
+smaller, or a link taken out of the file it is written in. A row is held when
+every way makes the case fail. A row that names no way, a table that names no
+row, and a checkout too shallow to hold the smaller guard are refused rather than
+passed — the last is why the validation job runs this driver after fetching the
+full history, a link `test_python_floor.py` holds to that workflow.
 
 The live tree is never touched. The driver copies this working tree (everything
 cargo and those rows need, without `target/` or caches) into a temporary directory,
@@ -608,51 +602,44 @@ RULES: list[tuple[str, str, str, str]] = [
 ]
 
 
-# Rules held by a case's presence and its refusals rather than by a reversion: each row names the
-# rule, the subject stating the refusal, the text stating it, the declaration whose number the
-# subject's own size is held against, and the case that carries both. The subject must state that
-# text exactly once, and the case must fail both with the subject a line over that number and when
-# run against a tip whose guard was smaller — so removing the case, renaming it, or emptying either
-# comparison leaves the rule unheld rather than green.
-HELD: list[tuple[str, str, str, str, str]] = [
+# Rules held by a case's presence and its refusals rather than by a reversion: the case cannot
+# hold its own presence — renaming it out of collection, deleting the class it sits in or emptying
+# the comparison it makes leaves the suite green and this driver reporting every row it has as
+# biting — so each row names the refusal, the case stating it, the subject stating it, the text the
+# subject states exactly once, and the ways that must make the case fail. A way is `(file, how,
+# argument)`: `larger` adds lines to `file` until it is past the number it declares after
+# `argument`, `earlier` runs the case against the smallest revision of `file` this checkout holds,
+# and `gone` takes `argument` out of `file`. A row with no way, and this table with no row, are
+# refused rather than passed.
+HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
     (
         "the reader-size guard's cap refuses a guard larger than the tip it lands on",
+        "test_the_guard_is_within_the_cap_it_may_not_raise",
         "planning/integrity/test_reader_size.py",
         "        self.assertLessEqual(GUARD_CAP, parent,",
-        "GUARD_CAP = ",
-        "test_the_guard_is_within_the_cap_it_may_not_raise",
+        (("planning/integrity/test_reader_size.py", "larger", "GUARD_CAP = "),
+         ("planning/integrity/test_reader_size.py", "earlier", "")),
     ),
-]
-
-# A third table, `LINKS`, for a hold that is a refusal about *another file*: the subject states the
-# refusal, the linked file carries the link the refusal is about, and the case must fail when that
-# link is taken out of the copy. A case cannot hold its own presence — renaming it out of
-# collection, deleting the class it sits in or emptying the comparison it makes leaves the suite
-# green and this driver reporting every row it has as biting, which is the escape the `HELD` table
-# closed one level down — so the links a suite's own evidence rests on are held here, where the
-# removal is what the driver watches fail. Each row: the rule, the subject stating the refusal, the
-# text stating it, the linked file, the text that is that link, and the case that carries it.
-LINKS: list[tuple[str, str, str, str, str, str]] = [
     (
         "the job that runs this directory's checks also runs the rule driver",
+        "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
         "planning/integrity/test_python_floor.py",
         "these jobs run the suite but not the rule driver",
-        ".github/workflows/roadmap-integrity.yml",
-        "      - name: Re-prove every refusal this repository claims\n"
-        "        run: python3 planning/integrity/revert_rules.py\n",
-        "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
+        ((".github/workflows/roadmap-integrity.yml", "gone",
+          "      - name: Re-prove every refusal this repository claims\n"
+          "        run: python3 planning/integrity/revert_rules.py\n"),),
     ),
     (
         "the job that runs those checks fetches the history they read",
+        "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
         "planning/integrity/test_python_floor.py",
         "these jobs run those checks without the history they read",
-        ".github/workflows/roadmap-integrity.yml",
-        "          # sit several commits back when one push carries more than one, so this job needs"
-        " the full\n"
-        "          # history the way the closing-keyword job above needs the pull request's own"
-        " range.\n"
-        "          fetch-depth: 0\n",
-        "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
+        ((".github/workflows/roadmap-integrity.yml", "gone",
+          "          # sit several commits back when one push carries more than one, so this job "
+          "needs the full\n"
+          "          # history the way the closing-keyword job above needs the pull request's own "
+          "range.\n"
+          "          fetch-depth: 0\n"),),
     ),
 ]
 
@@ -691,7 +678,7 @@ def history(tree: pathlib.Path, subject: str) -> list[str]:
     return log.stdout.split()
 
 
-def guard_before(tree: pathlib.Path, subject: str) -> str | None:
+def smaller_revision(tree: pathlib.Path, subject: str) -> str | None:
     """The revision of `subject` that held the fewest lines, when it held fewer than the tree does
     — the state a rule about the subject's own size must refuse, and the tip a push would name."""
     now = len((tree / subject).read_text().splitlines())
@@ -707,27 +694,49 @@ def guard_before(tree: pathlib.Path, subject: str) -> str | None:
     return smallest if sizes[smallest] < now else None
 
 
-def linked_by(subject: str, anchor: str, linked: str, removal: str, case: str,
-              tree: pathlib.Path) -> str | None:
-    """Why the case does not hold the link it names, or None when it does: the subject states the
-    refusal exactly once, the linked file carries that link exactly once, and the case fails as soon
-    as the link is taken out of the copy — which no reading of the subject's text can show.
+def shown(subject: pathlib.Path, way: tuple[str, str, str], case: str, tree: pathlib.Path,
+          scratch: pathlib.Path) -> str | None:
+    """Why this way does not make the case fail, or None when it does: the file is mutated in the
+    copy for the length and removal ways, the case is run against a named tip for the history way,
+    and every way names text this tree holds so the driver cannot be told to mutate nothing.
     """
-    path = tree / subject
-    if not path.is_file():
-        return f"{subject} is not in the tree"
-    if path.read_text().count(anchor) != 1:
-        return f"{subject} does not state the refusal exactly once"
-    target = tree / linked
+    where, how, argument = way
+    target = tree / where
     if not target.is_file():
-        return f"{linked} is not in the tree"
+        return f"{where} is not in the tree"
     text = target.read_text()
-    if text.count(removal) != 1:
-        return f"{linked} does not carry the link exactly once"
-    target.write_text(text.replace(removal, ""))
-    why = case_fails(path, case, {})
+    if how == "earlier":
+        smaller = smaller_revision(tree, where)
+        if smaller is None:
+            held = history(tree, where)
+            if len(held) <= 1:
+                return (f"this checkout holds {len(held)} revision of {where}, so the smaller "
+                        f"guard the refusal is shown against is not in it: a shallow clone or a "
+                        f"source export cannot hold this rule — fetch the history "
+                        f"(`fetch-depth: 0`, or `git fetch --unshallow`)")
+            return f"no revision of {where} holds a smaller guard, so the refusal refuses nothing"
+        payload = scratch / f"{target.stem}-before.json"
+        payload.write_text(json.dumps({"before": smaller}))
+        why = case_fails(subject, case, {"GITHUB_EVENT_NAME": "push",
+                                         "GITHUB_EVENT_PATH": str(payload)})
+        said = f"against a push naming {where}'s smaller guard"
+    elif how == "larger":
+        declared_number = declared(text, argument)
+        if declared_number is None:
+            return f"{where} declares no number after {argument!r}"
+        target.write_text(text.rstrip("\n")
+                          + "\n# one line past this cap\n" * max(0, declared_number + 1
+                                                                  - len(text.splitlines())))
+        why, said = case_fails(subject, case, {}), f"with {where} a line past its declared cap"
+    elif how == "gone":
+        if text.count(argument) != 1:
+            return f"{where} does not carry what the refusal is about exactly once"
+        target.write_text(text.replace(argument, ""))
+        why, said = case_fails(subject, case, {}), f"with the link taken out of {where}"
+    else:
+        return (f"{how!r} is not a way this driver shows a refusal: name larger, earlier or gone")
     target.write_text(text)
-    return None if why is None else f"{why} with the link removed from {linked}"
+    return None if why is None else f"{why} {said}"
 
 
 def case_fails(path: pathlib.Path, case: str, env: dict[str, str]) -> str | None:
@@ -751,46 +760,36 @@ def declared(text: str, prefix: str) -> int | None:
     return int(found.group(1)) if found else None
 
 
-def held_by(subject: str, anchor: str, declares: str, case: str, tree: pathlib.Path,
-            scratch: pathlib.Path) -> str | None:
-    """Why the case does not hold its rule, or None when it does: the subject states the refusal
-    once, and the case fails both with the subject a line over the number it declares and when run
-    against a tip whose guard was smaller — neither of which the refusal's text alone can show."""
-    path = tree / subject
-    if not path.is_file():
-        return f"{subject} is not in the tree"
-    text = path.read_text()
-    if text.count(anchor) != 1:
-        return f"{subject} does not state the refusal exactly once"
-    cap = declared(text, declares)
-    if cap is None:
-        return f"{subject} declares no number after {declares!r}"
-    earlier = guard_before(tree, subject)
-    if earlier is None:
-        held = history(tree, subject)
-        if len(held) <= 1:
-            return (f"this checkout holds {len(held)} revision of {subject}, so the smaller guard "
-                    f"the refusal is shown against is not in it: a shallow clone or a source "
-                    f"export cannot hold this rule — fetch the history (`fetch-depth: 0`, or "
-                    f"`git fetch --unshallow`)")
-        return f"no revision of {subject} holds a smaller guard, so the refusal refuses nothing"
-    payload = scratch / f"{path.stem}-before.json"
-    payload.write_text(json.dumps({"before": earlier}))
-    original = path.read_bytes()
-    padding = max(0, cap + 1 - len(text.splitlines()))
-    path.write_text(text.rstrip("\n") + "\n# one line past this cap\n" * padding)
-    grown = case_fails(path, case, {})
-    path.write_bytes(original)
-    if grown:
-        return f"{grown} with the subject a line past its declared cap"
-    return case_fails(path, case, {"GITHUB_EVENT_NAME": "push", "GITHUB_EVENT_PATH": str(payload)})
+def holds(row: tuple, tree: pathlib.Path, scratch: pathlib.Path) -> str | None:
+    """Why this row does not hold its refusal, or None when it does: the row names the five parts a
+    hold states, the subject is in the tree and states the refusal once, and every way the row names
+    makes the case fail. A row naming no way holds nothing, which is refused here rather than read
+    as a row with nothing to check, and so is a row naming fewer parts than a hold states.
+    """
+    if len(row) != 5:
+        return f"names {len(row)} parts, not the five a hold states"
+    _rule, case, stated_in, states, ways = row
+    subject = tree / stated_in
+    if not subject.is_file():
+        return f"{stated_in} is not in the tree"
+    if subject.read_text().count(states) != 1:
+        return f"{stated_in} does not state the refusal exactly once"
+    if not ways:
+        return "names no way to show its refusal, so it holds nothing"
+    for way in ways:
+        why = shown(subject, way, case, tree, scratch)
+        if why is not None:
+            return why
+    return None
 
 
 def main() -> int:
-    watched = (scanned(ROOT) + [ROOT / subject for _rule, subject, _anchor, _declares, _case in HELD]
-               + [ROOT / linked for _rule, _subject, _anchor, linked, _removal, _case in LINKS])
+    rows = [row for row in HOLDS if len(row) == 5]
+    watched = [path for path in (scanned(ROOT) + [ROOT / row[2] for row in rows]
+                                 + [ROOT / way[0] for row in rows for way in row[4]])
+               if path.is_file()]
     before = digest(watched)
-    bit, missing, stale, silent, unheld, unlinked = [], [], [], [], [], []
+    bit, missing, stale, silent, unheld, kept = [], [], [], [], [], 0
     scratch = tempfile.mkdtemp(prefix="revert-rules-")
     try:
         tree = pathlib.Path(scratch) / "tree"
@@ -827,20 +826,18 @@ def main() -> int:
             else:
                 silent.append((rule, case))
                 print(f"SILENT: {rule} ({case})")
-        for rule, subject, anchor, declares, case in HELD:
-            why = held_by(subject, anchor, declares, case, tree, pathlib.Path(scratch))
+        for row in HOLDS:
+            name = row[0] if row else "a hold row with no name"
+            why = holds(row, tree, pathlib.Path(scratch))
             if why is None:
-                print(f"HELD: {case}")
+                kept += 1
+                print(f"HELD: {name}")
             else:
-                unheld.append((rule, why))
-                print(f"NOT HELD: {rule} ({why})")
-        for rule, subject, anchor, linked, removal, case in LINKS:
-            why = linked_by(subject, anchor, linked, removal, case, tree)
-            if why is None:
-                print(f"LINKED: {case}")
-            else:
-                unlinked.append((rule, why))
-                print(f"LINK BROKEN: {rule} ({why})")
+                unheld.append((name, why))
+                print(f"NOT HELD: {name} ({why})")
+        if not HOLDS:
+            unheld.append(("the hold table", "names no row, so no refusal is held"))
+            print("NOT HELD: the hold table (names no row, so no refusal is held)")
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -849,11 +846,10 @@ def main() -> int:
     print(
         f"\n{len(bit)}/{len(RULES)} rules bit; {len(missing)} missing tests; "
         f"{len(stale)} stale anchors; {len(silent)} silent; "
-        f"{len(HELD) - len(unheld)}/{len(HELD)} cases held by presence and refusal; "
-        f"{len(LINKS) - len(unlinked)}/{len(LINKS)} links held by removal; "
+        f"{kept}/{len(HOLDS)} cases held by their refusals; "
         f"{len(moved)} files of the live tree moved ({', '.join(moved) or 'none'})"
     )
-    return 1 if missing or stale or silent or unheld or unlinked or moved else 0
+    return 1 if missing or stale or silent or unheld or moved else 0
 
 
 if __name__ == "__main__":
