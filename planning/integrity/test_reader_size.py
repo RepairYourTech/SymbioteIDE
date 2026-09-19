@@ -34,10 +34,10 @@ RULES = ("test_toolchain_floors.py", "test_handoff.py")
 READER_LINES = 450
 GUARD_LINES = 375
 GUARD_CASES = 12
-# Local modules whose reading is part of the subject. The repo's own files only, and named here
-# rather than followed quietly: a reader that moves reading into a module beside it must say so,
-# and that module's reading then counts in `READER_LINES` like the reader's own.
-LOCAL_IMPORTS: tuple[str, ...] = ()
+# Local modules whose reading is part of the subject. The repo's own files only, named here
+# rather than followed quietly: one a reader reaches through an import must be declared, and its
+# reading then counts like the reader's own. `python_floor` reads no text, so 450 stands.
+LOCAL_IMPORTS: tuple[str, ...] = ("python_floor",)
 # What reading text is, as a shape: these module names, whose operations read it, and the calls
 # that turn a file or a block into lines. A definition holding one of these reads text.
 TEXT_MODULES = frozenset({"re", "tomllib"})

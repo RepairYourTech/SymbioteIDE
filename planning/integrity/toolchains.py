@@ -14,8 +14,9 @@ that never closes, and a value only the runner knows are each refused by name.
 from __future__ import annotations
 
 import pathlib
+import python_floor
 import re
-import tomllib
+import tomllib  # the one gated import this directory has: `python_floor` states its floor
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
