@@ -21,7 +21,12 @@ smaller, or a link taken out of the file it is written in. A row is held when
 every way makes the case fail. A row that names no way, a table that names no
 row, and a checkout too shallow to hold the smaller guard are refused rather than
 passed — the last is why the validation job runs this driver after fetching the
-full history, a link `test_python_floor.py` holds to that workflow.
+full history, a link `test_python_floor.py` holds to that workflow. The checker
+proves itself every run too: it is read on inputs built to be refused — one per
+kind of way, and the rows a hold must not hold — so a checker vacated into holding
+everything is caught by the run it would have fooled rather than by a reading of
+its text, and the same negative inputs are driven from `test_revert_rules.py` so
+no single file holds the checker's strength.
 
 The live tree is never touched. The driver copies this working tree (everything
 cargo and those rows need, without `target/` or caches) into a temporary directory,
@@ -630,6 +635,14 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
           "        run: python3 planning/integrity/revert_rules.py\n"),),
     ),
     (
+        "the hold's own checker refuses a way that does not bite",
+        "test_the_checker_and_its_own_proof_refuse_a_way_that_does_not_bite",
+        "planning/integrity/test_revert_rules.py",
+        "a way that does not bite reads as held",
+        (("planning/integrity/revert_rules.py", "gone",
+          '    return None if why is None else f"{why} {said}"\n'),),
+    ),
+    (
         "the job that runs those checks fetches the history they read",
         "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
         "planning/integrity/test_python_floor.py",
@@ -739,6 +752,48 @@ def shown(subject: pathlib.Path, way: tuple[str, str, str], case: str, tree: pat
     return None if why is None else f"{why} {said}"
 
 
+# The inputs this driver's own checker must refuse: one crafted way per kind, each built so its case
+# stays green when the way is applied, so a checker reading any of them as held no longer refuses.
+# `main` reads them every run, which is how the hold proves its checker rather than trusting it.
+NEGATIVE: tuple[tuple[str, str, str], ...] = (
+    ("link.txt", "gone", "a link\n"),
+    ("cap.txt", "larger", "CAP = "),
+    ("cap.txt", "earlier", ""),
+)
+
+
+def negative_inputs(scratch: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """The tree those ways are read in and the module they act on: a case that passes whatever they
+    do, the link `gone` would take out, and the declaration `larger` counts to."""
+    tree = scratch / "negative"
+    tree.mkdir(parents=True, exist_ok=True)
+    (tree / "test_negative.py").write_text(
+        "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n")
+    (tree / "link.txt").write_text("a link\n")
+    (tree / "cap.txt").write_text("CAP = 1\n")
+    return tree, tree / "test_negative.py"
+
+
+def self_proof(scratch: pathlib.Path) -> str | None:
+    """Why this driver cannot show what it must refuse, or None when it can: one row per kind of way,
+    each stating the refusal a hold must refuse in this very tree, plus the rows a hold must refuse —
+    one naming no way, one whose subject states no such refusal. They are read through `holds`, so a
+    checker that stopped refusing shows up as one of them reading as held, and vacating the checker is
+    caught by this run rather than by a reading of its text.
+    """
+    tree, _subject = negative_inputs(scratch)
+    stated = "class T(unittest.TestCase):"
+    rows = [(f"a {way[1]} way that does not bite", stated, (way,)) for way in NEGATIVE]
+    rows += [("a row naming no way", stated, ()),
+             ("a subject that states no such refusal", "nothing here says this", NEGATIVE[:1])]
+    for what, states, ways in rows:
+        why = holds(("a rule this driver must not hold", "test_ok", "test_negative.py", states, ways),
+                    tree, scratch)
+        if why is None:
+            return f"{what} reads as held"
+    return None
+
+
 def case_fails(path: pathlib.Path, case: str, env: dict[str, str]) -> str | None:
     """Why the case does not fail when it must, or None when it does."""
     run = subprocess.run(
@@ -826,6 +881,15 @@ def main() -> int:
             else:
                 silent.append((rule, case))
                 print(f"SILENT: {rule} ({case})")
+        for name, table in (("the rule table", RULES), ("the hold table", HOLDS),
+                            ("the inputs the hold refuses", NEGATIVE)):
+            if not table:
+                missing.append((name, "names no row, so no refusal is held"))
+                print(f"MISSING: {name} names no row, so no refusal is held")
+        proof = self_proof(pathlib.Path(scratch))
+        if proof is not None:
+            unheld.append(("this driver's own checker", proof))
+            print(f"NOT HELD: this driver's own checker ({proof})")
         for row in HOLDS:
             name = row[0] if row else "a hold row with no name"
             why = holds(row, tree, pathlib.Path(scratch))
@@ -835,9 +899,6 @@ def main() -> int:
             else:
                 unheld.append((name, why))
                 print(f"NOT HELD: {name} ({why})")
-        if not HOLDS:
-            unheld.append(("the hold table", "names no row, so no refusal is held"))
-            print("NOT HELD: the hold table (names no row, so no refusal is held)")
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

@@ -21,6 +21,8 @@ one governs the table's rows.
 """
 
 import importlib
+import pathlib
+import tempfile
 import unittest
 
 import revert_rules
@@ -142,6 +144,26 @@ class RevertRulesTable(unittest.TestCase):
                     found = path.read_text().count(argument)
                     self.assertEqual(found, 1, f"{rule} names a link {where} carries {found} "
                                                f"times, so the driver cannot place it")
+    def test_the_checker_and_its_own_proof_refuse_a_way_that_does_not_bite(self):
+        # The checker cannot hold its own presence by watching the rows it judges, so this drives it
+        # and its built-in negative inputs directly: a way that leaves its case green must be
+        # reported, and a checker patched to hold everything must be refused by the proof.
+        with tempfile.TemporaryDirectory() as where:
+            scratch = pathlib.Path(where)
+            tree, subject = revert_rules.negative_inputs(scratch)
+            for way in revert_rules.NEGATIVE:
+                why = revert_rules.shown(subject, way, "test_ok", tree, scratch)
+                self.assertIsNotNone(why, f"a way that does not bite reads as held: {way}")
+            self.assertIsNone(revert_rules.self_proof(scratch), "the proof must refuse each input")
+            self.assertIn("proof = self_proof(", (ROOT / "planning/integrity/revert_rules.py").read_text(),
+                          "the run must read its own checker rather than only this case")
+            refusing = revert_rules.shown
+            try:
+                revert_rules.shown = lambda *args, **kwargs: None
+                self.assertIsNotNone(revert_rules.self_proof(scratch),
+                                     "a checker that holds everything must be refused")
+            finally:
+                revert_rules.shown = refusing
 
 
 if __name__ == "__main__":
