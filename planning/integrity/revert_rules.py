@@ -11,8 +11,15 @@ only place a rule's proof is recorded: `test_revert_rules.py` holds each row's
 anchor to the tree and each row's case to a case the suite runs, so a moved anchor
 or a renamed case fails that test rather than becoming a row this driver skips.
 
+A second table, `HELD`, holds the rules a reversion cannot prove because the rule
+*is* the refusal being reverted: removing the text removes the refusal, so a
+mutation would watch nothing fail. Each of those rows is checked by mutating the
+copy instead — the subject is in the tree, it states the refusal exactly once,
+the case is one the suite runs, and it still refuses in both directions the rule
+forbids: a file larger than its cap, and a tip whose guard was smaller.
+
 The live tree is never touched. The driver copies this working tree (everything
-cargo needs, without `.git/`, `target/` or caches) into a temporary directory,
+cargo and those rows need, without `target/` or caches) into a temporary directory,
 mutates the copy, runs each case there with the copy's own target directory, and
 removes it — then re-reads the live tree's files and fails if any byte of them
 moved. That is why it can be run beside another build: the version before this one
@@ -22,7 +29,10 @@ that were only its mutations.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -42,7 +52,7 @@ DOCUMENTS = (
     "docs/proofs/linux-shell.md",
     "docs/architecture/spike-contracts.json",
 )
-IGNORED = shutil.ignore_patterns(".git", "target", ".freebuff", "__pycache__", "node_modules")
+IGNORED = shutil.ignore_patterns("target", ".freebuff", "__pycache__", "node_modules")
 
 # Each row: the rule, the text that holds it, the text that removes it, and the
 # case that fails when it is removed.
@@ -587,6 +597,23 @@ RULES: list[tuple[str, str, str, str]] = [
 ]
 
 
+# Rules held by a case's presence and its refusals rather than by a reversion: each row names the
+# rule, the subject stating the refusal, the text stating it, the declaration whose number the
+# subject's own size is held against, and the case that carries both. The subject must state that
+# text exactly once, and the case must fail both with the subject a line over that number and when
+# run against a tip whose guard was smaller — so removing the case, renaming it, or emptying either
+# comparison leaves the rule unheld rather than green.
+HELD: list[tuple[str, str, str, str, str]] = [
+    (
+        "the reader-size guard's cap refuses a guard larger than the tip it lands on",
+        "planning/integrity/test_reader_size.py",
+        "        self.assertLessEqual(GUARD_CAP, parent,",
+        "GUARD_CAP = ",
+        "test_the_guard_is_within_the_cap_it_may_not_raise",
+    ),
+]
+
+
 def scanned(tree: pathlib.Path) -> list[pathlib.Path]:
     """Every file a row can be held in, under the tree the driver mutates."""
     files = [tree / document for document in DOCUMENTS]
@@ -613,9 +640,78 @@ def digest(files: list[pathlib.Path]) -> dict[str, str]:
     return {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
 
 
+def guard_before(tree: pathlib.Path, subject: str) -> str | None:
+    """The revision of `subject` that held the fewest lines, when it held fewer than the tree does
+    — the state a rule about the subject's own size must refuse, and the tip a push would name."""
+    now = len((tree / subject).read_text().splitlines())
+    log = subprocess.run(["git", "log", "--format=%H", "--", subject], cwd=tree,
+                         capture_output=True, text=True)
+    sizes: dict[str, int] = {}
+    for revision in log.stdout.split():
+        shown = subprocess.run(["git", "show", f"{revision}:{subject}"], cwd=tree,
+                               capture_output=True, text=True)
+        if shown.returncode == 0:
+            sizes[revision] = len(shown.stdout.splitlines())
+    if not sizes:
+        return None
+    smallest = min(sizes, key=lambda revision: sizes[revision])
+    return smallest if sizes[smallest] < now else None
+
+
+def case_fails(path: pathlib.Path, case: str, env: dict[str, str]) -> str | None:
+    """Why the case does not fail when it must, or None when it does."""
+    run = subprocess.run(
+        [sys.executable, "-m", "unittest", "-v", path.stem],
+        cwd=path.parent, capture_output=True, text=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **env},
+    )
+    output = run.stdout + run.stderr
+    if f"{case} (" not in output:
+        return f"{case} is not a case the suite runs"
+    if run.returncode == 0 or "FAIL" not in output:
+        return f"{case} passes where the rule forbids that state"
+    return None
+
+
+def declared(text: str, prefix: str) -> int | None:
+    """The number `text` declares after `prefix`, or None when it declares none."""
+    found = re.search(rf"^{re.escape(prefix)}(\d+)$", text, re.M)
+    return int(found.group(1)) if found else None
+
+
+def held_by(subject: str, anchor: str, declares: str, case: str, tree: pathlib.Path,
+            scratch: pathlib.Path) -> str | None:
+    """Why the case does not hold its rule, or None when it does: the subject states the refusal
+    once, and the case fails both with the subject a line over the number it declares and when run
+    against a tip whose guard was smaller — neither of which the refusal's text alone can show."""
+    path = tree / subject
+    if not path.is_file():
+        return f"{subject} is not in the tree"
+    text = path.read_text()
+    if text.count(anchor) != 1:
+        return f"{subject} does not state the refusal exactly once"
+    cap = declared(text, declares)
+    if cap is None:
+        return f"{subject} declares no number after {declares!r}"
+    earlier = guard_before(tree, subject)
+    if earlier is None:
+        return f"no revision of {subject} holds a smaller guard, so the refusal refuses nothing"
+    payload = scratch / f"{path.stem}-before.json"
+    payload.write_text(json.dumps({"before": earlier}))
+    original = path.read_bytes()
+    padding = max(0, cap + 1 - len(text.splitlines()))
+    path.write_text(text.rstrip("\n") + "\n# one line past this cap\n" * padding)
+    grown = case_fails(path, case, {})
+    path.write_bytes(original)
+    if grown:
+        return f"{grown} with the subject a line past its declared cap"
+    return case_fails(path, case, {"GITHUB_EVENT_NAME": "push", "GITHUB_EVENT_PATH": str(payload)})
+
+
 def main() -> int:
-    before = digest(scanned(ROOT))
-    bit, missing, stale, silent = [], [], [], []
+    watched = scanned(ROOT) + [ROOT / subject for _rule, subject, _anchor, _declares, _case in HELD]
+    before = digest(watched)
+    bit, missing, stale, silent, unheld = [], [], [], [], []
     scratch = tempfile.mkdtemp(prefix="revert-rules-")
     try:
         tree = pathlib.Path(scratch) / "tree"
@@ -652,17 +748,25 @@ def main() -> int:
             else:
                 silent.append((rule, case))
                 print(f"SILENT: {rule} ({case})")
+        for rule, subject, anchor, declares, case in HELD:
+            why = held_by(subject, anchor, declares, case, tree, pathlib.Path(scratch))
+            if why is None:
+                print(f"HELD: {case}")
+            else:
+                unheld.append((rule, why))
+                print(f"NOT HELD: {rule} ({why})")
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
-    after = digest(scanned(ROOT))
+    after = digest(watched)
     moved = [name for name in before if after.get(name) != before[name]]
     print(
         f"\n{len(bit)}/{len(RULES)} rules bit; {len(missing)} missing tests; "
         f"{len(stale)} stale anchors; {len(silent)} silent; "
+        f"{len(HELD) - len(unheld)}/{len(HELD)} cases held by presence and refusal; "
         f"{len(moved)} files of the live tree moved ({', '.join(moved) or 'none'})"
     )
-    return 1 if missing or stale or silent or moved else 0
+    return 1 if missing or stale or silent or unheld or moved else 0
 
 
 if __name__ == "__main__":
