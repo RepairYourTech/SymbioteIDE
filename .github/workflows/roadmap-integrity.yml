@@ -57,10 +57,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The reader-size guard holds its own cap against the guard the commit before this one
-          # carries, so this job needs that parent commit: the previous `main` on a push, the
-          # pull request's base on a merge ref.
-          fetch-depth: 2
+          # The reader-size guard holds its own cap against the guard the tip this commit lands on
+          # carried — the tip a push event names, the pull request's base on a merge ref — which can
+          # sit several commits back when one push carries more than one, so this job needs the full
+          # history the way the closing-keyword job above needs the pull request's own range.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
