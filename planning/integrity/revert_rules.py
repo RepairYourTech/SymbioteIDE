@@ -22,6 +22,13 @@ hold an earlier guard is refused by name rather than passed — which is why the
 validation job runs this driver after fetching the full history, a link
 `test_python_floor.py` holds to that workflow.
 
+`LINKS` holds the other half of that: the case which holds those links cannot
+hold its own presence, so each row names a refusal the case states, the file the
+refusal is about and the text that is the link — and the driver takes that text
+out of the copy and requires the case to fail. Renaming the case, deleting the
+class it sits in or emptying the comparison it makes leaves the row unheld and
+this run non-zero, rather than the suite green and this report unchanged.
+
 The live tree is never touched. The driver copies this working tree (everything
 cargo and those rows need, without `target/` or caches) into a temporary directory,
 mutates the copy, runs each case there with the copy's own target directory, and
@@ -617,6 +624,38 @@ HELD: list[tuple[str, str, str, str, str]] = [
     ),
 ]
 
+# A third table, `LINKS`, for a hold that is a refusal about *another file*: the subject states the
+# refusal, the linked file carries the link the refusal is about, and the case must fail when that
+# link is taken out of the copy. A case cannot hold its own presence — renaming it out of
+# collection, deleting the class it sits in or emptying the comparison it makes leaves the suite
+# green and this driver reporting every row it has as biting, which is the escape the `HELD` table
+# closed one level down — so the links a suite's own evidence rests on are held here, where the
+# removal is what the driver watches fail. Each row: the rule, the subject stating the refusal, the
+# text stating it, the linked file, the text that is that link, and the case that carries it.
+LINKS: list[tuple[str, str, str, str, str, str]] = [
+    (
+        "the job that runs this directory's checks also runs the rule driver",
+        "planning/integrity/test_python_floor.py",
+        "these jobs run the suite but not the rule driver",
+        ".github/workflows/roadmap-integrity.yml",
+        "      - name: Re-prove every refusal this repository claims\n"
+        "        run: python3 planning/integrity/revert_rules.py\n",
+        "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
+    ),
+    (
+        "the job that runs those checks fetches the history they read",
+        "planning/integrity/test_python_floor.py",
+        "these jobs run those checks without the history they read",
+        ".github/workflows/roadmap-integrity.yml",
+        "          # sit several commits back when one push carries more than one, so this job needs"
+        " the full\n"
+        "          # history the way the closing-keyword job above needs the pull request's own"
+        " range.\n"
+        "          fetch-depth: 0\n",
+        "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
+    ),
+]
+
 
 def scanned(tree: pathlib.Path) -> list[pathlib.Path]:
     """Every file a row can be held in, under the tree the driver mutates."""
@@ -666,6 +705,29 @@ def guard_before(tree: pathlib.Path, subject: str) -> str | None:
         return None
     smallest = min(sizes, key=lambda revision: sizes[revision])
     return smallest if sizes[smallest] < now else None
+
+
+def linked_by(subject: str, anchor: str, linked: str, removal: str, case: str,
+              tree: pathlib.Path) -> str | None:
+    """Why the case does not hold the link it names, or None when it does: the subject states the
+    refusal exactly once, the linked file carries that link exactly once, and the case fails as soon
+    as the link is taken out of the copy — which no reading of the subject's text can show.
+    """
+    path = tree / subject
+    if not path.is_file():
+        return f"{subject} is not in the tree"
+    if path.read_text().count(anchor) != 1:
+        return f"{subject} does not state the refusal exactly once"
+    target = tree / linked
+    if not target.is_file():
+        return f"{linked} is not in the tree"
+    text = target.read_text()
+    if text.count(removal) != 1:
+        return f"{linked} does not carry the link exactly once"
+    target.write_text(text.replace(removal, ""))
+    why = case_fails(path, case, {})
+    target.write_text(text)
+    return None if why is None else f"{why} with the link removed from {linked}"
 
 
 def case_fails(path: pathlib.Path, case: str, env: dict[str, str]) -> str | None:
@@ -725,9 +787,10 @@ def held_by(subject: str, anchor: str, declares: str, case: str, tree: pathlib.P
 
 
 def main() -> int:
-    watched = scanned(ROOT) + [ROOT / subject for _rule, subject, _anchor, _declares, _case in HELD]
+    watched = (scanned(ROOT) + [ROOT / subject for _rule, subject, _anchor, _declares, _case in HELD]
+               + [ROOT / linked for _rule, _subject, _anchor, linked, _removal, _case in LINKS])
     before = digest(watched)
-    bit, missing, stale, silent, unheld = [], [], [], [], []
+    bit, missing, stale, silent, unheld, unlinked = [], [], [], [], [], []
     scratch = tempfile.mkdtemp(prefix="revert-rules-")
     try:
         tree = pathlib.Path(scratch) / "tree"
@@ -771,6 +834,13 @@ def main() -> int:
             else:
                 unheld.append((rule, why))
                 print(f"NOT HELD: {rule} ({why})")
+        for rule, subject, anchor, linked, removal, case in LINKS:
+            why = linked_by(subject, anchor, linked, removal, case, tree)
+            if why is None:
+                print(f"LINKED: {case}")
+            else:
+                unlinked.append((rule, why))
+                print(f"LINK BROKEN: {rule} ({why})")
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -780,9 +850,10 @@ def main() -> int:
         f"\n{len(bit)}/{len(RULES)} rules bit; {len(missing)} missing tests; "
         f"{len(stale)} stale anchors; {len(silent)} silent; "
         f"{len(HELD) - len(unheld)}/{len(HELD)} cases held by presence and refusal; "
+        f"{len(LINKS) - len(unlinked)}/{len(LINKS)} links held by removal; "
         f"{len(moved)} files of the live tree moved ({', '.join(moved) or 'none'})"
     )
-    return 1 if missing or stale or silent or unheld or moved else 0
+    return 1 if missing or stale or silent or unheld or unlinked or moved else 0
 
 
 if __name__ == "__main__":
