@@ -118,6 +118,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+import python_floor  # this tool reaches `tomllib` through `toolchains`, so it states the floor
 from toolchains import named_workspace
 
 # The scalar keywords the wire file spells, which is what the crate's own parser

@@ -43,6 +43,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The checker reads a manifest through `planning/integrity/toolchains.py`, whose one
+      # gated import is `tomllib` (3.11) — `planning/integrity/python_floor.py` states the number
+      # and `test_python_floor.py` holds every job that runs these tools to it. This job used to
+      # inherit the image's python3, which is the same class of accident that made the contracts
+      # legs below run the checker on 3.10.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
