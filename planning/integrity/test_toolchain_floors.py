@@ -27,6 +27,7 @@ from toolchains import (
     jobs,
     legs,
     manifests,
+    named_workspace,
     pairs,
     version,
     workspace_jobs,
@@ -481,6 +482,54 @@ class EverySpellingOfOneStatement(unittest.TestCase):
             with self.subTest(missing="a manifest this tree does not hold"):
                 with self.assertRaisesRegex(AssertionError, "is not a manifest this tree holds"):
                     floor(nested / "member" / "Ghost.toml")
+
+    def test_a_root_a_crate_names_itself_is_read_as_cargo_reads_it(self):
+        """The key is TOML, so it is read as TOML: an escaped name and a multi-line string
+        each name the root they state, where the text scan this replaced read a sibling that
+        does not exist and the crate's own directory. A manifest cargo refuses is refused by
+        name rather than read as naming no root — the direction that matters, a name settling
+        where a crate's workspace is. Measured on the tree: no name in it moves either way.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            nested = pathlib.Path(directory) / "nested"
+            (nested / "root").mkdir(parents=True)
+            (nested / "root" / "Cargo.toml").write_text('[workspace]\nmembers = []\n')
+            member = nested / "member" / "Cargo.toml"
+            member.parent.mkdir(parents=True)
+            named_root = (nested / "root").resolve()
+            for spelling, stated in (("a plain name", 'workspace = "../root"'),
+                                     ("a name with a comment",
+                                      'workspace = "../root" # the root'),
+                                     ("a single-quoted name", "workspace = '../root'"),
+                                     ("a name in a table spelled with spaces",
+                                      'workspace = "../root"'),
+                                     ("an escaped name", 'workspace = "../r\\u006fot"'),
+                                     ("a multi-line name", 'workspace = """../root"""')):
+                with self.subTest(named=spelling):
+                    header = "[ package ]" if spelling.endswith("spaces") else "[package]"
+                    member.write_text(f'{header}\nname = "member"\n{stated}\n')
+                    self.assertEqual(named_workspace(member), named_root,
+                                     f"cargo reads this name as TOML: {stated}")
+            for spelling, stated in (("a name that is not a string", "workspace = 3"),
+                                     ("a name under another table",
+                                      '[package.metadata]\nworkspace = "../root"'),
+                                     ("a name only in a comment",
+                                      '# workspace = "../root"')):
+                with self.subTest(named=spelling):
+                    member.write_text(f'[package]\nname = "member"\n{stated}\n')
+                    self.assertIsNone(named_workspace(member),
+                                      "cargo spells the root as a plain string under the "
+                                      "package's own table, so nothing else is a name to follow")
+            with self.subTest(named="a manifest cargo refuses"):
+                member.write_text('[package]\nname = "member"\nworkspace = "../root"\n'
+                                  'name = "dup"\n')
+                with self.assertRaisesRegex(AssertionError, "is not TOML"):
+                    named_workspace(member)
+            with self.subTest(named="a root that holds no manifest"):
+                member.write_text('[package]\nname = "member"\nworkspace = "../nowhere"\n'
+                                  'rust-version.workspace = true\n')
+                with self.assertRaisesRegex(AssertionError, "holds no Cargo.toml"):
+                    floor(member)
 
     def test_a_directory_is_read_from_the_whole_value_it_states(self):
         """Measured against the reader before this held it: a `working-directory` written over

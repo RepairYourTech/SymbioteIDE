@@ -63,6 +63,16 @@ jobs:
         toolchain: ["1.85.0", stable]
     steps:
       - uses: actions/checkout@v4
+      # The second reader of a record is `planning/integrity/source_record.py`,
+      # which the source-stamp guard's tests spawn as `python3`; it reads a
+      # manifest's `[package] workspace` through `toolchains.py`, the tool the
+      # integrity rules share, so it needs `tomllib` and therefore 3.11+. This
+      # runner's own python3 is 3.10, which is a missing module rather than a
+      # verdict — measured, three guard cases read that as a refusal before this
+      # step existed. The version is the one the integrity jobs already use.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Build pinned Linux sandbox runtime
         run: |
           sudo apt-get update
