@@ -6,7 +6,10 @@ holds the table to the tree without running cargo, so a moved anchor or a rename
 case fails in a second rather than becoming a row the driver skips. The driver's
 `HELD` table — the rules a reversion cannot prove, because the rule is the refusal
 being reverted — is held the same way: each row's subject is in the tree, states
-the refusal exactly once, and runs the case the row names.
+the refusal exactly once, and runs the case the row names. Its `LINKS` table —
+the case that holds the links a suite's own evidence rests on, which cannot hold
+its own presence — is held the same way too: the subject states the refusal, the
+linked file carries the link, and the case the row names is one the subject runs.
 
 What it does not ask is whether the table is complete: no relation between the
 rows and the crate's refusal sites exists, so a rule added without a row is not
@@ -23,7 +26,7 @@ import importlib
 import unittest
 
 import revert_rules
-from revert_rules import HELD, ROOT, RULES, case_target, scanned
+from revert_rules import HELD, LINKS, ROOT, RULES, case_target, scanned
 
 
 def collected(module):
@@ -131,6 +134,29 @@ class RevertRulesTable(unittest.TestCase):
             self.assertTrue(subject.startswith("planning/integrity/test_"), subject)
         rules = [rule for rule, _subject, _anchor, _declares, _case in HELD]
         self.assertEqual(len(rules), len(set(rules)), "two rows state one rule")
+
+    def test_every_link_row_names_a_rule_a_subject_an_anchor_a_link_a_removal_and_a_case(self):
+        self.assertTrue(LINKS, "the driver holds no link by removing it")
+        for row in LINKS:
+            self.assertEqual(len(row), 6, row)
+            self.assertTrue(all(part.strip() for part in row), row)
+            rule, subject, anchor, linked, removal, case = row
+            self.assertNotEqual(anchor, removal, rule)
+        rules = [rule for rule, _subject, _anchor, _linked, _removal, _case in LINKS]
+        self.assertEqual(len(rules), len(set(rules)), "two rows state one rule")
+
+    def test_every_link_row_states_its_refusal_and_carries_its_link_once(self):
+        # The same claim `HELD` is held to, one file over: a row whose refusal or link cannot be
+        # placed is a row the driver cannot show failing, so it fails here instead of going quiet.
+        for rule, subject, anchor, linked, removal, case in LINKS:
+            for path, text, what in ((ROOT / subject, anchor, "states its refusal"),
+                                     (ROOT / linked, removal, "carries the link")):
+                self.assertTrue(path.is_file(), f"{rule} names {path}, which is not in the tree")
+                held = path.read_text().count(text)
+                self.assertEqual(held, 1, f"{rule} {what} {held} times in {path.name}, so the "
+                                           f"driver cannot place it")
+            self.assertIn(case, collected(importlib.import_module((ROOT / subject).stem)),
+                          f"{rule} names {case}, which {subject} does not run")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,10 @@ The same derivation holds the chain that runs this directory's proof, not only i
 the job that runs the integrity suite must run the rule driver beside it and fetch the history
 both read — the reader-size guard holds nothing if the driver that refuses a grown guard never
 runs, and the driver's own refusal is shown against an earlier guard only when the checkout holds
-one. Those three links are `TheChainThatRunsTheseChecks` below.
+one. Those three links are `TheChainThatRunsTheseChecks` below, read as the commands a job's steps
+run rather than as the spelling one workflow writes them in, so `-s planning/integrity`,
+`-s ./planning/integrity`, a `cd` into the directory and a preceding `cd` line are one check — and
+`revert_rules.py`'s `LINKS` rows hold that case in turn, since a case cannot hold its own presence.
 
 Stated with their figures, what this cannot see — each a derivation reading *statements* where the
 answer would take running the effect, which is why no case here closes them:
@@ -41,6 +44,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import posixpath
 import re
 import unittest
 
@@ -71,11 +75,25 @@ CANDIDATES = (8, 9, 10, 11, 12, 13)
 # a string exactly equal to one of these reaches the feature its qualified name is listed under.
 MEMBERS = {feature.split(".")[-1]: feature for feature in GATED if "." in feature}
 
-# The proof this directory's chain is made of: the suite that declares the reader-size guard, the
-# driver that refuses a guard grown past it, and the fetch that gives both the history they read.
-SUITE = "unittest discover -s planning/integrity"
-DRIVER = "revert_rules.py"
+# The proof this directory's chain is made of: the job whose commands run this directory's own
+# unittest discovery — the suite that declares the reader-size guard — the driver that refuses a
+# guard grown past it, and the fetch that gives both the history they read.
+SUITE_DIRECTORY = "planning/integrity"
+DRIVER_SCRIPT = "revert_rules.py"
 FULL_HISTORY = "fetch-depth: 0"
+SEPARATOR = re.compile(r"&&|\|\||[;&|]")
+# What a step's line starts with before its command does: `run:`, and the list dash a job may put
+# in front of it. A step written `run: cd here && python -m unittest discover` is one line holding
+# two commands, so the key has to come off before the first of them can be read as a command.
+RUN_KEY = re.compile(r"^(?:-\s*)?run:\s*")
+DISCOVER = re.compile(r"\bunittest\b.*\bdiscover\b")
+CHDIR = re.compile(r"^cd\s+(.+)$")
+# A directory can hold spaces (`${{ github.workspace }}/…`), so it runs to the next option or the
+# end of the command rather than to the next blank.
+START_DIRECTORY = re.compile(r"(?:-s|--start-directory)(?:\s+|=)([^-].*?)(?=\s+-|\s*$)")
+# Options whose value is the token after them, so `-p 'test_*.py'` is not read as a directory.
+VALUED = {"-p", "--pattern", "-k", "-t", "--top-level-directory"}
+RUNS_DRIVER = re.compile(rf"(?:^|\s)(?:python3?\s+)?(?:\S*/)?{re.escape(DRIVER_SCRIPT)}(?:\s|$)")
 JOB = re.compile(r"^  ([A-Za-z0-9_.\-]+):\s*$")
 VERSION = re.compile(r"""^\s*python-version:\s*['"]?([0-9]+)\.([0-9]+)['"]?\s*$""")
 COMMENT = re.compile(r"^\s*#")
@@ -190,6 +208,83 @@ def spawning() -> list[str]:
     return found
 
 
+def commands(lines: list[str]) -> list[str]:
+    """Every command a job's step lines run, in order: the shell's separators read as what
+    separates one command from the next, so a step that chains two is read as both.
+    """
+    found = []
+    for line in lines:
+        for command in SEPARATOR.split(line):
+            command = RUN_KEY.sub("", command.strip()).strip()
+            if command:
+                found.append(command)
+    return found
+
+
+def named_directory(command: str) -> str | None:
+    """The directory a `discover` command says to search: `-s`/`--start-directory`, or the
+    positional argument unittest reads the same way. Options and their values are skipped, so
+    `-p 'test_*.py'` is not read as a directory.
+    """
+    said = START_DIRECTORY.search(command)
+    if said:
+        return said.group(1)
+    skip = False
+    for token in command[command.index("discover") + len("discover"):].split():
+        if token.startswith("#"):
+            return None
+        if skip:
+            skip = False
+        elif token.startswith("-"):
+            skip = token in VALUED
+        else:
+            return token
+    return None
+
+
+def names_this_directory(where: str | None) -> bool:
+    """Whether a path names this directory: the tracked path itself, or one that ends in it — a
+    path built from the workspace variable is the same directory as the relative one.
+    """
+    if where is None:
+        return False
+    joined = posixpath.normpath(where)
+    return joined == SUITE_DIRECTORY or joined.endswith(f"/{SUITE_DIRECTORY}")
+
+
+def runs_the_suite(lines: list[str]) -> bool:
+    """Whether these steps run unittest's discovery over *this* directory, in any spelling of it.
+
+    `python -m unittest discover -s planning/integrity`, the same with `./` or a trailing slash, the
+    directory given positionally, `cd planning/integrity && python -m unittest discover` and a `cd`
+    on a line of its own before either are one check written five ways — discovery starts in the
+    directory it runs in when nothing names one — so all five are read, and the hold is not bound to
+    the spelling one workflow happens to write. A relative directory is resolved where the command
+    runs, so `-s .` after a `cd` into this directory is this directory. A directory named to
+    `-t`/`--top-level-directory` is not read: discovery would start at the top level and search
+    wider than this directory.
+    """
+    directory = None
+    for command in commands(lines):
+        went = CHDIR.match(command)
+        if went:
+            directory = posixpath.normpath(went.group(1).split("#")[0].strip().strip("'\""))
+            continue
+        if not DISCOVER.search(command):
+            continue
+        named = named_directory(command)
+        # `-s` names a directory relative to where the command runs, so `.` is the tracked one.
+        where = posixpath.join(directory or ".", named) if named else directory
+        if names_this_directory(where):
+            return True
+    return False
+
+
+def runs_the_driver(lines: list[str]) -> bool:
+    """Whether these steps run the rule driver, however the interpreter and path are spelled."""
+    return any(RUNS_DRIVER.search(command) for command in commands(lines))
+
+
 def jobs(workflow: pathlib.Path) -> dict[str, list[str]]:
     """Each job of a workflow as the lines of its steps, comments dropped so a note about this
     directory is not read as a command that runs it, and continuations joined so a command written
@@ -298,7 +393,9 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
     against an earlier guard, so its checkout must hold one. So the job that runs this directory's
     suite must run the driver too — two halves of one proof over one checkout — and must fetch the
     full history both read: the cap case reads the tip a push names, the driver an earlier guard.
-    Read as the steps a job states, the way the interpreter rule above reads them, not as YAML.
+    Read as the commands a job's steps run, the way the interpreter rule above reads them, not as
+    YAML and not as one spelling: whichever way a job writes the discovery, it is the job that runs
+    the check, and this case names it by failing rather than by matching its command.
     """
 
     def test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history(self):
@@ -306,15 +403,15 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
         for workflow in sorted(WORKFLOWS.glob("*.yml")):
             for job, lines in jobs(workflow).items():
                 named = f"{workflow.name}:{job}"
-                if SUITE not in "\n".join(lines):
+                if not runs_the_suite(lines):
                     continue
                 ran.append(named)
-                if DRIVER not in "\n".join(lines):
+                if not runs_the_driver(lines):
                     without.append(named)
                 if not any(line.strip() == FULL_HISTORY for line in lines):
                     shallow.append(named)
-        self.assertTrue(ran, f"no job runs {SUITE!r}, so the reader-size guard's hold is run by "
-                             f"nothing CI runs")
+        self.assertTrue(ran, f"no job runs this directory's unittest discovery, so the reader-size "
+                             f"guard's hold is run by nothing CI runs")
         self.assertEqual(without, [], f"these jobs run the suite but not the rule driver, whose "
                                       f"`HELD` row is the only check that refuses a guard grown "
                                       f"past its cap in both directions: {without}")
