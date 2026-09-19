@@ -17,8 +17,11 @@ the text removes the refusal, so a mutation would watch nothing fail. Each row
 names the refusal, the case that states it, the subject stating it, the text it
 states exactly once, and every way the driver shows it biting — the subject a
 line past the number it declares, the case run against a tip whose guard was
-smaller, a link taken out of the file it is written in, or a text in that file
-replaced by a weaker one, which is how a step made non-fatal is driven. A row is
+smaller, a link taken out of the file it is written in, a text in that file
+replaced by a weaker one, or a workflow written into one of the states `chain.py`
+names, which is how a link gone or a step made non-fatal is driven. That last
+kind reaches the workflow through the reading the case itself makes, so no row
+freezes a spelling the case accepts. A row is
 held when every way makes the case fail. A row that names no way, a table that
 names no row, a kind of way this file does not name, and a checkout too shallow to
 hold the smaller guard are refused rather than passed — the last is why the
@@ -53,6 +56,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+import chain
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SOURCES = ("crates/symbiote-architecture/src", "crates/symbiote-architecture/tests")
@@ -613,21 +618,24 @@ RULES: list[tuple[str, str, str, str]] = [
 ]
 
 
-# The tree texts a hold names and weakens: the step that runs the rule driver, which must stay fatal
-# for the cap the suite declares to mean anything — the suite step is read by its commands rather
-# than by its spelling, so the ways are anchored to the driver step — and the comparison of the live
-# tree before and after the run, which must stay able to see a file move.
-DRIVER_STEP = "        run: python3 planning/integrity/revert_rules.py\n"
+# The tree text a hold names and weakens: the comparison of the live tree before and after the run,
+# which must stay able to see a file move. No row anchors the workflow: which step runs these checks
+# is owned by `chain.py`, read from the commands a step runs, and the rows that hold the chain mutate
+# a workflow *through* that reading (`mutates` below) — a row freezing the workflow's own text would
+# refuse a maintainer who re-spells the step the way the case reads it.
 MOVED = ("    after = digest(watched)\n"
          "    moved = [name for name in before if after.get(name) != before[name]]\n")
+CHAIN = "planning/integrity/test_python_floor.py"
+WORKFLOW = ".github/workflows/roadmap-integrity.yml"
 
 # The ways a hold may show its refusal, named once here so the rows, the inputs the checker is
 # proved on and the rule holding both cannot drift apart: `larger` adds lines to `file` until it is
 # past the number it declares after `argument`, `earlier` runs the case against the smallest
-# revision of `file` this checkout holds, `gone` takes `argument` out of `file`, and `weaker`
-# replaces `argument` — a pair of texts — with the second, which is how a step made non-fatal or a
-# check whose result is thrown away is driven.
-WAYS: tuple[str, ...] = ("larger", "earlier", "gone", "weaker")
+# revision of `file` this checkout holds, `gone` takes `argument` out of `file`, `weaker` replaces
+# `argument` — a pair of texts — with the second, and `mutates` writes a workflow into the state
+# `argument` names through `chain.mutated`, which is how a link gone or a step made non-fatal is
+# driven without either way matching the workflow's own text.
+WAYS: tuple[str, ...] = ("larger", "earlier", "gone", "weaker", "mutates")
 
 # Rules held by a case's presence and its refusals rather than by a reversion: the case cannot
 # hold its own presence — renaming it out of collection, deleting the class it sits in or emptying
@@ -648,11 +656,9 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
     (
         "the job that runs this directory's checks also runs the rule driver",
         "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
-        "planning/integrity/test_python_floor.py",
+        CHAIN,
         "these jobs run the suite but not the rule driver",
-        ((".github/workflows/roadmap-integrity.yml", "gone",
-          "      - name: Re-prove every refusal this repository claims\n"
-          "        run: python3 planning/integrity/revert_rules.py\n"),),
+        ((WORKFLOW, "mutates", chain.NO_DRIVER),),
     ),
     (
         "the hold's own checker refuses a way that does not bite",
@@ -665,26 +671,18 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
     (
         "the job that runs those checks fetches the history they read",
         "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
-        "planning/integrity/test_python_floor.py",
+        CHAIN,
         "these jobs run those checks without the history they read",
-        ((".github/workflows/roadmap-integrity.yml", "gone",
-          "          # sit several commits back when one push carries more than one, so this job "
-          "needs the full\n"
-          "          # history the way the closing-keyword job above needs the pull request's own "
-          "range.\n"
-          "          fetch-depth: 0\n"),),
+        ((WORKFLOW, "mutates", chain.NO_HISTORY),),
     ),
     (
         "the job that runs these checks fails when they fail",
         "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
-        "planning/integrity/test_python_floor.py",
+        CHAIN,
         "these steps run the checks without their failure reaching the job",
-        ((".github/workflows/roadmap-integrity.yml", "weaker",
-          (DRIVER_STEP, "        continue-on-error: true\n" + DRIVER_STEP)),
-         (".github/workflows/roadmap-integrity.yml", "weaker",
-          (DRIVER_STEP, "        if: false\n" + DRIVER_STEP)),
-         (".github/workflows/roadmap-integrity.yml", "weaker",
-          (DRIVER_STEP, DRIVER_STEP.removesuffix("\n") + " || true\n"))),
+        ((WORKFLOW, "mutates", chain.NON_FATAL),
+         (WORKFLOW, "mutates", chain.CONDITIONAL),
+         (WORKFLOW, "mutates", chain.SWALLOWED)),
     ),
     (
         "the driver refuses a live file moved while it runs",
@@ -805,7 +803,7 @@ def smaller_revision(tree: pathlib.Path, subject: str) -> str | None:
 
 
 def shown(subject: pathlib.Path, way: tuple[str, str, str | tuple[str, str]], case: str,
-          tree: pathlib.Path, scratch: pathlib.Path) -> str | None:
+          tree: pathlib.Path, scratch: pathlib.Path, states: str | None = None) -> str | None:
     """Why this way does not make the case fail, or None when it does: the file is mutated in the
     copy for the length, removal and weakening ways, the case is run against a named tip for the
     history way, and every way names text this tree holds so the driver cannot be told to mutate
@@ -850,6 +848,17 @@ def shown(subject: pathlib.Path, way: tuple[str, str, str | tuple[str, str]], ca
             return f"{where} does not carry what the refusal is about exactly once"
         target.write_text(text.replace(before, after))
         why, said = case_fails(subject, case, {}), f"with {where} weakened"
+    elif how == "mutates":
+        # The state is written by the reading the case itself makes (`chain`), never by matching the
+        # workflow's text, so a spelling the case accepts is a state this way can reach and a way
+        # cannot demand one the case calls satisfied.
+        changed = chain.mutated(text, argument)
+        if changed == text or argument not in chain.MUTATIONS:
+            return (f"{where} is unchanged by {argument!r}: the states this driver writes are "
+                    f"{', '.join(chain.MUTATIONS)}")
+        target.write_text(changed)
+        why = case_fails(subject, case, {}, states)
+        said = f"with the workflow in the state {argument!r}"
     else:
         return (f"{how!r} is not a way this driver shows a refusal: name "
                 f"{', '.join(WAYS)}")
@@ -865,6 +874,7 @@ NEGATIVE: tuple[tuple[str, str, str | tuple[str, str]], ...] = (
     ("cap.txt", "larger", "CAP = "),
     ("cap.txt", "earlier", ""),
     ("cap.txt", "weaker", ("CAP = 1", "CAP = 0")),
+    ("workflow.yml", "mutates", chain.NO_DRIVER),
 )
 
 
@@ -877,6 +887,9 @@ def negative_inputs(scratch: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
         "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n")
     (tree / "link.txt").write_text("a link\n")
     (tree / "cap.txt").write_text("CAP = 1\n")
+    (tree / "workflow.yml").write_text(
+        "jobs:\n  check:\n    steps:\n      - name: the checks\n"
+        "        run: python -m unittest discover -s planning/integrity\n")
     return tree, tree / "test_negative.py"
 
 
@@ -906,8 +919,14 @@ def self_proof(scratch: pathlib.Path) -> str | None:
     return None
 
 
-def case_fails(path: pathlib.Path, case: str, env: dict[str, str]) -> str | None:
-    """Why the case does not fail when it must, or None when it does."""
+def case_fails(path: pathlib.Path, case: str, env: dict[str, str],
+               states: str | None = None) -> str | None:
+    """Why the case does not fail when it must, or None when it does.
+
+    `states` is the refusal a row says the case states, and is asked for by the way that writes a
+    workflow into a state: then the failure has to be that refusal rather than any earlier one, so a
+    reading vacated into failing somewhere above the assertion reads as nothing here.
+    """
     run = subprocess.run(
         [sys.executable, "-m", "unittest", "-v", path.stem],
         cwd=path.parent, capture_output=True, text=True,
@@ -920,6 +939,9 @@ def case_fails(path: pathlib.Path, case: str, env: dict[str, str]) -> str | None
     # row for the wrong reason, which is how a way that places nothing would read as biting.
     if run.returncode == 0 or not any(f"{kind}: {case} (" in output for kind in ("FAIL", "ERROR")):
         return f"{case} passes where the rule forbids that state"
+    if states is not None and states not in output:
+        return (f"{case} fails for another reason than the refusal the row states, so what made it "
+                f"fail need not be the state this way wrote")
     return None
 
 
@@ -946,7 +968,7 @@ def holds(row: tuple, tree: pathlib.Path, scratch: pathlib.Path) -> str | None:
     if not ways:
         return "names no way to show its refusal, so it holds nothing"
     for way in ways:
-        why = shown(subject, way, case, tree, scratch)
+        why = shown(subject, way, case, tree, scratch, states)
         if why is not None:
             return why
     return None

@@ -16,13 +16,15 @@ The same derivation holds the chain that runs this directory's proof, not only i
 the job that runs the integrity suite must run the rule driver beside it and fetch the history
 both read — the reader-size guard holds nothing if the driver that refuses a grown guard never
 runs, and the driver's own refusal is shown against an earlier guard only when the checkout holds
-one. Those three links are `TheChainThatRunsTheseChecks` below, read as the commands a job's steps
-run rather than as the spelling one workflow writes them in, so `-s planning/integrity`,
-`-s ./planning/integrity`, a `cd` into the directory and a preceding `cd` line are one check. A
-fourth link is that those steps' failures reach the job at all: a step made non-fatal, given a
-condition, or written so another command owns its exit status would leave CI green with the cap
-exceeded, which is the hold undone in one edit. `revert_rules.py`'s `HOLDS` rows hold that case in
-turn, since a case cannot hold its own presence.
+one. The reading is `chain.py`, which `TheChainThatRunsTheseChecks` below and the driver's ways
+both use, so which step runs these checks has one owner: a job is named for the commands its steps
+run, so `-s planning/integrity`, `-s ./planning/integrity`, a `cd` into the directory and a preceding
+`cd` line are one check. A fourth link is that those steps' failures reach the job at all: a step
+made non-fatal, given a condition that cannot hold, or written so another command owns its exit
+status would leave CI green with the cap exceeded, which is the hold undone in one edit.
+`revert_rules.py`'s `HOLDS` rows hold that case in turn, since a case cannot hold its own presence —
+and their ways mutate a workflow through `chain.mutated`, so a step re-spelled in a way this reading
+accepts is refused by neither the case nor a row.
 
 Stated with their figures, what this cannot see — each a derivation reading *statements* where the
 answer would take running the effect, which is why no case here closes them:
@@ -47,16 +49,26 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import posixpath
 import re
+import tempfile
 import unittest
 
+import chain
 import python_floor
+from chain import (DRIVER_LINK, FATAL_LINK, HISTORY_LINK, WORKFLOWS, jobs, links_missing,
+                   runs_the_suite)
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-WORKFLOWS = ROOT / ".github" / "workflows"
 CRATES = ROOT / "crates"
+# The workflow the chain is read in, mutated below to drive the reading on states the live tree does
+# not hold: this repository's own job, named once.
+CHAIN_WORKFLOW = WORKFLOWS / "roadmap-integrity.yml"
+# Which link each state the driver writes must leave the reading reporting, so a reading vacated into
+# finding nothing fails here rather than leaving the assertions above satisfied by a whole tree.
+STATE_LINKS = ((chain.NO_DRIVER, DRIVER_LINK), (chain.NO_HISTORY, HISTORY_LINK),
+               (chain.NON_FATAL, FATAL_LINK), (chain.CONDITIONAL, FATAL_LINK),
+               (chain.SWALLOWED, FATAL_LINK))
 
 # What a version-gated feature is, as far as this rule can tell: the global names the standard
 # library added, and the version that first had them. `tomllib` is the one this directory uses.
@@ -78,35 +90,6 @@ CANDIDATES = (8, 9, 10, 11, 12, 13)
 # a string exactly equal to one of these reaches the feature its qualified name is listed under.
 MEMBERS = {feature.split(".")[-1]: feature for feature in GATED if "." in feature}
 
-# The proof this directory's chain is made of: the job whose commands run this directory's own
-# unittest discovery — the suite that declares the reader-size guard — the driver that refuses a
-# guard grown past it, and the fetch that gives both the history they read.
-SUITE_DIRECTORY = "planning/integrity"
-DRIVER_SCRIPT = "revert_rules.py"
-FULL_HISTORY = "fetch-depth: 0"
-SEPARATOR = re.compile(r"&&|\|\||[;&|]")
-# What a step's line starts with before its command does: `run:`, and the list dash a job may put
-# in front of it. A step written `run: cd here && python -m unittest discover` is one line holding
-# two commands, so the key has to come off before the first of them can be read as a command.
-RUN_KEY = re.compile(r"^(?:-\s*)?run:\s*")
-DISCOVER = re.compile(r"\bunittest\b.*\bdiscover\b")
-CHDIR = re.compile(r"^cd\s+(.+)$")
-# A directory can hold spaces (`${{ github.workspace }}/…`), so it runs to the next option or the
-# end of the command rather than to the next blank.
-START_DIRECTORY = re.compile(r"(?:-s|--start-directory)(?:\s+|=)([^-].*?)(?=\s+-|\s*$)")
-# Options whose value is the token after them, so `-p 'test_*.py'` is not read as a directory.
-VALUED = {"-p", "--pattern", "-k", "-t", "--top-level-directory"}
-RUNS_DRIVER = re.compile(rf"(?:^|\s)(?:python3?\s+)?(?:\S*/)?{re.escape(DRIVER_SCRIPT)}(?:\s|$)")
-JOB = re.compile(r"^  ([A-Za-z0-9_.\-]+):\s*$")
-# A step that runs a check can stop its failure reaching the job two ways, both read from the step's
-# own lines: made non-fatal, or run only when a condition holds. `false` is the one value of
-# `continue-on-error` that keeps the step fatal.
-NONFATAL = re.compile(r"^(?:-\s*)?continue-on-error\s*:\s*(?!false\s*$)\S")
-CONDITIONAL = re.compile(r"^(?:-\s*)?if\s*:")
-# A command after the check that still fails the step, so `… || exit 1` swallows nothing.
-STILL_FAILS = re.compile(r"^exit\s+[1-9][0-9]*$")
-# A step's other keys, which are not commands and may follow its `run:` line.
-KEY_LINE = re.compile(r"^[a-z][a-z0-9_-]*:\s")
 VERSION = re.compile(r"""^\s*python-version:\s*['"]?([0-9]+)\.([0-9]+)['"]?\s*$""")
 COMMENT = re.compile(r"^\s*#")
 # A crate whose tests spawn a tool here: a Rust source naming this directory and starting python.
@@ -220,153 +203,6 @@ def spawning() -> list[str]:
     return found
 
 
-def commands(lines: list[str]) -> list[str]:
-    """Every command a job's step lines run, in order: the shell's separators read as what
-    separates one command from the next, so a step that chains two is read as both.
-    """
-    found = []
-    for line in lines:
-        for command in SEPARATOR.split(line):
-            command = RUN_KEY.sub("", command.strip()).strip()
-            if command:
-                found.append(command)
-    return found
-
-
-def named_directory(command: str) -> str | None:
-    """The directory a `discover` command says to search: `-s`/`--start-directory`, or the
-    positional argument unittest reads the same way. Options and their values are skipped, so
-    `-p 'test_*.py'` is not read as a directory.
-    """
-    said = START_DIRECTORY.search(command)
-    if said:
-        return said.group(1)
-    skip = False
-    for token in command[command.index("discover") + len("discover"):].split():
-        if token.startswith("#"):
-            return None
-        if skip:
-            skip = False
-        elif token.startswith("-"):
-            skip = token in VALUED
-        else:
-            return token
-    return None
-
-
-def names_this_directory(where: str | None) -> bool:
-    """Whether a path names this directory: the tracked path itself, or one that ends in it — a
-    path built from the workspace variable is the same directory as the relative one.
-    """
-    if where is None:
-        return False
-    joined = posixpath.normpath(where)
-    return joined == SUITE_DIRECTORY or joined.endswith(f"/{SUITE_DIRECTORY}")
-
-
-def runs_the_suite(lines: list[str]) -> bool:
-    """Whether these steps run unittest's discovery over *this* directory, in any spelling of it.
-
-    `python -m unittest discover -s planning/integrity`, the same with `./` or a trailing slash, the
-    directory given positionally, `cd planning/integrity && python -m unittest discover` and a `cd`
-    on a line of its own before either are one check written five ways — discovery starts in the
-    directory it runs in when nothing names one — so all five are read, and the hold is not bound to
-    the spelling one workflow happens to write. A relative directory is resolved where the command
-    runs, so `-s .` after a `cd` into this directory is this directory. A directory named to
-    `-t`/`--top-level-directory` is not read: discovery would start at the top level and search
-    wider than this directory.
-    """
-    directory = None
-    for command in commands(lines):
-        went = CHDIR.match(command)
-        if went:
-            directory = posixpath.normpath(went.group(1).split("#")[0].strip().strip("'\""))
-            continue
-        if not DISCOVER.search(command):
-            continue
-        named = named_directory(command)
-        # `-s` names a directory relative to where the command runs, so `.` is the tracked one.
-        where = posixpath.join(directory or ".", named) if named else directory
-        if names_this_directory(where):
-            return True
-    return False
-
-
-def runs_the_driver(lines: list[str]) -> bool:
-    """Whether these steps run the rule driver, however the interpreter and path are spelled."""
-    return any(RUNS_DRIVER.search(command) for command in commands(lines))
-
-
-def jobs(workflow: pathlib.Path) -> dict[str, list[str]]:
-    """Each job of a workflow as the lines of its steps, comments dropped so a note about this
-    directory is not read as a command that runs it, and continuations joined so a command written
-    over several lines is one string.
-    """
-    found: dict[str, list[str]] = {}
-    current, named = None, False
-    for line in workflow.read_text(errors="replace").splitlines():
-        if re.match(r"^jobs:\s*$", line):
-            named = True
-            continue
-        if named and line[:1] not in (" ", ""):
-            named = False
-        if not named:
-            continue
-        job = JOB.match(line)
-        if job:
-            current = job.group(1)
-            found[current] = []
-        elif current is not None and not COMMENT.match(line):
-            found[current].append(line.rstrip().removesuffix("\\").strip())
-    return found
-
-
-def steps(lines: list[str]) -> list[list[str]]:
-    """A job's steps, each starting at its own `- ` marker, so a step's fatality is read from the
-    step rather than from the job around it.
-    """
-    found: list[list[str]] = []
-    for line in lines:
-        if line.startswith("-") or not found:
-            found.append([])
-        found[-1].append(line)
-    return [step for step in found if step]
-
-
-def unfatal(lines: list[str]) -> list[str]:
-    """The steps of a job that run these checks without a failure reaching the job.
-
-    The cap the suite declares is enforced by that step failing, so a step made non-fatal, given a
-    condition that may not hold, or written so another command owns its exit status (`… || true`,
-    `… ; echo done`) leaves the job green with the cap exceeded — the whole hold undone by one edit
-    that no reading of the check itself can see. Read as the commands a step runs, the way this
-    case reads the discovery, so `cd … && python -m unittest discover` is the check with nothing
-    after it and stays green.
-    """
-    checks = [step for step in steps(lines) if runs_the_suite(step) or runs_the_driver(step)]
-    if not checks:
-        return []
-    found = []
-    # Read over the whole job, so a condition or a `continue-on-error` on the step and the same on
-    # the job are one clause rather than two that can be weakened one at a time.
-    if any(NONFATAL.match(line) for line in lines):
-        found.append("the check is made non-fatal, so its failure would leave this job green")
-    if any(CONDITIONAL.match(line) for line in lines):
-        found.append("the check runs only when a condition holds, so it can be skipped")
-    for step in checks:
-        name = next((line.removeprefix("- ").split(":", 1)[1].strip()
-                     for line in step if line.startswith("- name:")), step[0])
-        ran = commands(step)
-        reached = next((at for at in range(len(ran))
-                        if runs_the_suite(ran[:at + 1]) or runs_the_driver(ran[:at + 1])), None)
-        after = [one for one in ran[(reached + 1 if reached is not None else 0):]
-                 if not KEY_LINE.match(one)]
-        if reached is None or any(not STILL_FAILS.match(one) for one in after):
-            found.append(f"{name} runs the check before `{ran[-1]}`, so that command owns its "
-                         f"exit status")
-    return found
-
-
 def builds(text: str, owed: list[str]) -> bool:
     """Whether a cargo invocation in this text would compile a crate that spawns a tool here: the
     whole workspace, or that crate named on its own.
@@ -454,34 +290,54 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
     Read as the commands a job's steps run, the way the interpreter rule above reads them, not as
     YAML and not as one spelling: whichever way a job writes the discovery, it is the job that runs
     the check, and this case names it by failing rather than by matching its command. The same
-    reading holds that the step's failure is the job's: `unfatal` below refuses a step made
-    non-fatal, one behind a condition, or one whose exit status belongs to a later command.
+    reading — `chain.py`, which the driver's ways mutate through as well — holds that each link is
+    the job's own: `links_missing` names what a job lacks and `unfatal` refuses a step made
+    non-fatal, one behind a condition that cannot hold, or one whose exit status belongs to a later
+    command. Two spellings are deliberately green here, and the refusal is no wider than they are:
+
+      - a condition that *can* hold (`if: ${{ github.event_name == 'push' }}`), because a condition
+        this job satisfies is not a spelling the request named and deciding a non-constant one means
+        evaluating it; what that leaves — a condition false on an event this reading cannot name —
+        is answered by reading the workflow, not by this case; and
+      - a condition or a `continue-on-error` on a step that runs none of these checks (a checkout
+        behind `if: always()`), which says nothing about whether the check's failure reaches the
+        job.
     """
 
     def test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history(self):
-        ran, without, shallow, ignored = [], [], [], []
+        ran, lacking = [], {link: [] for link in (DRIVER_LINK, HISTORY_LINK, FATAL_LINK)}
         for workflow in sorted(WORKFLOWS.glob("*.yml")):
             for job, lines in jobs(workflow).items():
-                named = f"{workflow.name}:{job}"
-                ignored += [f"{named}: {step}" for step in unfatal(lines)]
                 if not runs_the_suite(lines):
                     continue
+                named = f"{workflow.name}:{job}"
                 ran.append(named)
-                if not runs_the_driver(lines):
-                    without.append(named)
-                if not any(line.strip() == FULL_HISTORY for line in lines):
-                    shallow.append(named)
-        self.assertTrue(ran, f"no job runs this directory's unittest discovery, so the reader-size "
-                             f"guard's hold is run by nothing CI runs")
-        self.assertEqual(without, [], f"these jobs run the suite but not the rule driver, whose "
-                                      f"`HELD` row is the only check that refuses a guard grown "
-                                      f"past its cap in both directions: {without}")
-        self.assertEqual(shallow, [], f"these jobs run those checks without the history they read "
-                                      f"— the cap case reads the tip a push names and the driver "
-                                      f"an earlier guard: {shallow}")
-        self.assertEqual(ignored, [],
+                for link in links_missing(lines):
+                    lacking[link].append(named)
+        self.assertTrue(ran, f"no job runs this directory's unittest discovery, so the "
+                             f"reader-size guard's hold is run by nothing CI runs")
+        self.assertEqual(lacking[DRIVER_LINK], [],
+                         "these jobs run the suite but not the rule driver, whose `HOLDS` row is "
+                         f"the only check that refuses a guard grown past its cap in both "
+                         f"directions: {lacking[DRIVER_LINK]}")
+        self.assertEqual(lacking[HISTORY_LINK], [],
+                         "these jobs run those checks without the history they read — the cap case "
+                         f"reads the tip a push names and the driver an earlier guard: "
+                         f"{lacking[HISTORY_LINK]}")
+        self.assertEqual(lacking[FATAL_LINK], [],
                          "these steps run the checks without their failure reaching the job, so a "
-                         f"guard grown past the cap it declares leaves CI green: {ignored}")
+                         f"guard grown past the cap it declares leaves CI green: "
+                         f"{lacking[FATAL_LINK]}")
+        # And the reading is driven on the states the driver's ways write: a reading that stopped
+        # finding a link would leave the assertions above satisfied by a tree that happens to be
+        # whole, which is a net going quiet rather than a rule holding.
+        with tempfile.TemporaryDirectory() as where:
+            written = pathlib.Path(where) / CHAIN_WORKFLOW.name
+            for what, link in STATE_LINKS:
+                written.write_text(chain.mutated(CHAIN_WORKFLOW.read_text(), what))
+                found = [one for _job, lines in jobs(written).items() for one in links_missing(lines)]
+                self.assertIn(link, found, f"a workflow in the state {what!r} is not read as lacking "
+                                           f"{link}, so this reading cannot find it")
 
 
 class TheInterpreterTheJobsProvide(unittest.TestCase):
