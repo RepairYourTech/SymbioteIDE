@@ -72,5 +72,14 @@ jobs:
         run: python -m unittest discover -s planning -p 'test_legacy_importers.py' -v
       - name: Verify registry and closing-keyword invariants
         run: python -m unittest discover -s planning/integrity -p 'test_*.py' -v
+      # The suite above declares the reader-size guard's cap; the driver below is what refuses a
+      # guard grown past it, in both directions, in a copy of this checkout. A hold nothing runs is
+      # not a hold, so the two run together over one full-history checkout — `test_python_floor.py`
+      # holds those three links to this job.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Re-prove every refusal this repository claims
+        run: python3 planning/integrity/revert_rules.py
       - name: Verify merged-checkout housekeeping
         run: python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v

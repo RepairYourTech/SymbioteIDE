@@ -12,6 +12,12 @@ job that runs this directory and configures no interpreter is what failed in CI:
 runner image, which was 3.10 on `ubuntu-22.04`, and the checker died as `No module named
 'tomllib'` where a refusal naming the floor belongs.
 
+The same derivation holds the chain that runs this directory's proof, not only its interpreter:
+the job that runs the integrity suite must run the rule driver beside it and fetch the history
+both read — the reader-size guard holds nothing if the driver that refuses a grown guard never
+runs, and the driver's own refusal is shown against an earlier guard only when the checkout holds
+one. Those three links are `TheChainThatRunsTheseChecks` below.
+
 Stated with their figures, what this cannot see — each a derivation reading *statements* where the
 answer would take running the effect, which is why no case here closes them:
 
@@ -65,6 +71,11 @@ CANDIDATES = (8, 9, 10, 11, 12, 13)
 # a string exactly equal to one of these reaches the feature its qualified name is listed under.
 MEMBERS = {feature.split(".")[-1]: feature for feature in GATED if "." in feature}
 
+# The proof this directory's chain is made of: the suite that declares the reader-size guard, the
+# driver that refuses a guard grown past it, and the fetch that gives both the history they read.
+SUITE = "unittest discover -s planning/integrity"
+DRIVER = "revert_rules.py"
+FULL_HISTORY = "fetch-depth: 0"
 JOB = re.compile(r"^  ([A-Za-z0-9_.\-]+):\s*$")
 VERSION = re.compile(r"""^\s*python-version:\s*['"]?([0-9]+)\.([0-9]+)['"]?\s*$""")
 COMMENT = re.compile(r"^\s*#")
@@ -277,6 +288,39 @@ class TheInterpreterTheCodeNeeds(unittest.TestCase):
             self.assertIn(f"{python_floor.FLOOR[0]}.{minor}", said)
         self.assertIsNone(python_floor.refuse(python_floor.FLOOR))
         self.assertIsNone(python_floor.refuse((python_floor.FLOOR[0], python_floor.FLOOR[1] + 1)))
+
+
+class TheChainThatRunsTheseChecks(unittest.TestCase):
+    """The links between the reader-size guard's hold and the workflow that runs it.
+
+    A hold nothing runs is not a hold. The suite states the cap; the driver is what refuses a guard
+    grown a line past it and a comparison read from the guard itself, and its refusal is shown
+    against an earlier guard, so its checkout must hold one. So the job that runs this directory's
+    suite must run the driver too — two halves of one proof over one checkout — and must fetch the
+    full history both read: the cap case reads the tip a push names, the driver an earlier guard.
+    Read as the steps a job states, the way the interpreter rule above reads them, not as YAML.
+    """
+
+    def test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history(self):
+        ran, without, shallow = [], [], []
+        for workflow in sorted(WORKFLOWS.glob("*.yml")):
+            for job, lines in jobs(workflow).items():
+                named = f"{workflow.name}:{job}"
+                if SUITE not in "\n".join(lines):
+                    continue
+                ran.append(named)
+                if DRIVER not in "\n".join(lines):
+                    without.append(named)
+                if not any(line.strip() == FULL_HISTORY for line in lines):
+                    shallow.append(named)
+        self.assertTrue(ran, f"no job runs {SUITE!r}, so the reader-size guard's hold is run by "
+                             f"nothing CI runs")
+        self.assertEqual(without, [], f"these jobs run the suite but not the rule driver, whose "
+                                      f"`HELD` row is the only check that refuses a guard grown "
+                                      f"past its cap in both directions: {without}")
+        self.assertEqual(shallow, [], f"these jobs run those checks without the history they read "
+                                      f"— the cap case reads the tip a push names and the driver "
+                                      f"an earlier guard: {shallow}")
 
 
 class TheInterpreterTheJobsProvide(unittest.TestCase):
