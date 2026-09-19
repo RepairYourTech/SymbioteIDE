@@ -31,8 +31,8 @@ from source_record import (
     embedded_record,
     is_hash,
     mark_locator,
+    named_workspace,
     nearest_workspace_root,
-    package_workspace,
     driven_unit,
     parse_dep_info,
     read_record,
@@ -1352,7 +1352,6 @@ class ManifestTests(unittest.TestCase):
             manifest.write_text(
                 '[package]\nname = "app"\nversion = "0.1.0"\nworkspace = "../other" # the root\n'
             )
-            self.assertEqual(package_workspace(manifest), "../other")
             self.assertEqual(
                 workspace_roots(package),
                 [target.resolve()],
@@ -1364,15 +1363,52 @@ class ManifestTests(unittest.TestCase):
                 "and the base the record's locators are spelled against",
             )
 
-    def test_a_workspace_key_that_is_not_a_string_or_not_the_packages_is_not_followed(self):
+    def test_the_root_a_crate_names_is_taken_from_the_one_reader_of_it(self):
+        # The name a crate gives its root is one fact, and it has one owner: this
+        # file used to carry its own scan of the key beside the toolchain rule's
+        # reader, and the two answered differently on a name TOML resolves (an
+        # escape, a multi-line string) and on a manifest cargo refuses. Measured
+        # on the tree: no name in it read differently, so the unification is a
+        # no-op today and only a second answer removed.
+        # Whether a manifest *declares* a workspace of its own is still read by
+        # the scan below: this file's two callers walk every ancestor, and their
+        # tolerance of a manifest that cannot be parsed is what keeps a stray
+        # manifest above the tree from refusing a record.
+        import toolchains
+
+        self.assertIs(named_workspace, toolchains.named_workspace,
+                      "the source record takes the named root from the reader that owns it "
+                      "rather than re-deriving it")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            package = base / "app"
+            (package / "src").mkdir(parents=True)
+            (base / "root" / "src").mkdir(parents=True)
+            (base / "root" / "Cargo.toml").write_text('[workspace]\nmembers = []\n')
+            manifest = package / "Cargo.toml"
+            # A name TOML resolves and a scan of the key does not: `\u006f` is the
+            # escape for `o`, so the first name is `../root`, which the scan reads
+            # as a sibling that does not exist; the multi-line string is read by
+            # the scan as an empty name — the package's own directory.
+            for spelling, written in (("an escape", 'workspace = "../r\\u006fot"'),
+                                      ("a multi-line string",
+                                       'workspace = """../root"""')):
+                with self.subTest(named=spelling):
+                    manifest.write_text(f'[package]\nname = "app"\n{written}\n')
+                    self.assertEqual(nearest_workspace_root(package),
+                                     (base / "root").resolve(),
+                                     f"the base a record's locators are spelled against: {written}")
+                    self.assertEqual(workspace_roots(package), [(base / "root").resolve()],
+                                     f"and the only root a build of it can read: {written}")
+            with self.subTest(named="a manifest cargo refuses"):
+                manifest.write_text('[package]\nname = "app"\nworkspace = "../root"\n'
+                                    'name = "dup"\n')
+                with self.assertRaisesRegex(AssertionError, "is not TOML"):
+                    nearest_workspace_root(package)
+
+    def test_a_comment_naming_a_workspace_is_not_a_declaration(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / "Cargo.toml"
-            manifest.write_text('[package]\nname = "app"\nworkspace = 3\n')
-            self.assertIsNone(package_workspace(manifest))
-            manifest.write_text(
-                '[package]\nname = "app"\n\n[package.metadata]\nworkspace = "../other"\n'
-            )
-            self.assertIsNone(package_workspace(manifest))
             manifest.write_text('[toolchain]\nchannel = "1.85.0" # [workspace]\n')
             self.assertFalse(declares_workspace(manifest.read_text()))
 

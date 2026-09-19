@@ -543,20 +543,32 @@ def declared(manifest: pathlib.Path, table: str) -> str | None:
     return stated if isinstance(stated, str) else None
 
 
+def named_workspace(manifest: pathlib.Path) -> pathlib.Path | None:
+    """The directory a crate's own `[package] workspace = "…"` names, or None.
+
+    The one reader of that key: `workspace_of` makes a manifest of it and the source-record check
+    takes this directory, rather than each reading the key — the scan the record carried answered
+    differently on a name TOML resolves and read a manifest cargo refuses. Read as TOML, because
+    the key is TOML: an escape and a multi-line string name what they state, and a manifest with
+    no reading of its own is refused by `parsed` rather than read as naming no root.
+    """
+    package = parsed(manifest).get("package")
+    named = package.get("workspace") if isinstance(package, dict) else None
+    return (manifest.parent / named).resolve() if isinstance(named, str) else None
+
+
 def workspace_of(manifest: pathlib.Path) -> pathlib.Path | None:
     """The manifest that is this crate's workspace, as cargo resolves it.
 
     A crate may name the root itself (`[package] workspace = ".."`), which cargo honours over
     the directory it sits in; failing that, the nearest manifest above it declaring a workspace.
     """
-    package = parsed(manifest).get("package")
-    named = package.get("workspace") if isinstance(package, dict) else None
-    if isinstance(named, str):
-        root = (manifest.parent / named).resolve() / "Cargo.toml"
-        if not root.is_file():
-            raise AssertionError(f"{manifest} names its workspace {named}, "
+    root = named_workspace(manifest)
+    if root is not None:
+        if not (root / "Cargo.toml").is_file():
+            raise AssertionError(f"{manifest} names its workspace {root}, "
                                  f"which holds no Cargo.toml")
-        return root
+        return root / "Cargo.toml"
     return next((parent / "Cargo.toml" for parent in manifest.parents
                  if (parent / "Cargo.toml").is_file()
                  and "workspace" in parsed(parent / "Cargo.toml")), None)

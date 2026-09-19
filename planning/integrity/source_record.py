@@ -118,6 +118,8 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+from toolchains import named_workspace
+
 # The scalar keywords the wire file spells, which is what the crate's own parser
 # reads too: the framing and the encoding of the bytes it frames, the variable a
 # record pins, the locators and contents, and what a refusal says about a mark the
@@ -860,50 +862,6 @@ def manifest_text(path):
         return ""
 
 
-def string_value(value):
-    """The content of a TOML string scalar — `"…"` or `'…'` — or None.
-
-    A comment or whitespace after the closing quote is ignored. A `workspace` a
-    manifest does not spell as a string is not a path this can follow, and
-    leaving it unrecorded is the safe direction where the ancestor roots are
-    still candidates.
-    """
-    value = value.strip()
-    if not value or value[0] not in "\"'":
-        return None
-    quote = value[0]
-    escaped = False
-    for index, character in enumerate(value[1:], start=1):
-        if escaped:
-            escaped = False
-        elif character == "\\" and quote == '"':
-            escaped = True
-        elif character == quote:
-            return value[1:index]
-    return None
-
-
-def package_workspace(manifest_path):
-    """The `workspace = "..."` a manifest's `[package]` table names, or None.
-
-    A package that names its own workspace root rather than inheriting the one
-    above it. Cargo spells it as a plain key — `workspace = "../.."` — so this
-    reads a scalar.
-    """
-    table = False
-    for line in manifest_text(manifest_path).splitlines():
-        name = table_name(line)
-        if name is not None:
-            table = name == "package"
-            continue
-        if not table:
-            continue
-        key, separator, value = line.partition("=")
-        if separator and key.strip() == "workspace":
-            return string_value(value)
-    return None
-
-
 def nearest_workspace_root(directory):
     """The root a record's relative locators are spelled against, or None.
 
@@ -912,12 +870,15 @@ def nearest_workspace_root(directory):
     root cargo reads: measured, a package whose manifest says
     `workspace = "../root"` resolves to the named root even where an ancestor
     manifest declares `[workspace]`, and the ancestor is then not parsed at all.
-    The same rule the record's own walk applies for its base.
+    The same rule the record's own walk applies for its base. The named root is
+    read by `toolchains.named_workspace`, the one reader of it: this file used to
+    carry its own scan of the key, and a second reader of one fact is a second
+    answer waiting to happen.
     """
     package = Path(directory).resolve()
-    target = package_workspace(package / "Cargo.toml")
+    target = named_workspace(package / "Cargo.toml")
     if target is not None:
-        return Path(os.path.normpath(package / target))
+        return target
     current = package
     while True:
         manifest = current / "Cargo.toml"
@@ -955,9 +916,9 @@ def workspace_roots(directory):
     the guarantee.
     """
     package = Path(directory).resolve()
-    target = package_workspace(package / "Cargo.toml")
+    target = named_workspace(package / "Cargo.toml")
     if target is not None:
-        return [Path(os.path.normpath(package / target))]
+        return [target]
     roots = [package]
     current = package
     while True:
