@@ -48,6 +48,37 @@ def collected(module):
     return names
 
 
+@contextlib.contextmanager
+def driver_state(**swapped):
+    """The driver's own names swapped for a run, and put back whatever the run does: a case that
+    drives the run needs the state the run reads, and one place to swap it is one place to get it
+    back.
+    """
+    real = {name: getattr(revert_rules, name) for name in swapped}
+    for name, value in swapped.items():
+        setattr(revert_rules, name, value)
+    try:
+        yield
+    finally:
+        for name, value in real.items():
+            setattr(revert_rules, name, value)
+
+
+class Copy:
+    """`shutil` as a run of the driver here uses it: a copy holding only the hold's own file, so a
+    run reads what its rows need rather than the whole repository, and a real removal.
+    """
+
+    @staticmethod
+    def copytree(source, destination, **_):
+        made = pathlib.Path(destination) / "planning" / "integrity"
+        made.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pathlib.Path(source) / "planning/integrity/test_revert_rules.py",
+                     made / "test_revert_rules.py")
+
+    rmtree = staticmethod(shutil.rmtree)
+
+
 def is_case(text, name):
     """Whether `text` defines `name` as a case it runs, not merely as a function."""
     lines = text.splitlines()
@@ -156,21 +187,32 @@ class RevertRulesTable(unittest.TestCase):
         """Driven over texts written here: a case the file collects that neither a row names nor the
         declaration accounts for is a case whose loss nothing would show, so it is refused — and so
         is a declared case the file no longer collects, which is a case renamed out of the suite.
+        Which names to write over is read from the file rather than copied into this one, so a rename
+        cannot leave the text below unchanged while the case passes on its own stale input.
         """
         self.assertIsNone(unheld_cases(ROOT), "a case here is unaccounted for")
         here = ROOT / "planning/integrity/test_revert_rules.py"
+        body = here.read_text()
+        declared = sorted(SHAPE_CASES & set(collected(importlib.import_module(here.stem))))
+        self.assertEqual(declared, sorted(SHAPE_CASES),
+                         "the declaration names a case this file no longer collects")
+
+        def written_over(name, replacement):
+            """The file's text with `name`'s definition replaced, or a failure when it has none."""
+            written = body.replace(f"    def {name}(self):", replacement, 1)
+            self.assertNotEqual(written, body, f"{name} is not written as a case in {here.name}, "
+                                               f"so this case would be driving nothing")
+            return written
+
         with tempfile.TemporaryDirectory() as where:
             scratch = pathlib.Path(where) / "planning/integrity"
             scratch.mkdir(parents=True)
-            body = here.read_text()
-            added = body.replace("    def test_the_hold_table_names",
-                                 "    def test_nothing_accounts_for_this(self):\n        pass\n\n"
-                                 "    def test_the_hold_table_names", 1)
-            (scratch / here.name).write_text(added)
+            (scratch / here.name).write_text(written_over(
+                declared[0], "    def test_nothing_accounts_for_this(self):\n        pass\n\n"
+                             f"    def {declared[0]}(self):"))
             self.assertIn("no declaration accounts for", unheld_cases(scratch.parent.parent) or "")
-            (scratch / here.name).write_text(
-                body.replace("    def test_the_table_names_rules_at_all(self):",
-                             "    def renamed_out_of_the_suite(self):", 1))
+            (scratch / here.name).write_text(written_over(
+                declared[-1], "    def renamed_out_of_the_suite(self):"))
             self.assertIn("collects no such case", unheld_cases(scratch.parent.parent) or "")
 
     def test_a_live_file_moved_while_the_driver_runs_is_refused(self):
@@ -182,30 +224,16 @@ class RevertRulesTable(unittest.TestCase):
         self.assertEqual(revert_rules.digest([here]),
                          {str(here.relative_to(ROOT)): hashlib.sha256(here.read_bytes()).hexdigest()},
                          "a file's digest must be its own bytes, or the re-read cannot see a move")
-        reads, real = [], (revert_rules.digest, revert_rules.shutil.copytree, revert_rules.RULES,
-                           revert_rules.HOLDS, revert_rules.NEGATIVE)
+        reads = []
 
         def two_answers(_files):
             reads.append(1)
             return {"moved.md": "before" if len(reads) == 1 else "after"}
 
-        def no_copy(source, destination, **_):
-            # Only what the run reads after the copy: this file, and nothing the rows would need.
-            made = pathlib.Path(destination) / "planning" / "integrity"
-            made.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(pathlib.Path(source) / "planning/integrity/test_revert_rules.py",
-                         made / "test_revert_rules.py")
-
-        try:
-            revert_rules.digest = two_answers
-            revert_rules.shutil.copytree = no_copy
-            revert_rules.RULES, revert_rules.HOLDS, revert_rules.NEGATIVE = [], [], ()
-            said = io.StringIO()
+        said = io.StringIO()
+        with driver_state(digest=two_answers, shutil=Copy, RULES=[], HOLDS=[], NEGATIVE=()):
             with contextlib.redirect_stdout(said):
                 code = revert_rules.main()
-        finally:
-            (revert_rules.digest, revert_rules.shutil.copytree, revert_rules.RULES,
-             revert_rules.HOLDS, revert_rules.NEGATIVE) = real
         self.assertIn("1 files of the live tree moved (moved.md)", said.getvalue(),
                       "the driver did not refuse a file moved while it ran")
         self.assertNotEqual(code, 0, "the run must fail when the live tree moved")
@@ -213,7 +241,9 @@ class RevertRulesTable(unittest.TestCase):
     def test_the_checker_and_its_own_proof_refuse_a_way_that_does_not_bite(self):
         # The checker cannot hold its own presence by watching the rows it judges, so this drives it
         # and its built-in negative inputs directly: a way that leaves its case green must be
-        # reported, and a checker patched to hold everything must be refused by the proof.
+        # reported, a checker patched to hold everything must be refused by the proof, and a run
+        # handed that same checker must refuse it by name — the run reading its own checker, driven
+        # rather than read off the line that calls it.
         with tempfile.TemporaryDirectory() as where:
             scratch = pathlib.Path(where)
             tree, subject = revert_rules.negative_inputs(scratch)
@@ -221,15 +251,13 @@ class RevertRulesTable(unittest.TestCase):
                 why = revert_rules.shown(subject, way, "test_ok", tree, scratch)
                 self.assertIsNotNone(why, f"a way that does not bite reads as held: {way}")
             self.assertIsNone(revert_rules.self_proof(scratch), "the proof must refuse each input")
-            self.assertIn("proof = self_proof(", (ROOT / "planning/integrity/revert_rules.py").read_text(),
-                          "the run must read its own checker rather than only this case")
-            refusing = revert_rules.shown
-            try:
-                revert_rules.shown = lambda *args, **kwargs: None
-                self.assertIsNotNone(revert_rules.self_proof(scratch),
-                                     "a checker that holds everything must be refused")
-            finally:
-                revert_rules.shown = refusing
+            said = io.StringIO()
+            with driver_state(shown=lambda *args, **kwargs: None, shutil=Copy, RULES=[]):
+                with contextlib.redirect_stdout(said):
+                    code = revert_rules.main()
+            self.assertIn("NOT HELD: this driver's own checker", said.getvalue(),
+                          "a run handed a checker that holds everything must refuse it by name")
+            self.assertNotEqual(code, 0, "the run must fail when its own checker is vacated")
 
 
 if __name__ == "__main__":
