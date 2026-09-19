@@ -56,6 +56,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The reader-size guard holds its own cap against the guard `origin/main` already
+          # carries, so this job needs the base branch's history, the way the closing-keyword
+          # job above needs the pull request's own range.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
