@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": 1,
+      "subject": "ADR-0001/HOST-STACK",
+      "transition": "proposed",
+      "from": 0,
+      "to": 1,
+      "content_sha256": "6cb2634fc2d1f64b5e1b22e1495c7726913bfac6d6c0c91657c52a68f6b029e3",
+      "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "925d8b1ef95666b58dea6f37631a7f1340f638343bd02f27570d1a860ce5d671"
+    },
+    {
+      "seq": 2,
+      "subject": "ADR-0001/HOST-STACK",
+      "transition": "accepted",
+      "from": 1,
+      "to": 2,
+      "at": 1788825600,
+      "content_sha256": "5aeaa12c089e0648bc16bb88ca07297408bcda0bcbf601fa333c434a3fef78c5",
+      "prev": "925d8b1ef95666b58dea6f37631a7f1340f638343bd02f27570d1a860ce5d671",
+      "sha256": "d5bbdc6197f555dcdd8e80d0a8730f22a304109451df1fc7a18325ec077c9777"
+    },
+    {
+      "seq": 3,
+      "subject": "ADR-0001/DESKTOP-SHELL",
+      "transition": "proposed",
+      "from": 0,
+      "to": 1,
+      "content_sha256": "00e8cabbf721acd88ca9005df2164b787d10d6e63baea61f628e60d0677e13bf",
+      "prev": "d5bbdc6197f555dcdd8e80d0a8730f22a304109451df1fc7a18325ec077c9777",
+      "sha256": "d1e5987722d1474c49677821c7888ecd119b9de9f9346301b05dcf28da7e4cd7"
+    },
+    {
+      "seq": 4,
+      "subject": "ADR-0001/DESKTOP-SHELL",
+      "transition": "revised",
+      "from": 1,
+      "to": 2,
+      "content_sha256": "66ae93b7da0f8da6384aefda095ac8dee01562d132f6bc4eb308cc024e1219d1",
+      "prev": "d1e5987722d1474c49677821c7888ecd119b9de9f9346301b05dcf28da7e4cd7",
+      "sha256": "dcf34b7f9f82931a150c29f7c62355347aeacfda9b350cc9bcd4354fa3f595e4"
+    },
+    {
+      "seq": 5,
+      "subject": "ADR-0001/GRAPH-STORAGE",
+      "transition": "proposed",
+      "from": 0,
+      "to": 1,
+      "content_sha256": "833875a16b853ed5fb8a0d0f16092d730fea26f7c540922d781dd6428710be17",
+      "prev": "dcf34b7f9f82931a150c29f7c62355347aeacfda9b350cc9bcd4354fa3f595e4",
+      "sha256": "bd059e820aef11d1c0341caea1eaf4a5ad8301037f414643170e1725ae1377c3"
+    },
+    {
+      "seq": 6,
+      "subject": "ADR-0001/GRAPH-STORAGE",
+      "transition": "revised",
+      "from": 1,
+      "to": 2,
+      "content_sha256": "482d78bd59334cd76dfb0a03f75713178c75f99f29490ddbce0b042ab66840f9",
+      "prev": "bd059e820aef11d1c0341caea1eaf4a5ad8301037f414643170e1725ae1377c3",
+      "sha256": "649c17769b3c1946c0fa0a8671cfad375abf3bbd48e0a9cf0773031bfce0f78d"
+    }
+  ]
+}

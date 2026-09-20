@@ -109,10 +109,16 @@ impl Workspace {
 /// The SHA-256 of a repository-relative file, or `None` when the tree does not
 /// hold it.
 pub fn hash(root: &Path, path: &str) -> Option<String> {
-    let bytes = std::fs::read(root.join(path)).ok()?;
+    Some(digest(&std::fs::read(root.join(path)).ok()?))
+}
+
+/// The SHA-256 of a byte string: one owner for what a digest is here, so a file
+/// in the tree, a stored copy and a recorded transition are all named the same
+/// way.
+pub fn digest(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
-    digest.update(&bytes);
-    Some(format!("{:x}", digest.finalize()))
+    digest.update(bytes);
+    format!("{:x}", digest.finalize())
 }
 
 fn relative(root: &Path, directory: &Path) -> String {

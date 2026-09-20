@@ -100,6 +100,19 @@ them.
   list of expected fields — is held by a case in
   [the contract suite](../crates/symbiote-architecture/tests/spike_contracts.rs),
   which asserts the derive's own words for it rather than restating them here.
+  **What #173 itself owed is now recorded in the tree:** every transition a
+  decision went through is an entry in a hash-chained
+  [history](architecture/journal.json) that replays back to what the ledger
+  publishes, what each record rests on has an immutable digest-named copy in
+  [the store](architecture/store), and every issue and requirement link is
+  resolved against the issue program the roadmap side generates, with the index
+  an issue-generation consumer asks for. What is left on this front is owned
+  elsewhere and named rather than left pending: authenticated gate enforcement and
+  transactional persistence and recovery (#180, #181), automatic research refresh
+  and authoritative source verification of pinned facts (#180, #181), the measured
+  candidate run that would settle the shell choice (#38), and the System Graph query
+  API that would serve these links to a graph consumer (#327). The refusals and the
+  cases that drive them are in [`architecture.md`](contracts/architecture.md).
 - **#38 — the shell proof.** Platform coverage, representative budgets, Preview
   authority isolation, signed updates, installer size and the rest of the
   contract's ceilings stay unmeasured, each blocked by a capability the fixture does

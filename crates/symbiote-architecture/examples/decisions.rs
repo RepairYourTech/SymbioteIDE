@@ -13,9 +13,11 @@
 
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
-use symbiote_architecture::checks::problems;
+use symbiote_architecture::checks::{governance, problems};
+use symbiote_architecture::journal::{JOURNAL_PATH, Journal};
 use symbiote_architecture::ledger::{LEDGER_PATH, Ledger};
 use symbiote_architecture::repository::Workspace;
+use symbiote_architecture::roadmap::{REGISTRY_PATH, Roadmap, links};
 use symbiote_architecture::spike::{CONTRACTS_PATH, Contracts};
 use symbiote_architecture::workspace_root;
 
@@ -112,16 +114,62 @@ fn main() -> ExitCode {
         );
     }
 
-    let found = problems(&ledger, &contracts, &workspace, &root, now);
+    // The recorded history, read back as the audit trail it is.
+    match Journal::read(&root.join(JOURNAL_PATH)) {
+        Ok(journal) => {
+            for entry in &journal.entries {
+                println!(
+                    "history {} {} {} {} -> {}",
+                    entry.seq, entry.subject, entry.transition, entry.from, entry.to
+                );
+            }
+        }
+        Err(error) => println!("refused {JOURNAL_PATH}: {error}"),
+    }
+    // The store's holdings, so a reader sees what it can recover.
+    for (artifact, digest) in symbiote_architecture::store::cited(&ledger) {
+        println!("store {digest} {artifact}");
+    }
+    // The index the issue-generation side asks in its own direction: what each
+    // issue the program carries is linked to.
+    match Roadmap::read(&root.join(REGISTRY_PATH)) {
+        Ok(roadmap) => {
+            for issue in &roadmap.entries {
+                let links = links(&ledger, issue.number);
+                if !links.is_empty() {
+                    let artifacts = match links.artifacts {
+                        0 => String::new(),
+                        count => counted(count, "artifact"),
+                    };
+                    println!(
+                        "index #{} {}: {} {artifacts}",
+                        issue.number,
+                        issue.key,
+                        links
+                            .decisions
+                            .iter()
+                            .map(|id| format!("decision {id}"))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    );
+                }
+            }
+        }
+        Err(error) => println!("refused {REGISTRY_PATH}: {error}"),
+    }
+
+    let mut found = problems(&ledger, &contracts, &workspace, &root, now);
+    found.extend(governance(&ledger, &root));
     for problem in &found {
         println!("refused {}: {}", problem.subject, problem.detail);
     }
     println!(
-        "{}, {}, {}, {} workspace members, {} refusals",
+        "{}, {}, {}, {} workspace members, {} store entries, {} refusals",
         counted(ledger.decisions.len(), "decision"),
         counted(ledger.artifacts.len(), "artifact"),
         counted(contracts.contracts.len(), "contract"),
         workspace.paths().count(),
+        symbiote_architecture::store::names(&root).len(),
         found.len(),
     );
     if found.is_empty() {
