@@ -15,12 +15,14 @@ runner image, which was 3.10 on `ubuntu-22.04`, and the checker died as `No modu
 The same derivation holds the chain that runs this directory's proof: the job that runs the suite
 must run the rule driver beside it and fetch the history both read — the reader-size guard holds
 nothing if the driver that refuses a grown guard never runs, and its refusal is shown against an
-earlier guard only when the checkout holds one. A fourth link is that those steps' failures reach
-the job at all: a step made non-fatal, given a condition that cannot hold, or written so another
-command owns its exit status would leave CI green with the cap exceeded. The reading is `chain.py`,
-which the case below and the driver's ways both use, so which step runs these checks has one owner;
-the `HOLDS` rows that hold this case in turn, since a case cannot hold its own presence, are
-`revert_rules.py`'s.
+earlier guard only when the checkout holds one. It owes every suite this repository's checks
+consist of as well, the competitor registry's `planning/research` among them, because a suite the
+job does not run is a refusal CI does not enforce. A further link is that those steps' failures
+reach the job at all: a step made non-fatal, given a condition that cannot hold, or written so
+another command owns its exit status would leave CI green with the cap exceeded. The reading is
+`chain.py`, which the case below and the driver's ways both use, so which step runs these checks has
+one owner; the `HOLDS` rows that hold this case in turn, since a case cannot hold its own presence,
+are `revert_rules.py`'s.
 
 Stated with their figures, what this cannot see — each a derivation reading *statements* where the
 answer would take running the effect, which is why no case here closes them:
@@ -58,8 +60,8 @@ import unittest
 
 import chain
 import python_floor
-from chain import (DRIVER_LINK, FATAL_LINK, HISTORY_LINK, WORKFLOWS, jobs, links_missing,
-                   runs_the_suite)
+from chain import (DRIVER_LINK, FATAL_LINK, HISTORY_LINK, REGISTRY_LINK, WORKFLOWS, jobs,
+                   links_missing, runs_the_suite)
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -70,6 +72,7 @@ CHAIN_WORKFLOW = WORKFLOWS / "roadmap-integrity.yml"
 # Which link each state the driver writes must leave the reading reporting, so a reading vacated into
 # finding nothing fails here rather than leaving the assertions above satisfied by a whole tree.
 STATE_LINKS = ((chain.NO_DRIVER, DRIVER_LINK), (chain.NO_HISTORY, HISTORY_LINK),
+               (chain.NO_REGISTRY, REGISTRY_LINK),
                (chain.NON_FATAL, FATAL_LINK), (chain.CONDITIONAL, FATAL_LINK),
                (chain.SWALLOWED, FATAL_LINK), (chain.JOB_CONDITIONAL, FATAL_LINK))
 
@@ -298,8 +301,11 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
 
     A hold nothing runs is not a hold: the job that runs this directory's suite must run the driver
     too — two halves of one proof over one checkout — and must fetch the history both read, because
-    the cap case reads the tip a push names and the driver an earlier guard. Read as the commands a
-    job's steps run, the way the interpreter rule above reads them, not as YAML and not as one
+    the cap case reads the tip a push names and the driver an earlier guard. It owes every suite
+    this repository's checks consist of as well — the competitor registry's `planning/research`
+    beside this one — because a suite the job does not run is a refusal CI does not enforce, and the
+    registry's suite is the only thing refusing a claim with nothing behind it. Read as the commands
+    a job's steps run, the way the interpreter rule above reads them, not as YAML and not as one
     spelling: whichever way a job writes the discovery, it is the job that runs the check, and this
     case names it by failing rather than by matching its command. Two spellings are deliberately
     green, and the refusal is no wider than they are:
@@ -312,7 +318,8 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
     """
 
     def test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history(self):
-        ran, lacking = [], {link: [] for link in (DRIVER_LINK, HISTORY_LINK, FATAL_LINK)}
+        ran, lacking = [], {link: [] for link in (REGISTRY_LINK, DRIVER_LINK, HISTORY_LINK,
+                                                  FATAL_LINK)}
         for workflow in sorted(WORKFLOWS.glob("*.yml")):
             for job, lines in jobs(workflow).items():
                 if not runs_the_suite(lines):
@@ -323,6 +330,10 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                     lacking[link].append(named)
         self.assertTrue(ran, f"no job runs this directory's unittest discovery, so the "
                              f"reader-size guard's hold is run by nothing CI runs")
+        self.assertEqual(lacking[REGISTRY_LINK], [],
+                         "these jobs run this directory's suite without the competitor registry's "
+                         "suite beside it (`planning/research`, whose case is the only thing "
+                         f"refusing a claim with nothing behind it): {lacking[REGISTRY_LINK]}")
         self.assertEqual(lacking[DRIVER_LINK], [],
                          "these jobs run the suite but not the rule driver, whose `HOLDS` row is "
                          f"the only check that refuses a guard grown past its cap in both "
@@ -447,10 +458,11 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                                  f"a job written that way must be read like any other")
                 for job, job_lines in read.items():
                     self.assertEqual(sorted(links_missing(job_lines)),
-                                     sorted([DRIVER_LINK, HISTORY_LINK]),
-                                     f"{name}:{job} runs this directory's suite with no driver and "
-                                     f"no history, so it must be read as lacking both rather than "
-                                     f"invisible: {sorted(links_missing(job_lines))}")
+                                     sorted([REGISTRY_LINK, DRIVER_LINK, HISTORY_LINK]),
+                                     f"{name}:{job} runs this directory's suite with no driver, no "
+                                     f"history and no registry suite beside it, so it must be read "
+                                     f"as lacking all three rather than invisible: "
+                                     f"{sorted(links_missing(job_lines))}")
 
 
 class TheInterpreterTheJobsProvide(unittest.TestCase):
