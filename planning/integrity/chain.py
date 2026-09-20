@@ -7,18 +7,12 @@ the driver too — two halves of one proof over one checkout — and must fetch 
 read. `test_python_floor.py`'s chain case refuses every link of that, and the driver's `HOLDS` rows
 hold that case.
 
-This module is the reading both go through, so which step runs these checks has **one** owner: a job
-is named for the commands its steps run, so `-s planning/integrity`, `-s ./planning/integrity`, the
-directory positionally, a `cd` into it and a preceding `cd` line are one check. One predicate says
-what a check step is (`runs_a_check`), one locator says where a definition's own keys are written
-(`key_column`, read from the definition's own lines however its dash is spelled), and the states the
-driver's ways show a refusal by are written *through* both (`mutated`) — so a way cannot demand a
-spelling the case accepts, a step that runs none of these checks is never written into, and the
-state lands where a YAML parser expects a key rather than beside the step, which is a text no parser
-reads. The case holds that placement, and it reads a job written at another indentation or with a
-comment or an anchor on its key. A job may indent its
-`jobs:` children any way YAML allows, and the column is read from the workflow rather than assumed,
-so a job written otherwise is still the job that runs these checks.
+This module is the reading both go through: one predicate says what a check step is
+(`runs_a_check`), one locator says where a definition's own keys are written (`key_column`, read from
+the definition's own lines however its dash is spelled, and the job's own column read from the
+workflow rather than assumed), and the states the driver's ways show a refusal by are written
+*through* both (`mutated`). The case holds that placement and reads a job written at another
+indentation or with a comment or an anchor on its key.
 """
 from __future__ import annotations
 

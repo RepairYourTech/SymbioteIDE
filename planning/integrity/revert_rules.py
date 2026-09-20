@@ -2,52 +2,32 @@
 """Revert each refusal rule of the architecture governance crate alone, in a
 throwaway copy of this working tree, and watch the case that holds it fail.
 
-The table below holds one row for each refusal this repository has proved by
-reversion: the text that holds the rule, the text that removes it, and the case
-that must fail. What it does **not** claim is completeness — nothing here relates
-the rows to the crate's refusal sites, so a rule added without a row runs unproved
-and the driver still reports every row it has as biting. The rows are also the
-only place a rule's proof is recorded: `test_revert_rules.py` holds each row's
-anchor to the tree and each row's case to a case the suite runs, so a moved anchor
-or a renamed case fails that test rather than becoming a row this driver skips.
+`RULES` holds one row for each refusal this repository has proved by reversion:
+the text that holds the rule, the text that removes it, and the case that must
+fail. What it does **not** claim is completeness — nothing here relates the rows
+to the crate's refusal sites, so a rule added without a row runs unproved and the
+driver still reports every row it has as biting. The rows are also the only place
+a rule's proof is recorded: `test_revert_rules.py` holds each row's anchor to the
+tree and each row's case to a case the suite runs, so a moved anchor or a renamed
+case fails there rather than becoming a row this driver skips.
 
-A second table, `HOLDS`, holds the rules a reversion cannot prove because the
-rule *is* the refusal being reverted, or the link the refusal is about: removing
-the text removes the refusal, so a mutation would watch nothing fail. Each row
-names the refusal, the case that states it, the subject stating it, the text it
-states exactly once, and every way the driver shows it biting — the subject a
-line past the number it declares, the case run against a tip whose guard was
-smaller, a link taken out of the file it is written in, a text in that file
-replaced by a weaker one, or a workflow written into one of the states `chain.py`
-names, which is how a link gone or a step made non-fatal is driven. That last
-kind reaches the workflow through the reading the case itself makes, so no row
-freezes a spelling the case accepts. A row is
-held when every way makes the case fail. A row that names no way, a table that
-names no row, a kind of way this file does not name, and a checkout too shallow to
-hold the smaller guard are refused rather than passed — the last is why the
-validation job runs this driver after fetching the full history, a link
-`test_python_floor.py` holds to that workflow. The checker proves itself every run
-too: it is read on inputs built to be refused — one per kind of way, and the rows a
-hold must not hold — so a checker vacated into holding everything is caught by the
-run it would have fooled rather than by a reading of its text, and the same
-negative inputs are driven from `test_revert_rules.py` so no single file holds the
-checker's strength. What the rows cannot see is a case beside one they name that no
-row names itself: those are declared once per file the rows state their refusals in,
-and the run requires the declarations and the rows together to account for every case
-in the classes the rows are proved in — this file's, the chain reading's, and the
-guard's — so un-naming one, or adding one nothing accounts for, is refused rather
-than silent. That walk is one line, so which files it covers is held in turn: the case
-stating it drives every file the rows name, and the row below replaces the line the
-walk derives them on with this file alone — a narrowing the case must fail on, and a
-spelling of that line the row cannot place, either of which is refused by name.
+`HOLDS` holds the rules a reversion cannot prove because the rule *is* the refusal
+being reverted, or the link the refusal is about: removing the text removes the
+refusal, so a mutation would watch nothing fail. Each row names the refusal, the
+case that states it, the subject stating it, the text it states exactly once, and
+every way the driver shows it biting — the subject a line past the number it
+declares, the case run against a tip whose guard was smaller, a link taken out of
+the file it is written in, a text in that file replaced by a weaker one, or a
+workflow written into one of the states `chain.py` names, which reaches the
+workflow through the reading the case itself makes and so freezes no spelling the
+case accepts. What a row cannot see, how the checker proves itself every run, and
+how the declarations and the rows together account for every case in the classes
+the rows are proved in are stated where they are done: in `holds` and `shown`, in
+`self_proof` and `NEGATIVE`, and in `unheld_cases`.
 
-The live tree is never touched. The driver copies this working tree (everything
-cargo and those rows need, without `target/` or caches) into a temporary directory,
-mutates the copy, runs each case there with the copy's own target directory, and
-removes it — then re-reads the live tree's files and fails if any byte of them
-moved. That is why it can be run beside another build: the version before this one
-mutated the live tree in place, and a concurrent `cargo test` reported failures
-that were only its mutations.
+The live tree is never touched: the driver copies this working tree into a
+temporary directory, mutates the copy, runs each case there, removes it and fails
+if any byte of the live tree moved, so it can be run beside another build.
 """
 from __future__ import annotations
 
