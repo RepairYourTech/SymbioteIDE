@@ -109,7 +109,9 @@ them.
   an issue-generation consumer asks for. What is left on this front is owned
   elsewhere and named rather than left pending: authenticated gate enforcement and
   transactional persistence and recovery (#180, #181), automatic research refresh
-  and authoritative source verification of pinned facts (#180, #181), the measured
+  and authoritative source verification of pinned facts (fetched at run time by
+  #180 and #181, with the dossier format a fact is recorded in #188's and the
+  refreshed registry that marks evidence stale #171's), the measured
   candidate run that would settle the shell choice (#38), and the System Graph query
   API that would serve these links to a graph consumer (#327). The refusals and the
   cases that drive them are in [`architecture.md`](contracts/architecture.md).
