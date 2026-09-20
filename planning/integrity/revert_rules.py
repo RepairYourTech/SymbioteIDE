@@ -682,6 +682,7 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
         "these steps run the checks without their failure reaching the job",
         ((WORKFLOW, "mutates", chain.NON_FATAL),
          (WORKFLOW, "mutates", chain.CONDITIONAL),
+         (WORKFLOW, "mutates", chain.JOB_CONDITIONAL),
          (WORKFLOW, "mutates", chain.SWALLOWED)),
     ),
     (

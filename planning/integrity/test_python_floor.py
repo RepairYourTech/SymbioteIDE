@@ -45,7 +45,9 @@ answer would take running the effect, which is why no case here closes them:
   absolute path or one held in a variable is still found;
 * jobs are read as the indentation shape of a `jobs:` block rather than as YAML: the block's own
   column is read from the workflow, so any indentation is read, and a job key may carry a comment or
-  an anchor. What that leaves is a whole `jobs:` block written as a **flow mapping**
+  an anchor — held by the chain case, which reads a job written at four columns and keys carrying a
+  comment and an anchor, so the derivation cannot be replaced by a constant without a red. What that
+  leaves is a whole `jobs:` block written as a **flow mapping**
   (`jobs: {checks: {…}}`), which is not read at all — measured, a workflow written that way whose
   step runs this directory's suite with no driver left the suite at 230 OK. A job whose `steps:` is a
   flow list is read and refused by the interpreter rule above, and tab indentation is a text no YAML
@@ -54,6 +56,7 @@ answer would take running the effect, which is why no case here closes them:
 from __future__ import annotations
 
 import ast
+import difflib
 import pathlib
 import re
 import tempfile
@@ -74,7 +77,7 @@ CHAIN_WORKFLOW = WORKFLOWS / "roadmap-integrity.yml"
 # finding nothing fails here rather than leaving the assertions above satisfied by a whole tree.
 STATE_LINKS = ((chain.NO_DRIVER, DRIVER_LINK), (chain.NO_HISTORY, HISTORY_LINK),
                (chain.NON_FATAL, FATAL_LINK), (chain.CONDITIONAL, FATAL_LINK),
-               (chain.SWALLOWED, FATAL_LINK))
+               (chain.SWALLOWED, FATAL_LINK), (chain.JOB_CONDITIONAL, FATAL_LINK))
 
 # What a version-gated feature is, as far as this rule can tell: the global names the standard
 # library added, and the version that first had them. `tomllib` is the one this directory uses.
@@ -344,6 +347,112 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                 found = [one for _job, lines in jobs(written).items() for one in links_missing(lines)]
                 self.assertIn(link, found, f"a workflow in the state {what!r} is not read as lacking "
                                            f"{link}, so this reading cannot find it")
+
+    def test_each_state_is_written_inside_the_definition_it_means(self):
+        """A key written beside a step rather than among the step's own keys is a workflow no YAML
+        parser reads, so the drive above would be showing a refusal on a text no workflow can be; and
+        a key written into a step that runs none of these checks — or into none of them — would move
+        a link the driver's ways never meant. Read from the mutated text itself, in the shapes a step
+        and a job are written: one key per definition that runs these checks, each inside its
+        definition and past that definition's own `-` or job key, which is where a parser reads a key
+        rather than beside one.
+        """
+        live = CHAIN_WORKFLOW.read_text()
+        lines = live.splitlines()
+        check_jobs = [(begin, end) for _name, begin, end in chain.job_ranges(live)
+                      if chain.runs_a_check([lines[each].strip()
+                                             for each in range(begin + 1, end)])]
+        check_steps = [one for one in chain.step_ranges(live)
+                       if one[2] is not None
+                       and chain.runs_a_check([lines[each].strip()
+                                               for each in range(one[0], one[1])])]
+
+        def inserted_positions(written):
+            """The lines the mutation added, by position: a workflow that already writes the same
+            text elsewhere would hide one from a membership test by text."""
+            return [at for tag, _a, _b, first, last in
+                    difflib.SequenceMatcher(a=lines, b=written, autojunk=False).get_opcodes()
+                    if tag == "insert" for at in range(first, last)]
+
+        for what in (chain.NON_FATAL, chain.CONDITIONAL, chain.JOB_CONDITIONAL):
+            written = chain.mutated(live, what)
+            mutated = written.splitlines()
+            meant = check_jobs if what == chain.JOB_CONDITIONAL else check_steps
+            self.assertTrue(meant, f"the live workflow runs these checks somewhere, so the state "
+                                   f"{what!r} has a definition it must be written into")
+            written_at = inserted_positions(mutated)
+            self.assertEqual(len(written_at), len(meant),
+                             f"the state {what!r} writes one key into each of the {len(meant)} "
+                             f"definitions that run these checks, and it wrote {len(written_at)} "
+                             f"into {[mutated[at].strip() for at in written_at]}")
+            for at in written_at:
+                key = mutated[at]
+                column = len(key) - len(key.lstrip())
+                if what == chain.JOB_CONDITIONAL:
+                    in_job = [(begin, end) for _name, begin, end in chain.job_ranges(written)
+                              if begin < at < end]
+                    self.assertTrue(in_job, f"the state {what!r} wrote `{key.strip()}` outside every "
+                                            f"job, where no parser reads a key")
+                    begin, end = in_job[0]
+                    self.assertTrue(chain.runs_a_check([mutated[each].strip()
+                                                        for each in range(begin + 1, end)]),
+                                    f"the state {what!r} wrote into a job that runs none of these "
+                                    f"checks, so it moves a link the driver's ways never mean")
+                    self.assertGreater(
+                        column, len(mutated[begin]) - len(mutated[begin].lstrip()),
+                        f"the state {what!r} wrote `{key.strip()}` at its job key's own column, "
+                        f"where no parser reads it as one of the job's keys")
+                    continue
+                in_step = [(start, end) for start, end, _column in chain.step_ranges(written)
+                           if start <= at < end]
+                self.assertTrue(in_step, f"the state {what!r} wrote `{key.strip()}` outside every "
+                                          f"step, where no parser reads a key")
+                start, end = in_step[0]
+                self.assertTrue(chain.runs_a_check([mutated[each].strip()
+                                                    for each in range(start, end)]),
+                                f"the state {what!r} wrote into a step that runs none of these "
+                                f"checks: {key.strip()!r}")
+                dash = len(mutated[start]) - len(mutated[start].lstrip())
+                self.assertGreater(column, dash,
+                                   f"the state {what!r} wrote `{key.strip()}` at its step's own "
+                                   f"dash column, which is a text no YAML parser reads")
+
+    def test_a_job_is_read_at_any_indentation_and_with_a_comment_or_anchor(self):
+        """The `jobs:` block's own column is read from the workflow rather than assumed — two
+        columns is what this repository writes, not what a job must use — and a job key may carry a
+        comment or the anchor an alias elsewhere resolves to. Read from texts written here, so a
+        derivation replaced by a constant reds here instead of leaving a job written that way
+        invisible to every rule above it.
+        """
+        four = ("jobs:\n"
+                "    checks:\n"
+                "        runs-on: ubuntu-latest\n"
+                "        steps:\n"
+                "            - run: python -m unittest discover -s planning/integrity\n")
+        marked = ("jobs:\n"
+                  "  anchored: &a\n"
+                  "    runs-on: ubuntu-latest\n"
+                  "    steps:\n"
+                  "      - run: python -m unittest discover -s planning/integrity\n"
+                  "  commented: # the second\n"
+                  "    runs-on: ubuntu-latest\n"
+                  "    steps:\n"
+                  "      - run: python -m unittest discover -s planning/integrity\n")
+        with tempfile.TemporaryDirectory() as where:
+            for name, text, called in (("four.yml", four, ["checks"]),
+                                       ("marked.yml", marked, ["anchored", "commented"])):
+                path = pathlib.Path(where) / name
+                path.write_text(text)
+                read = jobs(path)
+                self.assertEqual(sorted(read), called,
+                                 f"{name} writes {called} and this reading found {sorted(read)}: "
+                                 f"a job written that way must be read like any other")
+                for job, job_lines in read.items():
+                    self.assertEqual(sorted(links_missing(job_lines)),
+                                     sorted([DRIVER_LINK, HISTORY_LINK]),
+                                     f"{name}:{job} runs this directory's suite with no driver and "
+                                     f"no history, so it must be read as lacking both rather than "
+                                     f"invisible: {sorted(links_missing(job_lines))}")
 
 
 class TheInterpreterTheJobsProvide(unittest.TestCase):

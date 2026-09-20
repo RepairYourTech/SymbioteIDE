@@ -10,10 +10,13 @@ hold that case.
 This module is the reading both go through, so which step runs these checks has **one** owner: a job
 is named for the commands its steps run, so `-s planning/integrity`, `-s ./planning/integrity`, the
 directory positionally, a `cd` into it and a preceding `cd` line are one check. One predicate says
-what a check step is (`runs_a_check`), one locator says where a step's own keys are written
-(`step_ranges`, two columns past its dash however the dash is spelled), and the states the driver's
-ways show a refusal by are written *through* both (`mutated`) — so a way cannot demand a spelling the
-case accepts, and a step that runs none of these checks is never written into. A job may indent its
+what a check step is (`runs_a_check`), one locator says where a definition's own keys are written
+(`key_column`, read from the definition's own lines however its dash is spelled), and the states the
+driver's ways show a refusal by are written *through* both (`mutated`) — so a way cannot demand a
+spelling the case accepts, a step that runs none of these checks is never written into, and the
+state lands where a YAML parser expects a key rather than beside the step, which is a text no parser
+reads. The case holds that placement, and it reads a job written at another indentation or with a
+comment or an anchor on its key. A job may indent its
 `jobs:` children any way YAML allows, and the column is read from the workflow rather than assumed,
 so a job written otherwise is still the job that runs these checks.
 """
@@ -45,7 +48,12 @@ NO_HISTORY = "no history"
 NON_FATAL = "non-fatal"
 CONDITIONAL = "conditional"
 SWALLOWED = "swallowed"
-MUTATIONS: tuple[str, ...] = (NO_DRIVER, NO_HISTORY, NON_FATAL, CONDITIONAL, SWALLOWED)
+# The same way of throwing a check's failure away written at the job rather than the step: a job
+# behind a condition that cannot hold never runs, so the cap it declares is enforced by nothing —
+# and it is the job's own keys the reading must see, not the step's.
+JOB_CONDITIONAL = "job-conditional"
+MUTATIONS: tuple[str, ...] = (NO_DRIVER, NO_HISTORY, NON_FATAL, CONDITIONAL, SWALLOWED,
+                              JOB_CONDITIONAL)
 
 SEPARATOR = re.compile(r"&&|\|\||[;&|]")
 # What a step's line starts with before its command does: `run:`, and the list dash a job may put in
@@ -61,11 +69,12 @@ START_DIRECTORY = re.compile(r"(?:-s|--start-directory)(?:\s+|=)([^-].*?)(?=\s+-
 VALUED = {"-p", "--pattern", "-k", "-t", "--top-level-directory"}
 RUNS_DRIVER = re.compile(rf"(?:^|\s)(?:python3?\s+)?(?:\S*/)?{re.escape(DRIVER_SCRIPT)}(?:\s|$)")
 JOBS_KEY = re.compile(r"^jobs:\s*$")
-# The dash that begins a step, keeping its column: a step's own keys are written two columns past
-# it, whether the dash carries the first key (`- run: …`) or stands alone (`-` then `run: …`), so
-# one locator finds where a state written into a step belongs in every spelling of a step.
+# The dash that begins a step, keeping its column; and the key that begins a line of a step's or a
+# job's own lines — `run: …`, or `- run: …` when the dash carries that key. Where a definition's
+# keys are written is read from the definition's own lines (`key_column`) rather than from a column
+# added to its dash, so there is no constant beside a derivation for one edit to zero.
 STEP = re.compile(r"^(?P<indent> *)-(?:\s|$)")
-KEY_PAST_DASH = 2
+KEY = re.compile(r"^(?P<indent> *)(?:- +)?(?P<key>[A-Za-z_][A-Za-z0-9_-]*):(?:\s|$)")
 # A step that runs a check can stop its failure reaching the job two ways, both read from a step's
 # own keys: made non-fatal, or behind a condition that cannot hold. `false` is the one value of
 # `continue-on-error` that keeps the step fatal, and a condition is read for the value no reading of
@@ -165,6 +174,19 @@ def command_lines(step: list[str]) -> list[tuple[int, str]]:
     return [(at, one) for at, line in enumerate(step) for one in commands([line])]
 
 
+def key_column(lines: list[str], start: int, end: int) -> int | None:
+    """The column a step's or a job's own keys are written at, read from its own lines: the first
+    line inside it that states a key states it there, whether its dash carries that key
+    (`- run: …`) or the key stands on the line below (`-` then `run: …`). None when it states no
+    key at all, which is a definition with nothing to write into.
+    """
+    for at in range(start, end):
+        found = KEY.match(lines[at])
+        if found:
+            return found.start("key")
+    return None
+
+
 def check_reached(step: list[str]) -> int | None:
     """Where in a step's commands the check runs: the first one after which the step has run this
     directory's suite or the rule driver. This is the one owner of "the step that runs these
@@ -217,24 +239,25 @@ def job_ranges(text: str) -> list[tuple[str, int, int]]:
     return found
 
 
-def step_ranges(text: str) -> list[tuple[int, int, int]]:
-    """Every step of a workflow as the lines it spans and the column its own keys are written at: a
-    step begins where a line's own text begins with `-` at or above the previous step's dash, and
-    ends where the next such dash begins, so a nested list inside a step is part of it. Read from
-    the same job ranges the case reads, so a step the mutation writes into is a step the case sees.
+def step_ranges(text: str) -> list[tuple[int, int, int | None]]:
+    """Every step of a workflow as the lines it spans and the column its own keys are written at
+    (`key_column`, None when it states no key): a step begins where a line's own text begins with
+    `-` at or above the previous step's dash, and ends where the next such dash begins, so a nested
+    list inside a step is part of it. Read from the same job ranges the case reads, so a step the
+    mutation writes into is a step the case sees.
     """
     lines = text.splitlines()
-    found: list[tuple[int, int, int]] = []
+    found: list[tuple[int, int, int | None]] = []
     for _name, begin, end in job_ranges(text):
         opened, dash = None, None
         for at in range(begin + 1, end):
             began = STEP.match(lines[at])
             if began and (dash is None or len(began.group("indent")) <= dash):
                 if opened is not None:
-                    found.append((opened, at, dash + KEY_PAST_DASH))
+                    found.append((opened, at, key_column(lines, opened, at)))
                 opened, dash = at, len(began.group("indent"))
         if opened is not None:
-            found.append((opened, end, dash + KEY_PAST_DASH))
+            found.append((opened, end, key_column(lines, opened, end)))
     return found
 
 
@@ -316,11 +339,12 @@ def mutated(text: str, what: str) -> str:
     not a state this file names.
 
     `NO_DRIVER` and `NO_HISTORY` take the lines that hold them out — the one a command runs on and
-    the one the fetch is written as, so neither depends on how a step is spelled. The other three
-    write the way a check's failure is thrown away *inside the step that runs the check*, located by
-    the reading the case itself makes (`runs_a_check`) and at the column that step's own keys are
-    written at — two past its dash — so the state is one link gone in any spelling the case accepts,
-    and a step that runs none of these checks is never written into.
+    the one the fetch is written as, so neither depends on how a step is spelled. The others write
+    the way a check's failure is thrown away: *inside the step that runs the check* for the step
+    states, at the job for `JOB_CONDITIONAL`, each located by the reading the case itself makes
+    (`runs_a_check`) and written at the column that definition's own keys are written at
+    (`key_column`) — so the state is one link gone in any spelling the case accepts, a step that runs
+    none of these checks is never written into, and the text stays one a YAML parser reads.
     """
     if what not in MUTATIONS:
         return text
@@ -337,16 +361,24 @@ def mutated(text: str, what: str) -> str:
         return "".join(kept)
     written: dict[int, list[str]] = {}
     swallowed: dict[int, str] = {}
-    for start, end, indent in step_ranges(text):
-        step = [lines[at].rstrip("\n").removesuffix("\\").strip() for at in range(start, end)]
-        if not runs_a_check(step):
-            continue
-        if what == SWALLOWED:
-            at = start + command_lines(step)[check_reached(step)][0]
-            swallowed[at] = swallowed.get(at, lines[at].rstrip("\n")) + " || true"
-            continue
-        written.setdefault(end, []).append(
-            f"{' ' * indent}{'continue-on-error: true' if what == NON_FATAL else 'if: false'}\n")
+    if what == JOB_CONDITIONAL:
+        plain = text.splitlines()
+        for _name, begin, end in job_ranges(text):
+            job = [plain[at].strip() for at in range(begin + 1, end)]
+            column = key_column(plain, begin + 1, end)
+            if column is not None and runs_a_check(job):
+                written.setdefault(begin + 1, []).append(f"{' ' * column}if: false\n")
+    else:
+        for start, end, column in step_ranges(text):
+            step = [lines[at].rstrip("\n").removesuffix("\\").strip() for at in range(start, end)]
+            if column is None or not runs_a_check(step):
+                continue
+            if what == SWALLOWED:
+                at = start + command_lines(step)[check_reached(step)][0]
+                swallowed[at] = swallowed.get(at, lines[at].rstrip("\n")) + " || true"
+                continue
+            written.setdefault(end, []).append(
+                f"{' ' * column}{'continue-on-error: true' if what == NON_FATAL else 'if: false'}\n")
     out = []
     for at, line in enumerate(lines):
         out += written.get(at, [])
