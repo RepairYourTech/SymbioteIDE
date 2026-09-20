@@ -33,7 +33,8 @@ import tempfile
 import unittest
 
 import revert_rules
-from revert_rules import DECLARED, HOLDS, HOLDER, ROOT, RULES, WAYS, case_target, scanned, unheld_cases
+from revert_rules import (DECLARED, HOLDS, HOLDER, ROOT, RULES, WAYS, case_target, proving_classes,
+                          scanned, unheld_cases)
 
 
 def collected(module):
@@ -189,6 +190,11 @@ class RevertRulesTable(unittest.TestCase):
         is a declared case the file no longer collects, which is a case renamed out of the suite.
         Which names to write over is read from the file rather than copied into this one, so a rename
         cannot leave the text below unchanged while the case passes on its own stale input.
+
+        Every file a row states its refusal in is driven, in every class a row is proved in there,
+        because the walk this asks about is one line an edit can narrow to the hold's own file: which
+        files it covers is stated by the rows rather than here, so a walk narrowed to one of them
+        fails below — which is what the row that names this case replaces that line to show.
         """
         self.assertIsNone(unheld_cases(ROOT), "a case here is unaccounted for")
         here = ROOT / "planning/integrity/test_revert_rules.py"
@@ -204,16 +210,29 @@ class RevertRulesTable(unittest.TestCase):
                                                f"so this case would be driving nothing")
             return written
 
-        with tempfile.TemporaryDirectory() as where:
-            scratch = pathlib.Path(where) / "planning/integrity"
-            scratch.mkdir(parents=True)
-            (scratch / here.name).write_text(written_over(
-                declared[0], "    def test_nothing_accounts_for_this(self):\n        pass\n\n"
-                             f"    def {declared[0]}(self):"))
-            self.assertIn("no declaration accounts for", unheld_cases(scratch.parent.parent) or "")
-            (scratch / here.name).write_text(written_over(
-                declared[-1], "    def renamed_out_of_the_suite(self):"))
-            self.assertIn("collects no such case", unheld_cases(scratch.parent.parent) or "")
+        for where in sorted({row[2] for row in HOLDS if len(row) == 5}):
+            classes = sorted(proving_classes(ROOT, where))
+            self.assertTrue(classes, f"{where} holds no class a row is proved in")
+            for name in classes:
+                lines = (ROOT / where).read_text().splitlines(keepends=True)
+                at = next((index for index, line in enumerate(lines)
+                           if line.startswith(f"class {name}(")), None)
+                self.assertIsNotNone(at, f"{name} is not written as a class in {where}")
+                lines.insert(at + 1, "    def test_nothing_accounts_for_this(self):\n        pass\n\n")
+                with tempfile.TemporaryDirectory() as folder:
+                    scratch = pathlib.Path(folder) / where
+                    scratch.parent.mkdir(parents=True, exist_ok=True)
+                    scratch.write_text("".join(lines))
+                    self.assertIn("no declaration accounts for",
+                                  unheld_cases(pathlib.Path(folder)) or "",
+                                  f"a case nothing accounts for in {where} is not refused, so a walk "
+                                  f"that never reached {where} would read as accounted for")
+
+        with tempfile.TemporaryDirectory() as folder:
+            scratch = pathlib.Path(folder) / HOLDER
+            scratch.parent.mkdir(parents=True, exist_ok=True)
+            scratch.write_text(written_over(declared[-1], "    def renamed_out_of_the_suite(self):"))
+            self.assertIn("collects no such case", unheld_cases(pathlib.Path(folder)) or "")
 
     def test_a_live_file_moved_while_the_driver_runs_is_refused(self):
         """The driver's own guarantee, driven rather than read: it digests the files it watches

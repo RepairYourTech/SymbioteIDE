@@ -36,7 +36,10 @@ row names itself: those are declared once per file the rows state their refusals
 and the run requires the declarations and the rows together to account for every case
 in the classes the rows are proved in — this file's, the chain reading's, and the
 guard's — so un-naming one, or adding one nothing accounts for, is refused rather
-than silent.
+than silent. That walk is one line, so which files it covers is held in turn: the case
+stating it drives every file the rows name, and the row below replaces the line the
+walk derives them on with this file alone — a narrowing the case must fail on, and a
+spelling of that line the row cannot place, either of which is refused by name.
 
 The live tree is never touched. The driver copies this working tree (everything
 cargo and those rows need, without `target/` or caches) into a temporary directory,
@@ -627,6 +630,11 @@ RULES: list[tuple[str, str, str, str]] = [
 # refuse a maintainer who re-spells the step the way the case reads it.
 MOVED = ("    after = digest(watched)\n"
          "    moved = [name for name in before if after.get(name) != before[name]]\n")
+# The line the case accounting derives the files it walks from, as text: a row replaces it with the
+# hold's own file alone, so an edit that narrows that walk is a walk the case below stops stating
+# rather than a silent narrowing — and a spelling of the line this constant does not hold is a row
+# that no longer places its refusal.
+SUBJECTS = "    for where in sorted({row[2] for row in HOLDS if len(row) == 5}):\n"
 CHAIN = "planning/integrity/test_python_floor.py"
 WORKFLOW = ".github/workflows/roadmap-integrity.yml"
 
@@ -703,6 +711,16 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
         (("planning/integrity/revert_rules.py", "weaker",
           (MOVED, "    after = digest(watched)\n    moved = []\n")),),
     ),
+    (
+        "the case accounting walks every file a row states its refusal in",
+        "test_a_case_no_row_names_and_no_declaration_accounts_for_is_refused",
+        "planning/integrity/test_revert_rules.py",
+        "no declaration accounts for",
+        # The walk's own subject list, replaced by the hold's file alone: the case drives every
+        # file the rows state their refusals in, so a walk narrowed to one of them fails there.
+        (("planning/integrity/revert_rules.py", "weaker",
+          (SUBJECTS, "    for where in [HOLDER]:\n")),),
+    ),
 ]
 
 HOLDER = "planning/integrity/test_revert_rules.py"
@@ -713,7 +731,8 @@ HOLDER = "planning/integrity/test_revert_rules.py"
 # guard declares what is not reading. The run requires these declarations *and* the rows to account
 # for every case in the classes the rows prove their refusals in, across every file the rows name,
 # both directions: a case named here that the file no longer collects means one was renamed out of
-# it, and a case collected that neither names is one whose loss would be silent.
+# it, and a case collected that neither names is one whose loss would be silent. The walk itself is
+# no declaration: it reads the files the rows name, and the case below drives all of them.
 DECLARED: dict[str, frozenset[str]] = {
     HOLDER: frozenset({
         "test_the_driver_roots_itself_at_this_repository",
@@ -725,7 +744,6 @@ DECLARED: dict[str, frozenset[str]] = {
         "test_the_table_names_rules_at_all",
         "test_the_hold_table_names_a_rule_a_case_a_subject_and_its_ways",
         "test_every_hold_row_states_its_refusal_once_and_lays_its_ways_in_the_tree",
-        "test_a_case_no_row_names_and_no_declaration_accounts_for_is_refused",
     }),
     # The proof file the chain reading lives in: the case below states a shape of that reading
     # rather than a refusal of its own, and the reading's other case is named by the rows above.
