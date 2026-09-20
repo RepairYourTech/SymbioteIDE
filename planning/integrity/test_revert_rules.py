@@ -33,7 +33,7 @@ import tempfile
 import unittest
 
 import revert_rules
-from revert_rules import HOLDS, ROOT, RULES, SHAPE_CASES, WAYS, case_target, scanned, unheld_cases
+from revert_rules import DECLARED, HOLDS, HOLDER, ROOT, RULES, WAYS, case_target, scanned, unheld_cases
 
 
 def collected(module):
@@ -193,8 +193,8 @@ class RevertRulesTable(unittest.TestCase):
         self.assertIsNone(unheld_cases(ROOT), "a case here is unaccounted for")
         here = ROOT / "planning/integrity/test_revert_rules.py"
         body = here.read_text()
-        declared = sorted(SHAPE_CASES & set(collected(importlib.import_module(here.stem))))
-        self.assertEqual(declared, sorted(SHAPE_CASES),
+        declared = sorted(DECLARED[HOLDER] & set(collected(importlib.import_module(here.stem))))
+        self.assertEqual(declared, sorted(DECLARED[HOLDER]),
                          "the declaration names a case this file no longer collects")
 
         def written_over(name, replacement):
