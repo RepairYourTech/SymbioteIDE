@@ -12,19 +12,15 @@ job that runs this directory and configures no interpreter is what failed in CI:
 runner image, which was 3.10 on `ubuntu-22.04`, and the checker died as `No module named
 'tomllib'` where a refusal naming the floor belongs.
 
-The same derivation holds the chain that runs this directory's proof, not only its interpreter:
-the job that runs the integrity suite must run the rule driver beside it and fetch the history
-both read — the reader-size guard holds nothing if the driver that refuses a grown guard never
-runs, and the driver's own refusal is shown against an earlier guard only when the checkout holds
-one. The reading is `chain.py`, which `TheChainThatRunsTheseChecks` below and the driver's ways
-both use, so which step runs these checks has one owner: a job is named for the commands its steps
-run, so `-s planning/integrity`, `-s ./planning/integrity`, a `cd` into the directory and a preceding
-`cd` line are one check. A fourth link is that those steps' failures reach the job at all: a step
-made non-fatal, given a condition that cannot hold, or written so another command owns its exit
-status would leave CI green with the cap exceeded, which is the hold undone in one edit.
-`revert_rules.py`'s `HOLDS` rows hold that case in turn, since a case cannot hold its own presence —
-and their ways mutate a workflow through `chain.mutated`, so a step re-spelled in a way this reading
-accepts is refused by neither the case nor a row.
+The same derivation holds the chain that runs this directory's proof: the job that runs the suite
+must run the rule driver beside it and fetch the history both read — the reader-size guard holds
+nothing if the driver that refuses a grown guard never runs, and its refusal is shown against an
+earlier guard only when the checkout holds one. A fourth link is that those steps' failures reach
+the job at all: a step made non-fatal, given a condition that cannot hold, or written so another
+command owns its exit status would leave CI green with the cap exceeded. The reading is `chain.py`,
+which the case below and the driver's ways both use, so which step runs these checks has one owner;
+the `HOLDS` rows that hold this case in turn, since a case cannot hold its own presence, are
+`revert_rules.py`'s.
 
 Stated with their figures, what this cannot see — each a derivation reading *statements* where the
 answer would take running the effect, which is why no case here closes them:
@@ -43,16 +39,13 @@ answer would take running the effect, which is why no case here closes them:
 * a step replaced by a **composite action** or reusable workflow — measured, nothing reds, because
   the marking reads the steps a job states; and a crate path assembled at run time, though an
   absolute path or one held in a variable is still found;
-* jobs are read as the indentation shape of a `jobs:` block rather than as YAML: the block's own
-  column is read from the workflow, so any indentation is read, and a job key may carry a comment or
-  an anchor — held by the class the chain reading is proved in, where one case reads a job written
-  at four columns and keys carrying a comment and an anchor by name, and another reds on a workflow
-  written that way — so the derivation cannot be replaced by a constant without a red. What that
-  leaves is a whole `jobs:` block written as a **flow mapping**
-  (`jobs: {checks: {…}}`), which is not read at all — measured, a workflow written that way whose
-  step runs this directory's suite with no driver left this suite at 232 OK. A job whose `steps:` is
-  a flow list is read and refused by the interpreter rule above, and tab indentation is a text no
-  YAML parser accepts rather than a spelling that hides a job.
+* jobs are read as the indentation shape of a `jobs:` block rather than as YAML, with the block's
+  own column read from the workflow and a job key allowed a comment or an anchor — what that leaves
+  is a whole `jobs:` block written as a **flow mapping** (`jobs: {checks: {…}}`), which is not read at
+  all — measured, a workflow written that way whose step runs this directory's suite with no driver
+  left this suite at 232 OK. A job whose `steps:` is a flow list is read and refused by the
+  interpreter rule above, and tab indentation is a text no YAML parser accepts rather than a spelling
+  that hides a job.
 """
 from __future__ import annotations
 
@@ -292,26 +285,19 @@ class TheInterpreterTheCodeNeeds(unittest.TestCase):
 class TheChainThatRunsTheseChecks(unittest.TestCase):
     """The links between the reader-size guard's hold and the workflow that runs it.
 
-    A hold nothing runs is not a hold. The suite states the cap; the driver is what refuses a guard
-    grown a line past it and a comparison read from the guard itself, and its refusal is shown
-    against an earlier guard, so its checkout must hold one. So the job that runs this directory's
-    suite must run the driver too — two halves of one proof over one checkout — and must fetch the
-    full history both read: the cap case reads the tip a push names, the driver an earlier guard.
-    Read as the commands a job's steps run, the way the interpreter rule above reads them, not as
-    YAML and not as one spelling: whichever way a job writes the discovery, it is the job that runs
-    the check, and this case names it by failing rather than by matching its command. The same
-    reading — `chain.py`, which the driver's ways mutate through as well — holds that each link is
-    the job's own: `links_missing` names what a job lacks and `unfatal` refuses a step made
-    non-fatal, one behind a condition that cannot hold, or one whose exit status belongs to a later
-    command. Two spellings are deliberately green here, and the refusal is no wider than they are:
+    A hold nothing runs is not a hold: the job that runs this directory's suite must run the driver
+    too — two halves of one proof over one checkout — and must fetch the history both read, because
+    the cap case reads the tip a push names and the driver an earlier guard. Read as the commands a
+    job's steps run, the way the interpreter rule above reads them, not as YAML and not as one
+    spelling: whichever way a job writes the discovery, it is the job that runs the check, and this
+    case names it by failing rather than by matching its command. Two spellings are deliberately
+    green, and the refusal is no wider than they are:
 
       - a condition that *can* hold (`if: ${{ github.event_name == 'push' }}`), because a condition
-        this job satisfies is not a spelling the request named and deciding a non-constant one means
-        evaluating it; what that leaves — a condition false on an event this reading cannot name —
-        is answered by reading the workflow, not by this case; and
+        this job satisfies is not one the request named and deciding a non-constant one means
+        evaluating it — what that leaves is answered by reading the workflow, not by this case; and
       - a condition or a `continue-on-error` on a step that runs none of these checks (a checkout
-        behind `if: always()`), which says nothing about whether the check's failure reaches the
-        job.
+        behind `if: always()`), which says nothing about whether the check's failure reaches the job.
     """
 
     def test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history(self):

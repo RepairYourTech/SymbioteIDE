@@ -1,26 +1,19 @@
 """Run: python3 planning/integrity/test_revert_rules.py.
 
-The driver's table is itself a claim: that every row's anchor is text this tree
-holds exactly once, and that every row's case is one a suite actually runs. This
-holds the table to the tree without running cargo, so a moved anchor or a renamed
-case fails in a second rather than becoming a row the driver skips. The driver's
-`HOLDS` table — the rules a reversion cannot prove, because the rule is the
-refusal being reverted or the link the refusal is about — is held the same way:
-each row's subject is in the tree, states the refusal exactly once, names a case
-the subject runs, and lays every way it claims in a file this tree holds — every
-kind of way the driver names, `weaker` included, whose two texts must be text this
-tree carries once. The driver's own run re-reads the live tree, so the case below
-drives that comparison rather than reading the code that makes it.
+The driver's tables are themselves a claim held to the tree here without running cargo: every
+row's anchor is text this tree holds exactly once, every row's case is one a suite runs, and every
+`HOLDS` row's subject states its refusal exactly once and lays every way it claims — `weaker`
+included, whose two texts must be text this tree carries once — in a file this tree holds. A moved
+anchor or a renamed case fails in a second rather than becoming a row the driver skips.
 
-What it does not ask is whether the table is complete: no relation between the
-rows and the crate's refusal sites exists, so a rule added without a row is not
-noticed here, and the driver's report is about the rows it has.
+What it does not ask is whether the tables are complete: nothing relates the rows to the crate's
+refusal sites, so a rule added without a row is not noticed here, and the driver's report is about
+the rows it has.
 
-"Is this name a case?" is implemented twice — in the crate's own check (Rust,
-`defines_a_case`) and in `is_case` below — because that check runs inside a cargo
-test while this suite is Python-only and must not need a toolchain. The Rust one
-decides what the crate does; a change to the rule is a change to both, and this
-one governs the table's rows.
+"Is this name a case?" is implemented twice — in the crate's own check (Rust, `defines_a_case`)
+and in `is_case` below — because that check runs inside a cargo test while this suite is
+Python-only and must not need a toolchain: the Rust one decides what the crate does, and this one
+governs the table's rows, so a change to the rule is a change to both.
 """
 
 import contextlib
@@ -184,6 +177,7 @@ class RevertRulesTable(unittest.TestCase):
                     found = path.read_text().count(text)
                     self.assertEqual(found, 1, f"{rule} names a {how} way {where} carries {found} "
                                                f"times, so the driver cannot place it")
+
     def test_a_case_no_row_names_and_no_declaration_accounts_for_is_refused(self):
         """Driven over texts written here: a case the file collects that neither a row names nor the
         declaration accounts for is a case whose loss nothing would show, so it is refused — and so
@@ -203,13 +197,6 @@ class RevertRulesTable(unittest.TestCase):
         self.assertEqual(declared, sorted(DECLARED[HOLDER]),
                          "the declaration names a case this file no longer collects")
 
-        def written_over(name, replacement):
-            """The file's text with `name`'s definition replaced, or a failure when it has none."""
-            written = body.replace(f"    def {name}(self):", replacement, 1)
-            self.assertNotEqual(written, body, f"{name} is not written as a case in {here.name}, "
-                                               f"so this case would be driving nothing")
-            return written
-
         for where in sorted({row[2] for row in HOLDS if len(row) == 5}):
             classes = sorted(proving_classes(ROOT, where))
             self.assertTrue(classes, f"{where} holds no class a row is proved in")
@@ -228,10 +215,14 @@ class RevertRulesTable(unittest.TestCase):
                                   f"a case nothing accounts for in {where} is not refused, so a walk "
                                   f"that never reached {where} would read as accounted for")
 
+        renamed = body.replace(f"    def {declared[-1]}(self):",
+                               "    def renamed_out_of_the_suite(self):", 1)
+        self.assertNotEqual(renamed, body, f"{declared[-1]} is not written as a case in "
+                                           f"{here.name}, so this case would be driving nothing")
         with tempfile.TemporaryDirectory() as folder:
             scratch = pathlib.Path(folder) / HOLDER
             scratch.parent.mkdir(parents=True, exist_ok=True)
-            scratch.write_text(written_over(declared[-1], "    def renamed_out_of_the_suite(self):"))
+            scratch.write_text(renamed)
             self.assertIn("collects no such case", unheld_cases(pathlib.Path(folder)) or "")
 
     def test_a_live_file_moved_while_the_driver_runs_is_refused(self):
