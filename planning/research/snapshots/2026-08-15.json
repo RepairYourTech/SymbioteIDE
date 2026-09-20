@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-15",
+  "taxonomy": {
+    "dimensions": [
+      {
+        "id": "runtime",
+        "title": "Runtime and harness platform",
+        "capabilities": [
+          {"id": "runtime.harness-support", "title": "Which coding agents are supported, at what integration depth", "window_days": 180, "grade": true},
+          {"id": "runtime.structured-transport", "title": "Whether the product speaks a structured transport rather than wrapping a terminal", "window_days": 180},
+          {"id": "runtime.account-isolation", "title": "Separate accounts, profiles and config homes", "window_days": 180},
+          {"id": "runtime.usage-visibility", "title": "Quota, usage and rate-limit visibility and switching", "window_days": 180}
+        ]
+      },
+      {
+        "id": "orchestration",
+        "title": "Orchestration and work model",
+        "capabilities": [
+          {"id": "orchestration.parallel-worktrees", "title": "Parallel work in isolated worktrees or branches", "window_days": 365},
+          {"id": "orchestration.agent-identity", "title": "Named agent or teammate identity that survives a harness change", "window_days": 365},
+          {"id": "orchestration.task-hierarchy", "title": "Task or objective hierarchy, delegation and handoffs", "window_days": 365},
+          {"id": "orchestration.verification-behavior", "title": "Completion, review and verification behaviour, and how much is deterministic", "window_days": 365}
+        ]
+      },
+      {
+        "id": "artifacts",
+        "title": "Artifacts, specification and knowledge",
+        "capabilities": [
+          {"id": "artifacts.spec-documents", "title": "Durable specification artifacts rather than transcript", "window_days": 365},
+          {"id": "artifacts.artifact-lifecycle", "title": "Artifact identity, versioning, handoff and review semantics", "window_days": 365},
+          {"id": "artifacts.knowledge-provenance", "title": "Codebase knowledge with provenance, freshness and traceability", "window_days": 365}
+        ]
+      },
+      {
+        "id": "workbench",
+        "title": "Workbench and product experience",
+        "capabilities": [
+          {"id": "workbench.terminal-floor", "title": "Terminals, diffs and files inside the product", "window_days": 365},
+          {"id": "workbench.preview-browser", "title": "Preview or browser surface tied to the work", "window_days": 365},
+          {"id": "workbench.voice-dictation", "title": "Voice, dictation or routines on an agent", "window_days": 365},
+          {"id": "workbench.mobile-remote", "title": "Mobile or remote control of a running session", "window_days": 365}
+        ]
+      },
+      {
+        "id": "operations",
+        "title": "Git, delivery and operations",
+        "capabilities": [
+          {"id": "operations.git-integration", "title": "Git, issue and pull-request integration", "window_days": 365},
+          {"id": "operations.hosting-model", "title": "Local-first or cloud-dependent hosting and data ownership", "window_days": 365},
+          {"id": "operations.licensing", "title": "Licensing and distribution model", "window_days": 365}
+        ]
+      }
+    ]
+  },
+  "universe": [
+    {"id": "orca", "name": "Orca", "class": "direct_ade"},
+    {"id": "traycer", "name": "Traycer", "class": "spec_artifact_product"},
+    {"id": "bridgemind-one", "name": "BridgeMind One", "class": "direct_ade"},
+    {"id": "t3code", "name": "T3 Code", "class": "coding_agent_client"},
+    {"id": "superset", "name": "Superset", "class": "orchestration_tool"},
+    {"id": "vibekanban", "name": "Vibe Kanban", "class": "orchestration_tool"},
+    {"id": "opencode-desktop", "name": "OpenCode Desktop", "class": "coding_agent_client"},
+    {"id": "claude-code", "name": "Claude Code", "class": "provider_native_app"},
+    {"id": "codex-cli", "name": "Codex CLI", "class": "provider_native_app"},
+    {"id": "cursor", "name": "Cursor", "class": "adjacent_substitute"}
+  ],
+  "products": [
+    {
+      "id": "orca",
+      "name": "Orca",
+      "class": "direct_ade",
+      "claims": [
+        {
+          "capability": "orchestration.parallel-worktrees",
+          "state": "VERIFIED_CURRENT",
+          "observation": "Every task gets its own git worktree",
+          "evidence": [
+            {"kind": "official_docs", "source": "https://www.onorca.dev/docs", "retrieved_at": "2026-07-30", "confidence": "high", "excerpt": "Orca is a desktop IDE for running multiple AI coding agents side by side. Every task gets its own git worktree, its own agent terminal, and its own browser"}
+          ]
+        },
+        {
+          "capability": "workbench.mobile-remote",
+          "state": "UNKNOWN",
+          "observation": "Nothing was retrieved",
+          "evidence": [],
+          "gap": "Retrieve an official statement of remote or mobile control; not retrieved on 2026-08-15"
+        }
+      ]
+    },
+    {
+      "id": "traycer",
+      "name": "Traycer",
+      "class": "spec_artifact_product",
+      "claims": [
+        {
+          "capability": "artifacts.spec-documents",
+          "state": "UNKNOWN",
+          "observation": "The product described planning before code; no document set was read",
+          "evidence": [],
+          "gap": "Read the product's own documentation of the artifacts it produces; not retrieved on 2026-08-15"
+        },
+        {
+          "capability": "artifacts.artifact-lifecycle",
+          "state": "UNKNOWN",
+          "observation": "Nothing was retrieved",
+          "evidence": [],
+          "gap": "Read the official artifact page; not retrieved on 2026-08-15"
+        }
+      ]
+    },
+    {
+      "id": "bridgemind-one",
+      "name": "BridgeMind One",
+      "class": "direct_ade",
+      "claims": [
+        {
+          "capability": "orchestration.agent-identity",
+          "state": "UNKNOWN",
+          "observation": "The product described teammates; no identity model was read",
+          "evidence": [],
+          "gap": "Read the product's own description of teammate identity; not retrieved on 2026-08-15"
+        }
+      ]
+    },
+    {
+      "id": "t3code",
+      "name": "T3 Code",
+      "class": "coding_agent_client",
+      "claims": [
+        {
+          "capability": "operations.hosting-model",
+          "state": "INFERRED",
+          "observation": "Secondary sources describe a server that runs the agents; the official page was not retrieved",
+          "evidence": [
+            {"kind": "community", "source": "https://community-scripts.org/", "retrieved_at": "2026-08-11", "confidence": "low", "excerpt": "T3 Code is a web and desktop control surface for running coding agents on your machine."}
+          ],
+          "gap": "Retrieve the official statement of where the server runs; not retrieved on 2026-08-15"
+        }
+      ]
+    },
+    {
+      "id": "superset",
+      "name": "Superset",
+      "class": "orchestration_tool",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-08-15"
+    },
+    {
+      "id": "vibekanban",
+      "name": "Vibe Kanban",
+      "class": "orchestration_tool",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-08-15"
+    },
+    {
+      "id": "opencode-desktop",
+      "name": "OpenCode Desktop",
+      "class": "coding_agent_client",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-08-15"
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "class": "provider_native_app",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-08-15"
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "class": "provider_native_app",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-08-15"
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "class": "adjacent_substitute",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-08-15"
+    }
+  ],
+  "watch": [
+    {"capability": "runtime.harness-support", "requirements": ["FND-05"], "decisions": ["ADR-0001/DESKTOP-SHELL"], "locked": false},
+    {"capability": "runtime.structured-transport", "requirements": ["FND-05"], "decisions": ["ADR-0001/DESKTOP-SHELL"], "locked": false},
+    {"capability": "artifacts.spec-documents", "requirements": ["A04"], "decisions": ["ADR-0001/HOST-STACK"], "locked": true},
+    {"capability": "operations.hosting-model", "requirements": ["A05"], "decisions": ["ADR-0001/HOST-STACK"], "locked": true}
+  ]
+}

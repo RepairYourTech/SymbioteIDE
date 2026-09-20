@@ -83,3 +83,8 @@ jobs:
         run: python3 planning/integrity/revert_rules.py
       - name: Verify merged-checkout housekeeping
         run: python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
+      # #171's registry is a second data-with-rules surface beside this directory's: its own
+      # directory, its own reader, and a suite that refuses a claim with nothing behind it. Nothing
+      # in the driver above holds it, so this step is what runs it — a step that fails like any other.
+      - name: Verify the competitor registry and its snapshots
+        run: python -m unittest discover -s planning/research -p 'test_*.py' -v
