@@ -666,15 +666,16 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
         ((WORKFLOW, "mutates", chain.NO_HISTORY),),
     ),
     (
-        "the job that runs this directory's checks also runs the competitor registry's suite",
+        "the job that runs this directory's checks runs every suite this repository's checks "
+        "consist of",
         "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history",
         CHAIN,
-        "these jobs run this directory's suite without the competitor registry's",
-        # The suite's own command taken out of the step, located by the reading the case itself
-        # makes rather than matched against the text: a job that runs this directory's suite and
-        # not the registry's leaves the registry's refusals run by nothing, which is the state a
+        "these jobs run this directory's suite without",
+        # Each suite's own command taken out of its step, located by the reading the case itself
+        # makes rather than matched against the text: a job that runs this directory's suite and not
+        # the registry's or the matrices' leaves their refusals run by nothing, which is the state a
         # step deleted or moved to another job is in.
-        ((WORKFLOW, "mutates", chain.NO_REGISTRY),),
+        ((WORKFLOW, "mutates", chain.NO_SUITE),),
     ),
     (
         "the job that runs these checks fails when they fail",

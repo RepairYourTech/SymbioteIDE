@@ -5,7 +5,8 @@ A hold nothing runs is not a hold. This directory's suite states the reader-size
 earlier guard, so its checkout must hold one. So the job that runs this directory's suite must run
 the driver too — two halves of one proof over one checkout — and must fetch the full history both
 read. The same job owes every suite this repository's checks consist of, the competitor registry's
-`planning/research` among them: a suite the job does not run is a refusal CI does not enforce.
+`planning/research` and the parity matrices' `planning/parity` among them: a suite the job does not
+run is a refusal CI does not enforce.
 `test_python_floor.py`'s chain case refuses every link of that, and the driver's `HOLDS` rows hold
 that case.
 
@@ -37,12 +38,15 @@ SUITE_DIRECTORY = "planning/integrity"
 # and the state that writes a suite gone cannot mean a different suite than the case reads — a job
 # that runs this directory's suite is owed every row here.
 REGISTRY_DIRECTORY = "planning/research"
+PARITY_DIRECTORY = "planning/parity"
 # The link a job that runs this directory's suite lacks when it runs none of that suite: named here
 # so the table and the case's assertion cannot state it two ways.
 REGISTRY_LINK = "the competitor registry's suite beside it"
+PARITY_LINK = "the parity matrices' suite beside it"
 SUITES: tuple[tuple[str, str], ...] = (
     (SUITE_DIRECTORY, "this directory's own suite"),
     (REGISTRY_DIRECTORY, REGISTRY_LINK),
+    (PARITY_DIRECTORY, PARITY_LINK),
 )
 DRIVER_SCRIPT = "revert_rules.py"
 FULL_HISTORY = "fetch-depth: 0"
@@ -55,7 +59,7 @@ FATAL_LINK = "a failure that reaches the job"
 # the driver's ways carry these names, and a name this file does not write is a way that cannot bite.
 NO_DRIVER = "no driver"
 NO_HISTORY = "no history"
-NO_REGISTRY = "no registry suite"
+NO_SUITE = "a suite gone"
 NON_FATAL = "non-fatal"
 CONDITIONAL = "conditional"
 SWALLOWED = "swallowed"
@@ -63,7 +67,7 @@ SWALLOWED = "swallowed"
 # behind a condition that cannot hold never runs, so the cap it declares is enforced by nothing —
 # and it is the job's own keys the reading must see, not the step's.
 JOB_CONDITIONAL = "job-conditional"
-MUTATIONS: tuple[str, ...] = (NO_DRIVER, NO_HISTORY, NO_REGISTRY, NON_FATAL, CONDITIONAL,
+MUTATIONS: tuple[str, ...] = (NO_DRIVER, NO_HISTORY, NO_SUITE, NON_FATAL, CONDITIONAL,
                               SWALLOWED, JOB_CONDITIONAL)
 
 SEPARATOR = re.compile(r"&&|\|\||[;&|]")
@@ -359,10 +363,10 @@ def mutated(text: str, what: str) -> str:
     """A workflow's text in the state of one link being gone, or the text unchanged when `what` is
     not a state this file names.
 
-    `NO_DRIVER`, `NO_HISTORY` and `NO_REGISTRY` take the lines that hold them out — the one a command
-    runs on, the one the fetch is written as, and the one a suite runs on, the last located inside a
-    step (`step_ranges`) so it goes wherever a step writes it rather than a spelling this file
-    matches. The others write
+    `NO_DRIVER`, `NO_HISTORY` and `NO_SUITE` take the lines that hold them out — the one a command
+    runs on, the one the fetch is written as, and the line every suite but this directory's own runs
+    on, the last located inside a step (`step_ranges`) so it goes wherever a step writes it rather
+    than a spelling this file matches. The others write
     the way a check's failure is thrown away: *inside the step that runs the check* for the step
     states, at the job for `JOB_CONDITIONAL`, each located by the reading the case itself makes
     (`runs_a_check`) and written at the column that definition's own keys are written at
@@ -372,17 +376,19 @@ def mutated(text: str, what: str) -> str:
     if what not in MUTATIONS:
         return text
     lines = text.splitlines(keepends=True)
-    if what in (NO_DRIVER, NO_HISTORY, NO_REGISTRY):
+    if what in (NO_DRIVER, NO_HISTORY, NO_SUITE):
         inside = ({at for start, end, _column in step_ranges(text) for at in range(start, end)}
-                  if what == NO_REGISTRY else set())
+                  if what == NO_SUITE else set())
         kept = []
         for at, line in enumerate(lines):
             stripped = line.strip()
             command = RUN_KEY.sub("", stripped.removesuffix("\\").strip()).strip()
             if (what == NO_DRIVER and RUNS_DRIVER.search(command)) \
                     or (what == NO_HISTORY and stripped == FULL_HISTORY) \
-                    or (what == NO_REGISTRY and at in inside
-                        and runs_suite([line], REGISTRY_DIRECTORY)):
+                    or (what == NO_SUITE and at in inside
+                        and any(runs_suite([line], directory)
+                                for directory, _link in SUITES
+                                if directory != SUITE_DIRECTORY)):
                 continue
             kept.append(line)
         return "".join(kept)

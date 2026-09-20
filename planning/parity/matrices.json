@@ -1,0 +1,399 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-20",
+  "classes": [
+    "TABLE_STAKES",
+    "PARITY_GAP",
+    "DIFFERENTIATOR",
+    "INFRASTRUCTURE",
+    "EXPERIMENT",
+    "REJECTED_PATTERN",
+    "ADJACENT_OPPORTUNITY",
+    "UNKNOWN"
+  ],
+  "matrices": [
+    "runtime",
+    "orchestration",
+    "artifacts",
+    "knowledge",
+    "workbench",
+    "remote_mobile",
+    "operations"
+  ],
+  "decisions": ["BORROW", "ADAPT", "REJECT", "RESEARCH"],
+  "handoff_kinds": ["cross_product", "internal"],
+  "rows": [
+    {
+      "capability": "runtime.harness-support",
+      "matrix": "runtime",
+      "class": "TABLE_STAKES",
+      "stance": "Every product in the universe drives at least one external agent CLI; a terminal floor with detection and installation is the price of entry, not a differentiator.",
+      "evidence": [
+        {"product": "orca", "capability": "runtime.harness-support"},
+        {"product": "t3code", "capability": "runtime.harness-support"}
+      ],
+      "requirements": ["C03"],
+      "decisions": ["ADR-0001/DESKTOP-SHELL"]
+    },
+    {
+      "capability": "runtime.structured-transport",
+      "matrix": "runtime",
+      "class": "UNKNOWN",
+      "stance": "Whether any product drives an agent over a structured interface rather than a terminal is the whole depth question, and nothing in the registry answers it.",
+      "evidence": [],
+      "requirements": ["C03"],
+      "research": "Which products speak SDK, app-server, RPC, JSONL or ACP to an agent rather than wrapping a PTY, and at what integration depth?"
+    },
+    {
+      "capability": "runtime.account-isolation",
+      "matrix": "runtime",
+      "class": "REJECTED_PATTERN",
+      "stance": "We never build a proprietary parallel runtime environment: harness packs read the user's own config homes and binaries. The rejected pattern is a product-owned tree that mirrors .claude, Codex, Pi and OpenCode homes instead of using them.",
+      "evidence": [],
+      "requirements": ["NAT-03", "HSDK-05"],
+      "decisions": ["ADR-0001/HOST-STACK"]
+    },
+    {
+      "capability": "runtime.usage-visibility",
+      "matrix": "runtime",
+      "class": "UNKNOWN",
+      "stance": "Quota, rate-limit and usage surfaces are the operational half of harness support, and no product carries a claim here.",
+      "evidence": [],
+      "requirements": ["C03"],
+      "research": "Which products expose per-account usage, quota and rate-limit state, and what do they do when a provider falls back or a limit is hit?"
+    },
+    {
+      "capability": "orchestration.parallel-worktrees",
+      "matrix": "orchestration",
+      "class": "TABLE_STAKES",
+      "stance": "Parallel worktrees per task are table stakes for an orchestration tool; what is not table stakes is treating a worktree as a security boundary.",
+      "evidence": [{"product": "orca", "capability": "orchestration.parallel-worktrees"}],
+      "requirements": ["M02"],
+      "decisions": ["ADR-0001/DESKTOP-SHELL"]
+    },
+    {
+      "capability": "orchestration.agent-identity",
+      "matrix": "orchestration",
+      "class": "DIFFERENTIATOR",
+      "stance": "BridgeMind ships a teammate whose identity survives the workspace; ours has to survive the engine. A Role bound to a Workforce Binding is the claim, and the binding, not the seat, is the identity.",
+      "evidence": [{"product": "bridgemind", "capability": "orchestration.agent-identity"}],
+      "requirements": ["D01", "D04"]
+    },
+    {
+      "capability": "orchestration.task-hierarchy",
+      "matrix": "orchestration",
+      "class": "UNKNOWN",
+      "stance": "Objective, task and delegation state inside the product, rather than in a provider-local session, is the axis where the registry holds nothing: no product's dossier records how it decomposes work.",
+      "evidence": [],
+      "requirements": ["D07"],
+      "research": "How does each product represent objective, task and delegation state, and does any of it survive a change of agent or provider?"
+    },
+    {
+      "capability": "orchestration.verification-behavior",
+      "matrix": "orchestration",
+      "class": "ADJACENT_OPPORTUNITY",
+      "stance": "Traycer announces review artifacts and BridgeMind's routines are inferred to file work back; read together, both point at a verification pass that produces a review artifact. A routine that runs a verification pass and files its artifact against the Change Stream is derived from the two, not copied from either.",
+      "evidence": [
+        {"product": "traycer", "capability": "orchestration.verification-behavior"},
+        {"product": "bridgemind", "capability": "orchestration.verification-behavior"}
+      ],
+      "requirements": ["D08"]
+    },
+    {
+      "capability": "artifacts.spec-artifacts",
+      "matrix": "artifacts",
+      "class": "TABLE_STAKES",
+      "stance": "Living specs and plans are table stakes for a spec-artifact product; ours have to point at the graph, the decision and the closure rather than sit beside them.",
+      "evidence": [{"product": "traycer", "capability": "artifacts.spec-artifacts"}],
+      "requirements": ["F03"],
+      "decisions": ["ADR-0001/HOST-STACK"]
+    },
+    {
+      "capability": "artifacts.artifact-lifecycle",
+      "matrix": "artifacts",
+      "class": "PARITY_GAP",
+      "stance": "Versioning, approval, comments and handoff are current in Traycer and not yet first-class here, so this is a gap against the artifact system rather than a claim of ours.",
+      "evidence": [{"product": "traycer", "capability": "artifacts.artifact-lifecycle"}],
+      "requirements": ["F04", "F06"]
+    },
+    {
+      "capability": "artifacts.knowledge-provenance",
+      "matrix": "knowledge",
+      "class": "UNKNOWN",
+      "stance": "The knowledge matrix cannot be written from this registry: no codebase-knowledge product carries a claim, so provenance, freshness and traceability are unmeasured against the market.",
+      "evidence": [],
+      "requirements": ["DOC-01", "DOC-06"],
+      "research": "Which codebase-knowledge products expose provenance, confidence, freshness/debt and code-to-docs navigation, and with what graph links?"
+    },
+    {
+      "capability": "workbench.terminal-floor",
+      "matrix": "workbench",
+      "class": "TABLE_STAKES",
+      "stance": "Terminals and diffs beside the agent floor are table stakes for a workbench; the claim is their binding to the Change Stream, not their existence.",
+      "evidence": [{"product": "orca", "capability": "workbench.terminal-floor"}],
+      "requirements": ["FND-05"],
+      "decisions": ["ADR-0001/DESKTOP-SHELL"]
+    },
+    {
+      "capability": "workbench.preview-browser",
+      "matrix": "workbench",
+      "class": "EXPERIMENT",
+      "stance": "An isolated preview surface with console, network and accessibility readouts is worth an experiment on the desktop shell before it becomes a commitment; no competitor claim here says how far it goes.",
+      "evidence": [],
+      "requirements": ["L11", "L14"],
+      "deferral": "held as an experiment on L11/L14: the shell decision is still unproven, so building the surface first would be the wrong order."
+    },
+    {
+      "capability": "workbench.voice-dictation",
+      "matrix": "workbench",
+      "class": "EXPERIMENT",
+      "stance": "Dictation and voice are a preference and an experiment, not a roadmap item: BridgeMind is the only product in the universe with a voice axis and its claim reads UNKNOWN, so there is nothing here to parity-match.",
+      "evidence": [{"product": "bridgemind", "capability": "workbench.voice-dictation"}],
+      "requirements": ["J02", "L03"],
+      "deferral": "experiment only, recorded against J02/L03: no current competitor evidence makes a committed build defensible."
+    },
+    {
+      "capability": "workbench.mobile-remote",
+      "matrix": "remote_mobile",
+      "class": "UNKNOWN",
+      "stance": "Orca's remote and mobile experience is reported, not verified; the remote matrix cannot claim a market level from community reporting.",
+      "evidence": [{"product": "orca", "capability": "workbench.mobile-remote"}],
+      "requirements": ["LINK-02", "LINK-03"],
+      "research": "What does Orca actually ship for remote and mobile control, on what transport, and with what approval semantics away from the desktop?"
+    },
+    {
+      "capability": "operations.git-integration",
+      "matrix": "operations",
+      "class": "INFRASTRUCTURE",
+      "stance": "A provider-neutral Git and repository abstraction is infrastructure for every workflow above it and a differentiator for none: it is judged by what it lets the workflows do, never on its own.",
+      "evidence": [],
+      "requirements": ["M01"],
+      "deferral": "no market level recorded: no product claims this axis, and an abstraction is not a market posture."
+    },
+    {
+      "capability": "operations.hosting-model",
+      "matrix": "operations",
+      "class": "UNKNOWN",
+      "stance": "Local-first, cloud dependency, telemetry and data ownership are the constraints every other borrowing decision passes through, and the registry holds no current claim on any of them.",
+      "evidence": [{"product": "t3code", "capability": "operations.hosting-model"}],
+      "requirements": ["H04"],
+      "research": "For each product in the universe: what must leave the machine, what telemetry is on by default, and who owns the session data?"
+    },
+    {
+      "capability": "operations.licensing",
+      "matrix": "operations",
+      "class": "UNKNOWN",
+      "stance": "Licensing and monetization are watched, not copied; nothing in this registry measures them and no product requirement may be derived from them.",
+      "evidence": [{"product": "orca", "capability": "operations.licensing"}],
+      "requirements": ["A03"],
+      "research": "What is each product's license and monetization model, and does any of them restrict what a user may do with their own work?"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "idea-to-spec",
+      "name": "idea to specification to task generation",
+      "steps": [
+        {"owner": "symbiote", "action": "discovery questions and ambiguity objects"},
+        {"owner": "traycer", "action": "living specs, technical plans and briefs authored in the artifact workspace"},
+        {"owner": "symbiote", "action": "task generation with acceptance criteria"}
+      ],
+      "handoffs": [
+        {"at": 1, "kind": "cross_product", "gap": "the user leaves the product to author and version the spec, then returns with a document", "consequence": "provenance, approvals and graph links break at the boundary, so the spec has to be re-attached by hand"}
+      ]
+    },
+    {
+      "id": "client-request-to-worker",
+      "name": "client request to Role routing to worker execution",
+      "steps": [
+        {"owner": "symbiote", "action": "Client Request and Objective"},
+        {"owner": "symbiote", "action": "Role routing and Workforce Binding"},
+        {"owner": "symbiote", "action": "Runtime Contract and task dispatch"},
+        {"owner": "bridgemind", "action": "a teammate in its own workspace carries the work"},
+        {"owner": "symbiote", "action": "completion, review and closure"}
+      ],
+      "handoffs": [
+        {"at": 3, "kind": "cross_product", "gap": "a teammate's pane and routine state is the product's, not an exportable contract", "consequence": "work done in the seat cannot be replayed as a Symbiote task with its binding intact"}
+      ]
+    },
+    {
+      "id": "task-to-merge",
+      "name": "task to Change Stream to review to merge",
+      "steps": [
+        {"owner": "symbiote", "action": "task and Change Stream-owned worktree"},
+        {"owner": "orca", "action": "a terminal agent implements in the worktree"},
+        {"owner": "symbiote", "action": "diagnostics and review evidence"},
+        {"owner": "symbiote", "action": "PR, CI and merge"}
+      ],
+      "handoffs": [
+        {"at": 1, "kind": "cross_product", "gap": "a terminal transport cannot say what the agent actually ran", "consequence": "review evidence has to be reconstructed from the worktree after the fact"}
+      ]
+    },
+    {
+      "id": "artifact-to-task",
+      "name": "artifact creation to feedback to task derivation to handoff",
+      "steps": [
+        {"owner": "traycer", "action": "artifact authored and reviewed"},
+        {"owner": "traycer", "action": "feedback and versioning"},
+        {"owner": "symbiote", "action": "task derivation from the artifact"},
+        {"owner": "symbiote", "action": "agent handoff with the derived tasks"}
+      ],
+      "handoffs": [
+        {"at": 0, "kind": "cross_product", "gap": "artifacts live in the product that made them and arrive here as text", "consequence": "task derivation cannot cite the artifact identity it came from"}
+      ]
+    },
+    {
+      "id": "onboarding-to-modification",
+      "name": "existing repo onboarding to knowledge to modification",
+      "steps": [
+        {"owner": "symbiote", "action": "repository onboarding and indexing"},
+        {"owner": "symbiote", "action": "System Graph and Developer Knowledge"},
+        {"owner": "symbiote", "action": "context retrieval for a modification"},
+        {"owner": "orca", "action": "a terminal agent applies the modification"}
+      ],
+      "handoffs": [
+        {"at": 2, "kind": "internal", "gap": "retrieval has no uncertainty surface for existing code that was never documented", "consequence": "the boundary is ours: an unresolved boundary is not a handoff, but nothing in this matrix closes it"}
+      ]
+    },
+    {
+      "id": "mobile-approval",
+      "name": "away-from-desk approval and intervention",
+      "steps": [
+        {"owner": "symbiote", "action": "task notifies and waits for approval"},
+        {"owner": "orca", "action": "the remote client receives it and approves or intervenes"},
+        {"owner": "symbiote", "action": "the task resumes with the approval recorded"}
+      ],
+      "handoffs": [
+        {"at": 1, "kind": "cross_product", "gap": "approval away from the desktop runs on someone else's transport", "consequence": "the approval record and the device that gave it are not ours to hold"}
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "pattern": "a terminal floor that runs any agent CLI",
+      "decision": "BORROW",
+      "capability": "workbench.terminal-floor",
+      "source": {"product": "orca", "capability": "workbench.terminal-floor"},
+      "rationale": "The feature matrix in the registry shows the floor is universal; not having it is a defect, and having it proves nothing.",
+      "requirements": ["FND-05"],
+      "issues": [172],
+      "risk": "none material: a floor is not a moat, and treating it as one would be the mistake this matrix exists to prevent",
+      "changes_locked": false
+    },
+    {
+      "pattern": "stable teammate identity across workspaces",
+      "decision": "ADAPT",
+      "capability": "orchestration.agent-identity",
+      "source": {"product": "bridgemind", "capability": "orchestration.agent-identity"},
+      "rationale": "BridgeMind's identity is a seat in its own product; ours has to be a Role bound to a Workforce Binding so the same Role survives a different engine.",
+      "requirements": ["D01", "D04"],
+      "issues": [172],
+      "risk": "identity that outlives the engine must not leak seat state into the Role, or switching engines would change what the Role means",
+      "changes_locked": false
+    },
+    {
+      "pattern": "living specs with versioning, approvals and handoff",
+      "decision": "ADAPT",
+      "capability": "artifacts.artifact-lifecycle",
+      "source": {"product": "traycer", "capability": "artifacts.spec-artifacts"},
+      "rationale": "The artifact semantics are worth taking; importing the model wholesale would drop the graph link, the decision and the closure that make ours first-class.",
+      "requirements": ["F03", "F04"],
+      "issues": [172],
+      "risk": "a second artifact model inside the workbench would fork identity from the Artifact system",
+      "changes_locked": false
+    },
+    {
+      "pattern": "artifact provenance carries the decision it serves",
+      "decision": "ADAPT",
+      "capability": "artifacts.spec-artifacts",
+      "source": {"product": "traycer", "capability": "artifacts.artifact-lifecycle"},
+      "rationale": "Traycer versions artifacts; ours must also say which decision and which closure they serve — which touches the locked Host stack record and is therefore recorded as a review item rather than applied.",
+      "requirements": ["F06"],
+      "issues": [173, 172],
+      "risk": "this is the one pattern here that would move a locked decision if it were applied without review",
+      "changes_locked": true
+    },
+    {
+      "pattern": "a proprietary parallel runtime environment",
+      "decision": "REJECT",
+      "capability": "runtime.account-isolation",
+      "source": {"product": "t3code", "capability": "runtime.harness-support"},
+      "rationale": "A product-owned tree that mirrors the user's config homes conflicts with user-owned configuration; harness packs read what the user already has.",
+      "requirements": ["NAT-03", "HSDK-05"],
+      "issues": [172],
+      "risk": "reading the user's own homes means their breakage is our breakage, which the harness packs have to diagnose rather than hide",
+      "changes_locked": false
+    },
+    {
+      "pattern": "disposable worktrees treated as a security boundary",
+      "decision": "REJECT",
+      "capability": "orchestration.parallel-worktrees",
+      "source": {"product": "orca", "capability": "orchestration.parallel-worktrees"},
+      "rationale": "Worktrees give parallelism and isolation of files, not of credentials, network or production capability; the source's own permission and sandbox philosophy is what would have to be borrowed, and it is not in the registry.",
+      "requirements": ["M02"],
+      "issues": [172],
+      "risk": "if the sandbox model is never researched, this rejection rests on an unverified assumption about the source — recorded so research does not quietly reopen it",
+      "changes_locked": false
+    },
+    {
+      "pattern": "provider drivers and instances behind one contract",
+      "decision": "ADAPT",
+      "capability": "runtime.harness-support",
+      "source": {"product": "t3code", "capability": "runtime.harness-support"},
+      "rationale": "Explicit provider instances with their own config homes are the clean runtime boundary the Harness Packs should have, extended past thread-centric state into Workforce Bindings.",
+      "requirements": ["C03", "HSDK-05"],
+      "issues": [172, 188],
+      "risk": "a driver per provider multiplies the surface that has to be versioned and diagnosed",
+      "changes_locked": false
+    },
+    {
+      "pattern": "cloud-hosted teammate state as the source of truth",
+      "decision": "REJECT",
+      "capability": "orchestration.agent-identity",
+      "source": {"product": "bridgemind", "capability": "orchestration.agent-identity"},
+      "rationale": "State that lives in the vendor's cloud cannot be the canonical record for a local-first control plane.",
+      "requirements": ["PRJ-04"],
+      "issues": [172],
+      "risk": "the rejection is about where canonical state lives, not about multi-client access, which H04 and LINK-02 own",
+      "changes_locked": false
+    },
+    {
+      "pattern": "verification that files a review artifact against the change",
+      "decision": "RESEARCH",
+      "capability": "orchestration.verification-behavior",
+      "source": {"product": "bridgemind", "capability": "orchestration.verification-behavior"},
+      "rationale": "The inferred routine is the shape of the adjacent opportunity, and inference is not enough to build it: one official source would settle whether the artifact is reviewable or only a log.",
+      "requirements": ["D08"],
+      "issues": [172],
+      "risk": "building it on an inferred routine would commit to someone else's unverified workflow",
+      "changes_locked": false
+    },
+    {
+      "pattern": "whether the artifact identity survives a model handoff",
+      "decision": "RESEARCH",
+      "capability": "artifacts.artifact-lifecycle",
+      "source": {"product": "traycer", "capability": "artifacts.artifact-lifecycle"},
+      "rationale": "Its lifecycle claim is current, but what happens to an artifact when the agent or model behind it changes is not in the registry and is exactly what our handoff design needs.",
+      "requirements": ["F04"],
+      "issues": [172],
+      "risk": "assuming artifacts survive a handoff without evidence would make our own handoff semantics a guess",
+      "changes_locked": false
+    }
+  ],
+  "revisions": [
+    {
+      "capability": "workbench.mobile-remote",
+      "was": "Symbiote's remote and mobile control is a differentiator because the competitors ship none",
+      "matched_by": {"product": "orca", "capability": "workbench.mobile-remote"},
+      "revised": "withdrawn: Orca's remote experience is reported and the registry holds it as INFERRED, so the differentiation claim is not defensible until an official source arrives",
+      "observed_at": "2026-09-20"
+    },
+    {
+      "capability": "orchestration.agent-identity",
+      "was": "stable agent identity is Symbiote's alone",
+      "matched_by": {"product": "bridgemind", "capability": "orchestration.agent-identity"},
+      "revised": "narrowed to identity surviving a change of engine: BridgeMind matches stable identity inside its own product on official evidence, so the seat is not ours to claim",
+      "observed_at": "2026-09-20"
+    }
+  ]
+}
