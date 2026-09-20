@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-20",
+  "taxonomy": {
+    "dimensions": [
+      {
+        "id": "runtime",
+        "title": "Runtime and harness platform",
+        "capabilities": [
+          {"id": "runtime.harness-support", "title": "Which coding agents are supported, at what integration depth", "window_days": 180, "grade": true},
+          {"id": "runtime.structured-transport", "title": "Whether the product speaks a structured transport rather than wrapping a terminal", "window_days": 180},
+          {"id": "runtime.account-isolation", "title": "Separate accounts, profiles and config homes", "window_days": 180},
+          {"id": "runtime.usage-visibility", "title": "Quota, usage and rate-limit visibility and switching", "window_days": 180}
+        ]
+      },
+      {
+        "id": "orchestration",
+        "title": "Orchestration and work model",
+        "capabilities": [
+          {"id": "orchestration.parallel-worktrees", "title": "Parallel work in isolated worktrees or branches", "window_days": 365},
+          {"id": "orchestration.agent-identity", "title": "Named agent or teammate identity that survives a harness change", "window_days": 365},
+          {"id": "orchestration.task-hierarchy", "title": "Task or objective hierarchy, delegation and handoffs", "window_days": 365},
+          {"id": "orchestration.verification-behavior", "title": "Completion, review and verification behaviour, and how much is deterministic", "window_days": 365}
+        ]
+      },
+      {
+        "id": "artifacts",
+        "title": "Artifacts, specification and knowledge",
+        "capabilities": [
+          {"id": "artifacts.spec-artifacts", "title": "Durable specification artifacts rather than transcript", "window_days": 365},
+          {"id": "artifacts.artifact-lifecycle", "title": "Artifact identity, versioning, handoff and review semantics", "window_days": 365},
+          {"id": "artifacts.knowledge-provenance", "title": "Codebase knowledge with provenance, freshness and traceability", "window_days": 365}
+        ]
+      },
+      {
+        "id": "workbench",
+        "title": "Workbench and product experience",
+        "capabilities": [
+          {"id": "workbench.terminal-floor", "title": "Terminals, diffs and files inside the product", "window_days": 365},
+          {"id": "workbench.preview-browser", "title": "Preview or browser surface tied to the work", "window_days": 365},
+          {"id": "workbench.voice-dictation", "title": "Voice, dictation or routines on an agent", "window_days": 365},
+          {"id": "workbench.mobile-remote", "title": "Mobile or remote control of a running session", "window_days": 365}
+        ]
+      },
+      {
+        "id": "operations",
+        "title": "Git, delivery and operations",
+        "capabilities": [
+          {"id": "operations.git-integration", "title": "Git, issue and pull-request integration", "window_days": 365},
+          {"id": "operations.hosting-model", "title": "Local-first or cloud-dependent hosting and data ownership", "window_days": 365},
+          {"id": "operations.licensing", "title": "Licensing and distribution model", "window_days": 365}
+        ]
+      }
+    ]
+  },
+  "universe": [
+    {"id": "orca", "name": "Orca", "class": "direct_ade"},
+    {"id": "traycer", "name": "Traycer", "class": "spec_artifact_product"},
+    {"id": "bridgemind", "name": "BridgeMind One", "class": "direct_ade"},
+    {"id": "t3code", "name": "T3 Code", "class": "coding_agent_client"},
+    {"id": "superset", "name": "Superset", "class": "orchestration_tool"},
+    {"id": "vibekanban", "name": "Vibe Kanban", "class": "orchestration_tool"},
+    {"id": "opencode-desktop", "name": "OpenCode Desktop", "class": "coding_agent_client"},
+    {"id": "claude-code", "name": "Claude Code", "class": "provider_native_app"},
+    {"id": "codex-cli", "name": "Codex CLI", "class": "provider_native_app"},
+    {"id": "cursor", "name": "Cursor", "class": "adjacent_substitute"}
+  ],
+  "products": [
+    {
+      "id": "orca",
+      "name": "Orca",
+      "class": "direct_ade",
+      "claims": [
+        {
+          "capability": "orchestration.parallel-worktrees",
+          "state": "VERIFIED_CURRENT",
+          "observation": "Every task gets its own git worktree, its own agent terminal and its own browser",
+          "evidence": [
+            {"kind": "official_docs", "source": "https://www.onorca.dev/docs", "retrieved_at": "2026-09-20", "confidence": "high", "excerpt": "Orca is a desktop IDE for running multiple AI coding agents side by side. Every task gets its own git worktree, its own agent terminal, and its own browser"}
+          ]
+        },
+        {
+          "capability": "runtime.harness-support",
+          "state": "VERIFIED_CURRENT",
+          "observation": "Runs Claude Code, Codex, OpenCode and Pi side by side, one CLI agent per worktree terminal",
+          "grade": "terminal_compatible",
+          "transport": "pty",
+          "evidence": [
+            {"kind": "official_repo", "source": "https://github.com/stablyai/orca", "retrieved_at": "2026-09-20", "confidence": "high", "excerpt": "The AI Orchestrator for 100x builders. Run Codex, ClaudeCode, OpenCode or Pi side-by-side — each in its own worktree, tracked in one place."}
+          ]
+        },
+        {
+          "capability": "workbench.terminal-floor",
+          "state": "VERIFIED_CURRENT",
+          "observation": "Terminals, diffs, a browser and a CLI ship in the product",
+          "evidence": [
+            {"kind": "official_site", "source": "https://www.onorca.dev/", "retrieved_at": "2026-09-20", "confidence": "high", "excerpt": "Run Claude Code, Codex, and any other coding agent in parallel, each in its own worktree. Terminals, diffs, a browser, and a CLI, in one app built for agents."}
+          ]
+        },
+        {
+          "capability": "workbench.mobile-remote",
+          "state": "INFERRED",
+          "observation": "Secondary write-ups describe steering a running session from a phone; no official statement was retrieved",
+          "evidence": [
+            {"kind": "community", "source": "https://vibecodinghub.org/blog/orca-review", "retrieved_at": "2026-09-20", "confidence": "low", "excerpt": "It does not remove the need for Codex, Claude Code, OpenCode"}
+          ],
+          "gap": "An official statement of mobile or remote steering, and of which client can drive which session, was not retrieved on 2026-09-20"
+        },
+        {
+          "capability": "operations.licensing",
+          "state": "UNKNOWN",
+          "observation": "No licence was read from the repository or the site",
+          "evidence": [],
+          "gap": "Read the repository licence file and the distribution terms; neither was retrieved on 2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "traycer",
+      "name": "Traycer",
+      "class": "spec_artifact_product",
+      "claims": [
+        {
+          "capability": "artifacts.spec-artifacts",
+          "renamed_from": "artifacts.spec-documents",
+          "state": "VERIFIED_CURRENT",
+          "observation": "Specification-first: plans a change before code, from the product's own description",
+          "evidence": [
+            {"kind": "official_site", "source": "https://traycer.ai/", "retrieved_at": "2026-09-20", "confidence": "high", "excerpt": "Traycer brings spec-first development to AI coding workflows, helping developers plan changes clearly and execute them with confidence."}
+          ]
+        },
+        {
+          "capability": "artifacts.artifact-lifecycle",
+          "state": "VERIFIED_CURRENT",
+          "observation": "Epic Mode carries specs and tickets on shared boards with real-time collaboration",
+          "evidence": [
+            {"kind": "official_docs", "source": "https://docs.traycer.ai/extension/tasks/epic", "retrieved_at": "2026-09-20", "confidence": "high", "excerpt": "Collaborative artifact management through structured workflows. Perfect for managing specs and tickets with shared boards, real-time collaboration"}
+          ]
+        },
+        {
+          "capability": "orchestration.verification-behavior",
+          "state": "ANNOUNCED",
+          "observation": "The product's own blog frames it as a planning and verification layer; no independent or documented behaviour was retrieved",
+          "evidence": [
+            {"kind": "official_blog", "source": "https://traycer.ai/blog/build-with-intent-ship-with-confidence", "retrieved_at": "2026-09-20", "confidence": "medium", "excerpt": "Traycer is the planning and verification layer that brings specification and architectural rigor before code is generated, and it keeps code"}
+          ],
+          "gap": "What verification actually runs, and what it refuses, is not stated in any retrieved source"
+        },
+        {
+          "capability": "runtime.harness-support",
+          "state": "UNKNOWN",
+          "observation": "No retrieved source states which coding agents it hands off to or at what depth",
+          "evidence": [],
+          "gap": "Retrieve the official integration list and whether each is wrapped through a terminal or a structured interface; not retrieved on 2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "bridgemind",
+      "name": "BridgeMind One",
+      "class": "direct_ade",
+      "renamed_from": "bridgemind-one",
+      "claims": [
+        {
+          "capability": "orchestration.agent-identity",
+          "state": "VERIFIED_CURRENT",
+          "observation": "Named agents are put on routines inside one native desktop app",
+          "evidence": [
+            {"kind": "official_site", "source": "https://www.bridgemind.ai/", "retrieved_at": "2026-09-20", "confidence": "high", "excerpt": "Teammates on routines. Name an agent, give it a brief, put it on a routine ... One native desktop app for everything you do with AI agents — the teammates"}
+          ]
+        },
+        {
+          "capability": "workbench.voice-dictation",
+          "state": "UNKNOWN",
+          "observation": "The issue names dictation and voice as a separate row for this product; nothing was retrieved",
+          "evidence": [],
+          "gap": "Retrieve whether dictation, voice input or text-to-speech exist, and whether they are first-party; not retrieved on 2026-09-20"
+        },
+        {
+          "capability": "orchestration.verification-behavior",
+          "state": "INFERRED",
+          "observation": "A secondary review says its agents plan work, write code, review diffs and ship; the product's own site says nothing about verification",
+          "evidence": [
+            {"kind": "community", "source": "https://www.vibecademy.ai/blog/what-is-bridgemind", "retrieved_at": "2026-09-20", "confidence": "low", "excerpt": "AI agents are teammates there, not add-on tools. They plan work, write code, review diffs, and ship products alongside human builders."}
+          ],
+          "gap": "Read the official documentation for what a routine may and may not do between code and shipping; no official page was retrieved"
+        }
+      ]
+    },
+    {
+      "id": "t3code",
+      "name": "T3 Code",
+      "class": "coding_agent_client",
+      "claims": [
+        {
+          "capability": "runtime.harness-support",
+          "state": "INFERRED",
+          "observation": "Secondary sources describe provider settings in an open-source control surface; no official integration list was retrieved",
+          "grade": "detected",
+          "transport": "none",
+          "evidence": [
+            {"kind": "community", "source": "https://github.com/link-assistant/formal-ai", "retrieved_at": "2026-09-20", "confidence": "low", "excerpt": "In T3 Code's provider settings, choose Codex, provider formalai , model ... provider never invokes host agent / claude / codex binaries."}
+          ],
+          "gap": "Retrieve T3 Code's own provider documentation and its stated integration depth per provider; only secondary sources were retrieved on 2026-09-20"
+        },
+        {
+          "capability": "operations.hosting-model",
+          "state": "INFERRED",
+          "observation": "Secondary sources describe a server that can be moved off the laptop; the official product page was not retrieved",
+          "evidence": [
+            {"kind": "community", "source": "https://community-scripts.org/", "retrieved_at": "2026-09-20", "confidence": "low", "excerpt": "T3 Code is a web and desktop control surface for running coding agents on your machine."}
+          ],
+          "gap": "Retrieve the official statement of where the server runs and what leaves the machine; not retrieved on 2026-09-20"
+        },
+        {
+          "capability": "orchestration.verification-behavior",
+          "state": "UNKNOWN",
+          "observation": "Nothing was retrieved about completion or review behaviour",
+          "evidence": [],
+          "gap": "The product's own documentation of completion and review was not retrieved on 2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "superset",
+      "name": "Superset",
+      "class": "orchestration_tool",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-09-20: retrieve the product's own documentation of parallel agent work, worktree policy and completion behaviour"
+    },
+    {
+      "id": "vibekanban",
+      "name": "Vibe Kanban",
+      "class": "orchestration_tool",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-09-20: retrieve whether its task board owns canonical work or mirrors another tool's state"
+    },
+    {
+      "id": "opencode-desktop",
+      "name": "OpenCode Desktop",
+      "class": "coding_agent_client",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-09-20: retrieve its interface to its own agent and whether it shares the CLI's config home"
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "class": "provider_native_app",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-09-20: retrieve its native session, skill, hook and permission model from its own documentation"
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "class": "provider_native_app",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-09-20: retrieve its config home, sandbox and approval model from its own documentation"
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "class": "adjacent_substitute",
+      "claims": [],
+      "gap": "No dossier was researched on 2026-09-20: retrieve whether its agent surface is a substitute for or a client of the same runtimes"
+    }
+  ],
+  "watch": [
+    {"capability": "runtime.harness-support", "requirements": ["FND-05"], "decisions": ["ADR-0001/DESKTOP-SHELL"], "locked": false},
+    {"capability": "runtime.structured-transport", "requirements": ["FND-05"], "decisions": ["ADR-0001/DESKTOP-SHELL"], "locked": false},
+    {"capability": "artifacts.spec-artifacts", "requirements": ["A04"], "decisions": ["ADR-0001/HOST-STACK"], "locked": true},
+    {"capability": "operations.hosting-model", "requirements": ["A05"], "decisions": ["ADR-0001/HOST-STACK"], "locked": true}
+  ]
+}

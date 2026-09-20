@@ -50,6 +50,7 @@ Five habits, each of them checked rather than asserted:
 | The roadmap registry, its index and the accepted-decision coverage ledger | [integrity tooling](../planning/integrity/README.md) | `python3 planning/integrity/test_validate.py`, `python3 planning/integrity/coverage_ledger.py --check` |
 | The CLI's published schema fixtures | [schemas](contracts/schemas) | `symbiote schema --check docs/contracts/schemas` |
 | A driven binary's record covering every input its build read | [source records](../planning/integrity/README.md) | `planning/integrity/source_record.py --binary …` (see `.github/workflows/rust-contracts.yml`) |
+| What a competitor claim rests on, how old it is, and what changed between snapshots | [competitor registry](../planning/research/README.md) | `python3 planning/research/registry.py --check`, `python3 planning/research/test_registry.py` |
 
 Each of those is held by a case in the component that owns it, and the driver
 above is how this repository re-proves the architecture crate's own rules.
@@ -63,6 +64,7 @@ cargo fmt --all --check
 python -m unittest discover -s planning -p 'test_legacy_importers.py' -v
 python -m unittest discover -s planning/integrity -p 'test_*.py' -v
 python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
+python -m unittest discover -s planning/research -p 'test_*.py' -v
 python3 planning/integrity/revert_rules.py
 ```
 
