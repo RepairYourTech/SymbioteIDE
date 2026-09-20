@@ -1,11 +1,10 @@
 """Run: python3 planning/integrity/test_reader_size.py.
 
 `toolchains.py` is the reader the two toolchain rules share: this holds the reading path — every
-module-level definition that reads text and all it reaches — against an equal declaration, because
-the path grows as it learns a spelling, a reviewed act. This file's size is the opposite: `GUARD_CAP`
-cannot rise above the guard the tip it lands on held, so it comes down. Reading is *acquiring* text,
-not rearranging what the path states, which is why the names the rules read sit outside, free to
-grow. The measure is lines, so a guarded definition costs its own lines, not the one above it.
+module-level definition that reads text and all it reaches — against an equal declaration, and this
+file against a cap that cannot rise above the guard the tip it lands on held. Reading is *acquiring*
+text, not rearranging what the path states, so the names the rules read sit outside, and the README's
+figures for the path, the module and those projections are held here with it, each to what it states.
 """
 from __future__ import annotations
 
@@ -21,19 +20,16 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 TOOLCHAINS = HERE / "toolchains.py"
 RULES = ("test_toolchain_floors.py", "test_handoff.py")
-# The reading path's size; this guard's own cap, which may not rise above the guard the tip this
-# commit lands on held; and the cases a loader finds here.
+# The path's size; this file's cap, which may not rise above the tip's guard; and its case count.
 READER_LINES = 450
 GUARD_CAP = 365
 GUARD_CASES = 13
 # The repo's own modules whose reading counts with the reader's: `python_floor` reads no text.
 LOCAL_IMPORTS: tuple[str, ...] = ("python_floor",)
-# What reading text is, as a shape: these module names, whose operations read it, and the calls
-# that turn a file or a block into lines. A definition holding one of these reads text.
+# What reading text is: these module names, whose operations read it, or these calls on it.
 TEXT_MODULES = frozenset({"re", "tomllib"})
 TEXT_CALLS = frozenset({"read_text", "readlines", "read", "splitlines"})
-# Every operation this module calls outside the path, so a new one reds rather than hides: the first
-# four rearrange a value the path stated, and the rest touch no text, method and builtin alike.
+# Every operation called outside the path, so a new one reds: the rest rearrange or touch no text.
 NOT_READING = frozenset({"split", "join", "strip", "count", "get", "values", "fromkeys",
                          "append", "is_file", "resolve", "any()", "isinstance()", "list()",
                          "next()", "range()", "AssertionError()"})
@@ -50,9 +46,7 @@ def definitions(tree: ast.Module) -> dict[str, ast.AST]:
                 continue
             targets = (child.targets if isinstance(child, ast.Assign)
                        else [child.target] if isinstance(child, ast.AnnAssign) else [])
-            for target in targets:
-                if isinstance(target, ast.Name):
-                    found[target.id] = child
+            found.update({t.id: child for t in targets if isinstance(t, ast.Name)})
             if isinstance(child, (ast.Import, ast.ImportFrom)):
                 for alias in child.names:
                     found[(alias.asname or alias.name).split(".")[0]] = child
@@ -91,27 +85,26 @@ def reachable(defined: dict[str, ast.AST], seeds: set[str]) -> set[str]:
     while frontier:
         name = frontier.pop()
         for child in ast.walk(defined[name]):
-            callee = (child.func.id if isinstance(child, ast.Call)
-                      and isinstance(child.func, ast.Name)
-                      else child.id if isinstance(child, ast.Name)
-                      and isinstance(child.ctx, ast.Load) else None)
+            callee = (child.func.id if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                      else child.id if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+                      else None)
             if callee in defined and callee not in touched:
                 touched.add(callee)
                 frontier.append(callee)
     return touched
 
 
+def span(node: ast.AST) -> int:
+    """The lines a definition costs, its decorators included."""
+    start = min([d.lineno for d in getattr(node, "decorator_list", [])] or [node.lineno])
+    return node.end_lineno - start + 1
+
+
 def reading(source: str) -> dict[str, int]:
     """The reading path: every definition that reads text, its lines, and everything it reaches."""
     defined = definitions(ast.parse(source))
-    named = patterns(defined)
-    seeds = {name for name, node in defined.items() if reads(node, named)}
-    found: dict[str, int] = {}
-    for name in reachable(defined, seeds):
-        node = defined[name]
-        start = min([d.lineno for d in getattr(node, "decorator_list", [])] or [node.lineno])
-        found[name] = node.end_lineno - start + 1
-    return found
+    seeds = {name for name, node in defined.items() if reads(node, patterns(defined))}
+    return {name: span(defined[name]) for name in reachable(defined, seeds)}
 
 
 def local_chain(folder: pathlib.Path) -> list[str]:
@@ -121,8 +114,7 @@ def local_chain(folder: pathlib.Path) -> list[str]:
         source = (folder / f"{worklist.pop()}.py").read_text()
         for node in ast.walk(ast.parse(source)):
             names = ([node.module] if isinstance(node, ast.ImportFrom) and node.module
-                     else [alias.name for alias in node.names]
-                     if isinstance(node, ast.Import) else [])
+                     else [a.name for a in node.names] if isinstance(node, ast.Import) else [])
             for module in names:
                 if module not in seen and module != "toolchains" \
                         and (folder / f"{module.replace('.', '/')}.py").is_file():
@@ -135,8 +127,8 @@ def reading_path(folder: pathlib.Path) -> dict[str, int]:
     """The reader's subject: its reading path, and every declared local module's, keyed `module.name`."""
     held = reading((folder / "toolchains.py").read_text())
     for module in LOCAL_IMPORTS:
-        source = (folder / f"{module}.py").read_text()
-        held |= {f"{module}.{name}": span for name, span in reading(source).items()}
+        held |= {f"{module}.{name}": span for name, span in
+                 reading((folder / f"{module}.py").read_text()).items()}
     return held
 
 
@@ -153,19 +145,25 @@ def rules_read(folder: pathlib.Path) -> set[str]:
     return names
 
 
+def rules_own(source: str, used: set[str]) -> dict[str, int]:
+    """The definitions the rules read outside the path, with their reach, and the lines each costs."""
+    defined, held = definitions(ast.parse(source)), set(reading(source))
+    own = reachable(defined, set(used) & set(defined) - held) - held
+    return {name: span(defined[name]) for name in own}
+
+
 def outside(source: str, used: set[str]) -> dict[str, list[str]]:
     """Neither the path nor the rules' own: each with what it reads, and what the rules reach first."""
     defined = definitions(ast.parse(source))
     held = set(reading(source))
-    own = reachable(defined, set(used) & set(defined) - held) - held
+    own = set(rules_own(source, used))
     named = patterns(defined)
     flagged = {}
     for name, node in defined.items():
         if name in held or name in own or isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        reach = {child.func.id for child in ast.walk(node)
-                 if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
-                 and child.func.id in held}
+        reach = {call.func.id for call in ast.walk(node) if isinstance(call, ast.Call)
+                 and isinstance(call.func, ast.Name) and call.func.id in held}
         flagged[name] = sorted(set(reads(node, named)) | reach) or ["nothing reads it"]
     return flagged
 
@@ -193,8 +191,7 @@ def operations(source: str) -> dict[str, list[str]]:
 
 def small_module(definition: str, use: str) -> str:
     """A module whose reading path starts at `spell`: it reads the block a line at a time."""
-    return (f"def spell(block: str) -> str:\n"
-            f'    """The one definition here that reads text."""\n'
+    return ('def spell(block: str) -> str:\n    """The one definition here that reads text."""\n'
             f"    return {use}.splitlines()[0]\n\n\n{definition}")
 
 
@@ -224,23 +221,29 @@ class ReaderSize(unittest.TestCase):
         size = sum(held.values())
         self.assertEqual(size, READER_LINES,
                          f"the reading path is {size} lines — {', '.join(sorted(held))} — where "
-                         f"{READER_LINES} is declared: the declaration moves with any change to "
-                         f"what reads text, and a definition that reads none of it belongs to the "
-                         f"rules or does not belong here")
+                         f"{READER_LINES} is declared: the declaration moves with any change to text "
+                         f"reading, and a definition that reads none of it belongs to the rules")
 
-    def test_the_readme_states_the_two_numbers_this_rule_declares(self):
-        stated = re.search(r"(\d+) lines of the module's (\d+)", (HERE / "README.md").read_text())
-        self.assertIsNotNone(stated, "the README no longer states the reading path's size and the "
-                                     "module's own, so this case holds nothing")
+    def test_the_readme_states_the_numbers_this_rule_holds_or_measures(self):
+        readme, source = (HERE / "README.md").read_text(), TOOLCHAINS.read_text()
+        stated = re.search(r"(\d+) lines of the module's (\d+)", readme)
+        self.assertIsNotNone(stated, "the README no longer states the path's size and the module's")
         path_lines, module_lines = (int(number) for number in stated.groups())
         self.assertEqual(path_lines, READER_LINES,
                          f"the README states {path_lines} lines of reading path where "
                          f"{READER_LINES} is declared, and this rule is what declares it")
-        actual = len(TOOLCHAINS.read_text().splitlines())
+        actual = len(source.splitlines())
         self.assertEqual(module_lines, actual,
-                         f"the README states the module is {module_lines} lines and it is "
-                         f"{actual}: a line added to the reader moves this figure in the change "
-                         f"that adds it, the way READER_LINES moves")
+                         f"the README states the module is {module_lines} lines and it is {actual}: "
+                         f"a line added to the reader moves this figure in the change that adds it")
+        outside = re.search(r"their own reach \(([^)]*?), (\d+) lines\)", readme)
+        self.assertIsNotNone(outside, "the README no longer states the projections outside the path")
+        own = rules_own(source, rules_read(HERE))
+        self.assertEqual(sorted(re.findall(r"`([^`]+)`", outside.group(1))), sorted(own),
+                         "the README names projections outside the path that the rules do not read")
+        self.assertEqual(int(outside.group(2)), sum(own.values()),
+                         f"the README states {outside.group(2)} lines outside the path and they "
+                         f"cost {sum(own.values())}: this figure moves with them, as the module's does")
 
     def test_no_local_module_the_reader_imports_supplies_reading_uncounted(self):
         found = local_chain(HERE)
@@ -255,16 +258,14 @@ class OutsideThePath(unittest.TestCase):
     """What the path does not hold and no case would otherwise name."""
 
     def test_nothing_outside_the_path_reads_text_or_reaches_it(self):
-        used = rules_read(HERE)
-        flagged = outside(TOOLCHAINS.read_text(), used)
+        flagged = outside(TOOLCHAINS.read_text(), rules_read(HERE))
         self.assertEqual(flagged, {},
                          f"these definitions are neither the reading path nor the rules' own, and "
                          f"each reads text or reaches the path: {flagged}")
 
     def test_every_operation_outside_the_path_is_a_named_one(self):
         found = operations(TOOLCHAINS.read_text())
-        called = {op for ops in found.values() for op in ops}
-        undeclared = sorted(called ^ NOT_READING)
+        undeclared = sorted({op for ops in found.values() for op in ops} ^ NOT_READING)
         callers = {op: sorted(n for n, ops in found.items() if op in ops) for op in undeclared}
         self.assertEqual(undeclared, [],
                          f"these operations are called by definitions the reading path does not "
@@ -274,8 +275,7 @@ class OutsideThePath(unittest.TestCase):
 
     def test_a_definition_that_reads_text_joins_the_path(self):
         source = ('import re\n\n\nPATTERN = re.compile("")\n\n\n'
-                  "def spell(block: str) -> str:\n"
-                  "    return PATTERN.sub('', block)\n\n\n"
+                  "def spell(block: str) -> str:\n    return PATTERN.sub('', block)\n\n\n"
                   "def helper(value: str) -> str:\n    return PATTERN.sub(value)\n")
         held = reading(source)
         self.assertIn("spell", held, "the definition that reads text is the path's")
@@ -283,9 +283,9 @@ class OutsideThePath(unittest.TestCase):
         self.assertIn("helper", held, "and a definition that reads its own text joins it")
 
     def test_a_definition_that_reaches_the_path_is_named_unless_the_rules_read_it(self):
-        spell = ("def spell(block: str) -> str:\n"
-                 "    return block.splitlines()[0]\n\n\n")
-        reaching = spell + "def helper(value: str) -> str:\n    return spell(value)\n"
+        reaching = ("def spell(block: str) -> str:\n"
+                    "    return block.splitlines()[0]\n\n\n"
+                    "def helper(value: str) -> str:\n    return spell(value)\n")
         self.assertEqual(reading(reaching), {"spell": 2},
                          "`helper` reads no text and is not reached from the path")
         self.assertEqual(outside(reaching, used=set()), {"helper": ["spell"]},
@@ -335,8 +335,8 @@ class CountedKinds(unittest.TestCase):
                 self.assertIn(name, held, f"{name} is a kind the path reaches: {sorted(held)}")
 
     def test_a_helper_reached_only_as_a_string_is_not_counted(self):
-        reached = "def helper(value: str) -> str:\n    return value\n"
-        held = reading(small_module(reached, 'globals()["helper"](block)'))
+        held = reading(small_module('def helper(value: str) -> str:\n    return value\n',
+                                    'globals()["helper"](block)'))
         self.assertNotIn("helper", held, f"a string is not a binding the path reads: {sorted(held)}")
 
     def test_a_helper_reached_through_an_import_is_not_counted(self):
@@ -346,8 +346,8 @@ class CountedKinds(unittest.TestCase):
         self.assertNotIn("tail", held, f"not the logic an imported name reaches: {sorted(held)}")
 
     def test_a_definition_costs_its_decorator_too(self):
-        decorated = "@staticmethod\ndef helper(value: str) -> str:\n    return value\n"
-        held = reading(small_module(decorated, "helper(block)"))
+        held = reading(small_module("@staticmethod\ndef helper(value: str) -> str:\n"
+                                    "    return value\n", "helper(block)"))
         self.assertEqual(held.get("helper"), 3, f"the decorator line is part of what helper "
                                                f"costs: {held}")
 
