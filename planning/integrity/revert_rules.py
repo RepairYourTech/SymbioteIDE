@@ -31,10 +31,12 @@ too: it is read on inputs built to be refused — one per kind of way, and the r
 hold must not hold — so a checker vacated into holding everything is caught by the
 run it would have fooled rather than by a reading of its text, and the same
 negative inputs are driven from `test_revert_rules.py` so no single file holds the
-checker's strength. What the rows cannot see is a case this file's own suite holds
-that no row names: those are declared, and the run requires the declaration and the
-rows to account for every case `test_revert_rules.py` collects, so un-naming one is
-refused rather than silent.
+checker's strength. What the rows cannot see is a case beside one they name that no
+row names itself: those are declared once per file the rows state their refusals in,
+and the run requires the declarations and the rows together to account for every case
+in the classes the rows are proved in — this file's, the chain reading's, and the
+guard's — so un-naming one, or adding one nothing accounts for, is refused rather
+than silent.
 
 The live tree is never touched. The driver copies this working tree (everything
 cargo and those rows need, without `target/` or caches) into a temporary directory,
@@ -686,6 +688,14 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
          (WORKFLOW, "mutates", chain.SWALLOWED)),
     ),
     (
+        "the states the mutation writes land where a YAML parser reads a key",
+        "test_each_state_is_written_inside_the_definition_it_means",
+        CHAIN,
+        "                self.assertGreater(column, dash,",
+        (("planning/integrity/chain.py", "weaker",
+          ('            return found.start("key")', '            return found.start("indent")')),),
+    ),
+    (
         "the driver refuses a live file moved while it runs",
         "test_a_live_file_moved_while_the_driver_runs_is_refused",
         "planning/integrity/test_revert_rules.py",
@@ -697,59 +707,102 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
 
 HOLDER = "planning/integrity/test_revert_rules.py"
 
-# The cases in the hold's own file that no row names: each checks the shape of these tables or of
-# this driver rather than a refusal the repository makes, so losing one is not losing a refusal —
-# declared once here the way the reader-size guard declares what is not reading. The run requires
-# this declaration *and* the rows to account for every case `test_revert_rules.py` collects, both
-# directions: a case named here that the file no longer collects means one was renamed out of it,
-# and a case collected that neither names is one whose loss would be silent.
-SHAPE_CASES = frozenset({
-    "test_the_driver_roots_itself_at_this_repository",
-    "test_the_driver_scans_the_tree_it_is_held_to",
-    "test_every_row_names_a_rule_an_anchor_a_removal_and_a_case",
-    "test_every_anchor_is_held_once_in_the_tree",
-    "test_no_two_rows_are_the_same_proof",
-    "test_every_named_case_is_one_the_suite_runs",
-    "test_the_table_names_rules_at_all",
-    "test_the_hold_table_names_a_rule_a_case_a_subject_and_its_ways",
-    "test_every_hold_row_states_its_refusal_once_and_lays_its_ways_in_the_tree",
-    "test_a_case_no_row_names_and_no_declaration_accounts_for_is_refused",
-})
+# The cases in a file a row states its refusal in that no row names: each checks the shape of these
+# tables, of this driver, or of the reading a row proves rather than a refusal the repository
+# makes, so losing one is not losing a refusal — declared once per file the way the reader-size
+# guard declares what is not reading. The run requires these declarations *and* the rows to account
+# for every case in the classes the rows prove their refusals in, across every file the rows name,
+# both directions: a case named here that the file no longer collects means one was renamed out of
+# it, and a case collected that neither names is one whose loss would be silent.
+DECLARED: dict[str, frozenset[str]] = {
+    HOLDER: frozenset({
+        "test_the_driver_roots_itself_at_this_repository",
+        "test_the_driver_scans_the_tree_it_is_held_to",
+        "test_every_row_names_a_rule_an_anchor_a_removal_and_a_case",
+        "test_every_anchor_is_held_once_in_the_tree",
+        "test_no_two_rows_are_the_same_proof",
+        "test_every_named_case_is_one_the_suite_runs",
+        "test_the_table_names_rules_at_all",
+        "test_the_hold_table_names_a_rule_a_case_a_subject_and_its_ways",
+        "test_every_hold_row_states_its_refusal_once_and_lays_its_ways_in_the_tree",
+        "test_a_case_no_row_names_and_no_declaration_accounts_for_is_refused",
+    }),
+    # The proof file the chain reading lives in: the case below states a shape of that reading
+    # rather than a refusal of its own, and the reading's other case is named by the rows above.
+    CHAIN: frozenset({
+        "test_a_job_is_read_at_any_indentation_and_with_a_comment_or_anchor",
+    }),
+}
 
 
-def cases_in(tree: pathlib.Path) -> set[str]:
-    """Every case a loader collects from the hold's own file: the `test…` methods of each class
-    there that extends `unittest.TestCase`, read from its text rather than by importing it.
+def cases_in(tree: pathlib.Path, where: str = HOLDER,
+             only: set[str] | None = None) -> set[str]:
+    """Every case a loader collects from `where`: the `test…` methods of each class there that
+    extends `unittest.TestCase`, or of the classes in `only` when it names them, read from its text
+    rather than by importing it.
     """
-    holder = tree / HOLDER
-    if not holder.is_file():
+    source = tree / where
+    if not source.is_file():
         # A deleted file holds no case: the accounting below reports every name it should have
         # collected rather than raising where a refusal by name belongs.
         return set()
-    source = holder.read_text()
     found: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(ast.parse(source.read_text())):
         if not isinstance(node, ast.ClassDef):
             continue
         if "TestCase" not in {ast.unparse(base).split(".")[-1] for base in node.bases}:
+            continue
+        if only is not None and node.name not in only:
             continue
         found |= {child.name for child in node.body
                   if isinstance(child, ast.FunctionDef) and child.name.startswith("test")}
     return found
 
 
+def proving_classes(tree: pathlib.Path, where: str) -> set[str]:
+    """The classes in `where` that hold a case a row names: a row names the case that states its
+    refusal, and the class that case sits in is the class the refusal is proved in — so every case
+    beside it is a proof of the same reading, and losing one is losing a proof nothing else states.
+    Read from the file's text, so a renamed class is a class this names none of.
+    """
+    source = tree / where
+    if not source.is_file():
+        return set()
+    named = {row[1] for row in HOLDS if len(row) == 5 and row[2] == where}
+    if not named:
+        return set()
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source.read_text())):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if named & {child.name for child in node.body if isinstance(child, ast.FunctionDef)}:
+            found.add(node.name)
+    return found
+
+
 def unheld_cases(tree: pathlib.Path) -> str | None:
-    """Why the cases of the hold's own file are not all accounted for, or None when they are."""
-    cases = cases_in(tree)
-    accounted = {row[1] for row in HOLDS if len(row) == 5 and row[2] == HOLDER} | SHAPE_CASES
-    missing = sorted(accounted - cases)
-    extra = sorted(cases - accounted)
-    if missing:
-        return (f"{', '.join(missing)} is named by a row or declared here, and this file collects "
-                f"no such case, so it was renamed out of the suite")
-    if extra:
-        return (f"{', '.join(extra)} is a case no row names and no declaration accounts for, so "
-                f"losing it would be silent")
+    """Why the cases of the classes the rows prove their refusals in are not all accounted for, or
+    None when they are. Every file a row states its refusal in is asked — a row over a new file
+    makes that file's cases accountable without a declaration of its own: the classes holding a
+    case a row names, and every case in them either named by a row or declared — because a case
+    that cannot hold its own presence is the case a row is shown against, and the ones beside it
+    are the proofs of the same reading, which nothing else states. A subject this tree does not
+    hold is left to the rows that name it, which refuse a file that is not there by name.
+    """
+    for where in sorted({row[2] for row in HOLDS if len(row) == 5}):
+        if not (tree / where).is_file():
+            continue
+        cases = cases_in(tree, where, proving_classes(tree, where))
+        accounted = {row[1] for row in HOLDS if len(row) == 5 and row[2] == where}
+        accounted |= set(DECLARED.get(where, frozenset()))
+        missing = sorted(accounted - cases)
+        extra = sorted(cases - accounted)
+        if missing:
+            return (f"{', '.join(missing)} is named by a row or declared for {where}, and it "
+                    f"collects no such case, so it was renamed out of the suite")
+        if extra:
+            return (f"{', '.join(extra)} is a case in {where} that no row names and no declaration "
+                    f"accounts for, so losing it would be silent")
     return None
 
 
@@ -1029,8 +1082,8 @@ def main() -> int:
             print(f"NOT HELD: this driver's own checker ({proof})")
         unaccounted = unheld_cases(tree)
         if unaccounted is not None:
-            unheld.append(("the hold's own cases", unaccounted))
-            print(f"NOT HELD: the hold's own cases ({unaccounted})")
+            unheld.append(("the cases the rows are proved in", unaccounted))
+            print(f"NOT HELD: the cases the rows are proved in ({unaccounted})")
         for row in HOLDS:
             name = row[0] if row else "a hold row with no name"
             why = holds(row, tree, pathlib.Path(scratch))
