@@ -4,8 +4,10 @@ A hold nothing runs is not a hold. This directory's suite states the reader-size
 `revert_rules.py` is what refuses a guard grown a line past it, and its refusal is shown against an
 earlier guard, so its checkout must hold one. So the job that runs this directory's suite must run
 the driver too — two halves of one proof over one checkout — and must fetch the full history both
-read. `test_python_floor.py`'s chain case refuses every link of that, and the driver's `HOLDS` rows
-hold that case.
+read. The same job owes every suite this repository's checks consist of, the competitor registry's
+`planning/research` among them: a suite the job does not run is a refusal CI does not enforce.
+`test_python_floor.py`'s chain case refuses every link of that, and the driver's `HOLDS` rows hold
+that case.
 
 This module is the reading both go through: one predicate says what a check step is
 (`runs_a_check`), one locator says where a definition's own keys are written (`key_column`, read from
@@ -28,6 +30,20 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 # unittest discovery — the suite that declares the reader-size guard — the driver that refuses a
 # guard grown past it, and the fetch that gives both the history they read.
 SUITE_DIRECTORY = "planning/integrity"
+# The suites this repository's checks consist of, each with the link a job that runs this
+# directory's suite owes it: this directory's own, whose case declares the reader-size guard's cap,
+# and the competitor registry's beside it, whose suite refuses a claim with nothing behind it. One
+# address per suite, so the clause that finds them, the predicate that says what a check step is,
+# and the state that writes a suite gone cannot mean a different suite than the case reads — a job
+# that runs this directory's suite is owed every row here.
+REGISTRY_DIRECTORY = "planning/research"
+# The link a job that runs this directory's suite lacks when it runs none of that suite: named here
+# so the table and the case's assertion cannot state it two ways.
+REGISTRY_LINK = "the competitor registry's suite beside it"
+SUITES: tuple[tuple[str, str], ...] = (
+    (SUITE_DIRECTORY, "this directory's own suite"),
+    (REGISTRY_DIRECTORY, REGISTRY_LINK),
+)
 DRIVER_SCRIPT = "revert_rules.py"
 FULL_HISTORY = "fetch-depth: 0"
 # The links a job that runs these checks owes, named once here so the clauses that find them, the
@@ -39,6 +55,7 @@ FATAL_LINK = "a failure that reaches the job"
 # the driver's ways carry these names, and a name this file does not write is a way that cannot bite.
 NO_DRIVER = "no driver"
 NO_HISTORY = "no history"
+NO_REGISTRY = "no registry suite"
 NON_FATAL = "non-fatal"
 CONDITIONAL = "conditional"
 SWALLOWED = "swallowed"
@@ -46,8 +63,8 @@ SWALLOWED = "swallowed"
 # behind a condition that cannot hold never runs, so the cap it declares is enforced by nothing —
 # and it is the job's own keys the reading must see, not the step's.
 JOB_CONDITIONAL = "job-conditional"
-MUTATIONS: tuple[str, ...] = (NO_DRIVER, NO_HISTORY, NON_FATAL, CONDITIONAL, SWALLOWED,
-                              JOB_CONDITIONAL)
+MUTATIONS: tuple[str, ...] = (NO_DRIVER, NO_HISTORY, NO_REGISTRY, NON_FATAL, CONDITIONAL,
+                              SWALLOWED, JOB_CONDITIONAL)
 
 SEPARATOR = re.compile(r"&&|\|\||[;&|]")
 # What a step's line starts with before its command does: `run:`, and the list dash a job may put in
@@ -120,18 +137,18 @@ def named_directory(command: str) -> str | None:
     return None
 
 
-def names_this_directory(where: str | None) -> bool:
-    """Whether a path names this directory: the tracked path itself, or one that ends in it — a path
+def names_directory(where: str | None, directory: str) -> bool:
+    """Whether a path names `directory`: the tracked path itself, or one that ends in it — a path
     built from the workspace variable is the same directory as the relative one.
     """
     if where is None:
         return False
     joined = posixpath.normpath(where)
-    return joined == SUITE_DIRECTORY or joined.endswith(f"/{SUITE_DIRECTORY}")
+    return joined == directory or joined.endswith(f"/{directory}")
 
 
-def runs_the_suite(lines: list[str]) -> bool:
-    """Whether these steps run unittest's discovery over *this* directory, in any spelling of it.
+def runs_suite(lines: list[str], directory: str) -> bool:
+    """Whether these steps run unittest's discovery over `directory`, in any spelling of it.
 
     `python -m unittest discover -s planning/integrity`, the same with `./` or a trailing slash, the
     directory given positionally, `cd planning/integrity && python -m unittest discover` and a `cd`
@@ -140,22 +157,29 @@ def runs_the_suite(lines: list[str]) -> bool:
     the spelling one workflow happens to write. A relative directory is resolved where the command
     runs, so `-s .` after a `cd` into this directory is this directory. A directory named to
     `-t`/`--top-level-directory` is not read: discovery would start at the top level and search wider
-    than this directory.
+    than this directory. The directory is the argument because the job owes every suite this
+    repository's checks consist of, and each is read the same way rather than one being the suite and
+    the rest being spellings of it.
     """
-    directory = None
+    directory_of = None
     for command in commands(lines):
         went = CHDIR.match(command)
         if went:
-            directory = posixpath.normpath(went.group(1).split("#")[0].strip().strip("'\""))
+            directory_of = posixpath.normpath(went.group(1).split("#")[0].strip().strip("'\""))
             continue
         if not DISCOVER.search(command):
             continue
         named = named_directory(command)
         # `-s` names a directory relative to where the command runs, so `.` is the tracked one.
-        where = posixpath.join(directory or ".", named) if named else directory
-        if names_this_directory(where):
+        where = posixpath.join(directory_of or ".", named) if named else directory_of
+        if names_directory(where, directory):
             return True
     return False
+
+
+def runs_the_suite(lines: list[str]) -> bool:
+    """Whether these steps run this directory's own suite: the job the chain case is about."""
+    return runs_suite(lines, SUITE_DIRECTORY)
 
 
 def runs_the_driver(lines: list[str]) -> bool:
@@ -182,18 +206,21 @@ def key_column(lines: list[str], start: int, end: int) -> int | None:
 
 
 def check_reached(step: list[str]) -> int | None:
-    """Where in a step's commands the check runs: the first one after which the step has run this
-    directory's suite or the rule driver. This is the one owner of "the step that runs these
-    checks" — `unfatal` refuses a failure this step throws away and `mutated` writes a state inside a
-    step this names, so neither can mean a different step than the case reads.
+    """Where in a step's commands the check runs: the first one after which the step has run one of
+    the suites this repository's checks consist of, or the rule driver. This is the one owner of
+    "the step that runs these checks" — `unfatal` refuses a failure this step throws away and
+    `mutated` writes a state inside a step this names, so neither can mean a different step than the
+    case reads, and a suite the job owes is a step this names the moment it is in `SUITES`.
     """
     ran = commands(step)
     return next((at for at in range(len(ran))
-                 if runs_the_suite(ran[:at + 1]) or runs_the_driver(ran[:at + 1])), None)
+                 if any(runs_suite(ran[:at + 1], directory) for directory, _link in SUITES)
+                 or runs_the_driver(ran[:at + 1])), None)
 
 
 def runs_a_check(step: list[str]) -> bool:
-    """Whether these step lines run this directory's suite or the rule driver."""
+    """Whether these step lines run a suite this repository's checks consist of, or the rule
+    driver."""
     return check_reached(step) is not None
 
 
@@ -311,14 +338,14 @@ def unfatal(lines: list[str]) -> list[str]:
 
 
 def links_missing(lines: list[str]) -> list[str]:
-    """Which of the links a job that runs these checks owes that job lacks: the rule driver beside
-    the suite, the full history both read, and a failure that reaches the job. Read as commands, so
-    a job is named for what it runs rather than for a spelling, and the ways a step throws its own
-    failure away are `unfatal`'s above.
+    """Which of the links a job that runs these checks owes that job lacks: every suite this
+    repository's checks consist of, the rule driver beside the suite, the full history both read,
+    and a failure that reaches the job. Read as commands, so a job is named for what it runs rather
+    than for a spelling, and the ways a step throws its own failure away are `unfatal`'s above.
     """
     if not runs_the_suite(lines):
         return []
-    found = []
+    found = [link for directory, link in SUITES if not runs_suite(lines, directory)]
     if not runs_the_driver(lines):
         found.append(DRIVER_LINK)
     if not any(line.strip() == FULL_HISTORY for line in lines):
@@ -332,8 +359,10 @@ def mutated(text: str, what: str) -> str:
     """A workflow's text in the state of one link being gone, or the text unchanged when `what` is
     not a state this file names.
 
-    `NO_DRIVER` and `NO_HISTORY` take the lines that hold them out — the one a command runs on and
-    the one the fetch is written as, so neither depends on how a step is spelled. The others write
+    `NO_DRIVER`, `NO_HISTORY` and `NO_REGISTRY` take the lines that hold them out — the one a command
+    runs on, the one the fetch is written as, and the one a suite runs on, the last located inside a
+    step (`step_ranges`) so it goes wherever a step writes it rather than a spelling this file
+    matches. The others write
     the way a check's failure is thrown away: *inside the step that runs the check* for the step
     states, at the job for `JOB_CONDITIONAL`, each located by the reading the case itself makes
     (`runs_a_check`) and written at the column that definition's own keys are written at
@@ -343,13 +372,17 @@ def mutated(text: str, what: str) -> str:
     if what not in MUTATIONS:
         return text
     lines = text.splitlines(keepends=True)
-    if what in (NO_DRIVER, NO_HISTORY):
+    if what in (NO_DRIVER, NO_HISTORY, NO_REGISTRY):
+        inside = ({at for start, end, _column in step_ranges(text) for at in range(start, end)}
+                  if what == NO_REGISTRY else set())
         kept = []
-        for line in lines:
+        for at, line in enumerate(lines):
             stripped = line.strip()
             command = RUN_KEY.sub("", stripped.removesuffix("\\").strip()).strip()
             if (what == NO_DRIVER and RUNS_DRIVER.search(command)) \
-                    or (what == NO_HISTORY and stripped == FULL_HISTORY):
+                    or (what == NO_HISTORY and stripped == FULL_HISTORY) \
+                    or (what == NO_REGISTRY and at in inside
+                        and runs_suite([line], REGISTRY_DIRECTORY)):
                 continue
             kept.append(line)
         return "".join(kept)

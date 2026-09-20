@@ -8,7 +8,10 @@ registry (`registry.json`), one directory holds the historical states it can be 
 This is the in-repo half of [#171](https://github.com/RepairYourTech/SymbioteIDE/issues/171): the
 schema, the evidence discipline, the states, staleness, snapshots and deltas, and the focused
 refresh. The research itself — the dossiers, and keeping them current — is owned elsewhere and named
-under *What this does not claim*.
+under *What this does not claim*. This suite runs in the `offline-validation` job, and the chain
+reading in `planning/integrity/chain.py` — held by `test_python_floor.py` — refuses a job that runs
+this repository's checks without it: dropping the step, moving it to another job, putting it behind a
+condition that cannot hold, or letting another command own its exit status reds there by name.
 
 ## The record
 
