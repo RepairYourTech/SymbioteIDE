@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -226,6 +227,25 @@ class IntegrityTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("duplicate active key", result.stderr)
             self.assertFalse(output.exists())
+
+
+class ReadmeAuditCapture(unittest.TestCase):
+    """The README's audit-capture figure is the capture this tree ships, not a restatement of it."""
+
+    def test_the_readmes_audit_capture_is_the_one_this_tree_ships(self):
+        root = Path(__file__).parent
+        readme = (root / "README.md").read_text()
+        found = re.search(r"the full (\d+)-issue audit capture", readme)
+        self.assertIsNotNone(found, "the README no longer states the audit capture's size")
+        capture = json.loads((root / "fixtures/audit-2026-09-08.json").read_text())
+        registry = json.loads((root / "generated/registry.json").read_text())
+        stated = int(found.group(1))
+        self.assertEqual(stated, len(capture["issues"]),
+                         f"the README states a {stated}-issue audit capture and the fixture holds "
+                         f"{len(capture['issues'])} issues: the figure moves with the capture")
+        self.assertEqual(stated, registry["counts"]["snapshot_issues"],
+                         f"the README states a {stated}-issue capture and the registry this tree "
+                         f"generated from it declares {registry['counts']['snapshot_issues']}")
 
 
 if __name__ == "__main__":

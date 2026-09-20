@@ -62,6 +62,25 @@ SENTENCE_END = re.compile(r"[.!?;\n]+")
 # quotes, emphasis, an ordered-list number.
 CLAUSE_OPENING = re.compile(r"^[\s>*+`\"'|\-]*(?:\d+\.)?[\s>*+`\"'|\-]*$")
 
+# The README's pull-request section states a snapshot of `main` at a revision rather than a
+# property of the history. Two of its figures are read from that revision's own merged history,
+# which this tree holds — how many pull requests were merged there (the merge and squash commits
+# that are ancestors of it) and that the title rule refuses none of the subjects they landed —
+# and the case beside this declaration measures them. The other three need the service's record
+# of each pull request, which this tree does not hold: how many carried more than one commit, how
+# many merged with their title as the subject (`squash_title=COMMIT_OR_PR_TITLE` uses the title
+# only when there is more than one), and the one description that trips this rule. They are
+# declared here so the prose has one home, and the README is held against them.
+SNAPSHOT = {
+    "revision": "40a43b2d",
+    "merges": 85,
+    "multi_commit": 49,
+    "title_as_subject": 44,
+    "refused_descriptions": 1,
+    "refused_description": "#530",
+    "refused_titles": 0,
+}
+
 # A channel GitHub reads on merge and no reviewer reads as a closure
 # statement: text there refuses every closing keyword, accepted or denied.
 COMMIT_CHANNEL = "Nothing in review reads a commit message"
