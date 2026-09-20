@@ -3,18 +3,23 @@
 //!
 //! One concern per module. `policy` is the engine: the decision lifecycle,
 //! authority, evidence, pins, facts and the registry that owns them, with no
-//! file in sight. `ledger` and `spike` are this repository's own data read as
-//! documents — its decisions, and the proof contracts that would settle them —
-//! replayed through that engine. `repository` is what cargo reports about the
-//! workspace, and `checks` is the join: the refusals this repository must
-//! survive, one file per subject.
+//! file in sight. `ledger`, `spike` and `journal` are this repository's own data
+//! read as documents — its decisions, the proof contracts that would settle
+//! them, and the transitions those decisions were reached through — replayed
+//! through that engine. `repository` is what cargo reports about the workspace,
+//! `roadmap` is what the issue importer reports about the program, `store` is
+//! the immutable copy of what the records rest on, and `checks` is the join:
+//! the refusals this repository must survive, one file per subject.
 use std::path::{Path, PathBuf};
 
 pub mod checks;
+pub mod journal;
 pub mod ledger;
 pub mod policy;
 pub mod repository;
+pub mod roadmap;
 pub mod spike;
+pub mod store;
 
 // The vocabulary the crate publishes. Consumers name the engine and the
 // contract shape at the crate root; each module below keeps its own path for

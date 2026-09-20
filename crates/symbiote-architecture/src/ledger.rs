@@ -210,7 +210,9 @@ impl Ledger {
 
 /// A proposal as the registry requires one: the draft's content, proposed at
 /// revision 1. A record publishes a state; it never publishes the lifecycle.
-fn proposal(draft: &Decision) -> Decision {
+/// One owner, so the ledger's replay and the recorded history propose the same
+/// content for the same record.
+pub(crate) fn proposal(draft: &Decision) -> Decision {
     let mut proposal = draft.clone();
     proposal.state = DecisionState::Proposed;
     proposal.revision = 1;
