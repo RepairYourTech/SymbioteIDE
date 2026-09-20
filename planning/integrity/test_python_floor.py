@@ -60,8 +60,8 @@ import unittest
 
 import chain
 import python_floor
-from chain import (DRIVER_LINK, FATAL_LINK, HISTORY_LINK, PARITY_LINK, REGISTRY_LINK, WORKFLOWS,
-                   jobs, links_missing, runs_the_suite)
+from chain import (DRIVER_LINK, FATAL_LINK, HISTORY_LINK, PARITY_LINK, POLICY_LINK, REGISTRY_LINK,
+                   WORKFLOWS, jobs, links_missing, runs_the_suite)
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -73,6 +73,7 @@ CHAIN_WORKFLOW = WORKFLOWS / "roadmap-integrity.yml"
 # finding nothing fails here rather than leaving the assertions above satisfied by a whole tree.
 STATE_LINKS = ((chain.NO_DRIVER, DRIVER_LINK), (chain.NO_HISTORY, HISTORY_LINK),
                (chain.NO_SUITE, REGISTRY_LINK), (chain.NO_SUITE, PARITY_LINK),
+               (chain.NO_SUITE, POLICY_LINK),
                (chain.NON_FATAL, FATAL_LINK), (chain.CONDITIONAL, FATAL_LINK),
                (chain.SWALLOWED, FATAL_LINK), (chain.JOB_CONDITIONAL, FATAL_LINK))
 
@@ -302,10 +303,10 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
     A hold nothing runs is not a hold: the job that runs this directory's suite must run the driver
     too — two halves of one proof over one checkout — and must fetch the history both read, because
     the cap case reads the tip a push names and the driver an earlier guard.    It owes every suite
-    this repository's checks consist of as well — the competitor registry's `planning/research` and
-    the parity matrices' `planning/parity` beside this one — because a suite the job does not run is
-    a refusal CI does not enforce, and each of those suites is the only thing refusing what it
-    refuses. Read as the commands a job's steps run, the way the interpreter rule above reads them,
+    this repository's checks consist of as well — the competitor registry's `planning/research`, the
+    parity matrices' `planning/parity` and the licensing and trust policy's `planning/policy` beside
+    this one — because a suite the job does not run is a refusal CI does not enforce, and each of
+    those suites is the only thing refusing what it refuses. Read as the commands a job's steps run, the way the interpreter rule above reads them,
     not as YAML and not as one spelling: whichever way a job writes the discovery, it is the job that
     runs the check, and this case names it by failing rather than by matching its command. Two spellings are deliberately
     green, and the refusal is no wider than they are:
@@ -448,6 +449,10 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                   "    runs-on: ubuntu-latest\n"
                   "    steps:\n"
                   "      - run: python -m unittest discover -s planning/integrity\n")
+        # Every link a job that runs these checks owes, read off the one table that holds them
+        # rather than restated: a suite added there is owed here without this case being edited.
+        owed = [link for directory, link in chain.SUITES if directory != chain.SUITE_DIRECTORY]
+        owed += [DRIVER_LINK, HISTORY_LINK]
         with tempfile.TemporaryDirectory() as where:
             for name, text, called in (("four.yml", four, ["checks"]),
                                        ("marked.yml", marked, ["anchored", "commented"])):
@@ -458,12 +463,11 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                                  f"{name} writes {called} and this reading found {sorted(read)}: "
                                  f"a job written that way must be read like any other")
                 for job, job_lines in read.items():
-                    self.assertEqual(sorted(links_missing(job_lines)),
-                                     sorted([REGISTRY_LINK, PARITY_LINK, DRIVER_LINK, HISTORY_LINK]),
+                    self.assertEqual(sorted(links_missing(job_lines)), sorted(owed),
                                      f"{name}:{job} runs this directory's suite with no driver, no "
                                      f"history and no suite beside it, so it must be read as lacking "
-                                     f"all four rather than invisible: "
-                                     f"{sorted(links_missing(job_lines))}")
+                                     f"every link a job that runs these checks owes rather than "
+                                     f"invisible: {sorted(links_missing(job_lines))}")
 
 
 class TheInterpreterTheJobsProvide(unittest.TestCase):

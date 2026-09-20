@@ -52,6 +52,7 @@ Five habits, each of them checked rather than asserted:
 | A driven binary's record covering every input its build read | [source records](../planning/integrity/README.md) | `planning/integrity/source_record.py --binary …` (see `.github/workflows/rust-contracts.yml`) |
 | What a competitor claim rests on, how old it is, and what changed between snapshots | [competitor registry](../planning/research/README.md) | `python3 planning/research/registry.py --check`, `python3 planning/research/test_registry.py` |
 | What that evidence means for our own axes: the class, the map to a requirement, and the decision on each pattern | [parity matrices](../planning/parity/README.md) | `python3 planning/parity/parity.py --check`, `python3 planning/parity/test_parity.py` |
+| Which licence covers which artifact class, what each promise costs, and what every dependency and generated artifact is | [policy record](../planning/policy/README.md) | `python3 planning/policy/policy.py --check`, `python3 planning/policy/test_policy.py` |
 
 Each of those is held by a case in the component that owns it, and the driver
 above is how this repository re-proves the architecture crate's own rules.
@@ -67,6 +68,7 @@ python -m unittest discover -s planning/integrity -p 'test_*.py' -v
 python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
 python -m unittest discover -s planning/research -p 'test_*.py' -v
 python -m unittest discover -s planning/parity -p 'test_*.py' -v
+python -m unittest discover -s planning/policy -p 'test_*.py' -v
 python3 planning/integrity/revert_rules.py
 ```
 

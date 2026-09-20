@@ -673,8 +673,8 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
         "these jobs run this directory's suite without",
         # Each suite's own command taken out of its step, located by the reading the case itself
         # makes rather than matched against the text: a job that runs this directory's suite and not
-        # the registry's or the matrices' leaves their refusals run by nothing, which is the state a
-        # step deleted or moved to another job is in.
+        # the registry's, the matrices' or the policy's leaves their refusals run by nothing, which
+        # is the state a step deleted or moved to another job is in.
         ((WORKFLOW, "mutates", chain.NO_SUITE),),
     ),
     (

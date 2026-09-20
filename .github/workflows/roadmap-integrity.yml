@@ -83,14 +83,17 @@ jobs:
         run: python3 planning/integrity/revert_rules.py
       - name: Verify merged-checkout housekeeping
         run: python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
-      # #171's registry and #172's parity matrices are two more data-with-rules surfaces beside this
-      # directory's: their own directories, their own readers, and suites that refuse a claim with
-      # nothing behind it and a comparison with nothing holding it. This job owes every suite this
-      # repository's checks consist of, so `test_python_floor.py` holds these two steps the way it
-      # holds the driver above and the depth — through `chain.py` — and dropping either, moving it to
-      # another job, putting it behind a condition that cannot hold or letting another command own
-      # its exit status is refused there by name rather than leaving the suite unrun.
+      # #171's registry, #172's parity matrices and #174's licensing and trust record are three more
+      # data-with-rules surfaces beside this directory's: their own directories, their own readers,
+      # and suites that refuse a claim with nothing behind it, a comparison with nothing holding it,
+      # and a promise the tree cannot back. This job owes every suite this repository's checks
+      # consist of, so `test_python_floor.py` holds these three steps the way it holds the driver
+      # above and the depth — through `chain.py` — and dropping any of them, moving it to another
+      # job, putting it behind a condition that cannot hold or letting another command own its exit
+      # status is refused there by name rather than leaving the suite unrun.
       - name: Verify the competitor registry and its snapshots
         run: python -m unittest discover -s planning/research -p 'test_*.py' -v
       - name: Verify the parity and gap matrices against that registry
         run: python -m unittest discover -s planning/parity -p 'test_*.py' -v
+      - name: Verify the licensing, trust and data-ownership record
+        run: python -m unittest discover -s planning/policy -p 'test_*.py' -v

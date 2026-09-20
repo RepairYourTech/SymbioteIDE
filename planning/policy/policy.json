@@ -1,0 +1,329 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-20",
+  "issue": 174,
+  "classes": [
+    {
+      "id": "core",
+      "title": "The product this repository builds",
+      "covers": "The Host, the CLI, the desktop shell, the runtime SDK and transport, the protocol, and every crate in this workspace, with the committed artifacts it ships.",
+      "boundary": "Not the third-party dependencies it links, not the packs, extensions or catalog entries it loads, and not any hosted service: each of those is another class below, and a dependency's licence is its own author's.",
+      "license": null,
+      "status": "pending",
+      "owners": [174],
+      "why": "No LICENSE, COPYING or NOTICE file is present and `[workspace.package] publish = false`, so no licence has been selected. Selecting one is the act this issue owes; this record states the boundary it must fit."
+    },
+    {
+      "id": "official_pack",
+      "title": "Packs and adapters published by this project",
+      "covers": "The harness packs, provider adapters and fixtures this project publishes under its own name, separate from the upstream harness or provider they integrate.",
+      "boundary": "Not the upstream tool they integrate: an adapter's licence grants nothing about the CLI or service it drives, and the upstream's terms continue to govern its own binary and account.",
+      "license": null,
+      "status": "pending",
+      "owners": [174],
+      "why": "No pack or adapter is published yet, so nothing is licensed; the boundary is stated so that the first one is licensed deliberately rather than by default."
+    },
+    {
+      "id": "extension",
+      "title": "Third-party extensions, skills, hooks and MCP servers",
+      "covers": "Loading and running them, and the trust decision that gates it, not their content.",
+      "boundary": "Not the extension's own code: this project grants no rights over it and takes none. Its licence is its publisher's, and being loadable is not being endorsed, supported or distributed by this project.",
+      "license": null,
+      "status": "pending",
+      "owners": [174, 431],
+      "why": "The published form of the extension SDK, its permission model and its revocation path are #431's; until that lands the class has no artifact to license."
+    },
+    {
+      "id": "catalog_metadata",
+      "title": "Catalog entries describing packs and extensions",
+      "covers": "The metadata this project publishes about loadable artifacts: name, publisher, version, permissions, signature and the pointer to the artifact.",
+      "boundary": "Not the artifact it points at: metadata is a pointer, and a catalog entry must not imply a licence, a support level or a distribution right the referenced artifact's publisher has not granted.",
+      "license": null,
+      "status": "pending",
+      "owners": [174, 431],
+      "why": "The catalog and its manifest schema are #431's; this class records that metadata and artifact are separate licensing boundaries before either exists."
+    },
+    {
+      "id": "hosted_service",
+      "title": "Optional hosted services",
+      "covers": "Any service this project operates: the extension registry, telemetry intake, sync or entitlement. Each is optional and each is separate from the code.",
+      "boundary": "Not the local product: running the Host must never require a hosted service, and a service's terms of use are separate from the licence of the code that talks to it.",
+      "license": null,
+      "status": "pending",
+      "owners": [174, 459],
+      "why": "No hosted service exists in this tree, so nothing is offered under terms; #459 owns bounded telemetry storage and its optional upload, which is the first one planned."
+    }
+  ],
+  "obligations": [
+    {
+      "id": "data.local-first-ownership",
+      "area": "data",
+      "requirement": "Projects, source, prompts, logs and private configuration remain user-owned local data, and the product runs without a hosted service.",
+      "status": "built",
+      "evidence": "docs/contracts/storage.md",
+      "case": "resource_consent_and_revocation_survive_daemon_death_with_original_receipts"
+    },
+    {
+      "id": "data.consent-before-activation",
+      "area": "data",
+      "requirement": "A resource is authorized by the local owner before it is used, that consent is bound to exact bytes, and it expires and revokes rather than persisting by default.",
+      "status": "built",
+      "evidence": "docs/contracts/resource-consent.md",
+      "case": "expiry_revocation_and_invalid_time_are_denied"
+    },
+    {
+      "id": "data.no-hidden-exfiltration",
+      "area": "data",
+      "requirement": "No code or prompt leaves the machine without an explicit, inspectable consent; an unconfigured telemetry state is unknown rather than assumed on.",
+      "status": "built",
+      "evidence": "docs/security/trust-boundaries.md",
+      "case": "pulse_is_cached_identity_survives_restart_and_disabled_telemetry_stays_unknown"
+    },
+    {
+      "id": "data.telemetry-opt-in",
+      "area": "data",
+      "requirement": "Telemetry is opt-in, with exact event schemas, local inspection, retention and deletion controls, and permission filtering before any aggregation.",
+      "status": "delegated",
+      "owners": [459, 374],
+      "why": "No telemetry is transmitted by this tree, so there is nothing to make opt-in yet: #459 owns bounded telemetry storage, retention, privacy and optional upload, and #374 the opt-in product telemetry surface."
+    },
+    {
+      "id": "data.optional-hosted-services",
+      "area": "data",
+      "requirement": "Hosted services are optional; local-first operation is the default rather than a degraded mode.",
+      "status": "delegated",
+      "owners": [174, 374],
+      "why": "No hosted service is operated and no client calls one; #374 owns the observability surface that would be the first, and this issue owns the terms it must be offered under."
+    },
+    {
+      "id": "extension.publisher-identity",
+      "area": "extension_trust",
+      "requirement": "An extension names a verified publisher, and the trust decision is made per publisher and per version rather than per catalog entry.",
+      "status": "delegated",
+      "owners": [431],
+      "why": "Publisher identity needs the extension SDK and registry that #431 owns; nothing in this tree publishes or loads an extension yet."
+    },
+    {
+      "id": "extension.signing",
+      "area": "extension_trust",
+      "requirement": "Artifacts are signed by their publisher and the signature is verified before the artifact is trusted, with the release-signing keys held by the maintainers.",
+      "status": "delegated",
+      "owners": [431, 434],
+      "why": "Signing is not implemented for extensions or releases: #431 owns the signed extension SDK and #434 the signed release artifacts, installers and update feeds."
+    },
+    {
+      "id": "extension.permission-review",
+      "area": "extension_trust",
+      "requirement": "An extension declares its permissions, the trust level and permissions are visible before installation, and installed code cannot grant itself more.",
+      "status": "delegated",
+      "owners": [431],
+      "why": "The permission model ships with the extension SDK and marketplace (#431). The consent ledger here records what the local owner authorized, which is not an extension permission model."
+    },
+    {
+      "id": "extension.revocation",
+      "area": "extension_trust",
+      "requirement": "A publisher, a version or a vulnerable package can be revoked, and revocation reaches an installed artifact rather than only the catalog.",
+      "status": "delegated",
+      "owners": [431, 434],
+      "why": "The resource consent ledger revokes consent for a resource, not a publisher or a catalog entry; publisher and version revocation are #431's with the release channel's revocation in #434."
+    },
+    {
+      "id": "extension.vulnerable-package-response",
+      "area": "extension_trust",
+      "requirement": "A vulnerability in an extension, a pack or a dependency has a published response path: how it is triaged, what users are told, and how the affected version is withdrawn.",
+      "status": "delegated",
+      "owners": [431, 191],
+      "why": "The response path needs the trust model (#191) and the revocation mechanism (#431); the coordinated-disclosure half of it is this issue's own remaining work."
+    },
+    {
+      "id": "publishing.contribution",
+      "area": "publishing",
+      "requirement": "Contribution terms are stated: what a contributor grants, how a change is proposed and reviewed, and what a contribution's licence is.",
+      "status": "pending",
+      "owners": [174],
+      "why": "No CONTRIBUTING file or contributor agreement exists. This is this issue's own remaining work and depends on the core licence being selected first."
+    },
+    {
+      "id": "publishing.trademark",
+      "area": "publishing",
+      "requirement": "Trademark and naming expectations are stated: what may be called Symbiote, what a fork may call itself, and what a pack or extension may claim.",
+      "status": "pending",
+      "owners": [174],
+      "why": "No trademark policy exists. It is this issue's own remaining work and is independent of the code licence."
+    },
+    {
+      "id": "publishing.fork",
+      "area": "publishing",
+      "requirement": "Fork expectations are stated: what a fork may do, what it must not imply, and how it stays distinguishable from this project.",
+      "status": "pending",
+      "owners": [174],
+      "why": "The licence selected for the core class will answer part of this; the naming and support half is this issue's own remaining work."
+    },
+    {
+      "id": "publishing.commercial-hosting",
+      "area": "publishing",
+      "requirement": "Commercial hosting expectations are stated: whether a third party may operate this product or a hosted derivative, and under what terms.",
+      "status": "pending",
+      "owners": [174],
+      "why": "No hosted service exists to be operated by anyone; the expectation is this issue's own remaining work and must be stated before the first one is offered."
+    },
+    {
+      "id": "disclosure.coordinated-disclosure",
+      "area": "disclosure",
+      "requirement": "A security report has a private path to the maintainers and a coordinated-disclosure expectation, stated before public beta.",
+      "status": "pending",
+      "owners": [174, 191],
+      "why": "No SECURITY file or security contact exists. #191 owns the threat model; the reporting channel and its expectations are this issue's own remaining work."
+    },
+    {
+      "id": "supply_chain.dependency-license",
+      "area": "supply_chain",
+      "requirement": "Every third-party dependency this workspace links is recorded with the licence it is used under, and a licence the distribution boundary cannot honour is refused in CI.",
+      "status": "built",
+      "evidence": "planning/policy/policy.json",
+      "case": "test_the_declared_dependencies_are_the_ones_the_tree_declares"
+    },
+    {
+      "id": "supply_chain.artifact-provenance",
+      "area": "supply_chain",
+      "requirement": "Every committed artifact this repository generates names the program that wrote it, the command that re-derives it and the case that holds it.",
+      "status": "built",
+      "evidence": "planning/policy/policy.json",
+      "case": "test_the_declared_artifacts_are_written_by_programs_this_tree_carries"
+    }
+  ],
+  "stability": {
+    "default_level": "experimental",
+    "levels": [
+      {
+        "id": "experimental",
+        "rule": "May change or be removed in any release; no migration is promised, and a change may be recorded in the contract document's own text without a version gate."
+      },
+      {
+        "id": "stable",
+        "rule": "A breaking change needs a major version and a stated migration in the contract document; only permitted once the workspace version is at least 1.0."
+      },
+      {
+        "id": "deprecated",
+        "rule": "Still present and still supported for the stated window, with the replacement named in the contract document; only permitted once the workspace version is at least 1.0."
+      }
+    ],
+    "contracts": [
+      {"doc": "docs/contracts/protocol.md", "surface": "rpc"},
+      {"doc": "docs/contracts/client-sdk.md", "surface": "rpc"},
+      {"doc": "docs/contracts/cli.md", "surface": "cli"},
+      {"doc": "docs/contracts/configuration.md", "surface": "config"},
+      {"doc": "docs/contracts/providers.md", "surface": "config"},
+      {"doc": "docs/contracts/provider-registry.md", "surface": "config"},
+      {"doc": "docs/contracts/domain.md", "surface": "domain"},
+      {"doc": "docs/contracts/project-team.md", "surface": "domain"},
+      {"doc": "docs/contracts/role-resolution.md", "surface": "domain"},
+      {"doc": "docs/contracts/work-hierarchy.md", "surface": "domain"},
+      {"doc": "docs/contracts/workforce-bindings.md", "surface": "domain"},
+      {"doc": "docs/contracts/scheduling-leases.md", "surface": "domain"},
+      {"doc": "docs/contracts/dispatch-preparation.md", "surface": "domain"},
+      {"doc": "docs/contracts/worker-completion-wiring.md", "surface": "domain"},
+      {"doc": "docs/contracts/host.md", "surface": "host"},
+      {"doc": "docs/contracts/host-inventory.md", "surface": "host"},
+      {"doc": "docs/contracts/storage.md", "surface": "host"},
+      {"doc": "docs/contracts/agent-environment.md", "surface": "host"},
+      {"doc": "docs/contracts/runtime-sdk.md", "surface": "runtime"},
+      {"doc": "docs/contracts/runtime-transport.md", "surface": "runtime"},
+      {"doc": "docs/contracts/runtime-discovery.md", "surface": "runtime"},
+      {"doc": "docs/contracts/runtime-events.md", "surface": "runtime"},
+      {"doc": "docs/contracts/native-agent-loop.md", "surface": "runtime"},
+      {"doc": "docs/contracts/external-agent-loop.md", "surface": "runtime"},
+      {"doc": "docs/contracts/projection.md", "surface": "workbench"},
+      {"doc": "docs/contracts/repository.md", "surface": "workbench"},
+      {"doc": "docs/contracts/worktrees.md", "surface": "workbench"},
+      {"doc": "docs/contracts/context-credential-resolution.md", "surface": "workbench"},
+      {"doc": "docs/contracts/architecture.md", "surface": "governance"},
+      {"doc": "docs/contracts/constitution.md", "surface": "governance"},
+      {"doc": "docs/contracts/resource-consent.md", "surface": "governance"}
+    ]
+  },
+  "supply_chain": {
+    "permitted": {
+      "runtime": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0", "CC0-1.0", "Unlicense"],
+      "build": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0", "CC0-1.0", "Unlicense", "MPL-2.0", "LGPL-3.0-only"],
+      "test": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0", "CC0-1.0", "Unlicense", "MPL-2.0", "LGPL-3.0-only", "GPL-2.0-only", "GPL-3.0-only"]
+    },
+    "denied": ["AGPL-3.0-only", "AGPL-3.0-or-later", "GPL-2.0-or-later", "GPL-3.0-or-later", "SSPL-1.0", "BUSL-1.1", "Elastic-2.0", "Commons-Clause"],
+    "dependencies": [
+      {"name": "nix", "license": "MIT", "class": "runtime"},
+      {"name": "rusqlite", "license": "MIT", "class": "runtime"},
+      {"name": "schemars", "license": "MIT", "class": "runtime"},
+      {"name": "serde", "license": "MIT OR Apache-2.0", "class": "runtime"},
+      {"name": "serde_json", "license": "MIT OR Apache-2.0", "class": "runtime"},
+      {"name": "sha2", "license": "MIT OR Apache-2.0", "class": "runtime"},
+      {"name": "tauri", "license": "MIT OR Apache-2.0", "class": "runtime"},
+      {"name": "tauri-build", "license": "Apache-2.0 OR MIT", "class": "build"},
+      {"name": "tempfile", "license": "MIT OR Apache-2.0", "class": "test"},
+      {"name": "toml_edit", "license": "MIT OR Apache-2.0", "class": "runtime"},
+      {"name": "zeroize", "license": "Apache-2.0 OR MIT", "class": "runtime"}
+    ],
+    "generated": [
+      {
+        "paths": ["planning/integrity/generated/registry.json", "planning/integrity/generated/execution-index.md"],
+        "generator": "planning/integrity/validate.py",
+        "rerun": "python3 planning/integrity/validate.py <snapshot> --output planning/integrity/generated",
+        "check": "test_pinned_real_audit_structure"
+      },
+      {
+        "paths": ["planning/integrity/generated/coverage.json"],
+        "generator": "planning/integrity/coverage_ledger.py",
+        "rerun": "python3 planning/integrity/coverage_ledger.py --write",
+        "check": "test_the_committed_ledger_is_true_of_the_committed_registry"
+      },
+      {
+        "paths": ["docs/proofs/results/desktop-shell.json", "docs/proofs/results/desktop-shell/"],
+        "generator": "spikes/linux-shell/test_run_proof.py",
+        "rerun": "python3 spikes/linux-shell/test_run_proof.py",
+        "check": "test_a_clean_tree_at_the_recorded_revision_publishes"
+      },
+      {
+        "paths": ["docs/contracts/schemas/"],
+        "generator": "crates/symbiote-host/src/bin/symbiote/main.rs",
+        "rerun": "cargo run -p symbiote-host --bin symbiote -- schema --write docs/contracts/schemas",
+        "check": "the_binary_emits_the_published_schemas_and_they_match_the_committed_fixtures"
+      },
+      {
+        "paths": ["docs/architecture/journal.json"],
+        "generator": "crates/symbiote-architecture/examples/journal.rs",
+        "rerun": "cargo run -p symbiote-architecture --example journal -- <transition> <record> <index>",
+        "check": "the_committed_history_store_and_links_pass_every_rule"
+      },
+      {
+        "paths": ["docs/architecture/decisions.json", "docs/architecture/spike-contracts.json", "docs/architecture/store/"],
+        "generator": "crates/symbiote-architecture/examples/decisions.rs",
+        "rerun": "cargo run -p symbiote-architecture --example decisions -- <ledger>",
+        "check": "the_committed_store_holds_the_content_every_record_rests_on"
+      },
+      {
+        "paths": ["docs/contracts/constitution-report.json"],
+        "generator": "crates/symbiote-constitution/examples/report.rs",
+        "rerun": "cargo run -p symbiote-constitution --example constitution_report -- --write docs/contracts/constitution-report.json",
+        "check": "the_coverage_map_names_every_invariant_and_owner"
+      }
+    ]
+  },
+  "applicability": [
+    {"concern": "security", "mark": "required", "obligation": "data.consent-before-activation"},
+    {"concern": "privacy", "mark": "required", "obligation": "data.no-hidden-exfiltration"},
+    {"concern": "accessibility", "mark": "separately_tracked", "owners": [358]},
+    {"concern": "performance", "mark": "separately_tracked", "owners": [375]},
+    {"concern": "cross_platform", "mark": "separately_tracked", "owners": [435]}
+  ],
+  "runtime_assumptions": [
+    {"product": "orca", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "traycer", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "bridgemind", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "t3code", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "superset", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "vibekanban", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "opencode-desktop", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "claude-code", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "codex-cli", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]},
+    {"product": "cursor", "license": "UNKNOWN", "authentication": "UNKNOWN", "telemetry": "UNKNOWN", "gaps": ["license", "authentication", "telemetry"]}
+  ]
+}
