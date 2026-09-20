@@ -2,7 +2,7 @@
 //!
 //! Two entry points — [`problems`] for the ledger, the workspace and the
 //! contracts, and [`governance`] for the repository's own archival record — and
-//! three subjects, one file each: the
+//! one subject per file: the
 //! ledger's own records and facts (`records`), the workspace artifacts and the
 //! pins they carry (`artifacts`), the spike contracts and the runs that would
 //! settle their choices (`contracts`), the transitions the states were reached

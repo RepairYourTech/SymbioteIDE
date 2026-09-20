@@ -167,9 +167,11 @@ fn carries_name(source: &str, name: &str) -> bool {
 /// a fragment — and must still be cited by the document, so the list cannot
 /// excuse a name that exists nowhere and cannot outlive the sentence that used
 /// it.
-const NOT_CASES: [&str; 8] = [
+const NOT_CASES: [&str; 10] = [
     "blocking_issue",
     "contract_sha256",
+    "deployment_refs",
+    "graph_refs",
     "proof_contract",
     "proof_section",
     "proposed_dependencies",
