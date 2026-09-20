@@ -1,12 +1,16 @@
 """Run: python3 planning/integrity/test_closing_keywords.py."""
 
 import io
+import re
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from closing_keywords import closings, main, report
+from closing_keywords import SNAPSHOT, TITLE_CHANNEL, closings, main, report
+
+HERE = Path(__file__).resolve().parent
 
 
 def run(body, *arguments):
@@ -175,6 +179,75 @@ class ClosingKeywordTests(unittest.TestCase):
             ],
         )
         self.assertIn('"Does not fix #2"', lines[2])
+
+
+def merged(revision):
+    """The pull requests merged into `revision`: a first-parent merge commit, or a squash whose
+    subject names the pull request it landed. None where this checkout holds no such history.
+    """
+    log = subprocess.run(["git", "log", "--first-parent", revision, "--format=%s%x00%P"],
+                         cwd=HERE, capture_output=True, text=True)
+    if log.returncode != 0:
+        return None
+    found = []
+    for line in log.stdout.splitlines():
+        subject, parents = line.split("\x00")
+        if len(parents.split()) > 1 or re.search(r"\(#\d+\)$", subject):
+            found.append(subject)
+    return found
+
+
+class ReadmeSnapshot(unittest.TestCase):
+    """The pull-request section states a snapshot of `main` at a revision, and this is what holds
+    it: two of its figures are re-measured from that revision's own merged history, the rest are
+    the service's record of each pull request, which this tree does not hold and which
+    `closing_keywords.SNAPSHOT` therefore declares once.
+    """
+
+    def test_the_readme_states_the_snapshot_this_rule_declares(self):
+        readme = (HERE / "README.md").read_text()
+        claimed = {
+            "descriptions": (r"of the (\d+) descriptions merged up to", SNAPSHOT["merges"]),
+            "refused_descriptions": (r"exactly (one|\d+) trips it", SNAPSHOT["refused_descriptions"]),
+            "merged": (r"of the (\d+) pull requests merged up to", SNAPSHOT["merges"]),
+            "multi_commit": (r"(\d+) carried more than one commit", SNAPSHOT["multi_commit"]),
+            "title_as_subject": (r"and (\d+) have a subject that is exactly",
+                                 SNAPSHOT["title_as_subject"]),
+            "refused_titles": (r"refuses none of the (\d+) merged titles", SNAPSHOT["merges"]),
+        }
+        words = {"one": 1, "none": 0}
+        for label, (pattern, expected) in claimed.items():
+            found = re.search(pattern, readme)
+            self.assertIsNotNone(found, f"the README no longer states the {label} of its "
+                                        f"pull-request snapshot")
+            stated = words.get(found.group(1), found.group(1))
+            self.assertEqual(int(stated), expected,
+                             f"the README states {found.group(0)!r} where the snapshot declares "
+                             f"{expected}: it is a snapshot of one revision, so the two move "
+                             f"together or the figure has drifted")
+        self.assertIn(f"PR {SNAPSHOT['refused_description']}", readme,
+                      f"the README no longer names the one description that trips the rule "
+                      f"({SNAPSHOT['refused_description']})")
+        named = set(re.findall(r"(?:merged up to|snapshot of `main` at) `([0-9a-f]{7,40})`", readme))
+        self.assertEqual(named, {SNAPSHOT["revision"]},
+                         f"the README pins these counts to {sorted(named)} where the snapshot "
+                         f"declares {SNAPSHOT['revision']}")
+
+    def test_the_snapshot_is_of_a_revision_this_tree_holds_and_its_title_channel_reads_clean(self):
+        revision = SNAPSHOT["revision"]
+        landed = merged(revision)
+        self.assertIsNotNone(landed, f"this checkout holds no history for {revision}: the "
+                                      f"snapshot's counts are of that revision, so re-measuring "
+                                      f"them needs it (a shallow clone or a source export is refused "
+                                      f"here rather than passed)")
+        self.assertEqual(len(landed), SNAPSHOT["merges"],
+                         f"{revision} has {len(landed)} merges and the snapshot declares "
+                         f"{SNAPSHOT['merges']}")
+        refused = [subject for subject in landed
+                   if report(closings(subject), "pull-request title", TITLE_CHANNEL)[1]]
+        self.assertEqual(len(refused), SNAPSHOT["refused_titles"],
+                         f"the title rule refuses {refused}, where the snapshot declares "
+                         f"{SNAPSHOT['refused_titles']} of {revision}'s merged subjects")
 
 
 if __name__ == "__main__":

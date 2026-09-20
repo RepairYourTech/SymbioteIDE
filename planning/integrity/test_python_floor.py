@@ -159,6 +159,17 @@ def own(path: pathlib.Path) -> tuple[int, int]:
     return (3, CANDIDATES[-1] + 1)
 
 
+def parses_at(text: str) -> int | None:
+    """The oldest syntax version `text` parses at, or None where it parses at none of CANDIDATES."""
+    for minor in CANDIDATES:
+        try:
+            ast.parse(text, feature_version=minor)
+        except SyntaxError:
+            continue
+        return minor
+    return None
+
+
 def imported(source: str) -> list[str]:
     """Every module this text imports, each name's first part."""
     found: list[str] = []
@@ -465,3 +476,28 @@ class TheInterpreterTheJobsProvide(unittest.TestCase):
         self.assertEqual(offenders, [],
                          "these jobs run this directory's tools on an interpreter below "
                          f"{python_floor.FLOOR[0]}.{python_floor.FLOOR[1]}")
+
+class ReadmeInterpreter(unittest.TestCase):
+    """The README states the floor and what every module here parses at, so both are measured here
+    rather than restated: the declared number is the one `python_floor` owns, and the syntax figure
+    is the newest floor any module in this directory needs.
+    """
+
+    def test_the_readmes_interpreter_figures_are_this_directories(self):
+        readme = (HERE / "README.md").read_text()
+        declared = re.search(r"declared once in `python_floor\.py`: \*\*(\d+\.\d+)\*\*", readme)
+        self.assertIsNotNone(declared, "the README no longer states the floor this directory declares")
+        floor = f"{python_floor.FLOOR[0]}.{python_floor.FLOOR[1]}"
+        self.assertEqual(declared.group(1), floor,
+                         f"the README states {declared.group(1)} where `python_floor` declares {floor}")
+        stated = re.search(r"every module here parses at (\d+)\.(\d+)", readme)
+        self.assertIsNotNone(stated, "the README no longer states what every module here parses at")
+        floors = {module.name: parses_at(module.read_text()) for module in modules()}
+        self.assertNotIn(None, floors.values(),
+                         f"these modules parse at none of {CANDIDATES}: "
+                         f"{sorted(name for name, minor in floors.items() if minor is None)}")
+        self.assertEqual(max(floors.values()), int(stated.group(2)),
+                         f"the README states every module here parses at "
+                         f"{stated.group(1)}.{stated.group(2)} and the newest syntax one needs is "
+                         f"3.{max(floors.values())}: a module written in newer syntax moves this "
+                         f"figure in the change that adds it")

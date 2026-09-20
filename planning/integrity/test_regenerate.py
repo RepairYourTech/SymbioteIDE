@@ -7,6 +7,7 @@ claim.
 """
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -516,6 +517,28 @@ class RegenerationSafety(unittest.TestCase):
         self.assertTrue(report["dry_run"])
         self.assertEqual(runner.calls, [], "a dry run reads and writes nothing")
         self.assertEqual(runner.issues[4]["body"], task_body("A02", "- #3"))
+
+
+class ReadmeKeyCounts(unittest.TestCase):
+    """The README's reference-key counts are read from the committed registry, not restated: the
+    entries' own `key` and `kind` fields, the same ones `coverage_ledger.counted_classes` counts.
+    """
+
+    def test_the_readmes_reference_key_counts_are_the_registrys(self):
+        root = Path(__file__).parent
+        readme = (root / "README.md").read_text()
+        found = re.search(r"(\d+) of (\d+) reference keys, covering (\d+) of (\d+) (\w+)", readme)
+        self.assertIsNotNone(found, "the README no longer states the reference-key counts")
+        entries = json.loads((root / "generated/registry.json").read_text())["entries"]
+        reference = {entry["key"] for entry in entries if entry["kind"] == "reference"}
+        canonical = {entry["key"] for entry in entries
+                     if entry["kind"] in ("task", "epic", "master")}
+        both = reference & canonical
+        measured = (len(both), len(reference), len(both), len(canonical))
+        self.assertEqual(tuple(int(number) for number in found.groups()[:4]), measured,
+                         f"the README states {found.group(0)!r} and the registry holds {measured[0]} "
+                         f"of {measured[1]} reference keys covering {measured[0]} of {measured[3]} "
+                         f"canonical ones: a moved key moves this figure in the change that moves it")
 
 
 if __name__ == "__main__":
