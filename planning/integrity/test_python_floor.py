@@ -459,6 +459,50 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                                    f"the state {what!r} wrote `{key.strip()}` at its step's own "
                                    f"dash column, which is a text no YAML parser reads")
 
+    def test_the_discovery_is_read_in_every_spelling_this_case_drives(self):
+        """The spellings of a check step, each driven rather than counted: a step that names this
+        directory — `-s`, `./`, a trailing slash, positionally — or is reached by a `cd`, in the same
+        command or on a line of its own, up to a `-s .` inside it, runs this directory's suite; a
+        wider directory, one that only starts with this one, and a directory given to `-t` do not,
+        because discovery there searches somewhere else. Read from texts written here, so a reader
+        narrowed to the spelling this repository happens to write — or widened to a path that only
+        starts with this directory — fails here rather than leaving a job that runs these checks
+        invisible to every rule above it.
+        """
+        reads = (
+            ("names it to `-s`", "- run: python -m unittest discover -s planning/integrity"),
+            ("names it to `-s` with `./`",
+             "- run: python -m unittest discover -s ./planning/integrity"),
+            ("names it to `-s` with a trailing slash",
+             "- run: python -m unittest discover -s planning/integrity/"),
+            ("gives it positionally", "- run: python -m unittest discover planning/integrity"),
+            ("reaches it by a `cd` in the same command",
+             "- run: cd planning/integrity && python -m unittest discover"),
+            ("reaches it by a `cd` on a line of its own",
+             "- run: |\n          cd planning/integrity\n          python -m unittest discover"),
+            ("names `.` after a `cd` into it",
+             "- run: |\n          cd planning/integrity\n          python -m unittest discover -s ."),
+        )
+        ignores = (
+            ("names a wider directory", "- run: python -m unittest discover -s planning"),
+            ("names a directory that only starts with it",
+             "- run: python -m unittest discover -s planning/integrity-extra"),
+            ("names it to `-t`", "- run: python -m unittest discover -t planning/integrity"),
+        )
+        with tempfile.TemporaryDirectory() as where:
+            drafted = pathlib.Path(where) / "spelled.yml"
+            steps = [(label, step, ["checks"]) for label, step in reads]
+            steps += [(label, step, []) for label, step in ignores]
+            for label, step, want in steps:
+                drafted.write_text("jobs:\n  checks:\n    runs-on: ubuntu-latest\n    steps:\n      "
+                                   + step + "\n")
+                ran = [job for job, lines in jobs(drafted).items() if runs_the_suite(lines)]
+                self.assertEqual(ran, want,
+                                 f"a step that {label} is read as {ran} where this case says "
+                                 f"{want}: no spelling this case drives is read as this suite's "
+                                 f"step, so a job that runs these checks can be written in one "
+                                 f"this reading does not see")
+
     def test_a_job_is_read_at_any_indentation_and_with_a_comment_or_anchor(self):
         """The `jobs:` block's own column is read from the workflow rather than assumed — two
         columns is what this repository writes, not what a job must use — and a job key may carry a

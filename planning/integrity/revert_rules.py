@@ -718,6 +718,22 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
         (("planning/integrity/revert_rules.py", "weaker",
           (SUBJECTS, "    for where in [HOLDER]:\n")),),
     ),
+    (
+        "no spelling this case drives is read as this suite's step",
+        "test_the_discovery_is_read_in_every_spelling_this_case_drives",
+        CHAIN,
+        '        """The spellings of a check step, each driven rather than counted:',
+        # Both directions of the same reading: `names_directory` normalizes before it compares,
+        # which is what reads a `./` path and a trailing slash, and it compares a whole path rather
+        # than a prefix. A reader that stopped normalizing leaves a spelling the case drives unread,
+        # and one widened to a prefix reads a directory that only starts with this one — in each
+        # case the case fails there rather than the reading drifting unproved.
+        (("planning/integrity/chain.py", "weaker",
+          ("    joined = posixpath.normpath(where)\n", "    joined = where\n")),
+         ("planning/integrity/chain.py", "weaker",
+          ('    return joined == directory or joined.endswith(f"/{directory}")\n',
+           "    return joined.startswith(directory)\n"))),
+    ),
 ]
 
 HOLDER = "planning/integrity/test_revert_rules.py"
