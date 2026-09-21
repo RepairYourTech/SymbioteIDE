@@ -97,3 +97,5 @@ jobs:
         run: python -m unittest discover -s planning/parity -p 'test_*.py' -v
       - name: Verify the licensing, trust and data-ownership record
         run: python -m unittest discover -s planning/policy -p 'test_*.py' -v
+      - name: Verify the release metrics, gates and non-goals
+        run: python -m unittest discover -s planning/release -p 'test_*.py' -v
