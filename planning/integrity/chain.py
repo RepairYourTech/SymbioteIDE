@@ -165,16 +165,17 @@ def names_directory(where: str | None, directory: str) -> bool:
 def runs_suite(lines: list[str], directory: str) -> bool:
     """Whether these steps run unittest's discovery over `directory`, in any spelling of it.
 
-    `python -m unittest discover -s planning/integrity`, the same with `./` or a trailing slash, the
-    directory given positionally, `cd planning/integrity && python -m unittest discover` and a `cd`
-    on a line of its own before either are one check written five ways — discovery starts in the
-    directory it runs in when nothing names one — so all five are read, and the hold is not bound to
-    the spelling one workflow happens to write. A relative directory is resolved where the command
-    runs, so `-s .` after a `cd` into this directory is this directory. A directory named to
-    `-t`/`--top-level-directory` is not read: discovery would start at the top level and search wider
-    than this directory. The directory is the argument because the job owes every suite this
-    repository's checks consist of, and each is read the same way rather than one being the suite and
-    the rest being spellings of it.
+    `-s` naming the directory, the same path written with `./` or a trailing slash, the directory
+    given positionally, a `cd` into it in the same command or on a line of its own and a `-s .`
+    after such a `cd` are one check — discovery starts in the directory it runs in when nothing
+    names one, and a relative directory is resolved where the command runs. Which spellings are
+    read, and which shapes are not, is driven by the `test_python_floor.py` case that states it
+    rather than counted here: a reader narrowed to the spelling one workflow happens to write, or
+    widened to a path that only starts with this directory, fails there. A directory named to
+    `-t`/`--top-level-directory` is not read, because discovery would start at the top level and
+    search wider than this directory. The directory is the argument because the job owes every
+    suite this repository's checks consist of, and each is read the same way rather than one being
+    the suite and the rest being spellings of it.
     """
     directory_of = None
     for command in commands(lines):
