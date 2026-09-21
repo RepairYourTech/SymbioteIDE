@@ -83,13 +83,15 @@ jobs:
         run: python3 planning/integrity/revert_rules.py
       - name: Verify merged-checkout housekeeping
         run: python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
-      # #171's registry, #172's parity matrices and #174's licensing and trust record are three more
-      # data-with-rules surfaces beside this directory's: their own directories, their own readers,
-      # and suites that refuse a claim with nothing behind it, a comparison with nothing holding it,
-      # and a promise the tree cannot back. This job owes every suite this repository's checks
-      # consist of, so `test_python_floor.py` holds these three steps the way it holds the driver
-      # above and the depth — through `chain.py` — and dropping any of them, moving it to another
-      # job, putting it behind a condition that cannot hold or letting another command own its exit
+      # #171's registry, #172's parity matrices, #174's licensing and trust record, #175's release
+      # record and #38's bake-off acceptance record are five more data-with-rules surfaces beside
+      # this directory's: their own directories, their own readers, and suites that refuse a claim
+      # with nothing behind it, a comparison with nothing holding it, a promise the tree cannot
+      # back, a gate that omits the evidence it promises, and a criterion no obligation,
+      # measurement or owner answers. This job owes every suite this repository's checks consist
+      # of, so `test_python_floor.py` holds these five steps the way it holds the driver above and
+      # the depth — through `chain.py` — and dropping any of them, moving it to another job,
+      # putting it behind a condition that cannot hold or letting another command own its exit
       # status is refused there by name rather than leaving the suite unrun.
       - name: Verify the competitor registry and its snapshots
         run: python -m unittest discover -s planning/research -p 'test_*.py' -v
@@ -99,3 +101,5 @@ jobs:
         run: python -m unittest discover -s planning/policy -p 'test_*.py' -v
       - name: Verify the release metrics, gates and non-goals
         run: python -m unittest discover -s planning/release -p 'test_*.py' -v
+      - name: Verify the bake-off's acceptance criteria and what carries them
+        run: python -m unittest discover -s planning/bakeoff -p 'test_*.py' -v

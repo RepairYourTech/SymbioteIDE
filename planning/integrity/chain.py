@@ -34,27 +34,31 @@ SUITE_DIRECTORY = "planning/integrity"
 # directory's suite owes it: this directory's own, whose case declares the reader-size guard's cap,
 # and the data-with-rules suites beside it — the competitor registry's, whose suite refuses a claim
 # with nothing behind it, the parity matrices', the licensing and trust policy's, whose suite
-# refuses a promise the tree cannot back, and the release record's, whose suite refuses a gate that
-# omits the evidence it promises. One address per suite, so the clause that finds them, the
-# predicate that says what a check step is, and the state that writes a suite gone cannot mean a
-# different suite than the case reads — a job that runs this directory's suite is owed every row
-# here.
+# refuses a promise the tree cannot back, the release record's, whose suite refuses a gate that
+# omits the evidence it promises, and the bake-off acceptance record's, whose suite refuses a
+# criterion #38 states that no obligation, measurement or owner answers. One address per suite,
+# so the clause that finds them, the predicate that says what a check step is, and the state that
+# writes a suite gone cannot mean a different suite than the case reads — a job that runs this
+# directory's suite is owed every row here.
 REGISTRY_DIRECTORY = "planning/research"
 PARITY_DIRECTORY = "planning/parity"
 POLICY_DIRECTORY = "planning/policy"
 RELEASE_DIRECTORY = "planning/release"
+BAKEOFF_DIRECTORY = "planning/bakeoff"
 # The link a job that runs this directory's suite lacks when it runs none of that suite: named here
 # so the table and the case's assertion cannot state it two ways.
 REGISTRY_LINK = "the competitor registry's suite beside it"
 PARITY_LINK = "the parity matrices' suite beside it"
 POLICY_LINK = "the licensing and trust policy's suite beside it"
 RELEASE_LINK = "the release record's suite beside it"
+BAKEOFF_LINK = "the bake-off acceptance record's suite beside it"
 SUITES: tuple[tuple[str, str], ...] = (
     (SUITE_DIRECTORY, "this directory's own suite"),
     (REGISTRY_DIRECTORY, REGISTRY_LINK),
     (PARITY_DIRECTORY, PARITY_LINK),
     (POLICY_DIRECTORY, POLICY_LINK),
     (RELEASE_DIRECTORY, RELEASE_LINK),
+    (BAKEOFF_DIRECTORY, BAKEOFF_LINK),
 )
 DRIVER_SCRIPT = "revert_rules.py"
 FULL_HISTORY = "fetch-depth: 0"
