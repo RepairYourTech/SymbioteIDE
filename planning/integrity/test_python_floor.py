@@ -348,6 +348,23 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                          "these steps run the checks without their failure reaching the job, so a "
                          f"guard grown past the cap it declares leaves CI green: "
                          f"{lacking[FATAL_LINK]}")
+        # And the expectation table the drive below reads is held in both directions, from sources
+        # it does not state: the suites it expects under the state that takes a suite's step away
+        # are the ones this repository's checks consist of, and the states it drives are the ones
+        # the mutation names — so a pair taken out of it is a link the reading is never asked
+        # about, or a state never shown, refused rather than narrowed away.
+        suites = [(chain.NO_SUITE, link) for directory, link in chain.SUITES
+                  if directory != chain.SUITE_DIRECTORY]
+        expected = [pair for pair in STATE_LINKS if pair[0] == chain.NO_SUITE]
+        self.assertCountEqual(expected, suites,
+                              f"the suites the state {chain.NO_SUITE!r} is expected under, "
+                              f"{expected}, are not the ones this repository's checks consist of, "
+                              f"{suites}: a pair dropped or added here is a link the reading is "
+                              f"never asked about")
+        self.assertEqual(sorted({what for what, _link in STATE_LINKS}), sorted(chain.MUTATIONS),
+                         f"the states this case drives are not the ones the mutation names, "
+                         f"{list(chain.MUTATIONS)}: a state dropped or added here is a way the "
+                         f"driver writes that the reading is never shown")
         # And the reading is driven on the states the driver's ways write: a reading that stopped
         # finding a link would leave the assertions above satisfied by a tree that happens to be
         # whole, which is a net going quiet rather than a rule holding.

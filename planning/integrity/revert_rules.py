@@ -674,8 +674,13 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
         # Each suite's own command taken out of its step, located by the reading the case itself
         # makes rather than matched against the text: a job that runs this directory's suite and not
         # the registry's, the matrices' or the policy's leaves their refusals run by nothing, which
-        # is the state a step deleted or moved to another job is in.
-        ((WORKFLOW, "mutates", chain.NO_SUITE),),
+        # is the state a step deleted or moved to another job is in. And the case's own expectation
+        # table is held in turn: a pair taken out of it is a suite, or a state, the reading is never
+        # asked about, so the two `gone` ways must make the case fail on accounts it would otherwise
+        # have stopped stating.
+        ((WORKFLOW, "mutates", chain.NO_SUITE),
+         (CHAIN, "gone", "(chain.NO_SUITE, POLICY_LINK),\n"),
+         (CHAIN, "gone", "(chain.NO_DRIVER, DRIVER_LINK), ")),
     ),
     (
         "the job that runs these checks fails when they fail",
