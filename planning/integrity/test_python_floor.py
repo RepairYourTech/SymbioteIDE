@@ -304,10 +304,10 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
     A hold nothing runs is not a hold: the job that runs this directory's suite must run the driver
     too — two halves of one proof over one checkout — and must fetch the history both read, because
     the cap case reads the tip a push names and the driver an earlier guard.    It owes every suite
-    this repository's checks consist of as well — the competitor registry's `planning/research`, the
-    parity matrices' `planning/parity` and the licensing and trust policy's `planning/policy` beside
-    this one — because a suite the job does not run is a refusal CI does not enforce, and each of
-    those suites is the only thing refusing what it refuses. Read as the commands a job's steps run, the way the interpreter rule above reads them,
+    this repository's checks consist of as well, each row of `chain.SUITES` beside this one — because
+    a suite the job does not run is a refusal CI does not enforce, and each of those suites is the
+    only thing refusing what it refuses. That list is read from the table rather than repeated here,
+    so a suite added beside this one is owed without a sentence to keep in step. Read as the commands a job's steps run, the way the interpreter rule above reads them,
     not as YAML and not as one spelling: whichever way a job writes the discovery, it is the job that
     runs the check, and this case names it by failing rather than by matching its command. Two spellings are deliberately
     green, and the refusal is no wider than they are:
@@ -349,6 +349,18 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                          "these steps run the checks without their failure reaching the job, so a "
                          f"guard grown past the cap it declares leaves CI green: "
                          f"{lacking[FATAL_LINK]}")
+        # And the table those expectations come from is held to what a row has to be: a directory
+        # this tree carries, named once, because two rows on one directory let one suite's step
+        # answer another's row — measured, re-pointing a row at a directory already named left this
+        # case green with that suite's step deleted.
+        directories = [directory for directory, _link in chain.SUITES]
+        self.assertEqual(sorted(directories), sorted(set(directories)),
+                         f"two rows of the table name one directory, so one suite's step can "
+                         f"answer another suite's row: {directories}")
+        for directory in directories:
+            self.assertTrue((ROOT / directory).is_dir(),
+                            f"the table names {directory!r}, which this tree does not carry, so "
+                            f"the row is owed by a job that cannot run it")
         # And the expectation table the drive below reads is held in both directions, from sources
         # it does not state: the suites it expects under the state that takes a suite's step away
         # are the ones this repository's checks consist of, and the states it drives are the ones
