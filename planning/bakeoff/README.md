@@ -16,8 +16,9 @@ carriers and 3 routings to 2 owner issues; 10 of the contract's 14 obligations a
 program records how many acceptance items #38's body states
 (`acceptance_items` in `planning/integrity/generated/registry.json`), and the record's rows
 are held to that count in both directions — a criterion dropped, added or renumbered here is
-refused by name. The criteria's *words* are read from the issue and carried beside each row;
-what this tree can hold is the count, not the text (see the limits below).
+refused by name. A row carries the issue's own number and what carries it, and nothing else:
+the words are the issue's, read at the issue, because no committed artifact in this tree holds
+them (see the limits below).
 
 **What carries each criterion**, in the kinds its contract's `answers` use, one level up from
 the clauses they answer, plus a routing for what the workload does not carry:
@@ -33,10 +34,12 @@ cannot drift from the contract, and a routing cannot name an owner that does not
 
 **The join between the artifacts that settle the choice.** The record names the
 contract document and its identity, the ledger record that binds that contract to this issue,
-and the dossier the runs wrote. The contract must settle the decision the record names, that
-decision must be blocked by #38 and proved by that contract, and the dossier must be a result
-measured against it — so this record cannot point at another choice's contract, another
-contract's runs, or a decision somebody else is blocked on.
+the dossier the runs wrote and the shell record those runs are read against. The contract must
+settle the decision the record names, that decision must be blocked by #38 and proved by that
+contract, the dossier must be a result measured against it with a run behind it, and the shell
+record must name every measurement the contract predeclares — so this record cannot point at
+another choice's contract, another contract's runs, a decision somebody else is blocked on, or
+a record that leaves a ceiling on the bar unaccounted for.
 
 ## Readings
 
@@ -55,7 +58,8 @@ or the owner a part of the criterion is routed to. Nothing here reports a criter
 | Refusal | What it stops |
 | --- | --- |
 | a criterion dropped, added or renumbered against the program's own count | a claim the issue makes that no row answers |
-| a criterion with no words, or carried by nothing | a number standing where the issue's own claim should be |
+| a row carrying a field beside its number and carriers | a claim beside the routing that no rule in this record reads |
+| a criterion carried by nothing | a number standing where the issue's own routing should be |
 | a carrier naming two kinds at once, or one carrier stated twice in a row | one fact standing where two are owed, or a routing padded with a repeat |
 | an obligation the contract does not declare, or a measurement it does not predeclare | a carrier that resolves to nothing |
 | a routing to an issue the program does not carry, or with no reason | an owner that cannot own it, or a boundary asserted rather than recorded |
@@ -63,15 +67,17 @@ or the owner a part of the criterion is routed to. Nothing here reports a criter
 | a contract settling another decision, or a ledger record for another decision | a routing through another choice's contract |
 | a choice blocked by another issue, or proved by another contract | a join that is not this issue's |
 | a dossier measured against another contract, or recording no run | evidence that belongs to something else, or to nothing |
+| a shell record naming no measurement the contract predeclares | a figure on the bar that no reader of that record can find |
 
 ## Limits, with their measurement
 
-- **The criteria's text is read from the issue and cannot be held here.** The program records
-  how many acceptance items the body stated and pins a snapshot of the body by hash; it does
-  not carry the text, and that snapshot is not the revision a reader sees today — measured on
-  2026-09-21, the live body hashes to a different revision of the same issue while still
-  stating eight checkboxes. So the count is what is held, and a reworded criterion in this
-  file would be refused by nothing — what a reader compares is the row against the issue.
+- **The criteria's words are not carried here, because nothing in this tree holds them.**
+  The program records how many acceptance items #38's body stated and pins the body's hash
+  (`body_sha256`), and the only committed body capture reduces bodies — its own scope says it is
+  not an exact-body provenance claim, and #38's captured body is 194 bytes with zero checkbox
+  lines — so the words are not in this tree to be read back. The rows therefore state the
+  number and the carriers, a field beside them is refused, and a reader reads each criterion's
+  words at the issue; what is held is the count, the routing and that nothing unheld is carried.
 - **A carrier is a claim about coverage, not a proof of it.** That an obligation's wording
   covers the criterion it is routed to is a reading, exactly as the contract's own `answers`
   say of their clauses; what is held is that the carrier exists, is declared once, and

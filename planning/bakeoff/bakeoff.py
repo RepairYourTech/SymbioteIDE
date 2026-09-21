@@ -11,14 +11,19 @@ reader could resolve. This record is that join, and it holds what it can be held
 * the number of criteria is the program's own count for the issue
   (`acceptance_items` in `planning/integrity/generated/registry.json`), so a criterion
   dropped or added here is refused rather than silently states one fewer claim;
+* a row states the issue's own number and what carries it, and nothing else: the
+  committed body capture reduces bodies (its own scope says so, and #38's entry carries
+  no checkbox line), so the issue's words are not carried here and a field beside the
+  number would be a claim no rule holds; the words are the issue's, read at the issue;
 * a carrier is the contract's own three kinds, one level up from its `answers`: an
   `obligation` the contract declares and a run must exercise, a `measurement` it
   predeclares, or an `elsewhere` naming the issue that owns a criterion the contract does
   not carry — and each is read back against its owner, so a carrier that resolves to
   nothing is refused;
-* the contract, the ledger record that binds it to this issue, and the dossier the runs
-  wrote must agree with each other and with this record, so the join cannot point at
-  another choice's contract or another contract's runs;
+* the contract, the ledger record that binds it to this issue, the dossier the runs wrote
+  and the record those runs are read against must agree with each other and with this
+  record, so the join cannot point at another choice's contract, another contract's runs,
+  or a record that does not account for every figure the contract predeclares;
 * what the committed runs show for each carrier is **derived** from the dossier rather
   than stated here, so this file cannot claim a measurement no run observed.
 
@@ -79,15 +84,35 @@ def kind_of(carrier: dict) -> list[str]:
     return [kind for kind in CARRIERS if kind in carrier]
 
 
+def attested_by(artifact: dict | None) -> set[str]:
+    """The obligations the committed runs exercised."""
+    return {one for run in (artifact or {}).get("runs", []) for one in run.get("exercised", [])}
+
+
+def observed_in(artifact: dict | None) -> dict[str, list[float]]:
+    """Every predeclared measurement a committed run observed, with the values it read.
+
+    The one reading of the dossier's observations: `readings` counts the names and
+    `measured_for` prints the values, so neither walks the runs a second time.
+    """
+    found: dict[str, list[float]] = {}
+    for run in (artifact or {}).get("runs", []):
+        for one in run.get("observations", []):
+            found.setdefault(one.get("measurement"), []).append(one.get("observed"))
+    return found
+
+
 def contract_block(record: dict, sources: Sources) -> tuple[dict | None, list[str]]:
     """The contract this record routes through, and every way the join fails to resolve.
 
-    The five paths are read, the contract document must hold the identity the record names
+    Every path the record names is read, the contract document must hold the identity it names
     and that contract must settle the decision the record names, the ledger must hold that
-    decision with this issue as the one blocking it and this contract as its proof, and the
-    dossier must be a result measured against that contract. A record pointing at another
-    choice's contract, another contract's runs or a decision that is not this issue's is
-    refused by name rather than compared against nothing.
+    decision with this issue as the one blocking it and this contract as its proof, the
+    dossier must be a result measured against that contract with a run behind it, and the
+    record the dossier is read against must name every measurement the contract predeclares,
+    because what a run would take to read each figure is stated there or nowhere. A record
+    pointing at another choice's contract, another contract's runs or a decision that is not
+    this issue's is refused by name rather than compared against nothing.
     """
     block = record.get("contract")
     if not isinstance(block, dict):
@@ -132,6 +157,17 @@ def contract_block(record: dict, sources: Sources) -> tuple[dict | None, list[st
     if not results.get("runs"):
         problems.append(f"the dossier records no run, so nothing has been measured against the "
                         f"bar this record routes")
+    # The record reading: every figure the contract predeclares is accounted for in the record
+    # the runs are read against, so a ceiling the record does not mention is a figure no reader
+    # of that record can find what a run would take to read.
+    declared = [one.get("name") for one in contract.get("measurements", [])]
+    stated = (sources.root / block["record"]).read_text()
+    absent = [name for name in declared if name not in stated]
+    if absent:
+        problems.append(f"the record {block['record']!r} names no measurement "
+                        f"{', '.join(repr(one) for one in absent)}, which the contract "
+                        f"predeclares: what a run would need to read each figure is stated in "
+                        f"that record or nowhere")
     return contract, problems
 
 
@@ -170,9 +206,11 @@ def criteria_problems(record: dict, contract: dict, entry: dict | None,
     measurements = {one.get("name") for one in contract.get("measurements", [])}
     for row in rows:
         number = row.get("n")
-        if not row.get("criterion"):
-            problems.append(f"criterion {number} states no criterion words, so its row is a "
-                            f"number standing where the issue's own claim should be")
+        beyond = sorted(set(row) - {"n", "carried_by"})
+        if beyond:
+            problems.append(f"criterion {number} carries {beyond}, which no rule here reads: a "
+                            f"row states the issue's own number and what carries it, and a claim "
+                            f"beside those is a statement held by nothing")
         carriers = row.get("carried_by")
         if not isinstance(carriers, list) or not carriers:
             problems.append(f"criterion {number} is carried by nothing, so the issue's "
@@ -222,8 +260,8 @@ def readings(record: dict, contract: dict | None, artifact: dict | None) -> dict
     rows = record.get("criteria", [])
     carriers = [carrier for row in rows for carrier in row.get("carried_by", [])]
     runs = (artifact or {}).get("runs", [])
-    attested = {one for run in runs for one in run.get("exercised", [])}
-    observed = {one.get("measurement") for run in runs for one in run.get("observations", [])}
+    attested = attested_by(artifact)
+    observed = set(observed_in(artifact))
     applicable = (contract or {}).get("applicable_platforms", [])
     measured = {run.get("platform") for run in runs}
     untested = {one for one in (artifact or {}).get("untested_platforms", [])}
@@ -252,12 +290,7 @@ def readings(record: dict, contract: dict | None, artifact: dict | None) -> dict
 
 def measured_for(record_row: dict, artifact: dict | None) -> list[str]:
     """What the dossier shows for one criterion's carriers, in the record's own order."""
-    runs = (artifact or {}).get("runs", [])
-    attested = {one for run in runs for one in run.get("exercised", [])}
-    observed: dict[str, list[float]] = {}
-    for run in runs:
-        for one in run.get("observations", []):
-            observed.setdefault(one.get("measurement"), []).append(one.get("observed"))
+    attested, observed = attested_by(artifact), observed_in(artifact)
     found = []
     for carrier in record_row.get("carried_by", []):
         if "obligation" in carrier:
@@ -299,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact = sources.read(block["result"])
     if args.criteria:
         for row in record.get("criteria", []):
-            print(f"#{record.get('issue')} criterion {row.get('n')}: {row.get('criterion')}")
+            print(f"#{record.get('issue')} criterion {row.get('n')}:")
             for line in measured_for(row, artifact):
                 print(f"    {line}")
         return 0

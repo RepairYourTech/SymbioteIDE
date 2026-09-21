@@ -70,6 +70,9 @@ class Tree:
     def write(self, name: str, document: dict) -> None:
         (self.root / name).write_text(json.dumps(document))
 
+    def write_text(self, name: str, text: str) -> None:
+        (self.root / name).write_text(text)
+
 
 class TheCommittedRecord(unittest.TestCase):
     def test_every_criterion_the_issue_states_is_routed_and_every_carrier_resolves(self):
@@ -86,17 +89,23 @@ class TheCommittedRecord(unittest.TestCase):
                          "the program's own acceptance-item count and this record's rows "
                          "disagree, so one of them states a criterion the other does not")
 
-    def test_the_criteria_are_the_ones_the_body_states_and_the_count_is_all_that_is_held(self):
-        """The words are read from the issue, and this tree cannot hold their text: the program
-        pins a snapshot of the body by hash and records how many acceptance items it stated.
-        Measured, the snapshot's hash and the live body's are different revisions while both
-        state eight items, so what is held is the count rather than a claim about the words.
+    def test_a_row_carries_the_issues_number_and_what_carries_it_and_nothing_else(self):
+        """The words are the issue's and this tree cannot hold them: the program pins the body's
+        hash and records how many acceptance items it stated, and the only committed body capture
+        reduces bodies — its own scope says it is not an exact-body provenance claim. Measured,
+        #38's captured body is 194 bytes with no checkbox line. So a row states the number and
+        the carriers, a field beside them is refused, and the words are read at the issue.
         """
         entry = bakeoff.Sources().entry(38)
         self.assertRegex(entry["body_sha256"], r"^[0-9a-f]{64}$")
-        self.assertNotIn(entry["body_sha256"], [one["criterion"] for one in RECORD["criteria"]])
+        capture = bakeoff.Sources().read("planning/integrity/fixtures/audit-2026-09-08.json")
+        self.assertIn("not an exact-body provenance claim", capture["scope"])
+        body = next(one["body"] for one in capture["issues"] if one["number"] == 38)
+        self.assertNotRegex(body, r"(?m)^\s*- \[[ xX]\]",
+                            "the committed capture now carries #38's acceptance criteria, so the "
+                            "words can be held against it rather than read at the issue")
         for row in RECORD["criteria"]:
-            self.assertTrue(row["criterion"].endswith("."), row["criterion"])
+            self.assertEqual(sorted(row), ["carried_by", "n"])
 
 
 class CriterionRules(unittest.TestCase):
@@ -110,7 +119,7 @@ class CriterionRules(unittest.TestCase):
 
     def test_a_criterion_added_to_the_record_is_refused(self):
         row = mutate()
-        row["criteria"].append({"n": 9, "criterion": "x.", "carried_by": [
+        row["criteria"].append({"n": 9, "carried_by": [
             {"measurement": "installer_size_mib"}]})
         found, _ = refused(bakeoff.criteria_problems(row, self.contract(), self.entry(),
                                                      self.sources()),
@@ -130,11 +139,12 @@ class CriterionRules(unittest.TestCase):
                            "is a claim the issue makes that no row answers")
         self.assertTrue(found)
 
-    def test_a_criterion_with_no_words_is_refused(self):
-        found, _ = refused(bakeoff.criteria_problems(mutate(**{"criteria.0.criterion": ""}),
-                                                     self.contract(), self.entry(),
+    def test_a_field_beside_the_number_and_carriers_is_refused(self):
+        row = mutate()
+        row["criteria"][0]["criterion"] = "a claim restated here, which no rule reads"
+        found, _ = refused(bakeoff.criteria_problems(row, self.contract(), self.entry(),
                                                      self.sources()),
-                           "states no criterion words")
+                           "which no rule here reads")
         self.assertTrue(found)
 
     def test_a_criterion_carried_by_nothing_is_refused(self):
@@ -260,6 +270,20 @@ class JoinRules(unittest.TestCase):
             found, _ = refused(bakeoff.problems(RECORD, tree.sources()),
                                "as the record and this tree does not carry it")
             self.assertTrue(found)
+
+    def test_a_shell_record_naming_no_measurement_the_contract_predeclares_is_refused(self):
+        with Tree() as tree:
+            where = tree.root / BLOCK["record"]
+            where.write_text(where.read_text().replace("workload_process_tree_pss_mib", "a figure"))
+            found, _ = refused(bakeoff.problems(RECORD, tree.sources()),
+                               "names no measurement 'workload_process_tree_pss_mib'")
+            self.assertTrue(found)
+
+    def test_a_shell_record_naming_every_figure_the_contract_predeclares_stays_green(self):
+        with Tree() as tree:
+            where = tree.root / BLOCK["record"]
+            where.write_text(where.read_text() + "\n\nBoth figures above are named once each.\n")
+            self.assertEqual(bakeoff.problems(RECORD, tree.sources()), [])
 
     def test_a_contract_document_that_holds_no_such_contract_is_refused(self):
         with Tree() as tree:

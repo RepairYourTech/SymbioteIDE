@@ -32,14 +32,13 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 SUITE_DIRECTORY = "planning/integrity"
 # The suites this repository's checks consist of, each with the link a job that runs this
 # directory's suite owes it: this directory's own, whose case declares the reader-size guard's cap,
-# and the data-with-rules suites beside it — the competitor registry's, whose suite refuses a claim
-# with nothing behind it, the parity matrices', the licensing and trust policy's, whose suite
-# refuses a promise the tree cannot back, the release record's, whose suite refuses a gate that
-# omits the evidence it promises, and the bake-off acceptance record's, whose suite refuses a
-# criterion #38 states that no obligation, measurement or owner answers. One address per suite,
-# so the clause that finds them, the predicate that says what a check step is, and the state that
-# writes a suite gone cannot mean a different suite than the case reads — a job that runs this
-# directory's suite is owed every row here.
+# and the data-with-rules suites beside it, each of which carries its own reader and its own
+# refusals in its own directory. The rows below are the one place a suite is named for this
+# reading: the clause that finds them, the predicate that says what a check step is, and the state
+# that writes a suite gone all read this table, so a maintainer adding a suite adds a row here and
+# a step to the job, and no sentence outside it has to move. One address per suite, so none of
+# those three can mean a different suite than the case reads — a job that runs this directory's
+# suite is owed every row here.
 REGISTRY_DIRECTORY = "planning/research"
 PARITY_DIRECTORY = "planning/parity"
 POLICY_DIRECTORY = "planning/policy"
