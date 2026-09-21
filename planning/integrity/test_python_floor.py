@@ -54,6 +54,7 @@ from __future__ import annotations
 import ast
 import difflib
 import pathlib
+import posixpath
 import re
 import tempfile
 import unittest
@@ -459,49 +460,84 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
                                    f"the state {what!r} wrote `{key.strip()}` at its step's own "
                                    f"dash column, which is a text no YAML parser reads")
 
-    def test_the_discovery_is_read_in_every_spelling_this_case_drives(self):
-        """The spellings of a check step, each driven rather than counted: a step that names this
-        directory — `-s`, `./`, a trailing slash, positionally — or is reached by a `cd`, in the same
-        command or on a line of its own, up to a `-s .` inside it, runs this directory's suite; a
-        wider directory, one that only starts with this one, and a directory given to `-t` do not,
-        because discovery there searches somewhere else. Read from texts written here, so a reader
-        narrowed to the spelling this repository happens to write — or widened to a path that only
-        starts with this directory — fails here rather than leaving a job that runs these checks
-        invisible to every rule above it.
+    def test_a_step_is_read_as_the_suite_it_names_and_as_no_other(self):
+        """Which suite a step runs discovery in, driven from the rows themselves: for every row of
+        `chain.SUITES`, a step that names that directory — to `-s`, with `./`, with a trailing slash,
+        as a workspace path, positionally, or reached by a `cd` in the same command or on a line of
+        its own up to a `-s .` inside it — is that row's step and no other row's, and a step that
+        names something else is no row's step at all.
+
+        Both families are written from the row's own directory and from the tree beside it rather
+        than listed here: the other rows come from that one table, and a directory that only shares
+        the last name comes from this repository's own directories. So a reader narrowed to the
+        spelling one workflow happens to write, or widened to something that is merely not that
+        directory — a prefix, a deeper path, a parent, or a directory of the same name elsewhere —
+        fails here by name, rather than leaving a job invisible to every rule above it or read as a
+        suite it does not run. Nothing relates the corpus to the reading except that both are stated
+        over the same rows, so a reading that stops agreeing with it fails here, and a corpus emptied
+        of it stops failing when the reading is weakened — which the driver's rows refuse in turn.
         """
-        reads = (
-            ("names it to `-s`", "- run: python -m unittest discover -s planning/integrity"),
-            ("names it to `-s` with `./`",
-             "- run: python -m unittest discover -s ./planning/integrity"),
-            ("names it to `-s` with a trailing slash",
-             "- run: python -m unittest discover -s planning/integrity/"),
-            ("gives it positionally", "- run: python -m unittest discover planning/integrity"),
-            ("reaches it by a `cd` in the same command",
-             "- run: cd planning/integrity && python -m unittest discover"),
-            ("reaches it by a `cd` on a line of its own",
-             "- run: |\n          cd planning/integrity\n          python -m unittest discover"),
-            ("names `.` after a `cd` into it",
-             "- run: |\n          cd planning/integrity\n          python -m unittest discover -s ."),
-        )
-        ignores = (
-            ("names a wider directory", "- run: python -m unittest discover -s planning"),
-            ("names a directory that only starts with it",
-             "- run: python -m unittest discover -s planning/integrity-extra"),
-            ("names it to `-t`", "- run: python -m unittest discover -t planning/integrity"),
-        )
+        flat = "jobs:\n  checks:\n    runs-on: ubuntu-latest\n    steps:\n      %s\n"
+        suites = [directory for directory, _link in chain.SUITES]
+        twins = sorted(one.name for one in chain.ROOT.iterdir() if one.is_dir())
+
         with tempfile.TemporaryDirectory() as where:
             drafted = pathlib.Path(where) / "spelled.yml"
-            steps = [(label, step, ["checks"]) for label, step in reads]
-            steps += [(label, step, []) for label, step in ignores]
-            for label, step, want in steps:
-                drafted.write_text("jobs:\n  checks:\n    runs-on: ubuntu-latest\n    steps:\n      "
-                                   + step + "\n")
-                ran = [job for job, lines in jobs(drafted).items() if runs_the_suite(lines)]
-                self.assertEqual(ran, want,
-                                 f"a step that {label} is read as {ran} where this case says "
-                                 f"{want}: no spelling this case drives is read as this suite's "
-                                 f"step, so a job that runs these checks can be written in one "
-                                 f"this reading does not see")
+
+            def read_as(step):
+                """The rows a step is read as, from the text written here."""
+                drafted.write_text(flat % step)
+                return sorted({directory for lines in jobs(drafted).values()
+                               for directory in suites if chain.runs_suite(lines, directory)})
+
+            def names(directory):
+                """Every step that runs discovery in `directory`, written from the directory."""
+                return (f"- run: python -m unittest discover -s {directory}",
+                        f"- run: python -m unittest discover -s ./{directory}",
+                        f"- run: python -m unittest discover -s {directory}/",
+                        f"- run: python -m unittest discover -s "
+                        f"${{{{ github.workspace }}}}/{directory}",
+                        f"- run: python -m unittest discover {directory}",
+                        f"- run: cd {directory} && python -m unittest discover",
+                        f"- run: |\n          cd {directory}\n          python -m unittest discover",
+                        f"- run: |\n          cd {directory}\n          python -m unittest "
+                        f"discover -s .")
+
+            def names_elsewhere(directory):
+                """Steps that run discovery somewhere that is not `directory`, each with the row it
+                is the step of where it is one: a parent, a prefix, a deeper path, a directory of
+                the same name below it or beside it, another row of the same table, or `-t`.
+                """
+                parent, base = posixpath.dirname(directory), posixpath.basename(directory)
+                elsewhere = [(f"- run: python -m unittest discover -s {parent}", None),
+                             (f"- run: python -m unittest discover -s {directory}-extra", None),
+                             (f"- run: python -m unittest discover -s {directory}/{base}", None),
+                             ("- run: python -m unittest discover -s .", None),
+                             (f"- run: python -m unittest discover -t {directory}", None)]
+                elsewhere += [(f"- run: python -m unittest discover -s {other}", other)
+                              for other in suites if other != directory]
+                elsewhere += [(f"- run: python -m unittest discover -s {twin}/{base}",
+                               f"{twin}/{base}" if f"{twin}/{base}" in suites else None)
+                              for twin in twins if f"{twin}/{base}" != directory]
+                return elsewhere
+
+            for directory in suites:
+                for step in names(directory):
+                    read = read_as(step)
+                    self.assertEqual(
+                        read, [directory],
+                        f"a step that runs one suite is that suite's step and no other's: a step "
+                        f"naming {directory} was read as {read}, so a job that runs one of these "
+                        f"checks can be read as running another — or as running none")
+                for step, of_row in names_elsewhere(directory):
+                    read = read_as(step)
+                    want = [] if of_row is None else [of_row]
+                    self.assertEqual(
+                        read, want,
+                        f"a step that names no row's directory is no row's step: {step!r} names "
+                        f"something that is not {directory} and was read as {read} where {want} is "
+                        f"what it names, so a reading that stopped comparing whole paths, or that "
+                        f"narrowed to the last name alone, passes a job that runs elsewhere")
 
     def test_a_job_is_read_at_any_indentation_and_with_a_comment_or_anchor(self):
         """The `jobs:` block's own column is read from the workflow rather than assumed — two

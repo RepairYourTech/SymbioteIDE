@@ -719,20 +719,27 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
           (SUBJECTS, "    for where in [HOLDER]:\n")),),
     ),
     (
-        "no spelling this case drives is read as this suite's step",
-        "test_the_discovery_is_read_in_every_spelling_this_case_drives",
+        "a step that runs one suite is that suite's step and no other's",
+        "test_a_step_is_read_as_the_suite_it_names_and_as_no_other",
         CHAIN,
-        '        """The spellings of a check step, each driven rather than counted:',
-        # Both directions of the same reading: `names_directory` normalizes before it compares,
-        # which is what reads a `./` path and a trailing slash, and it compares a whole path rather
-        # than a prefix. A reader that stopped normalizing leaves a spelling the case drives unread,
-        # and one widened to a prefix reads a directory that only starts with this one — in each
-        # case the case fails there rather than the reading drifting unproved.
+        '        """Which suite a step runs discovery in, driven from the rows themselves:',
+        # Every direction the case above drives, each one edit to `names_directory`: it normalizes
+        # before it compares, which is what reads a `./` path and a trailing slash; it compares a
+        # whole path rather than a prefix; and it compares the whole path rather than the last name,
+        # which is what refuses a directory of the same name elsewhere. A reader that stopped
+        # normalizing leaves a spelling the case drives unread, one widened to a prefix reads a
+        # directory that only starts with this one, and one widened to the last name reads a
+        # directory the row it is asked about does not name — in each case the case fails there
+        # rather than the reading drifting unproved, and a corpus emptied of the rows it is stated
+        # over stops failing here, which the run of this table refuses in turn.
         (("planning/integrity/chain.py", "weaker",
           ("    joined = posixpath.normpath(where)\n", "    joined = where\n")),
          ("planning/integrity/chain.py", "weaker",
           ('    return joined == directory or joined.endswith(f"/{directory}")\n',
-           "    return joined.startswith(directory)\n"))),
+           "    return joined.startswith(directory)\n")),
+         ("planning/integrity/chain.py", "weaker",
+          ('    return joined == directory or joined.endswith(f"/{directory}")\n',
+           "    return posixpath.basename(joined) == posixpath.basename(directory)\n"))),
     ),
 ]
 
