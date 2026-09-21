@@ -723,15 +723,18 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
         "test_a_step_is_read_as_the_suite_it_names_and_as_no_other",
         CHAIN,
         '        """Which suite a step runs discovery in, driven from the rows themselves:',
-        # Every direction the case above drives, each one edit to `names_directory`: it normalizes
-        # before it compares, which is what reads a `./` path and a trailing slash; it compares a
-        # whole path rather than a prefix; and it compares the whole path rather than the last name,
-        # which is what refuses a directory of the same name elsewhere. A reader that stopped
-        # normalizing leaves a spelling the case drives unread, one widened to a prefix reads a
-        # directory that only starts with this one, and one widened to the last name reads a
+        # Three of the directions the case above drives, each one edit to `names_directory`: it
+        # normalizes before it compares, which is what reads a `./` path and a trailing slash; it
+        # compares a whole path rather than a prefix; and it compares the whole path rather than the
+        # last name, which is what refuses a directory of the same name elsewhere. A reader that
+        # stopped normalizing leaves a spelling the case drives unread, one widened to a prefix reads
+        # a directory that only starts with this one, and one widened to the last name reads a
         # directory the row it is asked about does not name — in each case the case fails there
-        # rather than the reading drifting unproved, and a corpus emptied of the rows it is stated
-        # over stops failing here, which the run of this table refuses in turn.
+        # rather than the reading drifting unproved. Not every edit the case catches is carried as a
+        # way: a reader that reads any path naming the directory (`directory in joined`), one that
+        # reads every path or none, and one that answers with this directory whatever was asked all
+        # red the case and are left to it. A family emptied of the rows it is stated over stops
+        # failing here, which the run of this table refuses in turn.
         (("planning/integrity/chain.py", "weaker",
           ("    joined = posixpath.normpath(where)\n", "    joined = where\n")),
          ("planning/integrity/chain.py", "weaker",

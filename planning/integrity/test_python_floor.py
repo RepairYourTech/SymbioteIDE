@@ -473,9 +473,10 @@ class TheChainThatRunsTheseChecks(unittest.TestCase):
         spelling one workflow happens to write, or widened to something that is merely not that
         directory — a prefix, a deeper path, a parent, or a directory of the same name elsewhere —
         fails here by name, rather than leaving a job invisible to every rule above it or read as a
-        suite it does not run. Nothing relates the corpus to the reading except that both are stated
-        over the same rows, so a reading that stops agreeing with it fails here, and a corpus emptied
-        of it stops failing when the reading is weakened — which the driver's rows refuse in turn.
+        suite it does not run. What holds this case is the two families stated over the rows: empty
+        either and it stops failing when the reading is weakened, which the row that names it refuses
+        in turn. The same-last-name directories beside them are coverage the every-other-row family
+        also carries — asserted here, and measured not to be what holds the row.
         """
         flat = "jobs:\n  checks:\n    runs-on: ubuntu-latest\n    steps:\n      %s\n"
         suites = [directory for directory, _link in chain.SUITES]
