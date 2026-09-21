@@ -47,6 +47,7 @@ Five habits, each of them checked rather than asserted:
 | The domain's canonical entities and the noun that owns each | [domain](contracts/domain.md) | `cargo run -p symbiote-domain --example ontology_schema -- --check` |
 | Which decisions are settled, provisional or under proof, and the pins each member declares | [architecture governance](contracts/architecture.md), [decisions](architecture/decisions.json) | `cargo run -p symbiote-architecture --example decisions` |
 | What would settle the desktop-shell choice, and whether a run stands | [spike contract](architecture/spike-contracts.json) | the same map, plus the crate's own suite |
+| What each of #38's own acceptance criteria answers to, and what the committed runs show for it | [bake-off record](../planning/bakeoff/README.md) | `python3 planning/bakeoff/bakeoff.py --check`, `python3 planning/bakeoff/test_bakeoff.py` |
 | The roadmap registry, its index and the accepted-decision coverage ledger | [integrity tooling](../planning/integrity/README.md) | `python3 planning/integrity/test_validate.py`, `python3 planning/integrity/coverage_ledger.py --check` |
 | The CLI's published schema fixtures | [schemas](contracts/schemas) | `symbiote schema --check docs/contracts/schemas` |
 | A driven binary's record covering every input its build read | [source records](../planning/integrity/README.md) | `planning/integrity/source_record.py --binary …` (see `.github/workflows/rust-contracts.yml`) |
@@ -71,6 +72,7 @@ python -m unittest discover -s planning/research -p 'test_*.py' -v
 python -m unittest discover -s planning/parity -p 'test_*.py' -v
 python -m unittest discover -s planning/policy -p 'test_*.py' -v
 python -m unittest discover -s planning/release -p 'test_*.py' -v
+python -m unittest discover -s planning/bakeoff -p 'test_*.py' -v
 python3 planning/integrity/revert_rules.py
 ```
 
@@ -123,11 +125,18 @@ them.
   candidate run that would settle the shell choice (#38), and the System Graph query
   API that would serve these links to a graph consumer (#327). The refusals and the
   cases that drive them are in [`architecture.md`](contracts/architecture.md).
-- **#38 — the shell proof.** Platform coverage, representative budgets, Preview
-  authority isolation, signed updates, installer size and the rest of the
-  contract's ceilings stay unmeasured, each blocked by a capability the fixture does
-  not have; what each would take is stated once, in
-  [the Linux shell record](proofs/linux-shell.md). The scope is
+- **#38 — the shell proof.** The issue's own acceptance criteria are routed where
+  they are carried ([the bake-off record](../planning/bakeoff/README.md)), so what is
+  owed to the contract, what is an owner's, and what the committed runs already show
+  are readable rather than inferred. Part of the contract's predeclared measurement
+  set was not observed by the committed run, each unobserved figure blocked by a
+  capability the fixture does not have, and what each of those would take is stated
+  once, in
+  [the Linux shell record](proofs/linux-shell.md) — which is a statement about those
+  measurements, not about the criteria they do not exhaust: platform coverage is the
+  contract's declared untested list, Preview authority isolation is an obligation the
+  fixture cannot yet meet, and signed builds and update feeds are #434's and #417's
+  rather than a measurement this contract predeclares. The scope is
   [ADR-0001](architecture/adr-0001-technology-direction.md).
 - **#170 and #36 — broader acceptance.** The machinery is in place and checked;
   the production capabilities the criteria name are owned by the issues they route.
