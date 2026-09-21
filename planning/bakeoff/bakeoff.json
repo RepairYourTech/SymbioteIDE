@@ -13,7 +13,6 @@
   "criteria": [
     {
       "n": 1,
-      "criterion": "All candidates run the same representative workload with reproducible results.",
       "carried_by": [
         {
           "obligation": "#38: the same scripted workload on every eligible non-Electron candidate, rerun so its results are reproducible"
@@ -22,7 +21,6 @@
     },
     {
       "n": 2,
-      "criterion": "Chosen architecture handles four agent streams, three terminals, Monaco, and live Preview on minimum target hardware without UI starvation.",
       "carried_by": [
         {
           "obligation": "#38: four concurrent agent streams, dispatched and supervised at once"
@@ -46,7 +44,6 @@
     },
     {
       "n": 3,
-      "criterion": "Cancellation kills child processes without orphan worktrees, ports, or secret-bearing processes.",
       "carried_by": [
         {
           "obligation": "#38: cancellation of the whole process tree, then restart"
@@ -73,7 +70,6 @@
     },
     {
       "n": 4,
-      "criterion": "Crash/restart recovers canonical state without transcript dependence.",
       "carried_by": [
         {
           "obligation": "#38: crash and client reconnect that recover canonical state without the transcript"
@@ -85,7 +81,6 @@
     },
     {
       "n": 5,
-      "criterion": "Platform-specific compromises and fallbacks are explicit.",
       "carried_by": [
         {
           "obligation": "#38: Linux Wayland, Linux X11, Windows and macOS exercised as applicable, with platform-specific compromises and fallbacks recorded"
@@ -94,7 +89,6 @@
     },
     {
       "n": 6,
-      "criterion": "Signed-build/update paths exist for every required desktop platform.",
       "carried_by": [
         {
           "elsewhere": {
@@ -106,7 +100,6 @@
     },
     {
       "n": 7,
-      "criterion": "Desktop framework never owns canonical project/agent state.",
       "carried_by": [
         {
           "obligation": "#38: the desktop framework holding no canonical project or agent state, evidenced by authorized headless work surviving shell exit"
@@ -115,7 +108,6 @@
     },
     {
       "n": 8,
-      "criterion": "A headless Linux Host can be controlled by another desktop client before desktop feature implementation begins.",
       "carried_by": [
         {
           "obligation": "#38: a second desktop client controlling a headless Linux Host, including controller handoff"

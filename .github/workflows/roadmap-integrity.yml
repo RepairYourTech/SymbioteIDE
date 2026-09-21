@@ -83,16 +83,13 @@ jobs:
         run: python3 planning/integrity/revert_rules.py
       - name: Verify merged-checkout housekeeping
         run: python -m unittest discover -s planning/housekeeping -p 'test_*.py' -v
-      # #171's registry, #172's parity matrices, #174's licensing and trust record, #175's release
-      # record and #38's bake-off acceptance record are five more data-with-rules surfaces beside
-      # this directory's: their own directories, their own readers, and suites that refuse a claim
-      # with nothing behind it, a comparison with nothing holding it, a promise the tree cannot
-      # back, a gate that omits the evidence it promises, and a criterion no obligation,
-      # measurement or owner answers. This job owes every suite this repository's checks consist
-      # of, so `test_python_floor.py` holds these five steps the way it holds the driver above and
-      # the depth — through `chain.py` — and dropping any of them, moving it to another job,
-      # putting it behind a condition that cannot hold or letting another command own its exit
-      # status is refused there by name rather than leaving the suite unrun.
+      # The data-with-rules suites beside this directory have their own directories, their own
+      # readers and their own refusals. This job owes every suite this repository's checks consist
+      # of, so `test_python_floor.py` holds these steps the way it holds the driver above and the
+      # depth — through `chain.py`, whose `SUITES` table is the one place each suite is addressed —
+      # and dropping any of them, moving it to another job, putting it behind a condition that
+      # cannot hold or letting another command own its exit status is refused there by name rather
+      # than leaving the suite unrun.
       - name: Verify the competitor registry and its snapshots
         run: python -m unittest discover -s planning/research -p 'test_*.py' -v
       - name: Verify the parity and gap matrices against that registry
