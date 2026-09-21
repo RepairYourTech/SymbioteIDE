@@ -38,8 +38,11 @@ the gap where one does.
 `the_committed_contract_passes_every_rule`). The full cross-platform laboratory is #435's.
 
 **Two registers regressions are tracked against**, read rather than restated: the constitutional
-invariants from `docs/contracts/constitution-report.json` (24) and the competitor-parity rows from
-`planning/parity/matrices.json` (18). Each register names the case that holds its own artifact.
+invariants from `docs/contracts/constitution-report.json` and the competitor-parity rows from
+`planning/parity/matrices.json`. Each register names the case that holds its own artifact, and every
+figure this file writes beside a noun — here, in the figures above, and in the limits below — is held
+against those files by one case, so a copy that moves without the others reds by name rather than
+going unread.
 
 **The concerns reviewed** are the applicability marks the licensing and trust policy already
 carries, read from `planning/policy/policy.json`: five concerns, each `required`,

@@ -341,6 +341,28 @@ class ReadmeFigures(unittest.TestCase):
                           len(RECORD["gates"]), goals, len(RECORD["registers"]),
                           registers.get("constitution", 0), registers.get("parity", 0),
                           len(RECORD["concerns"]["reviewed"])])
+        # And every other place this file writes one of those figures in the `N <noun>` form is the
+        # same figure: a number written twice is a number one of the copies can leave stale while
+        # this case stays green, which is how the registers paragraph carried an unread 18 until a
+        # pass removed it. The limit, stated: a figure written another way — a bare `(18)` beside a
+        # path — is not read by this, so the descriptive sentences name the files rather than
+        # repeat a count.
+        held = {
+            "metrics": count,
+            "measured": sources.get("measured", 0),
+            "delegated": sources.get("delegated", 0),
+            "gates": len(RECORD["gates"]),
+            "non-goals": goals,
+            "registers": len(RECORD["registers"]),
+            "invariants": registers.get("constitution", 0),
+            "parity rows": registers.get("parity", 0),
+            "concerns": len(RECORD["concerns"]["reviewed"]),
+        }
+        for noun, expected in held.items():
+            written = re.findall(rf"(\d+)\s+{noun}\b", readme.replace("**", ""))
+            self.assertTrue(written, f"the README no longer states how many {noun} the record carries")
+            self.assertEqual([int(one) for one in written], [expected] * len(written),
+                             f"the README states {written} {noun} where the record carries {expected}")
 
 
 if __name__ == "__main__":

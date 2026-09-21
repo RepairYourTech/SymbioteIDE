@@ -6,6 +6,7 @@
 //! a companion that hands it a weakened input.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use symbiote_constitution::*;
 
 #[test]
@@ -156,6 +157,170 @@ fn a_binding_the_harness_does_not_run_is_refused() {
             harness.outcome(binding).ok,
             "{binding} should have been accepted"
         );
+    }
+}
+
+/// The Python suites are held to the commands the workflows write rather than to
+/// a list kept beside them: a suite the reading drops would refuse a binding the
+/// job runs, and one it keeps after the workflow stopped running it would accept
+/// a check nothing executes.
+#[test]
+fn the_python_suites_are_the_commands_the_workflows_write() {
+    let workflows = workspace_root().join(".github").join("workflows");
+    let suites = suites_in(&workflows).expect("the workflows' suites");
+    let mut commands = 0;
+    for entry in std::fs::read_dir(&workflows).expect("the workflow directory") {
+        let path = entry.expect("a workflow entry").path();
+        let yaml = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext == "yml" || ext == "yaml");
+        if !yaml {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a workflow");
+        commands += text
+            .lines()
+            .filter(|line| line.contains("unittest") && line.contains("discover"))
+            .count();
+    }
+    assert_eq!(
+        suites.len(),
+        commands,
+        "the suites read from the workflows are not the commands they write: {suites:?}"
+    );
+    for (directory, pattern) in &suites {
+        assert!(
+            !directory.is_empty() && !pattern.is_empty(),
+            "a suite names no directory or no pattern: {suites:?}"
+        );
+    }
+
+    // Both directions, on the tree's own workflow text: a discovery line taken
+    // out is a suite the reading no longer names, and one written in is a suite
+    // it names, in the spellings a workflow may use.
+    let text = std::fs::read_to_string(workflows.join("roadmap-integrity.yml"))
+        .expect("the roadmap-integrity workflow");
+    let named = suites_in_text(&text);
+    assert!(
+        named.contains(&("planning/release".to_string(), "test_*.py".to_string())),
+        "the workflow no longer names the release suite: {named:?}"
+    );
+    // Located by what the line names rather than by one spelling of it, so a
+    // workflow that reaches the suite through `cd` is the same line to this
+    // reading — a literal step string would false-red an honest re-spelling.
+    let step = text
+        .lines()
+        .find(|line| line.contains("planning/release") && line.contains("discover"))
+        .expect("the release suite's discovery line");
+    let dropped = text.replace(step, "");
+    assert_eq!(suites_in_text(&dropped).len(), named.len() - 1);
+    assert!(
+        !suites_in_text(&dropped)
+            .iter()
+            .any(|(directory, _pattern)| directory == "planning/release")
+    );
+    let added = format!(
+        "{text}      - name: A suite this tree does not carry\n        run: python -m \
+         unittest discover -s planning/example -p 'test_*.py' -v\n"
+    );
+    assert!(
+        suites_in_text(&added).contains(&("planning/example".to_string(), "test_*.py".to_string()))
+    );
+    assert_eq!(
+        suites_in_text(
+            "        run: cd planning/example && python -m unittest discover -p 'test_*.py' -v"
+        ),
+        vec![("planning/example".to_string(), "test_*.py".to_string())]
+    );
+    assert_eq!(
+        suites_in_text(
+            "        run: python -m unittest discover --start-directory=planning/example"
+        ),
+        vec![("planning/example".to_string(), "test*.py".to_string())]
+    );
+    assert!(suites_in_text("name: no suite here\n").is_empty());
+    assert!(
+        suites_in(&workflows).expect("the real workflows").len() > 1,
+        "the whole job cannot rest on one suite"
+    );
+}
+
+/// A binding into each suite the workflows run has to be acknowledged: the
+/// harness reads the suite from the workflow and the case from the tree, so a
+/// suite a workflow runs while the harness refuses its cases is the false
+/// refusal a list kept in the harness produced.
+#[test]
+fn a_case_in_every_python_suite_the_workflows_run_is_acknowledged() {
+    let root = workspace_root();
+    let harness = Harness::discover(&root).expect("the workspace harness");
+    for (directory, pattern) in harness.python_suites() {
+        let candidates = matching_cases(&root, directory, pattern);
+        assert!(
+            !candidates.is_empty(),
+            "the suite {directory}/{pattern} names no test case in this tree"
+        );
+        let accepted: Vec<&String> = candidates
+            .iter()
+            .filter(|binding| harness.outcome(binding).ok)
+            .collect();
+        assert!(
+            !accepted.is_empty(),
+            "no case in {directory}/{pattern} is acknowledged, so a suite the workflow runs \
+             is evidence nothing can cite: {candidates:?}"
+        );
+    }
+}
+
+/// Every `relative/path::test_name` the tree declares under one suite's
+/// directory, in a stable order, so the assertion above is about the suite and
+/// not about which file a directory walk happened to reach first.
+fn matching_cases(root: &Path, directory: &str, pattern: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_matching_files(&root.join(directory), pattern, &mut files);
+    files.sort();
+    let mut cases = Vec::new();
+    for file in files {
+        let Ok(source) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let relative = file
+            .strip_prefix(root)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for line in source.lines() {
+            let Some(rest) = line.trim().strip_prefix("def ") else {
+                continue;
+            };
+            let Some(name) = rest.split('(').next() else {
+                continue;
+            };
+            if name.starts_with("test_") {
+                cases.push(format!("{relative}::{name}"));
+            }
+        }
+    }
+    cases
+}
+
+fn collect_matching_files(directory: &Path, pattern: &str, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_matching_files(&path, pattern, found);
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if pattern_matches(pattern, name) {
+            found.push(path);
+        }
     }
 }
 

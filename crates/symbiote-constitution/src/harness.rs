@@ -1,15 +1,20 @@
 //! What the test harness actually compiles and runs, read from cargo and from
-//! the CI workflow's own discovery patterns rather than assumed from the file
-//! layout.
+//! the workflows' own discovery commands rather than assumed from the file
+//! layout or restated here.
 //!
-//! A `#[test]` inside a file the harness never compiles is not evidence. The
-//! binding channel used to accept any file carrying a `#[test]` attribute, so a
-//! binding could name a check that never ran — a fixture under `tests/fixtures/`
-//! was refused only because it also carried `#[ignore]`. This module makes the
-//! requirement structural: a Rust binding must resolve to a file cargo reports
-//! as a target of a workspace member, or to a file inside a member's compiled
+//! A `#[test]` inside a file the harness never compiles is not evidence, and
+//! neither is a Python test in a file no workflow's discovery command names.
+//! The binding channel used to accept any file carrying a `#[test]` attribute,
+//! so a binding could name a check that never ran — a fixture under
+//! `tests/fixtures/` was refused only because it also carried `#[ignore]`, and
+//! the Python half was read from a list kept in this module, which fell four
+//! suites behind the job it described while every check stayed green. This
+//! module makes the requirement structural: a Rust binding must resolve to a
+//! file cargo reports as a target of a workspace member, or to a file inside a
+//! member's compiled
 //! source tree whose module a `mod` declaration actually reaches; a Python
-//! binding must resolve to a file one of the maintenance suites discovers.
+//! binding must resolve to a file one of the workflows' own discovery commands
+//! names.
 
 use crate::catalog::Invariant;
 use crate::report::Outcome;
@@ -18,13 +23,127 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The maintenance suites the `offline-validation` job runs, as the workflow
-/// spells them: a directory and the pattern `unittest discover -p` matches.
-const PYTHON_SUITES: &[(&str, &str)] = &[
-    ("planning", "test_legacy_importers.py"),
-    ("planning/integrity", "test_*.py"),
-    ("planning/housekeeping", "test_*.py"),
-];
+/// The Python suites the workflows run, read from their own `unittest discover`
+/// commands rather than restated here.
+///
+/// One owner for this fact: a suite this file listed but no workflow ran would
+/// be evidence nothing executes, and a suite a workflow runs but this file
+/// omitted would make every binding into it a false refusal — which is how a
+/// list kept here fell four suites behind the job it described. Adding, moving
+/// or removing a suite is a change to the workflow, and this reading follows it.
+///
+/// A workflows directory that names no suite is an error rather than an empty
+/// list: a harness with nothing to compare a binding against has not passed it.
+pub fn suites_in(workflows: &Path) -> Result<Vec<(String, String)>, String> {
+    let entries = std::fs::read_dir(workflows)
+        .map_err(|error| format!("the workflow directory could not be read: {error}"))?;
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "yml" || ext == "yaml")
+        })
+        .collect();
+    files.sort();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file)
+            .map_err(|error| format!("{} could not be read: {error}", file.display()))?;
+        for suite in suites_in_text(&text) {
+            if !found.contains(&suite) {
+                found.push(suite);
+            }
+        }
+    }
+    if found.is_empty() {
+        return Err(
+            "no workflow names a Python suite with `unittest discover`, so a Python \
+                    binding has nothing to be checked against"
+                .into(),
+        );
+    }
+    Ok(found)
+}
+
+/// The suites one workflow's own commands name: every `unittest discover` line,
+/// as the directory it searches and the pattern it matches.
+pub fn suites_in_text(workflow: &str) -> Vec<(String, String)> {
+    workflow.lines().filter_map(suite_of).collect()
+}
+
+/// The suite one `unittest discover` command names, or `None` where the line is
+/// not one: the directory from `-s`/`--start-directory` or from the `cd` the
+/// command was reached through, and the pattern from `-p`/`--pattern`.
+fn suite_of(line: &str) -> Option<(String, String)> {
+    if !line.contains("unittest") || !line.contains("discover") {
+        return None;
+    }
+    let tokens = shell_tokens(line);
+    let at = tokens.iter().position(|token| token == "discover")?;
+    let mut directory: Option<String> = None;
+    let mut pattern: Option<String> = None;
+    let mut index = at + 1;
+    while index < tokens.len() {
+        let token = tokens[index].as_str();
+        if token == "-s" || token == "--start-directory" {
+            directory = tokens.get(index + 1).cloned();
+            index += 2;
+            continue;
+        }
+        if token == "-p" || token == "--pattern" {
+            pattern = tokens.get(index + 1).cloned();
+            index += 2;
+            continue;
+        }
+        if let Some(rest) = token.strip_prefix("--start-directory=") {
+            directory = Some(rest.to_string());
+        } else if let Some(rest) = token.strip_prefix("--pattern=") {
+            pattern = Some(rest.to_string());
+        }
+        index += 1;
+    }
+    if directory.is_none() {
+        let mut before = tokens[..at].iter();
+        while let Some(token) = before.next() {
+            if token == "cd" {
+                directory = before.next().cloned();
+            }
+        }
+    }
+    let directory = directory.unwrap_or_else(|| ".".to_string());
+    let directory = directory
+        .strip_prefix("./")
+        .unwrap_or(directory.as_str())
+        .to_string();
+    Some((directory, pattern.unwrap_or_else(|| "test*.py".to_string())))
+}
+
+/// A command's words, with quotes removed, so a `-p 'test_*.py'` names the same
+/// pattern a shell would hand `unittest`.
+fn shell_tokens(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for character in line.chars() {
+        match quote {
+            Some(open) if character == open => quote = None,
+            Some(_) => current.push(character),
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None if character.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
 
 /// The files a workspace test run compiles, and the suites it discovers.
 pub struct Harness {
@@ -33,6 +152,8 @@ pub struct Harness {
     targets: BTreeSet<PathBuf>,
     /// `<member>/src` for every member, whose module tree cargo compiles.
     source_dirs: Vec<PathBuf>,
+    /// The Python suites the workflows' own commands name.
+    python_suites: Vec<(String, String)>,
 }
 
 impl Harness {
@@ -84,11 +205,18 @@ impl Harness {
         if targets.is_empty() {
             return Err("cargo reported no workspace target to check a binding against".into());
         }
+        let python_suites = suites_in(&root.join(".github").join("workflows"))?;
         Ok(Self {
             root,
             targets,
             source_dirs,
+            python_suites,
         })
+    }
+
+    /// The Python suites every workflow's own `unittest discover` commands name.
+    pub fn python_suites(&self) -> &[(String, String)] {
+        &self.python_suites
     }
 
     /// Every binding an invariant declares, checked against what the harness
@@ -111,7 +239,7 @@ impl Harness {
             return Outcome::fail("test", subject, "the named test file does not exist");
         };
         if path.ends_with(".py") {
-            return python_outcome(subject, path, name, &source);
+            return python_outcome(subject, path, name, &source, &self.python_suites);
         }
         if !self.compiled(path) {
             return Outcome::fail(
@@ -161,17 +289,23 @@ impl Harness {
     }
 }
 
-/// Python bindings are checked against the discovery the workflow performs,
+/// Python bindings are checked against the discovery the workflows perform,
 /// since `cargo test` never runs them.
-fn python_outcome(subject: String, path: &str, name: &str, source: &str) -> Outcome {
-    let discovered = PYTHON_SUITES.iter().any(|(dir, pattern)| {
+fn python_outcome(
+    subject: String,
+    path: &str,
+    name: &str,
+    source: &str,
+    suites: &[(String, String)],
+) -> Outcome {
+    let discovered = suites.iter().any(|(dir, pattern)| {
         path.starts_with(&format!("{dir}/")) && pattern_matches(pattern, path)
     });
     if !discovered {
         return Outcome::fail(
             "test",
             subject,
-            "no maintenance suite discovers that file, so the test never runs",
+            "no workflow's `unittest discover` command names that file, so the test never runs",
         );
     }
     let Some(attributes) = attributes_above(source, &format!("def {name}(")) else {
@@ -195,8 +329,9 @@ fn python_outcome(subject: String, path: &str, name: &str, source: &str) -> Outc
     )
 }
 
-/// The two `unittest discover -p` patterns the workflow uses.
-fn pattern_matches(pattern: &str, path: &str) -> bool {
+/// Whether a file matches one `unittest discover -p` pattern, the way the
+/// interpreter's own glob reads it for the patterns this repository uses.
+pub fn pattern_matches(pattern: &str, path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or("");
     match pattern.strip_suffix(".py") {
         Some(rest) => match rest.strip_suffix('*') {

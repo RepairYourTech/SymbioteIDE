@@ -20,10 +20,10 @@
 //!   the checks this tree actually runs, which a coverage row's check names
 //!   resolve against rather than being taken at their word.
 //! * **test** — [`harness`]: a named test that must be a check the harness
-//!   actually compiles and runs, carry `#[test]` (or `def` for the Python
-//!   maintenance suites), and not be `#[ignore]`d. [`Harness`] reads cargo's own
-//!   target list and the workflow's discovery patterns, so a binding cannot cite
-//!   a file the harness never compiles.
+//!   actually compiles and runs, carry `#[test]` (or `def` for the Python suites
+//!   the workflows discover), and not be `#[ignore]`d. [`Harness`] reads cargo's
+//!   own target list and the workflows' own discovery commands, so a binding
+//!   cannot cite a file the harness never compiles.
 //!
 //! [`report::evaluate`] produces the per-invariant report published as evidence
 //! against the issue, committed under [`REPORT_PATH`] and diffed against a fresh
@@ -48,7 +48,7 @@ pub mod repository;
 
 pub use catalog::{EXPLANATIONS, Fact, INVARIANTS, Invariant};
 pub use document::CONSTITUTION;
-pub use harness::Harness;
+pub use harness::{Harness, pattern_matches, suites_in, suites_in_text};
 pub use report::{Coverage, Outcome, REPORT_PATH, Report, evaluate, report_json, report_to_json};
 
 use std::path::{Path, PathBuf};
