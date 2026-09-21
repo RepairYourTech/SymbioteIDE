@@ -61,7 +61,7 @@ import unittest
 import chain
 import python_floor
 from chain import (DRIVER_LINK, FATAL_LINK, HISTORY_LINK, PARITY_LINK, POLICY_LINK, REGISTRY_LINK,
-                   WORKFLOWS, jobs, links_missing, runs_the_suite)
+                   RELEASE_LINK, WORKFLOWS, jobs, links_missing, runs_the_suite)
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -74,6 +74,7 @@ CHAIN_WORKFLOW = WORKFLOWS / "roadmap-integrity.yml"
 STATE_LINKS = ((chain.NO_DRIVER, DRIVER_LINK), (chain.NO_HISTORY, HISTORY_LINK),
                (chain.NO_SUITE, REGISTRY_LINK), (chain.NO_SUITE, PARITY_LINK),
                (chain.NO_SUITE, POLICY_LINK),
+               (chain.NO_SUITE, RELEASE_LINK),
                (chain.NON_FATAL, FATAL_LINK), (chain.CONDITIONAL, FATAL_LINK),
                (chain.SWALLOWED, FATAL_LINK), (chain.JOB_CONDITIONAL, FATAL_LINK))
 

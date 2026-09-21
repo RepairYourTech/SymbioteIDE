@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-21",
+  "issue": 175,
+  "metrics": [
+    {
+      "id": "quality",
+      "definition": "verified output quality of a release candidate: first-pass closure, review findings, CI failures, retries and escaped defects, each over a declared cohort rather than a global average",
+      "unit": "rates and medians over declared cohorts, with denominators",
+      "source": "delegated",
+      "owner": 456,
+      "reason": "MEAS-03 owns the definitions, denominators, cohorts and inclusion rules; this record holds the gate that requires them instead of restating them"
+    },
+    {
+      "id": "task-success",
+      "definition": "a task a client asked for is carried through to a verified result: its required gates, review and impact/documentation closure are met, and a cheap underbuilt attempt is not counted as success",
+      "unit": "rate over comparable, risk-cohorted tasks with sample size and limitations",
+      "source": "delegated",
+      "owner": 435,
+      "reason": "the cross-platform golden end-to-end conformance laboratory owns the task-level evidence path; today's nearest tree evidence is the golden path this record requires"
+    },
+    {
+      "id": "context-efficiency",
+      "definition": "supplied, retrieved, reopened, cited and expanded bytes/tokens per verified task, as observable proxies rather than a claim about internal model attention",
+      "unit": "bytes and tokens per verified task, with the ledger's own accounting",
+      "source": "delegated",
+      "owner": 329,
+      "reason": "the context inspector and token ledger own the measurement; an uncited-context claim is not evidence and stays unknown"
+    },
+    {
+      "id": "graph-precision-recall",
+      "definition": "precision and recall of graph-derived selection — affected tests, impact and drift — measured against what the repository actually changed",
+      "unit": "precision and recall over the graph's own audit population",
+      "source": "delegated",
+      "owner": 385,
+      "reason": "the Specification Graph ↔ Implementation Graph completeness and drift audits own the population and the comparison"
+    },
+    {
+      "id": "recovery",
+      "definition": "a committed transition history replays from its own journal and the replay reproduces the published ledger record",
+      "unit": "replayed entries against the published record; a mismatch is a failure rather than a partial pass",
+      "source": "measured",
+      "evidence": {
+        "path": "crates/symbiote-architecture/tests/audit.rs",
+        "case": "the_committed_history_recovers_what_the_ledger_publishes"
+      },
+      "narrowing": {
+        "scope": "this measures the architecture evidence chain's own recovery, not a user-facing session, goal or mobile-client recovery",
+        "owners": [328, 412]
+      }
+    },
+    {
+      "id": "latency",
+      "definition": "queue, inference, tool, human-wait, review, CI and integration time separated rather than summed, with wall-clock lead time never treated as the additive sum of parallel task durations",
+      "unit": "per-segment durations and rates with uncertainty",
+      "source": "delegated",
+      "owner": 375,
+      "reason": "Q14 owns the performance, scale, resource, latency and endurance budgets and their continuous benchmarks"
+    },
+    {
+      "id": "mobile-control",
+      "definition": "a client's control of running work from a mobile client: attention queue, approvals, intervention and parity of what may be done away from the desktop",
+      "unit": "per-release capability coverage against the mobile architecture's parity contract",
+      "source": "delegated",
+      "owner": 407,
+      "reason": "MOB-04 implements mobile-first control; the architecture and parity contract it must satisfy are P02's (#399)"
+    },
+    {
+      "id": "delivery",
+      "definition": "the repository's own checks reach CI intact: every suite this repository's checks consist of and the rule driver run in the job, the depth the cap reads is fetched, and a failure reaches the job rather than leaving CI green",
+      "unit": "the enforcement chain's own readings; a check that is dropped, moved, made non-fatal or swallowed is a failure",
+      "source": "measured",
+      "artifact": ".github/workflows/roadmap-integrity.yml",
+      "evidence": {
+        "path": "planning/integrity/test_python_floor.py",
+        "case": "test_the_job_that_runs_these_checks_also_runs_the_driver_over_full_history"
+      },
+      "narrowing": {
+        "scope": "delivery latency and lead-time metrics are MEAS-03's; this measures delivery of the checks themselves",
+        "owners": [456]
+      }
+    }
+  ],
+  "gates": [
+    {
+      "id": "technical-preview",
+      "permits": "internal and invited design-partner previews that state in their own material that they are not production",
+      "withholds": "any quality, latency, compatibility or mobile-control claim",
+      "requires": ["delivery", "recovery", "golden-path"],
+      "non_goals": ["preview-no-mobile", "preview-no-extension-distribution"],
+      "tracks": ["constitution", "parity"]
+    },
+    {
+      "id": "alpha",
+      "permits": "small external cohorts with the known gaps documented beside the build",
+      "withholds": "performance promises and any compatibility promise across releases",
+      "requires": ["delivery", "recovery", "task-success", "golden-path"],
+      "non_goals": ["alpha-no-performance-budget", "alpha-no-compatibility-promise"],
+      "tracks": ["constitution", "parity"]
+    },
+    {
+      "id": "beta",
+      "permits": "broad external use behind a documented support boundary",
+      "withholds": "production-support commitments and unmeasured platform claims",
+      "requires": ["delivery", "recovery", "task-success", "context-efficiency",
+                   "graph-precision-recall", "latency", "golden-path"],
+      "non_goals": ["beta-no-platform-matrix", "beta-no-learning-rollback"],
+      "tracks": ["constitution", "parity"]
+    },
+    {
+      "id": "stable",
+      "permits": "production use inside the scope the shipped release actually supports",
+      "withholds": "nothing this record states; the non-goals below remain outside every gate's claim",
+      "requires": ["quality", "task-success", "context-efficiency", "graph-precision-recall",
+                   "recovery", "latency", "mobile-control", "delivery", "golden-path"],
+      "non_goals": ["stable-no-unlocked-entitlements"],
+      "tracks": ["constitution", "parity"]
+    }
+  ],
+  "non_goals": [
+    {
+      "id": "preview-no-mobile",
+      "release": "technical-preview",
+      "does_not_support": "mobile clients or mobile control of running work",
+      "why": "the cross-platform mobile architecture and parity contract are not locked and no client exists",
+      "owner": 399
+    },
+    {
+      "id": "preview-no-extension-distribution",
+      "release": "technical-preview",
+      "does_not_support": "a marketplace or signed third-party extension distribution",
+      "why": "the signed extension SDK, permission review, marketplace and revocation model are not built",
+      "owner": 431
+    },
+    {
+      "id": "alpha-no-performance-budget",
+      "release": "alpha",
+      "does_not_support": "performance, scale, resource, latency and endurance guarantees",
+      "why": "the budgets and their continuous benchmarks are not established",
+      "owner": 375
+    },
+    {
+      "id": "alpha-no-compatibility-promise",
+      "release": "alpha",
+      "does_not_support": "compatibility promises across releases, including any stability level below 1.0",
+      "why": "the stability levels and what each promises are the licensing and trust policy's, and this workspace has not shipped a version",
+      "owner": 174
+    },
+    {
+      "id": "beta-no-platform-matrix",
+      "release": "beta",
+      "does_not_support": "cross-platform releases beyond the reference Linux environment",
+      "why": "the cross-platform golden conformance and release laboratory is not built",
+      "owner": 435
+    },
+    {
+      "id": "beta-no-learning-rollback",
+      "release": "beta",
+      "does_not_support": "automatic context, workflow or staffing optimisation and its rollback",
+      "why": "proposals for versioned optimisation exist as work, with no rollback surface in this tree",
+      "owner": 451
+    },
+    {
+      "id": "stable-no-unlocked-entitlements",
+      "release": "stable",
+      "does_not_support": "providers or harnesses whose authentication or subscription entitlement is unknown or unlaced",
+      "why": "unknown entitlement is not permitted integration; it is a hard gate rather than an averaged score",
+      "owner": 447
+    }
+  ],
+  "golden_path": {
+    "requires": "every release candidate names the case and the committed trace that carries a client request to the evidence it publishes; a candidate whose evidence is not in this tree does not pass its gate",
+    "artifact": "docs/proofs/results/desktop-shell.json",
+    "evidence": {
+      "path": "crates/symbiote-architecture/tests/spike_contracts.rs",
+      "case": "the_committed_contract_passes_every_rule"
+    },
+    "owner": 435,
+    "reason": "the cross-platform golden end-to-end conformance and release laboratory owns the full path; this record holds the requirement, the committed artifact and the case that reads it"
+  },
+  "registers": [
+    {
+      "id": "constitution",
+      "source": "docs/contracts/constitution-report.json",
+      "carries": "invariants",
+      "holds": {
+        "path": "crates/symbiote-constitution/tests/conformance.rs",
+        "case": "the_constitution_conforms_and_every_binding_resolves"
+      }
+    },
+    {
+      "id": "parity",
+      "source": "planning/parity/matrices.json",
+      "carries": "rows",
+      "holds": {
+        "path": "planning/parity/test_parity.py",
+        "case": "test_the_committed_matrices_pass_every_rule"
+      }
+    }
+  ],
+  "concerns": {
+    "source": "planning/policy/policy.json",
+    "reviewed": ["security", "privacy", "accessibility", "performance", "cross_platform"]
+  }
+}
