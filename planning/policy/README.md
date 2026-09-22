@@ -1,6 +1,6 @@
 # The licensing, trust and data-ownership record (#174)
 
-The in-repo half of [#174](https://github.com/RepairYourTech/SymbioteIDE/issues/174) (A05): the five
+The in-repo half of [#174](https://github.com/RepairYourTech/SymbioteIDE/issues/174) (A05): the
 licensing boundaries an open-source tool that controls repositories, credentials, terminals and
 third-party agents needs, the obligations each one carries, the stability level of every public
 contract, the licence and provenance of everything this workspace links or generates, and the
@@ -42,7 +42,7 @@ python3 planning/policy/policy.py --generated
 
 `--check` refuses the committed record on the first rule it breaks, naming its subject, then prints
 what it read; it also prints that no class selects a licence, so the selection is visibly owed rather
-than quietly absent. `--classes` prints the five boundaries. `--audit` prints each product's
+than quietly absent. `--classes` prints the boundaries. `--audit` prints each product's
 assumptions with the fields still unknown, the count of unknown fields, and the obligations this tree
 has not built — the debt the issue's verification clause is about, readable rather than inferred.
 `--generated` prints the provenance table. None of them writes anything, and none reaches the
@@ -77,13 +77,13 @@ record names that the tree does not carry is a refusal, in both directions.
 | a licence no class permits, or a denied-only licence | the distribution boundary refusing what it cannot honour |
 | a dependency class with no permitted licence | a class a dependency can land in with nothing permitting it |
 | a generated artifact the tree lacks, with a generator that is not a file, with a re-derivation naming a path the tree lacks, or held by a case no file declares | provenance that names nothing real |
-| a concern marked nowhere, marked outside the three marks, required against an obligation that does not exist, or tracked by no issue | applicability assumed rather than reviewed |
+| a concern marked nowhere, marked outside the marks this record states, required against an obligation that does not exist, or tracked by no issue | applicability assumed rather than reviewed |
 | a universe product with no assumption recorded, a field left blank, an unknown naming no gap, or a value the registry holds no source for | the unstated assumption the issue's verification clause exists to find |
 
 ## What this does not claim
 
 - **No licence is selected.** No `LICENSE`, `COPYING`, `NOTICE`, `CONTRIBUTING` or `SECURITY` file
-  is present and `[workspace.package] publish = false`, so all five classes are `pending` with
+  is present and `[workspace.package] publish = false`, so every class is `pending` with
   [#174](https://github.com/RepairYourTech/SymbioteIDE/issues/174) as their owner. This record
   states the boundaries the selection must fit and refuses a licence the tree cannot back; choosing
   the licence, the contributor terms and the trademark posture is a maintainer's decision, not a
@@ -106,13 +106,14 @@ record names that the tree does not carry is a refusal, in both directions.
 - **A `built` status is held by a name, not by a passing test.** The case is required to be
   *declared* by a file in this tree; whether it asserts the right thing is the case's own business,
   the same boundary the architecture contract's document case states.
-- **The runtime audit states the gap rather than filling it.** All ten of #171's universe products
-  are recorded `UNKNOWN` for licence, authentication and telemetry with the gap named per field,
+- **The runtime audit states the gap rather than filling it.** Every one of #171's universe
+  products is recorded `UNKNOWN` for licence, authentication and telemetry with the gap named per
+  field,
   because the registry holds no such claim for any of them and asserting one here would restate a
   product fact the registry owns. The rule that a stated value needs a source the registry holds is
   implemented and driven in this suite; the retrieval itself is
   [#171](https://github.com/RepairYourTech/SymbioteIDE/issues/171)'s registry refresh. The audit's
-  finding is therefore precise: integrating any of the ten currently depends on an assumption this
+  finding is therefore precise: integrating any of them currently depends on an assumption this
   tree states as unknown rather than one it can stand behind.
 - **Applicability is marked, not proven.** Security and privacy are `required` against the consent
   and no-exfiltration obligations this tree does build; accessibility, performance and cross-platform
