@@ -998,3 +998,77 @@ fn the_documents_state_the_version_and_bounds_this_crate_enforces() {
         );
     }
 }
+
+/// The kind names `protocol.md`'s response sentence writes are ones this crate's `ResponseBody`
+/// declares: the enum's adjacently tagged variants are the response kinds, so a document naming a
+/// kind the crate cannot produce — or a variant renamed or removed without the document — fails
+/// here by name rather than in prose nobody reads. The tag rule the enum's own attribute states is
+/// read too: if it stops being `snake_case`, the variant names are no longer the kinds, and the
+/// case refuses rather than judging against a rule that no longer holds.
+///
+/// What it does not read: the sentence's own framing (`include`), which does not claim the list is
+/// complete, so a kind the document does not name is not a failure here.
+#[test]
+fn the_contract_names_only_response_kinds_this_crate_declares() {
+    let protocol = include_str!("../../../docs/contracts/protocol.md");
+    let source = include_str!("../src/lib.rs");
+
+    let header = &source[..source
+        .find("pub enum ResponseBody {")
+        .expect("the response body enum")];
+    assert!(
+        header[header.len().saturating_sub(300)..].contains("rename_all = \"snake_case\""),
+        "the response kinds are the variant names only while the enum's tag rule is snake_case"
+    );
+
+    let body = region(source, "pub enum ResponseBody {", "\n}\n");
+    let declared: Vec<String> = body
+        .lines()
+        .filter_map(|line| {
+            let variant = line.trim_start();
+            variant
+                .starts_with(|c: char| c.is_ascii_uppercase())
+                .then(|| {
+                    variant
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect::<String>()
+                })
+        })
+        .map(|variant| {
+            variant.chars().fold(String::new(), |mut snake, c| {
+                if c.is_ascii_uppercase() {
+                    if !snake.is_empty() {
+                        snake.push('_');
+                    }
+                    snake.push(c.to_ascii_lowercase());
+                } else {
+                    snake.push(c);
+                }
+                snake
+            })
+        })
+        .collect();
+    assert!(
+        declared.len() > 1,
+        "the response body must declare its variants, and this read found {declared:?}"
+    );
+
+    let sentence = region(protocol, "Successful response kinds include ", " alongside");
+    let named: Vec<&str> = sentence
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert!(
+        !named.is_empty(),
+        "the response sentence must name the kind it adds, and it names none"
+    );
+    for kind in named {
+        assert!(
+            declared.iter().any(|declared| declared == kind),
+            "the protocol document names {kind} as a response kind, and ResponseBody declares {declared:?}"
+        );
+    }
+}

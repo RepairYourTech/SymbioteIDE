@@ -2142,6 +2142,185 @@ mod tests {
         replay_through_tracker(&session);
     }
 
+    /// The slice `text` writes between `from` and the next `to` after it.
+    fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+        let start = text
+            .find(from)
+            .unwrap_or_else(|| panic!("the text must state {from:?}"))
+            + from.len();
+        let rest = &text[start..];
+        let end = rest
+            .find(to)
+            .unwrap_or_else(|| panic!("the text must state {to:?}"));
+        &rest[..end]
+    }
+
+    /// The figure a statement writes, commas and any sentence punctuation trimmed off.
+    fn figure(text: &str) -> u64 {
+        let number: String = text
+            .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
+            .replace(',', "");
+        number
+            .parse()
+            .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
+    }
+
+    /// The byte figure a statement writes: `16 KiB`, `64 KiB`.
+    fn bytes(text: &str) -> u64 {
+        let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
+        let number = figure(number);
+        match unit {
+            "KiB" => number * 1024,
+            "MiB" => number * 1024 * 1024,
+            _ => number,
+        }
+    }
+
+    /// The bounds `external-agent-loop.md` states are the ones this crate enforces, and every
+    /// `SCREAMING_SNAKE` name it writes is a constant this crate declares: a document naming a
+    /// symbol the tree does not define, or stating a bound the constants have moved past, fails
+    /// here by name rather than in prose nobody reads.
+    ///
+    /// What it does not read: the pinned harness behaviours the same document describes — the
+    /// approval shapes, the stop-state mapping, the sandbox composition — which the cases above
+    /// drive against fixture and real-subprocess transports.
+    #[test]
+    fn the_contract_states_the_bounds_this_driver_enforces() {
+        let contract = include_str!("../../../docs/contracts/external-agent-loop.md");
+        let sources = [include_str!("lib.rs"), include_str!("process.rs")];
+
+        let mut named = 0;
+        for span in contract.split('`').skip(1).step_by(2) {
+            for word in span.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                let screaming = word.contains('_')
+                    && word.starts_with(|c: char| c.is_ascii_uppercase())
+                    && word
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+                if !screaming {
+                    continue;
+                }
+                named += 1;
+                assert!(
+                    sources
+                        .iter()
+                        .any(|source| source.contains(&format!("const {word}"))),
+                    "the contract names {word}, and this crate declares no such constant"
+                );
+            }
+        }
+        assert!(
+            named > 0,
+            "the contract must name the constants that own the bounds it states"
+        );
+
+        let text_bound = bytes(region(
+            contract,
+            "Event text truncates at",
+            " on char boundaries",
+        ));
+        assert_eq!(
+            text_bound, MAX_EVENT_TEXT_BYTES as u64,
+            "the contract states {text_bound}-byte event text, and this crate truncates at {MAX_EVENT_TEXT_BYTES}"
+        );
+
+        // The same figure as behaviour: the bound the contract states is the length a truncated
+        // observation comes back with, marker included, so a budget widened or narrowed quietly
+        // reds here rather than only in the document.
+        let truncated = truncate_event_text(&"a".repeat(MAX_EVENT_TEXT_BYTES + 1));
+        assert_eq!(
+            truncated.as_str().len(),
+            MAX_EVENT_TEXT_BYTES,
+            "the contract states {text_bound}-byte event text, and this driver truncates at {}",
+            truncated.as_str().len()
+        );
+        assert!(
+            truncated.as_str().ends_with(']'),
+            "truncation must be visible, and this one reads {:?}",
+            truncated.as_str()
+        );
+
+        let id_bound = figure(region(contract, "identifier charset and ", "-byte"));
+        assert!(
+            valid_correlation_id(&"a".repeat(id_bound as usize)),
+            "the contract states a {id_bound}-byte correlation-id bound this crate refuses"
+        );
+        assert!(
+            !valid_correlation_id(&"a".repeat(id_bound as usize + 1)),
+            "the contract states a {id_bound}-byte correlation-id bound, and this crate accepts longer"
+        );
+
+        let call_timeout = figure(region(contract, "transport's own ", "-second call timeout"));
+        assert_eq!(
+            call_timeout,
+            super::process::DEFAULT_CALL_TIMEOUT.as_secs(),
+            "the contract states a {call_timeout}-second call timeout, and this transport waits {}",
+            super::process::DEFAULT_CALL_TIMEOUT.as_secs()
+        );
+
+        let frame_cap = bytes(region(contract, "default frame cap is ", ";"));
+        assert_eq!(
+            frame_cap,
+            symbiote_runtime_transport::TransportLimits::default().max_frame_bytes as u64,
+            "the contract states a {frame_cap}-byte default frame cap, and the shared transport defaults to {}",
+            symbiote_runtime_transport::TransportLimits::default().max_frame_bytes
+        );
+
+        let pinned = symbiote_runtime_discovery::codex::CODEX_VERSION;
+        let title = region(contract, "(`codex-cli", "`, #483)").trim();
+        assert_eq!(
+            title, pinned,
+            "the contract pins codex-cli {title}, and this driver speaks {pinned}"
+        );
+        let mut versions = 0;
+        for (index, _) in contract.match_indices("symbiote/") {
+            let rest = &contract[index + "symbiote/".len()..];
+            let stated: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if stated.is_empty() {
+                continue;
+            }
+            versions += 1;
+            assert_eq!(
+                stated, pinned,
+                "the contract states symbiote/{stated}, and this driver speaks symbiote/{pinned}"
+            );
+        }
+        assert!(
+            versions > 0,
+            "the contract must state the pinned protocol version"
+        );
+
+        // Two figures this crate's own comments derive from a constant beside them: the silence
+        // budget in minutes and the frames one `call` may buffer. Both are held to the product
+        // their constants give, so a moved bound or a moved poll window reds here.
+        let minutes = figure(region(include_str!("lib.rs"), "at roughly ", " minutes"));
+        let derived = (MAX_EMPTY_NOTIFICATION_POLLS as u128
+            * super::process::DEFAULT_FRAME_TIMEOUT.as_millis()
+            + 30_000)
+            / 60_000;
+        assert_eq!(
+            minutes as u128,
+            derived,
+            "the comment states roughly {minutes} minutes of silence, and {MAX_EMPTY_NOTIFICATION_POLLS} polls at {:?} are {derived}",
+            super::process::DEFAULT_FRAME_TIMEOUT
+        );
+
+        let buffered = figure(region(
+            include_str!("lib.rs"),
+            "one `call` may buffer: ",
+            ")",
+        ));
+        assert_eq!(
+            buffered,
+            super::process::MAX_BUFFERED_NOTIFICATIONS as u64,
+            "the comment states {buffered} buffered frames, and this transport buffers {}",
+            super::process::MAX_BUFFERED_NOTIFICATIONS
+        );
+    }
+
     #[test]
     fn foreign_turn_notifications_do_not_stop_observation() {
         let mut session = session();

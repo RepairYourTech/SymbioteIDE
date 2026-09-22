@@ -278,3 +278,80 @@ fn already_reaped_leader_reports_unknown_while_unescaped_child_survives() {
         thread::sleep(Duration::from_millis(5));
     }
 }
+
+/// The slice `text` writes between `from` and the next `to` after it.
+fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("the text must state {from:?}"))
+        + from.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(to)
+        .unwrap_or_else(|| panic!("the text must state {to:?}"));
+    &rest[..end]
+}
+
+/// The byte figure a statement writes: `64 KiB`, `4096`.
+fn bytes(text: &str) -> usize {
+    let number = figure(text.trim().split_once(' ').map(|(n, _)| n).unwrap_or(text));
+    if text.contains("KiB") {
+        number * 1024
+    } else if text.contains("MiB") {
+        number * 1024 * 1024
+    } else {
+        number
+    }
+}
+
+/// The figure a statement writes, commas and all.
+fn figure(text: &str) -> usize {
+    text.trim()
+        .replace(',', "")
+        .parse()
+        .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
+}
+
+/// The limits `runtime-transport.md` states are the ones `TransportLimits` defaults to. Each figure
+/// is read from the sentence it is written in, so a document that states a bound this transport has
+/// moved past fails here by name rather than in prose nobody reads.
+///
+/// What it does not read: the behaviours the same section describes — sticky failures, nonfatal
+/// deadlines, bounded diagnostics — which the cases above drive against real subprocesses.
+#[test]
+fn the_contract_states_the_limits_this_transport_defaults_to() {
+    let contract = include_str!("../../../docs/contracts/runtime-transport.md");
+    let defaults = TransportLimits::default();
+
+    for (label, stated, held) in [
+        (
+            "bytes per frame",
+            bytes(region(contract, "defaults to ", " per frame")),
+            defaults.max_frame_bytes,
+        ),
+        (
+            "queued frames",
+            figure(region(contract, "per frame, ", " queued frames")),
+            defaults.frame_queue_capacity,
+        ),
+        (
+            "diagnostics",
+            figure(region(contract, "queued frames, ", " diagnostics and ")),
+            defaults.diagnostic_queue_capacity,
+        ),
+        (
+            "bytes per diagnostic",
+            figure(region(
+                contract,
+                "diagnostics and ",
+                " bytes per diagnostic",
+            )),
+            defaults.max_diagnostic_bytes,
+        ),
+    ] {
+        assert_eq!(
+            stated, held,
+            "the contract states {stated} {label}, and this transport defaults to {held}"
+        );
+    }
+}

@@ -32,7 +32,7 @@ The tracker implements `Serialize` for inspection but deliberately does **not** 
 
 ## Verification and pending acceptance
 
-Run `cargo test -p symbiote-runtime-sdk --test events` and `cargo clippy -p symbiote-runtime-sdk --test events -- -D warnings`. Twelve event tests cover:
+Run `cargo test -p symbiote-runtime-sdk --test events` and `cargo clippy -p symbiote-runtime-sdk --test events -- -D warnings`. The event tests cover:
 
 - The complete observed tool lifecycle, advisory completion report and false-green exit-zero boundary.
 - Exact duplicates, changed IDs/content, reused sequences and gaps without cursor advancement.

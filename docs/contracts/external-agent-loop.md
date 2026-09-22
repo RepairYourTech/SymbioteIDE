@@ -81,9 +81,9 @@ policy to hold.
   ids are validated to the pinned protocol's identifier charset and 128-byte
   bound on receipt.
 - One observed turn may absorb at most
-  `MAX_NOTIFICATIONS_PER_CALL * MAX_TURNS_NOTIFICATION_ROUNDS` frames;
-  exceeding that halts the run as `TransportLost`. Event text truncates at
-  16 KiB on char boundaries with a visible marker.
+  `MAX_TURN_NOTIFICATION_FRAMES` frames; exceeding that halts the run as
+  `TransportLost`. Event text truncates at 16 KiB on char boundaries with a
+  visible marker.
 - Stop states are explicit (`Completed`, `Failed`, `Interrupted`,
   `TransportLost`) and map to `Exit(0)`, `Exit(1)`, `Exit(None)`, and a
   Diagnostic + error respectively. `Exit(None)` for interruptions, not
