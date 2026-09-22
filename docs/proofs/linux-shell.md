@@ -194,10 +194,10 @@ revision a run records has to be the tree it ran in — clean, at `HEAD` — and
 recipe it cites has to have logged the same revision, because a
 build log that names only its commands cannot be tied to a tree.
 
-Nothing here settles #38. Three of the contract's four platforms are declared
-untested in the result artifact, and the workload exercised is the prepared
-fixture, not the product's agent streams, editor source mapping, cancellation path
-or canonical store. Six of the contract's eleven predeclared measurements were
-taken, and every run entry would have to answer all eleven for a choice to settle.
+Nothing here settles #38. Three of the contract's platforms are declared untested
+in the result artifact, and the workload exercised is the prepared fixture, not the
+product's agent streams, editor source mapping, cancellation path or canonical
+store. Six of the contract's predeclared measurements were taken, and every run
+entry would have to answer all of them for a choice to settle.
 
 Pending full #38 acceptance: Wayland and real X11 compositor behavior; Windows/macOS; real agent streams; terminal interaction; all geometry, IME, accessibility, focus/stacking and scaling checks; design-bridge authentication/DOM-to-source mapping; crash recovery/replay/reconnect; simultaneous controllers/headless Host; watcher behavior; menus/updater/signing/installers; suspension/cancellation across services; release/idle/cold-start CPU/PSS measurements and representative database/analyzer/provider workloads. A screenshot alone cannot prove these properties. No shell decision is authorized by this partial spike.
