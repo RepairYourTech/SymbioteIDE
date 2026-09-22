@@ -18,5 +18,8 @@ serde_json.workspace = true
 [[example]]
 name = "codex_thread_smoke"
 
+[dev-dependencies]
+symbiote-contract-read = { path = "../symbiote-contract-read" }
+
 [lints]
 workspace = true

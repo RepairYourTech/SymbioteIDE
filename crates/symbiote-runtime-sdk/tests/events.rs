@@ -1,3 +1,4 @@
+use symbiote_contract_read::{figure, region};
 use symbiote_domain::{CommandId, DispatchId, HostId, RequestId, RuntimeKind, SessionId};
 use symbiote_runtime_sdk::events::*;
 
@@ -565,27 +566,6 @@ fn invalid_known_usage_subsets_and_totals_reject_construction_and_wire_without_a
     );
 }
 
-/// The slice `text` writes between `from` and the next `to` after it.
-fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-    let start = text
-        .find(from)
-        .unwrap_or_else(|| panic!("the text must state {from:?}"))
-        + from.len();
-    let rest = &text[start..];
-    let end = rest
-        .find(to)
-        .unwrap_or_else(|| panic!("the text must state {to:?}"));
-    &rest[..end]
-}
-
-/// The figure a statement writes, commas and all.
-fn figure(text: &str) -> usize {
-    text.trim()
-        .replace(',', "")
-        .parse()
-        .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
-}
-
 /// The bounds `runtime-events.md` states are the ones this module enforces: the `EventText` byte
 /// bound, the three defaults `TrackerLimits::default()` retains, and the configured hard maxima a
 /// tracker accepts. Each figure is read from the sentence it is written in, so a document that
@@ -598,7 +578,7 @@ fn figure(text: &str) -> usize {
 fn the_contract_states_the_bytes_and_limits_this_module_enforces() {
     let contract = include_str!("../../../docs/contracts/runtime-events.md");
 
-    let stated = figure(region(contract, "diagnostic to ", " UTF-8 **bytes**"));
+    let stated: usize = figure(region(contract, "diagnostic to ", " UTF-8 **bytes**"));
     assert_eq!(
         stated, MAX_EVENT_TEXT_BYTES,
         "the contract states an event-text bound of {stated} bytes, and this module bounds {MAX_EVENT_TEXT_BYTES}"
@@ -608,7 +588,7 @@ fn the_contract_states_the_bytes_and_limits_this_module_enforces() {
     for (label, stated, retained) in [
         (
             "replay entries",
-            figure(region(contract, "Defaults retain ", " replay entries")),
+            figure::<usize>(region(contract, "Defaults retain ", " replay entries")),
             defaults.replay_capacity,
         ),
         (

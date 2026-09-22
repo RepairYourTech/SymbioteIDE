@@ -14,5 +14,8 @@ symbiote-trust = { path = "../symbiote-trust" }
 symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
 symbiote-workforce = { path = "../symbiote-workforce" }
 
+[dev-dependencies]
+symbiote-contract-read = { path = "../symbiote-contract-read" }
+
 [lints]
 workspace = true

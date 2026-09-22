@@ -19,6 +19,7 @@ use crate::session::*;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use symbiote_contract_read::region;
 use symbiote_host::cli_authorization::*;
 use symbiote_host::cli_schema::{CLI_SCHEMA, POLICY_SCHEMA, Risk, dangerous_kinds, risk_of_kind};
 
@@ -101,19 +102,6 @@ fn every_typed_command_emits_the_kind_it_declares() {
         .map(|command| command.name)
         .collect();
     assert_eq!(undeclared, vec!["raw"]);
-}
-
-/// The region of `text` between two phrases it states. Every document this file reads is
-/// prose, so each reader names the sentences it reads rather than line numbers.
-fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-    let start = text
-        .find(from)
-        .unwrap_or_else(|| panic!("the text must state {from:?}"));
-    let rest = &text[start..];
-    let end = rest
-        .find(to)
-        .unwrap_or_else(|| panic!("the text must state {to:?}"));
-    &rest[..end]
 }
 
 /// The first word of every code span in `text`, skipping spans inside parentheses: a

@@ -10,19 +10,7 @@
 //! generation, the observed authentication state — which the codex and inventory cases drive, and
 //! the historical narration in `docs/proofs/` and `docs/agent-takeover.md`, which states what a
 //! past run observed rather than what this crate enforces.
-
-/// The slice `text` writes between `from` and the next `to` after it.
-fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-    let start = text
-        .find(from)
-        .unwrap_or_else(|| panic!("the text must state {from:?}"))
-        + from.len();
-    let rest = &text[start..];
-    let end = rest
-        .find(to)
-        .unwrap_or_else(|| panic!("the text must state {to:?}"));
-    &rest[..end]
-}
+use symbiote_contract_read::region;
 
 /// The pinned release the document states is the one `CODEX_VERSION` carries, in every sentence
 /// that writes it.

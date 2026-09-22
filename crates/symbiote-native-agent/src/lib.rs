@@ -685,6 +685,7 @@ fn truncate_event_text(text: &str) -> EventText {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use symbiote_contract_read::{bytes, figure, region};
     use symbiote_runtime_sdk::provider::ProviderToolCall;
 
     fn model() -> ModelDescriptor {
@@ -1285,29 +1286,6 @@ mod tests {
         );
     }
 
-    /// The slice `text` writes between `from` and the next `to` after it.
-    fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-        let start = text
-            .find(from)
-            .unwrap_or_else(|| panic!("the text must state {from:?}"))
-            + from.len();
-        let rest = &text[start..];
-        let end = rest
-            .find(to)
-            .unwrap_or_else(|| panic!("the text must state {to:?}"));
-        &rest[..end]
-    }
-
-    /// The figure a statement writes, commas and any surrounding punctuation trimmed off.
-    fn figure(text: &str) -> usize {
-        let number: String = text
-            .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
-            .replace(',', "");
-        number
-            .parse()
-            .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
-    }
-
     /// The last `words` words written before `anchor`.
     fn stated_before<'a>(text: &'a str, anchor: &str, words: usize) -> &'a str {
         let at = text
@@ -1322,17 +1300,6 @@ mod tests {
                 .map_or(0, |index| index + 1);
         }
         &head[start..]
-    }
-
-    /// The byte figure a statement writes: `16 KiB`.
-    fn bytes(text: &str) -> usize {
-        let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
-        let number = figure(number);
-        match unit {
-            "KiB" => number * 1024,
-            "MiB" => number * 1024 * 1024,
-            _ => number,
-        }
     }
 
     /// The bounds `native-agent-loop.md` states are the ones this crate enforces: the tool-output and
@@ -1352,7 +1319,7 @@ mod tests {
         for (label, stated, held) in [
             (
                 "tool-output bytes",
-                bytes(region(
+                bytes::<usize>(region(
                     contract,
                     "Tool output is bounded at ",
                     " with a visible marker",

@@ -13,5 +13,8 @@ toml_edit = "=0.22.27"
 nix = { version = "=0.30.1", features = ["fs", "dir", "user"] }
 sha2 = "=0.10.9"
 
+[dev-dependencies]
+symbiote-contract-read = { path = "../symbiote-contract-read" }
+
 [lints]
 workspace = true

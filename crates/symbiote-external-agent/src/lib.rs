@@ -1012,6 +1012,7 @@ fn truncate_event_text(text: &str) -> EventText {
 mod tests {
     use super::*;
     use std::collections::{BTreeSet, VecDeque};
+    use symbiote_contract_read::{bytes, figure, region};
 
     /// The limits a fixture dispatch is staffed with. The contract records
     /// them; nothing here enforces them.
@@ -2142,40 +2143,6 @@ mod tests {
         replay_through_tracker(&session);
     }
 
-    /// The slice `text` writes between `from` and the next `to` after it.
-    fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-        let start = text
-            .find(from)
-            .unwrap_or_else(|| panic!("the text must state {from:?}"))
-            + from.len();
-        let rest = &text[start..];
-        let end = rest
-            .find(to)
-            .unwrap_or_else(|| panic!("the text must state {to:?}"));
-        &rest[..end]
-    }
-
-    /// The figure a statement writes, commas and any sentence punctuation trimmed off.
-    fn figure(text: &str) -> u64 {
-        let number: String = text
-            .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
-            .replace(',', "");
-        number
-            .parse()
-            .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
-    }
-
-    /// The byte figure a statement writes: `16 KiB`, `64 KiB`.
-    fn bytes(text: &str) -> u64 {
-        let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
-        let number = figure(number);
-        match unit {
-            "KiB" => number * 1024,
-            "MiB" => number * 1024 * 1024,
-            _ => number,
-        }
-    }
-
     /// The bounds `external-agent-loop.md` states are the ones this crate enforces, and every
     /// `SCREAMING_SNAKE` name it writes is a constant this crate declares: a document naming a
     /// symbol the tree does not define, or stating a bound the constants have moved past, fails
@@ -2214,7 +2181,7 @@ mod tests {
             "the contract must name the constants that own the bounds it states"
         );
 
-        let text_bound = bytes(region(
+        let text_bound: u64 = bytes(region(
             contract,
             "Event text truncates at",
             " on char boundaries",
@@ -2240,7 +2207,7 @@ mod tests {
             truncated.as_str()
         );
 
-        let id_bound = figure(region(contract, "identifier charset and ", "-byte"));
+        let id_bound: u64 = figure(region(contract, "identifier charset and ", "-byte"));
         assert!(
             valid_correlation_id(&"a".repeat(id_bound as usize)),
             "the contract states a {id_bound}-byte correlation-id bound this crate refuses"
@@ -2250,7 +2217,8 @@ mod tests {
             "the contract states a {id_bound}-byte correlation-id bound, and this crate accepts longer"
         );
 
-        let call_timeout = figure(region(contract, "transport's own ", "-second call timeout"));
+        let call_timeout: u64 =
+            figure(region(contract, "transport's own ", "-second call timeout"));
         assert_eq!(
             call_timeout,
             super::process::DEFAULT_CALL_TIMEOUT.as_secs(),
@@ -2258,7 +2226,7 @@ mod tests {
             super::process::DEFAULT_CALL_TIMEOUT.as_secs()
         );
 
-        let frame_cap = bytes(region(contract, "default frame cap is ", ";"));
+        let frame_cap: u64 = bytes(region(contract, "default frame cap is ", ";"));
         assert_eq!(
             frame_cap,
             symbiote_runtime_transport::TransportLimits::default().max_frame_bytes as u64,
@@ -2296,7 +2264,7 @@ mod tests {
         // Two figures this crate's own comments derive from a constant beside them: the silence
         // budget in minutes and the frames one `call` may buffer. Both are held to the product
         // their constants give, so a moved bound or a moved poll window reds here.
-        let minutes = figure(region(include_str!("lib.rs"), "at roughly ", " minutes"));
+        let minutes: u64 = figure(region(include_str!("lib.rs"), "at roughly ", " minutes"));
         let derived = (MAX_EMPTY_NOTIFICATION_POLLS as u128
             * super::process::DEFAULT_FRAME_TIMEOUT.as_millis()
             + 30_000)
@@ -2308,7 +2276,7 @@ mod tests {
             super::process::DEFAULT_FRAME_TIMEOUT
         );
 
-        let buffered = figure(region(
+        let buffered: u64 = figure(region(
             include_str!("lib.rs"),
             "one `call` may buffer: ",
             ")",

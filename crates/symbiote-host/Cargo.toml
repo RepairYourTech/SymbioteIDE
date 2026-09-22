@@ -35,6 +35,7 @@ symbiote-source-stamp = { path = "../symbiote-source-stamp" }
 # The real-sandbox proofs resolve the launcher through the workflow crate's
 # freshness check, which only test builds carry.
 symbiote-workflow = { path = "../symbiote-workflow", features = ["test-support"] }
+symbiote-contract-read = { path = "../symbiote-contract-read" }
 
 [lints]
 workspace = true
