@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import unittest
 
 import parity as P
@@ -305,14 +306,27 @@ class HonestEdits(unittest.TestCase):
 
 
 class TheReadme(unittest.TestCase):
-    """The figures the README states are the ones this file measures, so a stated count cannot
-    drift the way prose does."""
+    """The figures the README states are the ones this file measures, each written beside the noun
+    it counts, so neither a count nor the thing it counts can drift the way prose does."""
 
     def test_the_readme_states_the_counts_this_file_measures(self):
         readme = (P.ROOT / "planning/parity/README.md").read_text()
         measured = P.matrices()
-        counts = (len(measured.rows), len(measured.matrices), len(measured.workflows),
-                  len(measured.patterns), len(measured.revisions))
-        for number in counts:
-            self.assertIn(f"**{number}**", readme,
-                          f"the README does not state {number}, which this file measures")
+        counts = {"rows": len(measured.rows), "matrices": len(measured.matrices),
+                  "workflows": len(measured.workflows), "patterns": len(measured.patterns),
+                  "revisions": len(measured.revisions)}
+        # The figure read beside its own noun rather than the figure found anywhere: measured, a
+        # case that asked only whether the five numerals were present stayed green when two of them
+        # were swapped in place, so `**7** rows over **18** matrices` passed as the committed counts
+        # and a figure moved to the noun beside it went unread too. A count written twice is held as
+        # well — every copy read here must state the same figure — which is how the policy, release
+        # and bake-off records' own README cases read theirs. The limit, stated: a figure written
+        # without the emphasis this reads, or counting something this record does not carry, is not
+        # read by this.
+        for noun, number in counts.items():
+            written = re.findall(rf"\*\*(\d+)\*\* +{noun}\b", readme)
+            self.assertTrue(written, f"the README states no {noun} figure, which this file measures "
+                                     f"as {number}")
+            self.assertEqual([int(one) for one in written], [number] * len(written),
+                             f"the README states {written} {noun} where this file measures "
+                             f"{number}: a figure belongs beside the noun it counts")
