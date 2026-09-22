@@ -23,7 +23,8 @@ target/debug/symbiote --state-dir /absolute/private/state-directory health
 operations — `hello`, `health`, `host-pulse`, `shutdown`, `get-project`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
-`request-task-completion`, `scheduling-projection`, `get-team`,
+`request-task-completion`, `request-elevation`, `scheduling-projection`,
+`get-team`,
 `get-task-origin`, and `raw <operation.json>` for anything the typed
 commands do not cover (the daemon still validates and authorizes every
 field). Responses are the daemon's own JSON, pretty-printed. Exit codes

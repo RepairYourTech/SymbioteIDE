@@ -34,7 +34,7 @@ entry that is not a published document is reported whatever its name. A
 selector narrows `--write` the same way.
 
 Flags are declared per command, and a flag a command cannot honor is a usage
-error that names it, never a silent no-op. The daemon commands honor the five
+error that names it, never a silent no-op. The daemon commands honor the
 daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
 `--yes`), because each of them is answered by a request over the socket; the
 local `schema` command honors `--write` and `--check`, and the local `help`
@@ -58,7 +58,7 @@ second owner can hold a copy that drifts.
 
 ## Exit codes
 
-Every invocation ends in one of four codes. They are distinct so a script can
+Every invocation ends in one of the codes below. They are distinct so a script can
 tell a refusal from a transport failure from a missing authorization without
 parsing prose.
 
@@ -106,7 +106,7 @@ requires `kind` and leaves the rest of the body to
 
 `error.code` is a non-empty string. When the daemon answered, it is the
 daemon's own code. When nothing reached the socket, it is one of the CLI's
-three:
+own:
 
 - `authorization_required` — a dangerous operation without `--yes`, a policy
   grant, or an accepted prompt. Exit 3.
