@@ -29,6 +29,10 @@ const BRANCH_PREFIX: &str = "symbiote";
 /// Both are truncated hashes, not unique encodings.
 const BRANCH_SUFFIX_DIGEST_BYTES: usize = 12;
 const WORKTREE_ID_DIGEST_BYTES: usize = 8;
+/// The longest branch derivation accepts: the reserved prefix, two domain identities and the hex
+/// suffix. The protocol's `TaskDraft` bound is the same one, so a derived branch is never one the
+/// wire would refuse.
+const MAX_BRANCH_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeError {
@@ -113,6 +117,12 @@ fn ref_component(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
+/// Whether a derived branch fits the bound the contract states and passes Git's ref rules. The
+/// derivation refuses anything this refuses, so the bound is applied where it is declared.
+fn branch_is_ref_safe(branch: &str) -> bool {
+    branch.len() <= MAX_BRANCH_BYTES && branch.split('/').all(ref_component)
+}
+
 impl Derived {
     /// Pure derivation. Ids use the domain charset ([A-Za-z0-9_-]), so every
     /// derived component is ref-safe by construction; the seed mixes policy
@@ -153,10 +163,7 @@ impl Derived {
             return Err(WorktreeError::InvalidIdentity);
         }
         let branch = format!("{BRANCH_PREFIX}/{project}/{stream}/{suffix}");
-        // 512 covers the worst case (two 128-byte domain identities); the
-        // protocol TaskDraft bound matches so derivation never produces a
-        // branch the wire would reject.
-        if branch.len() > 512 || !branch.split('/').all(ref_component) {
+        if !branch_is_ref_safe(&branch) {
             return Err(WorktreeError::InvalidIdentity);
         }
         Ok(Self {
@@ -863,16 +870,16 @@ mod tests {
 
     /// The identity figures `worktrees.md` states are the ones this module derives: the hex
     /// characters and digest bits in the worktree id and the branch suffix, and the branch length
-    /// bound the reservation check applies. Each is read from the sentence it is written in and from
-    /// the width or the comparison that applies it, so a document that states an identity this module
-    /// has moved past fails here by name rather than in prose nobody reads.
+    /// bound the reservation check applies. Each is read from the sentence it is written in and held
+    /// to the width or the declaration that applies it, so a document that states an identity this
+    /// module has moved past fails here by name rather than in prose nobody reads.
     ///
     /// What it does not read: the prose around the figures — the ref-format rules, the reserved
-    /// namespace, the marker's mode and fsync — which the cases above drive against a real git.
+    /// namespace, the marker's mode and fsync — which the cases above drive against a real git, and
+    /// the bound's own behaviour, which `the_branch_bound_is_the_one_derivation_applies` drives.
     #[test]
     fn the_contract_states_the_identities_this_module_derives() {
         let contract = include_str!("../../../docs/contracts/worktrees.md");
-        let source = include_str!("lib.rs");
 
         let stated_identity_hex: usize = figure(region(contract, "`st-` plus ", " hex characters"));
         let stated_identity_bits: usize = figure(region(contract, " carrying a ", "-bit digest"));
@@ -880,9 +887,6 @@ mod tests {
         let stated_suffix_bits = figure(region(contract, "the suffix carries a ", "-bit digest"));
         let stated_branch_bytes =
             figure(region(contract, "branch length is bounded to ", " bytes"));
-
-        let enforced_branch_bytes =
-            figure(region(source, "if branch.len() > ", " || !branch.split"));
 
         for (label, stated, enforced) in [
             (
@@ -905,16 +909,39 @@ mod tests {
                 stated_suffix_bits,
                 8 * BRANCH_SUFFIX_DIGEST_BYTES,
             ),
-            (
-                "bytes in a branch",
-                stated_branch_bytes,
-                enforced_branch_bytes,
-            ),
+            ("bytes in a branch", stated_branch_bytes, MAX_BRANCH_BYTES),
         ] {
             assert_eq!(
                 stated, enforced,
                 "the contract states {stated} {label}, and this module derives {enforced}"
             );
         }
+    }
+
+    /// The bound the case above reads is the one derivation applies.
+    ///
+    /// The identities the domain crate admits cannot produce a branch this guard refuses — its
+    /// charset excludes `.`, `..` and `.lock`, and its length bound keeps a derived branch well
+    /// inside `MAX_BRANCH_BYTES` — so the guard is driven directly here, at the bound and one byte
+    /// past it, and what a real derivation produces is shown to pass it.
+    #[test]
+    fn the_branch_bound_is_the_one_derivation_applies() {
+        assert!(branch_is_ref_safe(&"a".repeat(MAX_BRANCH_BYTES)));
+        assert!(!branch_is_ref_safe(&"a".repeat(MAX_BRANCH_BYTES + 1)));
+        assert!(!branch_is_ref_safe(
+            "symbiote/demo/../1a2b3c4d5e6f7a8b9c0d1e2f"
+        ));
+        assert!(!branch_is_ref_safe("symbiote/demo/stream-a/.lock"));
+
+        assert!(branch_is_ref_safe(&derived("stream-a", "policy-1").branch));
+        let longest = Derived::derive(DeriveInputs {
+            project_id: &ProjectId::new("p".repeat(128)).unwrap(),
+            root_id: &symbiote_domain::RootId::new("root").unwrap(),
+            stream_id: &symbiote_domain::ChangeStreamId::new("s".repeat(128)).unwrap(),
+            seed: "policy-1",
+        })
+        .unwrap();
+        assert!(longest.branch.len() < MAX_BRANCH_BYTES);
+        assert!(branch_is_ref_safe(&longest.branch));
     }
 }

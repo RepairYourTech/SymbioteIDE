@@ -269,49 +269,81 @@ fn unsupported_fifo_does_not_block_and_generation_symlink_is_never_followed() {
     assert!(root.0.join("generation-alias").is_symlink());
 }
 
-/// The bounds `projection.md` states are the ones this module enforces: the file count, the per-file
-/// and total byte bounds, and the modes a published file and a generation directory carry. The
-/// constants are module-private, so each figure is read from the sentence it is written in and from
-/// the declaration beside the check that applies it.
-///
-/// What it does not read: the prose around the figures — the symlink refusals, the descriptor-relative
-/// opens, the manifest bound — which the cases above drive against a real filesystem.
+/// The bounds `projection.md` states are the ones `publish` applies: exactly the file count, the
+/// per-file bound and the total it states are accepted, one past any of them is refused before a
+/// generation is created, and the modes it states are the ones a published generation and its files
+/// carry. The declarations the same figures are held to are
+/// `generation::contract::the_contract_states_the_bounds_this_module_enforces`, where the private
+/// constants live; this case drives the behaviour a caller sees, through the public `publish` and
+/// `verify`. A generation whose modes move after publication is refused, which
+/// `unsafe_paths_symlinks_hardlinks_and_permissions_are_rejected` above drives.
 #[test]
-fn the_contract_states_the_bounds_this_module_enforces() {
+fn the_bounds_the_contract_states_are_the_ones_publish_applies() {
     let contract = include_str!("../../../docs/contracts/projection.md");
-    let source = include_str!("../src/generation.rs");
+    let per_file: usize = bytes(region(contract, "files, ", " per file"));
+    let total: usize = bytes(region(contract, "per file and ", " total"));
+    let count: usize = figure(region(contract, "allows at most ", " files"));
+    let mode = |text: &str| u32::from_str_radix(text.trim(), 8).expect("an octal mode");
 
-    let stated_file: usize = bytes(region(contract, "files, ", " per file"));
-    let stated_total: usize = bytes(region(contract, "per file and ", " total"));
-    let stated_files: usize = figure(region(contract, "allows at most ", " files"));
-    let stated_file_mode: usize = figure(region(contract, "files use 0", " and generation"));
-    let stated_directory_mode: usize = figure(region(contract, "directories 0", "."));
+    let root = PrivateRoot::new();
+    let sized = |files: usize, bytes: usize| -> BTreeMap<String, Vec<u8>> {
+        (0..files)
+            .map(|index| (format!("f{index}.txt"), vec![b'x'; bytes]))
+            .collect()
+    };
 
-    let enforced_file: usize = figure(region(source, "const MAX_FILE: usize = ", ";"));
-    let enforced_multiple: usize =
-        figure(region(source, "const MAX_TOTAL: usize = ", " * MAX_FILE"));
-    let enforced_files: usize = figure(region(source, "const MAX_FILES: usize = ", ";"));
-    let enforced_file_mode: usize = figure(region(source, "} else { 0", " };"));
-    let enforced_directory_mode: usize = figure(region(source, "if directory { 0", " } else"));
+    // Exactly the stated count, per-file bound and total are accepted.
+    assert_eq!(
+        publish(&root.0, "at-count", &sized(count, 1))
+            .unwrap()
+            .files
+            .len(),
+        count
+    );
+    assert_eq!(
+        publish(&root.0, "at-file", &sized(1, per_file))
+            .unwrap()
+            .files["f0.txt"]
+            .bytes,
+        per_file as u64
+    );
+    let mut at_total = sized(3, per_file);
+    at_total.insert("last.bin".into(), vec![b'x'; total - 3 * per_file]);
+    assert_eq!(
+        publish(&root.0, "at-total", &at_total).unwrap().files.len(),
+        4
+    );
 
-    for (label, stated, enforced) in [
-        ("files per generation", stated_files, enforced_files),
-        ("bytes per file", stated_file, enforced_file),
-        (
-            "bytes per generation",
-            stated_total,
-            enforced_file * enforced_multiple,
-        ),
-        ("file mode", stated_file_mode, enforced_file_mode),
-        (
-            "directory mode",
-            stated_directory_mode,
-            enforced_directory_mode,
-        ),
+    // One past any of them is refused, and nothing is created.
+    let mut past_total = sized(4, per_file);
+    past_total.insert("one-more.txt".into(), b"x".to_vec());
+    for (label, files) in [
+        ("the stated file count", sized(count + 1, 1)),
+        ("the stated per-file bound", sized(1, per_file + 1)),
+        ("the stated total", past_total),
     ] {
         assert_eq!(
-            stated, enforced,
-            "the contract states {stated} {label}, and this module enforces {enforced}"
+            publish(&root.0, "past-the-bound", &files),
+            Err(GenerationError::BoundsExceeded),
+            "{label} is one past what the contract states"
+        );
+    }
+    assert!(!root.0.join("past-the-bound").exists());
+
+    // The stated modes are the ones the generation and its files carry.
+    let generation = root.0.join("at-file");
+    assert_eq!(
+        fs::metadata(&generation).unwrap().permissions().mode() & 0o7777,
+        mode(region(contract, "directories 0", "."))
+    );
+    for name in ["f0.txt", ".manifest.json", ".ready"] {
+        assert_eq!(
+            fs::metadata(generation.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            mode(region(contract, "files use 0", " and generation"))
         );
     }
 }
