@@ -292,3 +292,55 @@ fn conflicting_project_runtime_and_telemetry_intent_survives_rename() {
     assert_eq!(restored.policies.preferences.telemetry, Some(false));
     assert_eq!(b.canonical_json().unwrap(), before_b);
 }
+
+/// The slice `text` writes between `from` and the next `to` after it.
+fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("the text must state {from:?}"))
+        + from.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(to)
+        .unwrap_or_else(|| panic!("the text must state {to:?}"));
+    &rest[..end]
+}
+
+/// The byte figure a statement writes: `1 MiB`.
+fn bytes(text: &str) -> u64 {
+    let digits: String = text
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>();
+    let number: u64 = digits
+        .parse()
+        .unwrap_or_else(|_| panic!("a figure, not {text:?}"));
+    if text.contains("KiB") {
+        number * 1024
+    } else if text.contains("MiB") {
+        number * 1024 * 1024
+    } else {
+        number
+    }
+}
+
+/// The manifest bound `agent-environment.md` states is the one this crate's parser applies. The
+/// figure is read from the sentence it is written in and the bound from the parser call that
+/// enforces it — `EnvironmentDocument::parse`, the manifest parser, not the smaller bound the
+/// resolution target's own parse applies — so a document that states a bound this crate has moved
+/// past fails here by name rather than in prose nobody reads.
+///
+/// What it does not read: the prose around the figure — recursive duplicate-key rejection, the
+/// expansion refusal on export — which the crate's own cases drive.
+#[test]
+fn the_contract_states_the_manifest_bound_this_crate_enforces() {
+    let contract = include_str!("../../../docs/contracts/agent-environment.md");
+    let source = include_str!("../src/environment.rs");
+
+    let stated = bytes(region(contract, "limits input to ", "."));
+    let enforced = bytes(region(source, "impl EnvironmentDocument {", ";"));
+    assert_eq!(
+        stated, enforced,
+        "the contract states a {stated}-byte manifest bound, and this crate parses {enforced}"
+    );
+}
