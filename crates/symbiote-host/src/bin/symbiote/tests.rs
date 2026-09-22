@@ -103,6 +103,130 @@ fn every_typed_command_emits_the_kind_it_declares() {
     assert_eq!(undeclared, vec!["raw"]);
 }
 
+/// The region of `text` between two phrases it states. Every document this file reads is
+/// prose, so each reader names the sentences it reads rather than line numbers.
+fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("the text must state {from:?}"));
+    let rest = &text[start..];
+    let end = rest
+        .find(to)
+        .unwrap_or_else(|| panic!("the text must state {to:?}"));
+    &rest[..end]
+}
+
+/// The first word of every code span in `text`, skipping spans inside parentheses: a
+/// parenthetical that names a value the list does not carry is not part of the list.
+fn listed_names(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut depth = 0i32;
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        for character in rest[..start].chars() {
+            match character {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else { break };
+        let token = &after[..end];
+        if depth == 0 {
+            if let Some(first) = token.split_whitespace().next() {
+                names.push(first);
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    names
+}
+
+/// Every `--flag` spelling `text` names, as a set: a flag named twice is one flag.
+fn flags_in(text: &str) -> BTreeSet<&str> {
+    let mut names = BTreeSet::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("--") {
+        let after = &rest[at..];
+        let length = after[2..]
+            .find(|character: char| !(character.is_ascii_lowercase() || character == '-'))
+            .map_or(after.len(), |offset| offset + 2);
+        names.insert(&after[..length]);
+        rest = &after[length..];
+    }
+    names
+}
+
+/// Every unsigned integer `text` states.
+fn numbers(text: &str) -> Vec<i64> {
+    let mut found = Vec::new();
+    let mut digits = String::new();
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if !digits.is_empty() {
+            found.push(digits.parse().expect("a bounded run of digits"));
+            digits.clear();
+        }
+    }
+    if !digits.is_empty() {
+        found.push(digits.parse().expect("a bounded run of digits"));
+    }
+    found
+}
+
+/// The command surface `docs/contracts/host.md` publishes is the table this binary runs:
+/// every command the table defines is named in the document's own list, and the document
+/// names no command the table does not define. The dangerous-kind list in the same document
+/// is held the same way against the operation table's classification, with the parenthetical
+/// that names the narrowing revocation read as prose (it is not part of the list).
+///
+/// What it does not read: the summaries and usages beside the names, which the table's own
+/// builders are driven with, and the meanings the document writes for each kind.
+#[test]
+fn the_contract_document_names_the_commands_and_kinds_the_table_defines() {
+    let document = include_str!("../../../../../docs/contracts/host.md");
+
+    let stated = listed_names(region(
+        document,
+        "maps onto typed protocol",
+        "for anything the typed",
+    ));
+    let declared: Vec<&str> = commands().iter().map(|command| command.name).collect();
+    for name in &declared {
+        assert!(
+            stated.contains(name),
+            "the contract document's command list never names {name}, which the table defines"
+        );
+    }
+    for name in &stated {
+        assert!(
+            declared.contains(name),
+            "the contract document's command list names {name}, and the table defines no such command"
+        );
+    }
+
+    let stated = listed_names(region(
+        document,
+        "grant capability:",
+        "A kind the table does not know",
+    ));
+    let dangerous = dangerous_kinds();
+    for kind in &dangerous {
+        assert!(
+            stated.contains(kind),
+            "the contract document's dangerous-kind list never names {kind}, which the table classifies dangerous"
+        );
+    }
+    for kind in &stated {
+        assert!(
+            dangerous.contains(kind),
+            "the contract document's dangerous-kind list names {kind}, and the table does not classify it dangerous"
+        );
+    }
+}
+
 #[test]
 fn read_only_and_mutating_commands_never_prompt() {
     for risk in [Risk::ReadOnly, Risk::Mutation] {
@@ -343,6 +467,97 @@ fn every_flag_the_model_carries_is_one_the_applicability_check_names() {
     }
 }
 
+/// The flag surface the help and the contract state is the applicability table's own rows:
+/// each arm is read for the flags it grants, the flags every row shares are required to be
+/// exactly the one both copies call universal, and every flag any row grants must be named
+/// wherever the surface is laid out — the contract's sentence, the help paragraph and the
+/// help's usage lines — so a flag added to the table cannot leave a copy behind.
+///
+/// What it does not read: the applicability check's behaviour, which
+/// `flag_applicability_is_declared_per_command` drives with arguments.
+#[test]
+fn the_flag_surface_the_help_and_the_contract_state_is_the_tables_rows() {
+    let table = region(
+        include_str!("args.rs"),
+        "pub(crate) fn honored_flags",
+        "\n}\n",
+    );
+    let mut rows: Vec<BTreeSet<String>> = Vec::new();
+    let mut rest = table;
+    while let Some(at) = rest.find("Flags {") {
+        let after = &rest[at + "Flags {".len()..];
+        let Some(end) = after.find('}') else { break };
+        rows.push(
+            after[..end]
+                .lines()
+                .filter_map(|line| line.trim().strip_suffix(": true,"))
+                .map(|field| format!("--{}", field.trim().replace('_', "-")))
+                .collect(),
+        );
+        rest = &after[end..];
+    }
+    assert_eq!(rows.len(), 3, "the table declares one arm per command kind");
+
+    let mut universal = rows[0].clone();
+    for row in &rows[1..] {
+        universal = universal.intersection(row).cloned().collect();
+    }
+    assert_eq!(
+        universal,
+        BTreeSet::from(["--help".to_string()]),
+        "the arms share exactly `--help`, the one flag the copies call universal"
+    );
+    let mut surface = BTreeSet::new();
+    for row in &rows {
+        surface.extend(row.iter().cloned());
+    }
+    for flag in &universal {
+        surface.remove(flag);
+    }
+
+    let contract = include_str!("../../../../../docs/contracts/cli.md");
+    let help = include_str!("commands.rs");
+    for (label, stated) in [
+        (
+            "docs/contracts/cli.md",
+            flags_in(region(
+                contract,
+                "The daemon commands honor",
+                "`--help`/`-h` is the one universal flag",
+            )),
+        ),
+        (
+            "the help paragraph",
+            flags_in(region(
+                help,
+                "flags are per command:",
+                "`--help`/`-h` is universal",
+            )),
+        ),
+        (
+            "the help usage lines",
+            flags_in(region(
+                help,
+                "usage: symbiote [",
+                "replays a lost response instead of re-executing",
+            )),
+        ),
+    ] {
+        for flag in &surface {
+            assert!(
+                stated.contains(flag.as_str()),
+                "{label} never names {flag}, which an applicability arm grants"
+            );
+        }
+        for flag in &stated {
+            assert!(
+                surface.contains(*flag),
+                "{label} names {flag}, which no applicability arm grants"
+            );
+        }
+    }
+}
+
 #[test]
 fn help_is_a_universal_flag_that_connects_to_nothing() {
     // `--help`/`-h` are flags, not commands, and are answered from the
@@ -480,6 +695,189 @@ fn the_published_schemas_track_the_cli_contract() {
     dangerous.sort_unstable();
     assert_eq!(published, dangerous);
     assert!(published.contains(&POLICY_EXAMPLE_KIND));
+}
+
+/// The third argument of an `error_envelope` call: the code the envelope carries. Read as an
+/// argument rather than as the last string, because one call's message is a literal too.
+fn envelope_code(call: &str) -> Option<String> {
+    let mut depth = 0i32;
+    let mut quoted = false;
+    let mut arguments: Vec<String> = vec![String::new()];
+    for character in call["error_envelope(".len()..].chars() {
+        match character {
+            '"' => {
+                quoted = !quoted;
+                arguments.last_mut().expect("an argument").push(character);
+            }
+            '(' | '[' if !quoted => {
+                depth += 1;
+                arguments.last_mut().expect("an argument").push(character);
+            }
+            ')' | ']' if !quoted => {
+                depth -= 1;
+                if depth < 0 {
+                    break;
+                }
+                arguments.last_mut().expect("an argument").push(character);
+            }
+            ',' if !quoted && depth == 0 => arguments.push(String::new()),
+            _ => arguments.last_mut().expect("an argument").push(character),
+        }
+    }
+    let code = arguments.get(2)?.trim();
+    Some(code.strip_prefix('"')?.strip_suffix('"')?.to_string())
+}
+
+/// The codes this binary uses are the ones the documents state: `args.rs`'s exit constants
+/// are the exit surface, and the codes the gate and the session hand the envelope are read
+/// off their own `error_envelope` calls. Each copy — the contract's exit table and error
+/// bullets, `host.md`'s sentence, the entry point's own doc comment, the help text, the
+/// published fixture's description and `output.rs` — must name exactly them, so a fifth
+/// exit, a renumbered code or a fourth CLI-origin error code fails here by name rather than
+/// in prose nobody reads.
+///
+/// What it does not read: the meanings written beside the codes and the conditions that
+/// choose them, which the suites drive with real invocations and policies.
+#[test]
+fn the_codes_the_documents_state_are_the_ones_this_binary_uses() {
+    let mut exits: Vec<i64> = include_str!("args.rs")
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub(crate) const EXIT_"))
+        .filter_map(|rest| rest.split(": i32 = ").nth(1))
+        .filter_map(|value| value.trim_end_matches(';').trim().parse().ok())
+        .collect();
+    exits.sort_unstable();
+    assert_eq!(
+        exits.len(),
+        4,
+        "the exit surface is the constants: {exits:?}"
+    );
+    let exits: BTreeSet<i64> = exits.into_iter().collect();
+
+    let contract = include_str!("../../../../../docs/contracts/cli.md");
+    let host = include_str!("../../../../../docs/contracts/host.md");
+    let entry = include_str!("main.rs");
+    let help = include_str!("commands.rs");
+    for (label, stated) in [
+        (
+            "docs/contracts/cli.md's exit table",
+            numbers(region(
+                contract,
+                "## Exit codes",
+                "## The `--json` envelope",
+            )),
+        ),
+        (
+            "docs/contracts/host.md",
+            numbers(region(host, "Exit codes", "scripts branch")),
+        ),
+        (
+            "the entry point's doc comment",
+            numbers(region(entry, "Exit codes:", "distinct exits")),
+        ),
+        (
+            "the help text",
+            numbers(region(
+                help,
+                "Exit codes:",
+                "authorization required (no request was sent)",
+            )),
+        ),
+    ] {
+        let stated: BTreeSet<i64> = stated.into_iter().collect();
+        assert_eq!(
+            stated, exits,
+            "{label} states the codes this binary exits with"
+        );
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    for source in [include_str!("gate.rs"), include_str!("session.rs")] {
+        let mut rest = source;
+        while let Some(at) = rest.find("error_envelope(") {
+            let call = &rest[at..];
+            let mut depth = 0i32;
+            let mut end = call.len();
+            for (index, character) in call.char_indices() {
+                match character {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = index;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(code) = envelope_code(&call[..end]) {
+                errors.push(code);
+            }
+            rest = &call[end..];
+        }
+    }
+    errors.sort();
+    errors.dedup();
+    assert_eq!(
+        errors.len(),
+        3,
+        "the envelope's CLI-origin codes: {errors:?}"
+    );
+
+    let stated = listed_names(region(contract, "one of the CLI's", "```json"));
+    let stated: Vec<&str> = stated
+        .into_iter()
+        .filter(|name| !name.starts_with("--"))
+        .collect();
+    for code in &errors {
+        assert!(
+            stated.iter().any(|name| name == code),
+            "docs/contracts/cli.md's error bullets never name {code}, which this binary hands the envelope"
+        );
+    }
+    for name in &stated {
+        assert!(
+            errors.iter().any(|code| code == name),
+            "docs/contracts/cli.md's error bullets name {name}, and this binary never hands the envelope that code"
+        );
+    }
+
+    let stated = listed_names(region(
+        include_str!("output.rs"),
+        "one of the CLI's own:",
+        "pub(crate) fn error_envelope",
+    ));
+    for code in &errors {
+        assert!(
+            stated.contains(&code.as_str()),
+            "output.rs never names {code}, which a caller hands the envelope"
+        );
+    }
+    for name in &stated {
+        assert!(
+            errors.iter().any(|code| code == name),
+            "output.rs names {name}, and no caller hands the envelope that code"
+        );
+    }
+
+    let envelope = load_fixture("symbiote.cli.v1.schema.json");
+    let description = envelope["$defs"]["error"]["properties"]["code"]["description"]
+        .as_str()
+        .expect("the fixture describes the error code");
+    let stated = listed_names(description);
+    for code in &errors {
+        assert!(
+            stated.contains(&code.as_str()),
+            "the published envelope fixture never names {code}, which this binary hands the envelope"
+        );
+    }
+    for name in &stated {
+        assert!(
+            errors.iter().any(|code| code == name),
+            "the published envelope fixture names {name}, and this binary never hands the envelope that code"
+        );
+    }
 }
 
 #[test]

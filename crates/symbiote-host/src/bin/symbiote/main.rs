@@ -15,8 +15,8 @@
 //! The CLI holds no daemon authority of its own: it cannot widen what the
 //! protocol permits. What it does own is the decision to *send* a dangerous
 //! request at all, and that decision never happens silently. An invocation
-//! authorizes a dangerous command one of three ways — `--yes`, an `yes` typed
-//! at the prompt when stdin is a terminal, or a configured **authorization
+//! authorizes a dangerous command with `--yes`, an `yes` typed at the prompt
+//! when stdin is a terminal, or a configured **authorization
 //! policy** (`--policy FILE`, else `SYMBIOTE_CLI_POLICY`) that pre-authorizes
 //! the named operation kinds. Otherwise the CLI refuses **before connecting**,
 //! so an unattended script cannot stop a Host, start work, or smuggle either
