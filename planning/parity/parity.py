@@ -175,7 +175,7 @@ def problems(matrices: Matrices, program: dict, ledger: set[str]) -> list[str]:
 
 def evidence_problems(matrices: Matrices, row: dict, subject: str) -> list[str]:
     """What a row's evidence may be: a claim the registry holds about *this* axis, current when the
-    class requires it, and always present for the two classes that claim something about us."""
+    class requires it, and always present for the classes that claim something about us."""
     found: list[str] = []
     evidence = row.get("evidence", [])
     for one in evidence:

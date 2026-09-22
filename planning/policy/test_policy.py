@@ -102,6 +102,12 @@ class TheCommittedRecord(unittest.TestCase):
             "dependencies": len(record["supply_chain"]["dependencies"]),
             "generated artifacts": len(record["supply_chain"]["generated"]),
             "universe products": len(record["runtime_assumptions"]),
+            # The transitive closure is the lock's own fact: the entries it records with a source
+            # are the registry and git packages, and the rest are this workspace's own.
+            "packages": sum(1 for entry in re.findall(r"\[\[package\]\]\n(.*?)(?=\n\[\[|\Z)",
+                                                    (ROOT / "Cargo.lock").read_text(),
+                                                    flags=re.S)
+                            if "\nsource = " in entry),
         }
         for what, count in figures.items():
             self.assertRegex(text, rf"\*\*{count}\*\*\s+{re.escape(what)}",

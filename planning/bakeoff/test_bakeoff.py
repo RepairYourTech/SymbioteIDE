@@ -93,7 +93,7 @@ class TheCommittedRecord(unittest.TestCase):
         """The words are the issue's and this tree cannot hold them: the program pins the body's
         hash and records how many acceptance items it stated, and the only committed body capture
         reduces bodies — its own scope says it is not an exact-body provenance claim. Measured,
-        #38's captured body is 194 bytes with no checkbox line. So a row states the number and
+        #38's captured body is 196 bytes with no checkbox line. So a row states the number and
         the carriers, a field beside them is refused, and the words are read at the issue.
         """
         entry = bakeoff.Sources().entry(38)
@@ -468,6 +468,16 @@ class ReadmeFigures(unittest.TestCase):
             counts["obligations_attested"], counts["obligations"],
             counts["measurements_observed"], counts["measurements"]],
             "the README states what the runs back where the dossier reads another figure")
+        # And the captured body's size, which the limits sentence states about the one artifact this
+        # record reads rather than about the issue: the capture owns the body, so the capture's own
+        # measurement is what the sentence's figure has to equal.
+        capture = bakeoff.Sources().read("planning/integrity/fixtures/audit-2026-09-08.json")
+        body = next(one["body"] for one in capture["issues"] if one["number"] == 38)
+        size = re.search(r"#38's captured body is (\d+) bytes", readme)
+        self.assertIsNotNone(size, "the README no longer states the captured body's size")
+        self.assertEqual(int(size.group(1)), len(body.encode()),
+                         "the README states the captured body's size in bytes where the capture "
+                         "measures another")
 
 
 if __name__ == "__main__":

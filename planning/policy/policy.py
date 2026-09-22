@@ -6,11 +6,11 @@ terminals and third-party agents needs. Most of that model is a *statement* — 
 which artifact class, what a publisher must prove, what a contributor grants — and a statement is
 only worth the reading that keeps it true of the tree. This module is that reading:
 
-* `classes` — the five licensing boundaries (the core product, official packs, third-party
+* `classes` — the licensing boundaries (the core product, official packs, third-party
   extensions, catalog metadata, and hosted services), each with what it covers, what it does *not*
   cover, and whether a licence has been selected for it. A class that selects a licence the tree
   does not carry, or that states no boundary, is refused.
-* `obligations` — one row per obligation the issue names, each at one of four statuses: `built`
+* `obligations` — one row per obligation the issue names, each at one of the statuses: `built`
   (with the path that shows it and the case that exercises it), `delegated` or `pending` (with the
   issue that owns it), or `not_applicable` (with the rationale). A row claiming `built` with no
   evidence path in the tree, or with a case no file declares, is refused — the fault the issue's
@@ -40,7 +40,7 @@ The readings:
     python3 planning/policy/policy.py --generated
 
 `--check` refuses the committed record on the first rule it breaks, naming its subject, then prints
-what it read. `--classes` prints the five boundaries. `--audit` prints the runtime assumptions with
+what it read. `--classes` prints the boundaries. `--audit` prints the runtime assumptions with
 the fields still unknown, and the obligations this tree has not built. `--generated` prints the
 provenance table. None of them writes anything.
 """
@@ -225,7 +225,8 @@ def expressions(licence: str) -> list[list[str]]:
 
 
 def class_problems(policy: dict, tree: Tree, program: set[int]) -> list[str]:
-    """The five boundaries, and whether each license the record names is one this tree carries."""
+    """The licensing boundaries, and whether each license the record names is one this tree
+    carries."""
     found: list[str] = []
     classes = policy.get("classes", [])
     seen = {}
@@ -312,8 +313,8 @@ def obligation_problems(policy: dict, tree: Tree, program: set[int]) -> list[str
 
 def obligation_status_problems(entry: dict, name: str, status: str, tree: Tree,
                                program: set[int]) -> list[str]:
-    """What each status has to carry: `built` an evidence path in the tree and a case, the two
-    deferred statuses an owner, `not_applicable` a rationale — and never both at once."""
+    """What each status has to carry: `built` an evidence path in the tree and a case, the deferred
+    statuses an owner, `not_applicable` a rationale — and never both at once."""
     found: list[str] = []
     evidence, case = entry.get("evidence"), entry.get("case")
     owners = entry.get("owners", [])
@@ -648,7 +649,7 @@ def record() -> dict:
 
 
 def class_report(policy: dict) -> list[dict]:
-    """The five boundaries as the record holds them, with whether a licence is selected."""
+    """The licensing boundaries as the record holds them, with whether a licence is selected."""
     return [{"class": entry.get("id"), "title": entry.get("title"),
              "license": entry.get("license"), "status": entry.get("status"),
              "owners": entry.get("owners", []), "covers": entry.get("covers"),
@@ -658,7 +659,7 @@ def class_report(policy: dict) -> list[dict]:
 
 def audit(policy: dict, universe: dict[str, list[str]]) -> dict:
     """The assumptions this project makes about the products it plans to integrate, and the
-    obligations this tree has not built — the two readings the issue's own verification clause and
+    obligations this tree has not built — the readings the issue's own verification clause and
     applicability criterion are about."""
     assumptions = []
     for entry in policy.get("runtime_assumptions", []):
@@ -689,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true",
                         help="refuse the committed record, or pass it")
     parser.add_argument("--classes", action="store_true",
-                        help="print the five licensing boundaries")
+                        help="print the licensing boundaries")
     parser.add_argument("--audit", action="store_true",
                         help="print the runtime assumptions and the obligations not built")
     parser.add_argument("--generated", action="store_true",

@@ -2,8 +2,8 @@
 """What a release promises, what it withholds and how its claims are measured.
 
 One record (`release.json`), one reading. The record holds the issue's own metric
-list, the four release gates, the explicit non-goals by release, the golden-path
-requirement with the nearest committed evidence, the two registers regressions are
+list, the release gates, the explicit non-goals by release, the golden-path
+requirement with the nearest committed evidence, the registers regressions are
 tracked against and the concerns reviewed; every fact another owner holds stays
 there and is read, not restated:
 
@@ -158,8 +158,8 @@ def metric_problems(record: dict, tree: Tree, program: set[int]) -> list[str]:
 
 
 def gate_problems(record: dict) -> list[str]:
-    """Every release gate is one of the four, requires the golden path and at least one metric
-    or register it does not invent, and names the non-goals that bound it."""
+    """Every release gate is one of those the record names, requires the golden path and at least
+    one metric or register it does not invent, and names the non-goals that bound it."""
     problems = []
     rows = record.get("gates")
     if not isinstance(rows, list) or not rows:
@@ -287,7 +287,7 @@ def register_problems(record: dict, tree: Tree) -> list[str]:
 
 def concern_problems(record: dict, program: set[int]) -> list[str]:
     """The concerns this record reviews are the marks the policy record carries, and each mark
-    is one of the three the issue states."""
+    is one of the marks the issue states."""
     problems = []
     concerns = record.get("concerns")
     if not isinstance(concerns, dict):
