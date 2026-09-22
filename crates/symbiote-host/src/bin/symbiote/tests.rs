@@ -282,6 +282,67 @@ fn flag_applicability_is_declared_per_command() {
     }
 }
 
+/// The flag surface is the struct: every field of [`Flags`] is a flag `unsuited_for` names,
+/// and every flag it names is a field. Both lists are read from the model's own source, so a
+/// ninth flag fails this case by name rather than being supplied and never reported as
+/// unsuited — which is what the check cannot notice on its own, since it decides applicability
+/// from the same struct it would have to enumerate.
+///
+/// What it does not read: how a flag is parsed, or what each command honors — those are the
+/// options model's and the arms' own claims, which
+/// `flag_applicability_is_declared_per_command` drives with arguments.
+#[test]
+fn every_flag_the_model_carries_is_one_the_applicability_check_names() {
+    let source = include_str!("args.rs");
+    let declared = source
+        .find("pub(crate) struct Flags {")
+        .expect("the flag struct");
+    let body = &source[declared..];
+    let body = &body[body.find('{').expect("the struct's opening brace") + 1..];
+    let body = &body[..body.find("\n}").expect("the struct's end")];
+    let fields: Vec<&str> = body
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("pub(crate) "))
+        .filter_map(|line| line.split(':').next())
+        .map(str::trim)
+        .collect();
+    assert!(
+        fields.len() > 4,
+        "the flag struct carries the whole flag surface: {fields:?}"
+    );
+
+    let check = source
+        .find("fn unsuited_for")
+        .expect("the applicability check");
+    let check = &source[check..];
+    let check = &check[..check.find("\n    }").expect("the check's end")];
+    let mut named: Vec<String> = Vec::new();
+    for piece in check.split("\"--").skip(1) {
+        if let Some(name) = piece.split('"').next() {
+            named.push(format!("--{name}"));
+        }
+    }
+    assert!(
+        !named.is_empty(),
+        "the applicability check names the flags it decides: {named:?}"
+    );
+
+    for field in &fields {
+        let flag = format!("--{}", field.replace('_', "-"));
+        assert!(
+            named.iter().any(|one| one == &flag),
+            "the flag struct carries {field}, and the applicability check never names {flag}"
+        );
+    }
+    for flag in &named {
+        let field = flag.trim_start_matches("--").replace('-', "_");
+        assert!(
+            fields.contains(&field.as_str()),
+            "the applicability check names {flag}, and the flag struct carries no {field}"
+        );
+    }
+}
+
 #[test]
 fn help_is_a_universal_flag_that_connects_to_nothing() {
     // `--help`/`-h` are flags, not commands, and are answered from the

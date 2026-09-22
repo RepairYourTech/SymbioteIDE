@@ -123,7 +123,9 @@ pub(crate) fn parse_options(arguments: &[String]) -> Result<Options, Usage> {
 }
 
 /// Which flags an invocation actually supplied. Checked as a whole so flag
-/// applicability is one decision instead of an `if` per flag.
+/// applicability is one decision instead of an `if` per flag, and every field
+/// here is a flag [`Flags::unsuited_for`] names — so the surface cannot grow
+/// past the check that decides it.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Flags {
     pub(crate) state_dir: bool,

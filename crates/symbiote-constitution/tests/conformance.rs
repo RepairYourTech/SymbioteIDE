@@ -535,6 +535,86 @@ fn every_channel_the_contract_doc_claims_is_one() {
     }
 }
 
+/// The contract document's structure list is the crate's own module map, and the crate's
+/// doc is the same map: every module this crate declares is named by both — the doc writes
+/// it as `x.rs`, the crate doc as a link — and neither names a concern the crate does not
+/// declare. The map is read from the declarations, so a seventh concern fails this case by
+/// name rather than leaving a list a reader would take for the whole crate.
+///
+/// What it does not read: what a bullet says about its concern, or a file named outside the
+/// document's structure list — the list's words are for a reader, and this case holds its
+/// members.
+#[test]
+fn the_contract_doc_lists_every_concern_the_crate_declares() {
+    let root = workspace_root();
+    let source = "crates/symbiote-constitution/src/lib.rs";
+    let lib = std::fs::read_to_string(root.join(source))
+        .unwrap_or_else(|error| panic!("the crate's own source at {source}: {error}"));
+    let modules: Vec<String> = lib
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub mod "))
+        .filter_map(|rest| rest.strip_suffix(';'))
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        modules.len() > 1,
+        "the crate declares the concerns this map is made of: {modules:?}"
+    );
+    let doc = std::fs::read_to_string(root.join(claims::CONTRACT_PATH))
+        .expect("the conformance contract document");
+    let listed = structure_list(&doc);
+    assert!(
+        !listed.is_empty(),
+        "the contract document's structure list names the concerns it owns: {listed:?}"
+    );
+
+    for module in &modules {
+        assert!(
+            lib.contains(&format!("[`{module}`]")),
+            "the crate's own doc names every module it declares, and it does not name {module}"
+        );
+        assert!(
+            listed.contains(module),
+            "the contract document's structure list names every concern the crate declares, and it has no {module}"
+        );
+    }
+    assert!(
+        listed.iter().any(|module| module == "lib"),
+        "the contract document lists the crate root among the concerns it owns"
+    );
+    for module in &listed {
+        assert!(
+            module == "lib" || modules.contains(module),
+            "the contract document lists {module}.rs as a concern, and this crate declares no such module"
+        );
+    }
+}
+
+/// The concerns the contract document's own structure list names, in the section it opens
+/// with `## Structure`: the module each bullet is about, so a mention of a file elsewhere in
+/// the document is not read as a bullet.
+fn structure_list(doc: &str) -> Vec<String> {
+    let mut listed = Vec::new();
+    let mut inside = false;
+    for line in doc.lines() {
+        if line.starts_with("## ") {
+            inside = line.starts_with("## Structure");
+            continue;
+        }
+        if !inside || !line.starts_with("- `") {
+            continue;
+        }
+        if let Some(module) = line
+            .split('`')
+            .nth(1)
+            .and_then(|path| path.strip_suffix(".rs"))
+        {
+            listed.push(module.to_owned());
+        }
+    }
+    listed
+}
+
 /// The evidence recorded against the issue is a generated artifact, so it is
 /// guarded the way this repository guards its other generated artifacts: the
 /// committed encoding must be exactly what the tree emits.

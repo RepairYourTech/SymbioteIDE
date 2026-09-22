@@ -1,7 +1,8 @@
 //! What this repository's documents claim about its contract (#173), held to the
 //! crate that owns the facts: every name `docs/contracts/architecture.md` writes in a
 //! code span is something this crate has, the surface that document writes for the join
-//! is the surface `checks/mod.rs` defines, and every ceiling `docs/proofs/linux-shell.md`
+//! is the surface `checks/mod.rs` defines, the table's rows are this crate's own module
+//! map, and every ceiling `docs/proofs/linux-shell.md`
 //! states for a measurement is the maximum the committed contract predeclares. A rename,
 //! or a threshold the contract moves, fails a case here rather than leaving a document
 //! citing a name nobody can run or a bar the machine no longer enforces — the bar's
@@ -310,12 +311,14 @@ fn is_bare_name(span: &str) -> bool {
 
 /// The document's account of the join is the module's own surface: every entry point
 /// `checks/mod.rs` defines is named in the row this document writes for that file and in
-/// the module's own doc, every subject it composes is named in the module's own doc and
-/// has a row of its own here, and neither copy names an entry point or a subject the
-/// module does not define. The two lists are derived from the source, so a third entry
-/// point or a seventh subject fails this case by name rather than leaving a list a reader
-/// would take for the whole of the surface — which is what the numeral both copies used to
-/// carry in front of those lists could not do, and why neither states one now.
+/// the module's own doc, every subject it composes is named in the module's own doc, and
+/// neither copy names an entry point or a subject the module does not define. The two
+/// lists are derived from the source, so a third entry point or a seventh subject fails
+/// this case by name rather than leaving a list a reader would take for the whole of the
+/// surface — which is what the numeral both copies used to carry in front of those lists
+/// could not do, and why neither states one now. The rows the document writes for those
+/// subjects are a separate claim, held by
+/// `the_document_writes_a_row_for_every_module_the_crate_declares`.
 ///
 /// What it does not read: a signature, a body, whether an entry point is public for
 /// another reason, or which entry point asks which subject — the row's own words say that,
@@ -361,10 +364,6 @@ fn the_document_names_the_surface_the_join_defines() {
             composed.contains(subject),
             "the module's own doc names every subject it composes, and it does not name {subject}"
         );
-        assert!(
-            document.contains(&format!("`checks/{subject}.rs`")),
-            "the document writes a row for every subject the join composes, and it has none for checks/{subject}.rs"
-        );
     }
 
     for named in &listed {
@@ -394,6 +393,114 @@ fn the_document_names_the_surface_the_join_defines() {
         assert!(
             entry_points.iter().any(|name| name.as_str() == span),
             "the join's row writes {span} as an entry point, and the join defines no such one"
+        );
+    }
+}
+
+/// The modules a source file declares, as the files they live in: a `pub mod x;` or
+/// `mod x;` at the top level, which is the declaration the compiler follows, answered by the
+/// file the tree holds for it — `x.rs`, or `x/mod.rs` where the module is a directory.
+/// `source` is the directory the declaring file sits in and `prefix` the path rows are
+/// written with, so the join's own subjects read as `checks/x.rs`.
+fn declared_modules(source: &str, declarations: &Path, prefix: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("pub mod ")
+                .or_else(|| line.strip_prefix("mod "))
+        })
+        .filter_map(|rest| rest.strip_suffix(';'))
+        .map(|name| {
+            let file = format!("{name}.rs");
+            if declarations.join(&file).is_file() {
+                format!("{prefix}{file}")
+            } else {
+                format!("{prefix}{name}/mod.rs")
+            }
+        })
+        .collect()
+}
+
+/// The name a row's module is declared under: the directory for a `x/mod.rs`, the file
+/// stem otherwise.
+fn module_name(row: &str) -> String {
+    row.strip_suffix("/mod.rs")
+        .map_or_else(|| row.trim_end_matches(".rs").to_owned(), str::to_owned)
+}
+
+/// The rows the document's module table writes: the section it opens with
+/// `## Module layout`, so a row of another table is not read as a module of this crate.
+fn module_rows(document: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut inside = false;
+    for line in document.lines() {
+        if line.starts_with("## ") {
+            inside = line.starts_with("## Module layout");
+            continue;
+        }
+        if !inside || !line.starts_with("| `") {
+            continue;
+        }
+        if let Some(path) = line.split('`').nth(1) {
+            if path.ends_with(".rs") {
+                rows.push(path.to_owned());
+            }
+        }
+    }
+    rows
+}
+
+/// The document's module table is this crate's own module map: every module the crate
+/// declares — the root's `pub mod`, the join's subjects, and the root file itself — has a
+/// row here, every row for a `.rs` file is one of those modules, and the crate's own doc
+/// names each of the root's modules. The map is read from the declarations, so a ninth
+/// module or a seventh subject fails this case by name rather than leaving a table a reader
+/// would take for the whole crate.
+///
+/// What it does not read: what a row says about its module, a module declared below the
+/// crate root or below the join, or a row for a file outside the crate's `src/` — the
+/// table's words are for a reader, and this case holds its rows.
+#[test]
+fn the_document_writes_a_row_for_every_module_the_crate_declares() {
+    let root = workspace_root();
+    let directory = root.join("crates/symbiote-architecture");
+    let lib = std::fs::read_to_string(directory.join("src/lib.rs")).expect("the crate root");
+    let join =
+        std::fs::read_to_string(directory.join("src/checks/mod.rs")).expect("the join module");
+    let source = directory.join("src");
+    let mut declared = declared_modules(&lib, &source, "");
+    declared.push("lib.rs".to_owned());
+    declared.extend(declared_modules(&join, &source.join("checks"), "checks/"));
+    assert!(
+        declared.len() > 1,
+        "the crate declares the modules this map is made of: {declared:?}"
+    );
+
+    let document = std::fs::read_to_string(root.join("docs/contracts/architecture.md"))
+        .expect("the contract document");
+    for path in &declared {
+        assert!(
+            document.contains(&format!("| `{path}` |")),
+            "the document writes a row for every module this crate declares, and it has none for {path}"
+        );
+    }
+    for row in module_rows(&document) {
+        assert!(
+            declared.contains(&row),
+            "the document writes a row for {row}, and this crate declares no such module"
+        );
+    }
+
+    let crate_doc: String = lib
+        .lines()
+        .filter(|line| line.trim_start().starts_with("//!"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    for row in declared_modules(&lib, &source, "") {
+        let module = module_name(&row);
+        assert!(
+            crate_doc.contains(&module),
+            "the crate's own doc names every module it declares, and it does not name {module}"
         );
     }
 }
