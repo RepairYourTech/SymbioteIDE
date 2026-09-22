@@ -61,6 +61,7 @@ import unittest
 
 import chain
 import python_floor
+import revert_rules
 from chain import (BAKEOFF_LINK, DRIVER_LINK, FATAL_LINK, HISTORY_LINK, PARITY_LINK, POLICY_LINK,
                    REGISTRY_LINK, RELEASE_LINK, WORKFLOWS, jobs, links_missing, runs_the_suite)
 
@@ -630,3 +631,71 @@ class ReadmeInterpreter(unittest.TestCase):
                          f"{stated.group(1)}.{stated.group(2)} and the newest syntax one needs is "
                          f"3.{max(floors.values())}: a module written in newer syntax moves this "
                          f"figure in the change that adds it")
+
+
+# The five data-with-rules suites the README's presence section names, as it names them: the counts
+# it states are derived from these rather than restated, so a case added to or deleted from one of
+# them is refused by the case below in the change that adds it, and the set itself is held against
+# the rows `chain.py` runs beside this directory's own suite, so a suite added there reds here.
+PRESENCE = (("registry", "research"), ("parity", "parity"), ("policy", "policy"),
+            ("release", "release"), ("bake-off", "bakeoff"))
+
+
+def collected(directory: str) -> int:
+    """The `test…` methods a suite's own test files collect, read from their text the way a loader
+    reads them, so a class a loader does not collect is not counted here either.
+    """
+    total = 0
+    for source in sorted((ROOT / "planning" / directory).glob("test_*.py")):
+        for node in ast.walk(ast.parse(source.read_text())):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if "TestCase" not in {ast.unparse(base).split(".")[-1] for base in node.bases}:
+                continue
+            total += sum(1 for child in node.body
+                         if isinstance(child, ast.FunctionDef) and child.name.startswith("test"))
+    return total
+
+
+def one_fewer(label: str, count: int) -> str:
+    """A suite named with the count a deleted case leaves, as the README writes it."""
+    return f"{label} {count}→{count - 1}"
+
+
+class ThePresenceOfTheDataSuites(unittest.TestCase):
+    """The five data-with-rules suites hold their cases by presence, and the counts the README's
+    presence section states are the cases those suites' own test files collect.
+
+    `chain.py`'s `SUITES` holds that the job runs each suite, not what is inside it, and
+    `revert_rules.py`'s case accounting walks only the files its rows state their refusals in —
+    none of which is one of the five — so a case emptied in `planning/research`,
+    `planning/parity`, `planning/policy`, `planning/release` or `planning/bakeoff` still passes
+    and is caught only by the diff. What the README states about that residual is the measurement
+    beside it and the counts; what this case holds is the half prose can rot: the counts are read
+    from the suites' own `test_*.py`, the way a loader reads them, so a case added to or deleted
+    from any of the five — or from this directory's own suite — reds here by name, and a case
+    deleted together with the figure that counts it is the one state that stays the diff's. The set
+    those figures are read over is derived too, from the rows `chain.py` runs beside this
+    directory's own suite, so a suite added to that table reds here rather than leaving this
+    section naming five. And the case names its own hold: the row that keeps it from being emptied
+    silently is read here, so taking the row out is this case failing rather than a hold gone.
+    """
+
+    def test_the_counts_the_readme_states_are_the_cases_those_suites_collect(self):
+        self.assertIn(self._testMethodName, [row[1] for row in revert_rules.HOLDS],
+                      "no hold row names this case, so it could be emptied with nothing to red")
+        readme = re.sub(r"\s+", " ", (HERE / "README.md").read_text())
+        self.assertEqual([suite for _label, suite in PRESENCE],
+                         [posixpath.basename(directory) for directory, _link in chain.SUITES
+                          if directory != chain.SUITE_DIRECTORY],
+                         "the suites this case counts are not the suites the chain runs beside this "
+                         "directory's own: a suite added there needs its figure in the README")
+        fewer = re.search(r"at one case fewer \((.+?)\)", readme)
+        self.assertIsNotNone(fewer, "the README no longer states what a deleted case leaves")
+        expected = [one_fewer(label, collected(suite)) for label, suite in PRESENCE]
+        self.assertEqual(fewer.group(1), ", ".join(expected),
+                         "the README states counts these suites do not collect")
+        own = re.search(r"this directory's suite green at (\d+) cases", readme)
+        self.assertIsNotNone(own, "the README no longer states what its own suite collects")
+        self.assertEqual(int(own.group(1)), collected(HERE.name),
+                         "the README states a count this directory's own suite does not collect")

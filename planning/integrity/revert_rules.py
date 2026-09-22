@@ -744,6 +744,25 @@ HOLDS: list[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]]] = [
           ('    return joined == directory or joined.endswith(f"/{directory}")\n',
            "    return posixpath.basename(joined) == posixpath.basename(directory)\n"))),
     ),
+    (
+        "the counts the README states for the data suites are the ones those suites collect",
+        "test_the_counts_the_readme_states_are_the_cases_those_suites_collect",
+        CHAIN,
+        "the README states counts these suites do not collect",
+        # Both ways weaken the derivation the case makes rather than the README's sentence: a
+        # count that no longer answers for its suite is refused by the case's own equality, so the
+        # ways are that answer written wrong (the count collected rather than one fewer) and the
+        # walk read over one suite instead of all five. The sentence is the anchor, not a way — a
+        # way that edited it would prove the case fails on text the derivation does not read. The
+        # case reads this row back in turn, so taking the row out is that case failing rather than
+        # a hold gone: the pair cannot be separated in one edit.
+        ((CHAIN, "weaker",
+          ('    return f"{label} {count}→{count - 1}"\n',
+           '    return f"{label} {count}→{count}"\n')),
+         (CHAIN, "weaker",
+          ("        expected = [one_fewer(label, collected(suite)) for label, suite in PRESENCE]\n",
+           "        expected = [one_fewer(label, collected(suite)) for label, suite in PRESENCE[:1]]\n"))),
+    ),
 ]
 
 HOLDER = "planning/integrity/test_revert_rules.py"
