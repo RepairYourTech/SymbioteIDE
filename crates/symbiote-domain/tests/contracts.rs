@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use symbiote_contract_read::{bytes, figure, region};
 use symbiote_domain::*;
 
 macro_rules! id {
@@ -988,46 +989,12 @@ fn binding_enforcement_floor_refuses_weaker_host_claims_at_assignment() {
     );
 }
 
-/// The slice `text` writes between `from` and the next `to` after it.
-fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-    let start = text
-        .find(from)
-        .unwrap_or_else(|| panic!("the text must state {from:?}"))
-        + from.len();
-    let rest = &text[start..];
-    let end = rest
-        .find(to)
-        .unwrap_or_else(|| panic!("the text must state {to:?}"));
-    &rest[..end]
-}
-
-/// The figure a statement writes: commas as thousands, `_` as a Rust literal's separator.
-fn figure(text: &str) -> u64 {
-    let number: String = text
-        .trim_matches(|c: char| !c.is_ascii_digit() && c != ',' && c != '_')
-        .replace([',', '_'], "");
-    number
-        .parse()
-        .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
-}
-
-/// The byte figure a statement writes: `32 KiB`.
-fn bytes(text: &str) -> u64 {
-    let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
-    let number = figure(number);
-    match unit {
-        "KiB" => number * 1024,
-        "MiB" => number * 1024 * 1024,
-        _ => number,
-    }
-}
-
 /// The milliseconds a stated lease window writes: `1s–1h`.
 fn window_ms(text: &str) -> (u64, u64) {
     let (low, high) = text.trim().split_once('–').expect("a window's two ends");
     let end = |end: &str| {
         let (value, unit) = end.trim().split_at(end.trim().len() - 1);
-        let value = figure(value);
+        let value: u64 = figure(value);
         match unit {
             "ms" => value,
             "s" => value * 1_000,
@@ -1054,33 +1021,33 @@ fn the_contracts_state_the_work_and_lease_bounds_this_crate_enforces() {
     let leases = include_str!("../../../docs/contracts/scheduling-leases.md");
     let work = include_str!("../src/work.rs");
 
-    let stated_spec = bytes(region(
+    let stated_spec: u64 = bytes(region(
         hierarchy,
         "Work specifications are bounded to ",
         ",",
     ));
-    let enforced_spec = figure(region(work, "const MAX_SPEC_BYTES: usize = ", ";"));
+    let enforced_spec: u64 = figure(region(work, "const MAX_SPEC_BYTES: usize = ", ";"));
     assert_eq!(
         stated_spec, enforced_spec,
         "the contract states a {stated_spec}-byte specification bound, and this crate bounds {enforced_spec}"
     );
 
-    let stated_work = bytes(region(hierarchy, "aggregates to ", ","));
-    let enforced_work = figure(region(work, "const MAX_WORK_BYTES: usize = ", ";"));
+    let stated_work: u64 = bytes(region(hierarchy, "aggregates to ", ","));
+    let enforced_work: u64 = figure(region(work, "const MAX_WORK_BYTES: usize = ", ";"));
     assert_eq!(
         stated_work, enforced_work,
         "the contract states a {stated_work}-byte aggregate bound, and this crate bounds {enforced_work}"
     );
 
-    let stated_commands = figure(region(hierarchy, "histories to", " commands"));
-    let enforced_commands = figure(region(work, "at most ", " work commands"));
+    let stated_commands: u64 = figure(region(hierarchy, "histories to", " commands"));
+    let enforced_commands: u64 = figure(region(work, "at most ", " work commands"));
     assert_eq!(
         stated_commands, enforced_commands,
         "the contract states {stated_commands} work commands, and this crate accepts {enforced_commands}"
     );
 
-    let stated_items = figure(region(hierarchy, "graph validation to ", " items"));
-    let enforced_items = figure(region(work, "if items.len() > ", ")"));
+    let stated_items: u64 = figure(region(hierarchy, "graph validation to ", " items"));
+    let enforced_items: u64 = figure(region(work, "if items.len() > ", ")"));
     assert_eq!(
         stated_items, enforced_items,
         "the contract states {stated_items} graph items, and this crate validates {enforced_items}"

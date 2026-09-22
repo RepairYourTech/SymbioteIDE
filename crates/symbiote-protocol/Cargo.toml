@@ -20,5 +20,8 @@ schemars.workspace = true
 symbiote-domain = { path = "../symbiote-domain" }
 symbiote-runtime-sdk = { path = "../symbiote-runtime-sdk" }
 
+[dev-dependencies]
+symbiote-contract-read = { path = "../symbiote-contract-read" }
+
 [lints]
 workspace = true

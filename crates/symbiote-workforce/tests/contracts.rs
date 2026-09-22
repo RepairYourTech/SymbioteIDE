@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use symbiote_contract_read::{bytes, region};
 use symbiote_domain::*;
 use symbiote_workforce::*;
 fn access() -> AccessSnapshot {
@@ -776,34 +777,6 @@ fn execution_access_follows_what_the_lanes_execution_actually_needs() {
     assert_eq!(check_of(&external).result, CheckResult::Rejected);
 }
 
-/// The slice `text` writes between `from` and the next `to` after it.
-fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-    let start = text
-        .find(from)
-        .unwrap_or_else(|| panic!("the text must state {from:?}"))
-        + from.len();
-    let rest = &text[start..];
-    let end = rest
-        .find(to)
-        .unwrap_or_else(|| panic!("the text must state {to:?}"));
-    &rest[..end]
-}
-
-/// The byte figure a statement writes: `32 KiB`.
-fn bytes(text: &str) -> usize {
-    let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
-    let number: usize = number
-        .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
-        .replace(',', "")
-        .parse()
-        .unwrap_or_else(|_| panic!("a figure, not {number:?}"));
-    match unit {
-        "KiB" => number * 1024,
-        "MiB" => number * 1024 * 1024,
-        _ => number,
-    }
-}
-
 /// The configuration bound `workforce-bindings.md` states is the one this crate enforces: the figure
 /// is read from the sentence it is written in and compared to the constant the parser applies, so a
 /// document that states a bound this crate has moved past fails here by name rather than in prose
@@ -814,7 +787,7 @@ fn bytes(text: &str) -> usize {
 #[test]
 fn the_contract_states_the_binding_bound_this_crate_enforces() {
     let contract = include_str!("../../../docs/contracts/workforce-bindings.md");
-    let stated = bytes(region(
+    let stated: usize = bytes(region(
         contract,
         "Configuration is bounded to ",
         " and validates",

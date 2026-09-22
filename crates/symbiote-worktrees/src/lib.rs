@@ -575,6 +575,7 @@ use symbiote_domain::{ChangeStreamId, ProjectId, RootId, Timestamp, WorktreeId};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use symbiote_contract_read::{figure, region};
     use symbiote_domain::ProjectId;
 
     fn derived(stream: &str, seed: &str) -> Derived {
@@ -860,29 +861,6 @@ mod tests {
         );
     }
 
-    /// The slice `text` writes between `from` and the next `to` after it.
-    fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-        let start = text
-            .find(from)
-            .unwrap_or_else(|| panic!("the text must state {from:?}"))
-            + from.len();
-        let rest = &text[start..];
-        let end = rest
-            .find(to)
-            .unwrap_or_else(|| panic!("the text must state {to:?}"));
-        &rest[..end]
-    }
-
-    /// The figure a statement writes, surrounding punctuation trimmed off.
-    fn figure(text: &str) -> usize {
-        let number: String = text
-            .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
-            .replace(',', "");
-        number
-            .parse()
-            .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
-    }
-
     /// The identity figures `worktrees.md` states are the ones this module derives: the hex
     /// characters and digest bits in the worktree id and the branch suffix, and the branch length
     /// bound the reservation check applies. Each is read from the sentence it is written in and from
@@ -896,9 +874,9 @@ mod tests {
         let contract = include_str!("../../../docs/contracts/worktrees.md");
         let source = include_str!("lib.rs");
 
-        let stated_identity_hex = figure(region(contract, "`st-` plus ", " hex characters"));
-        let stated_identity_bits = figure(region(contract, " carrying a ", "-bit digest"));
-        let stated_suffix_hex = figure(region(contract, "<stream>/<", "-hex>"));
+        let stated_identity_hex: usize = figure(region(contract, "`st-` plus ", " hex characters"));
+        let stated_identity_bits: usize = figure(region(contract, " carrying a ", "-bit digest"));
+        let stated_suffix_hex: usize = figure(region(contract, "<stream>/<", "-hex>"));
         let stated_suffix_bits = figure(region(contract, "the suffix carries a ", "-bit digest"));
         let stated_branch_bytes =
             figure(region(contract, "branch length is bounded to ", " bytes"));

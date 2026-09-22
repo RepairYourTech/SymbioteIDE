@@ -15,6 +15,7 @@ schemars.workspace = true
 symbiote-runtime-transport = { path = "../symbiote-runtime-transport" }
 symbiote-sandbox = { path = "../symbiote-sandbox" }
 symbiote-trust = { path = "../symbiote-trust" }
+symbiote-contract-read = { path = "../symbiote-contract-read" }
 
 [lints]
 workspace = true

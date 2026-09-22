@@ -12,5 +12,8 @@ serde.workspace = true
 serde_json.workspace = true
 nix = { version = "=0.30.1", features = ["dir", "user", "fs"] }
 
+[dev-dependencies]
+symbiote-contract-read = { path = "../symbiote-contract-read" }
+
 [lints]
 workspace = true

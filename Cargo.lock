@@ -2947,6 +2947,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-protocol",
 ]
@@ -2958,6 +2959,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
 ]
 
@@ -2976,9 +2978,14 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "zeroize",
 ]
+
+[[package]]
+name = "symbiote-contract-read"
+version = "0.1.0"
 
 [[package]]
 name = "symbiote-desktop"
@@ -3002,6 +3009,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
 ]
 
 [[package]]
@@ -3011,6 +3019,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-runtime-discovery",
  "symbiote-runtime-sdk",
@@ -3028,6 +3037,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symbiote-context",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-external-agent",
  "symbiote-host-inventory",
@@ -3053,6 +3063,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-runtime-discovery",
 ]
@@ -3064,6 +3075,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-runtime-sdk",
 ]
@@ -3077,6 +3089,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "symbiote-config",
+ "symbiote-contract-read",
  "toml_edit 0.22.27",
 ]
 
@@ -3087,6 +3100,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-host-inventory",
  "symbiote-runtime-sdk",
@@ -3101,6 +3115,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-worktrees",
  "tempfile",
@@ -3113,6 +3128,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-runtime-transport",
  "symbiote-sandbox",
@@ -3126,6 +3142,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
 ]
 
@@ -3136,6 +3153,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
 ]
 
 [[package]]
@@ -3165,6 +3183,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-runtime-sdk",
  "symbiote-trust",
@@ -3206,6 +3225,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-host-inventory",
  "symbiote-runtime-sdk",
@@ -3218,6 +3238,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-trust",
 ]

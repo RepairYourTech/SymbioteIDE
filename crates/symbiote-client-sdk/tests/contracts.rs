@@ -9,19 +9,7 @@
 //! The four outcomes are not the file's six variants — three are build-time refusals — so the
 //! count is not a figure any declaration carries; the list itself is the statement, and the
 //! numeral is gone.
-
-/// The slice `text` writes between `from` and the next `to` after it.
-fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
-    let start = text
-        .find(from)
-        .unwrap_or_else(|| panic!("the text must state {from:?}"))
-        + from.len();
-    let rest = &text[start..];
-    let end = rest
-        .find(to)
-        .unwrap_or_else(|| panic!("the text must state {to:?}"));
-    &rest[..end]
-}
+use symbiote_contract_read::region;
 
 /// The leading identifier of every backticked name in `text`, in order: `` `Ok(body)` `` writes
 /// `Ok`, `` `ResponseBody` `` writes `ResponseBody`.

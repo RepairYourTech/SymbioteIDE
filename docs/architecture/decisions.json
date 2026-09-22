@@ -135,6 +135,7 @@
     { "pins": { "artifact": "crates/symbiote-config", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-constitution", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-context", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-contract-read", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-desktop", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }, { "id": "ADR-0001/DESKTOP-SHELL", "revision": 2 }], "compatibility": [] }, "status": "provisional", "blocking_issue": 38 },
     { "pins": { "artifact": "crates/symbiote-domain", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-external-agent", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },

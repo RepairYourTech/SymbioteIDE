@@ -11,5 +11,8 @@ symbiote-domain = { path = "../symbiote-domain" }
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+symbiote-contract-read = { path = "../symbiote-contract-read" }
+
 [lints]
 workspace = true

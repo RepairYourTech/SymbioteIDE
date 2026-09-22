@@ -11,6 +11,9 @@ serde_json.workspace = true
 schemars.workspace = true
 symbiote-domain = { path = "../symbiote-domain" }
 
+[dev-dependencies]
+symbiote-contract-read = { path = "../symbiote-contract-read" }
+
 [lints]
 workspace = true
 
