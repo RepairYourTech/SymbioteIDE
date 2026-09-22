@@ -852,3 +852,149 @@ fn provider_registry_writes_and_reads_stay_owner_authority_only() {
         );
     }
 }
+
+/// The region of `text` between two phrases it states. The documents this file reads are
+/// prose, so each reader names the sentence it reads rather than line numbers.
+fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("the text must state {from:?}"))
+        + from.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(to)
+        .unwrap_or_else(|| panic!("the text must state {to:?}"));
+    &rest[..end]
+}
+
+/// The `major.minor` a dotted figure states.
+fn dotted(text: &str) -> (u16, u16) {
+    let (major, minor) = text.trim().split_once('.').expect("a dotted version");
+    (
+        major.parse().expect("a major version"),
+        minor.parse().expect("a minor version"),
+    )
+}
+
+/// The byte figure a statement writes: `65,536 bytes`, `64 KiB`, `1 MiB` or a plain count.
+fn bytes(text: &str) -> usize {
+    let number: usize = text
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("a figure");
+    if text.contains("KiB") {
+        number * 1024
+    } else if text.contains("MiB") {
+        number * 1024 * 1024
+    } else {
+        number
+    }
+}
+
+/// The version and bounds the protocol's documents state are the ones this crate speaks and
+/// enforces: the version in `protocol.md` (its title, the envelope's exact version, the two
+/// figures in the `hello` sentence, the fixture sentence) and in `host-inventory.md`, and the
+/// three bounds in `protocol.md`, `host.md` and `client-sdk.md`, each read from the sentence
+/// it is written in. A document that states a figure `CURRENT_VERSION` or the constants have
+/// moved past fails here by name rather than in prose nobody reads.
+///
+/// What it does not read: the changelog's history (`v1.20`, `v1.5` …), which states what an
+/// older revision did and stays true when the current one moves.
+#[test]
+fn the_documents_state_the_version_and_bounds_this_crate_enforces() {
+    let protocol = include_str!("../../../docs/contracts/protocol.md");
+    let host = include_str!("../../../docs/contracts/host.md");
+    let inventory = include_str!("../../../docs/contracts/host-inventory.md");
+    let sdk = include_str!("../../../docs/contracts/client-sdk.md");
+    let current = (CURRENT_VERSION.major, CURRENT_VERSION.minor);
+
+    for (label, stated) in [
+        (
+            "the protocol document's title",
+            dotted(region(protocol, "# Client/Host protocol v", " foundation")),
+        ),
+        (
+            "the protocol document's envelope version",
+            (
+                region(protocol, "exact `version: {major: ", ",")
+                    .trim()
+                    .parse()
+                    .expect("a major version"),
+                region(protocol, ", minor: ", "}`")
+                    .trim()
+                    .parse()
+                    .expect("a minor version"),
+            ),
+        ),
+        (
+            "the protocol document's hello offer",
+            dotted(region(
+                protocol,
+                "`hello` offers the explicit protocol version it supports: v",
+                ". Only v",
+            )),
+        ),
+        (
+            "the protocol document's supported version",
+            dotted(region(protocol, "Only v", " is supported")),
+        ),
+        (
+            "the protocol document's fixture sentence",
+            dotted(region(protocol, "Fixtures verify v", " and rejection")),
+        ),
+        (
+            "the host inventory document",
+            dotted(region(inventory, "for protocol v", ". This batch")),
+        ),
+    ] {
+        assert_eq!(
+            stated, current,
+            "{label} states v{}.{}, and this crate speaks v{}.{}",
+            stated.0, stated.1, current.0, current.1
+        );
+    }
+
+    for (label, stated, enforced) in [
+        (
+            "the protocol document's request bound",
+            bytes(region(protocol, "Requests are limited to ", " bytes")),
+            MAX_REQUEST_BYTES,
+        ),
+        (
+            "the protocol document's response cap",
+            bytes(region(
+                protocol,
+                "`encode_response` caps output at ",
+                " before larger allocation",
+            )),
+            MAX_RESPONSE_BYTES,
+        ),
+        (
+            "the protocol document's page bound",
+            bytes(region(protocol, "`limit` in 1–", ".")),
+            MAX_PAGE_SIZE as usize,
+        ),
+        (
+            "the host document's frame bound",
+            bytes(region(host, "Frames have a ", " request bound")),
+            MAX_REQUEST_BYTES,
+        ),
+        (
+            "the host document's response bound",
+            bytes(region(host, "Responses have a ", " serialization bound")),
+            MAX_RESPONSE_BYTES,
+        ),
+        (
+            "the client SDK document's bound",
+            bytes(region(sdk, "`RequestTooLarge` for the ", " bound")),
+            MAX_REQUEST_BYTES,
+        ),
+    ] {
+        assert_eq!(
+            stated, enforced,
+            "{label} states {stated}, and this crate enforces {enforced}"
+        );
+    }
+}

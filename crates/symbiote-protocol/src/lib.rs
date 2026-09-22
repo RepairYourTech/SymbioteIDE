@@ -47,29 +47,36 @@ pub struct ProtocolError {
     pub message: String,
 }
 impl ProtocolError {
-    /// Messages are stable and contain no input values, secrets, or internal paths.
+    /// Messages are stable and contain no input values, secrets, or internal paths. The
+    /// request bound is stated once, in [`MAX_REQUEST_BYTES`]: this message names it rather
+    /// than restating it, so a moved bound cannot leave a stale figure behind.
     pub fn new(code: ErrorCode) -> Self {
-        let message = match code {
-            ErrorCode::InvalidRequest => "invalid request shape or field value",
-            ErrorCode::FailedPrecondition => "preparation composition refused by recorded state",
-            ErrorCode::RequestTooLarge => "request exceeds 65536 bytes",
-            ErrorCode::UnsupportedVersion => "no supported protocol version",
-            ErrorCode::PermissionDenied => {
-                "operation is not permitted for this principal and project"
+        let message: String = match code {
+            ErrorCode::InvalidRequest => "invalid request shape or field value".to_owned(),
+            ErrorCode::FailedPrecondition => {
+                "preparation composition refused by recorded state".to_owned()
             }
-            ErrorCode::NotFound => "resource not found",
-            ErrorCode::Conflict => "resource conflict",
-            ErrorCode::StaleRevision => "expected revision is stale",
-            ErrorCode::IdempotencyConflict => "command identity was reused for different intent",
-            ErrorCode::InvalidCursor => "cursor is outside the available journal",
-            ErrorCode::ResourceExhausted => "operation exceeds a configured resource bound",
-            ErrorCode::Unavailable => "service is temporarily unavailable",
-            ErrorCode::Internal => "internal operation failed",
+            ErrorCode::RequestTooLarge => {
+                format!("request exceeds {MAX_REQUEST_BYTES} bytes")
+            }
+            ErrorCode::UnsupportedVersion => "no supported protocol version".to_owned(),
+            ErrorCode::PermissionDenied => {
+                "operation is not permitted for this principal and project".to_owned()
+            }
+            ErrorCode::NotFound => "resource not found".to_owned(),
+            ErrorCode::Conflict => "resource conflict".to_owned(),
+            ErrorCode::StaleRevision => "expected revision is stale".to_owned(),
+            ErrorCode::IdempotencyConflict => {
+                "command identity was reused for different intent".to_owned()
+            }
+            ErrorCode::InvalidCursor => "cursor is outside the available journal".to_owned(),
+            ErrorCode::ResourceExhausted => {
+                "operation exceeds a configured resource bound".to_owned()
+            }
+            ErrorCode::Unavailable => "service is temporarily unavailable".to_owned(),
+            ErrorCode::Internal => "internal operation failed".to_owned(),
         };
-        Self {
-            code,
-            message: message.into(),
-        }
+        Self { code, message }
     }
 }
 impl std::fmt::Display for ProtocolError {

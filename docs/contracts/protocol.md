@@ -28,7 +28,7 @@ Task creation accepts proposed domain identities, a versioned Task contract refe
 
 `read_journal` carries an exclusive `after` numeric cursor and `limit` in 1–100. A page returns typed durable `JournalEvent` records, `next_cursor` and `has_more`. Events may have global sequence gaps from other Projects; within the selected Project they must strictly increase. The next cursor is the last returned event, or the original cursor for an empty page. Clients acknowledge only consumed pages. Storage determines cursor availability and retention boundaries; protocol cannot fabricate missing history or turn telemetry into a durable event.
 
-Durable payloads are `project_registered`, `task_created` and `task_changed`, retaining canonical records and command identities. These are server output, never wire-authorized commands. `Telemetry` is a separate lossy type with heartbeat/queue-depth observations, no durable cursor and no arbitrary harness payload. No actual streaming subscription/backpressure/heartbeat service is implemented here.
+Durable payloads are the typed `EventPayload` kinds this crate defines, retaining canonical records and command identities. These are server output, never wire-authorized commands. `Telemetry` is a separate lossy type with heartbeat/queue-depth observations, no durable cursor and no arbitrary harness payload. No actual streaming subscription/backpressure/heartbeat service is implemented here.
 
 ## Evidence and remaining acceptance
 
