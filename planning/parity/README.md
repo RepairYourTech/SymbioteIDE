@@ -34,7 +34,8 @@ decided about a competitor practice; a `revision` keeps "we deliberately rejecte
 from "we never noticed it".
 
 As committed: **18** rows over **7** matrices, **6** workflows, **10** patterns and **2** revisions,
-with one pattern recorded as touching a locked decision.
+with one pattern recorded as touching a locked decision. Each figure is read back beside the noun it
+counts by this suite's own case, so a count cannot move on one side alone.
 
 ## The readings
 
