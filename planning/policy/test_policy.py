@@ -480,11 +480,22 @@ class TheRuntimeAssumptions(unittest.TestCase):
     def test_the_audit_reading_is_the_records_own_debt(self):
         """`--audit` prints the fields still unknown per product and the obligations not built, so
         the unstated-assumption debt is readable rather than inferred."""
-        report = policy.audit(policy.record(), policy.universe_sources())
-        self.assertEqual(len(report["assumptions"]),
-                         len(policy.record()["runtime_assumptions"]))
+        record = policy.record()
+        report = policy.audit(record, policy.universe_sources())
+        expected = [(entry.get("product"),
+                     [field for field in policy.ASSUMPTIONS
+                      if str(entry.get(field, "")).strip() == policy.UNKNOWN])
+                    for entry in record["runtime_assumptions"]]
+        self.assertTrue(expected, "the record states assumptions for the audit to read")
+        # The readings themselves, not only their number: a list held by a count the same reader
+        # produced cannot tell another product, or another product's fields, from the ones it read.
+        self.assertEqual([(one["product"], one["unknown"]) for one in report["assumptions"]],
+                         expected,
+                         "the audit prints every assumption the record states, with the fields the "
+                         "record leaves unknown")
         self.assertEqual(report["unknown_fields"],
-                         sum(len(one["unknown"]) for one in report["assumptions"]))
+                         sum(len(fields) for _product, fields in expected),
+                         "the debt the audit totals is the one the record states")
         self.assertTrue(report["unbuilt"], "the audit reports every obligation as built")
         self.assertEqual(sorted(one["obligation"] for one in report["unbuilt"]),
                          sorted(entry["id"] for entry in policy.record()["obligations"]
