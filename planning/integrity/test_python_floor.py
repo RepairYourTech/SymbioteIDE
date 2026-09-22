@@ -36,7 +36,7 @@ answer would take running the effect, which is why no case here closes them:
   `getattr(module, "batched")`); bound to a variable first and passed on, it is not — measured,
   `m = "tomllib"` then `import_module(m)` reports nothing, since following a value means running it;
 * a module **outside** this directory reached through `sys.path` that needs a newer Python —
-  measured, a sibling needing 3.12 left this suite at 232 OK, since `closure()` follows the files
+  measured, a sibling needing 3.12 left this suite green, since `closure()` follows the files
   beside this one and following a run-time path means running it;
 * a step replaced by a **composite action** or reusable workflow — measured, nothing reds, because
   the marking reads the steps a job states; and a crate path assembled at run time, though an
@@ -45,7 +45,7 @@ answer would take running the effect, which is why no case here closes them:
   own column read from the workflow and a job key allowed a comment or an anchor — what that leaves
   is a whole `jobs:` block written as a **flow mapping** (`jobs: {checks: {…}}`), which is not read at
   all — measured, a workflow written that way whose step runs this directory's suite with no driver
-  left this suite at 232 OK. A job whose `steps:` is a flow list is read and refused by the
+  left this suite green. A job whose `steps:` is a flow list is read and refused by the
   interpreter rule above, and tab indentation is a text no YAML parser accepts rather than a spelling
   that hides a job.
 """

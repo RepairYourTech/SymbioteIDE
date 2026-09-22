@@ -93,7 +93,7 @@ class TheCommittedRecord(unittest.TestCase):
         """The words are the issue's and this tree cannot hold them: the program pins the body's
         hash and records how many acceptance items it stated, and the only committed body capture
         reduces bodies — its own scope says it is not an exact-body provenance claim. Measured,
-        #38's captured body is 196 bytes with no checkbox line. So a row states the number and
+        #38's captured body carries no checkbox line. So a row states the number and
         the carriers, a field beside them is refused, and the words are read at the issue.
         """
         entry = bakeoff.Sources().entry(38)

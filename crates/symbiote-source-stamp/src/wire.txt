@@ -170,9 +170,9 @@
 # and a check that excused the name reported the record clean with that line
 # removed, while one that excuses nothing by name refused it and named
 # `tests/mod.rs` as read by the build script's unit. Measured too, a build driven
-# into `<workspace>/build-output` left 353 inputs under that directory that no
-# record can name — cargo wrote them — and a rule reading the name `target`
-# refused the binary for every one of them.
+# into `<workspace>/build-output` left inputs under that directory that no record
+# can name — cargo wrote them — and a rule reading the name `target` refused the
+# binary for every one of them.
 start	symbiote-source-record:[
 end	]symbiote-source-record
 encoding	UTF-8
