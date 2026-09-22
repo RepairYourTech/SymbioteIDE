@@ -21,6 +21,10 @@ const MAX_FILE: usize = 1_048_576;
 const MAX_TOTAL: usize = 4 * MAX_FILE;
 const MAX_FILES: usize = 16;
 const MAX_MANIFEST: usize = 16_384;
+/// The modes a published file and a generation directory carry. Every open of either checks the mode
+/// it finds against these, so a generation whose modes moved is refused rather than read.
+const FILE_MODE: u32 = 0o600;
+const DIRECTORY_MODE: u32 = 0o700;
 const MANIFEST: &str = ".manifest.json";
 const READY: &str = ".ready";
 
@@ -103,7 +107,7 @@ fn check_private(fd: &impl AsFd, directory: bool) -> Result<()> {
     } else {
         SFlag::S_IFREG
     };
-    let mode = if directory { 0o700 } else { 0o600 };
+    let mode = if directory { DIRECTORY_MODE } else { FILE_MODE };
     if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != kind
         || stat.st_uid != geteuid().as_raw()
         || stat.st_mode & 0o7777 != mode
@@ -149,7 +153,7 @@ fn write_new(directory: &File, name: &str, bytes: &[u8]) -> Result<()> {
         directory,
         name,
         OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-        Mode::S_IRUSR | Mode::S_IWUSR,
+        Mode::from_bits_truncate(FILE_MODE),
     )
     .map_err(|_| GenerationError::Io)?;
     check_private(&fd, false)?;
@@ -200,7 +204,7 @@ pub fn publish(
         return Err(GenerationError::BoundsExceeded);
     }
     let root = root_directory(root)?;
-    mkdirat(&root, generation, Mode::S_IRWXU).map_err(|error| {
+    mkdirat(&root, generation, Mode::from_bits_truncate(DIRECTORY_MODE)).map_err(|error| {
         if error == nix::errno::Errno::EEXIST {
             GenerationError::AlreadyExists
         } else {
@@ -320,4 +324,60 @@ pub fn verify(root: &Path, generation: &str) -> Result<Receipt> {
         generation: generation.into(),
         files,
     })
+}
+
+/// The bounds `projection.md` states are the ones this module enforces: the file count, the per-file
+/// and total byte bounds, and the modes a published file and a generation directory carry. The
+/// declarations are module-private, so the case that holds the document reads them here, by name,
+/// rather than out of this file's text; a document that states a bound this module has moved past
+/// fails by name rather than in prose nobody reads.
+///
+/// What it does not read: the prose around the figures — the symlink refusals, the descriptor-relative
+/// opens, the manifest bound — and the bounds' own behaviour, which the cases in `tests/generation.rs`
+/// drive against a real filesystem, including
+/// `the_bounds_the_contract_states_are_the_ones_publish_applies`.
+#[cfg(all(test, target_os = "linux"))]
+mod contract {
+    use symbiote_contract_read::{bytes, figure, region};
+
+    #[test]
+    fn the_contract_states_the_bounds_this_module_enforces() {
+        let contract = include_str!("../../../docs/contracts/projection.md");
+        let stated_file: usize = bytes(region(contract, "files, ", " per file"));
+        let stated_total: usize = bytes(region(contract, "per file and ", " total"));
+        let stated_files: usize = figure(region(contract, "allows at most ", " files"));
+
+        for (label, stated, declared) in [
+            ("files per generation", stated_files, super::MAX_FILES),
+            ("bytes per file", stated_file, super::MAX_FILE),
+            ("bytes per generation", stated_total, super::MAX_TOTAL),
+        ] {
+            assert_eq!(
+                stated, declared,
+                "the contract states {stated} {label}, and this module declares {declared}"
+            );
+        }
+
+        // The document writes both modes as octal numerals, and the declaration each is held to is
+        // the mode itself, so the comparison is the numeral the document writes against the numeral
+        // the declaration spells.
+        for (label, stated, declared) in [
+            (
+                "file mode",
+                region(contract, "files use 0", " and generation").trim(),
+                super::FILE_MODE,
+            ),
+            (
+                "directory mode",
+                region(contract, "directories 0", ".").trim(),
+                super::DIRECTORY_MODE,
+            ),
+        ] {
+            assert_eq!(
+                stated,
+                format!("{declared:o}"),
+                "the contract states 0{stated} as the {label}, and this module declares 0{declared:o}"
+            );
+        }
+    }
 }
