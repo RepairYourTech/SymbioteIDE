@@ -1284,4 +1284,105 @@ mod tests {
             Some(HaltReason::EnvelopeMismatch)
         );
     }
+
+    /// The slice `text` writes between `from` and the next `to` after it.
+    fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+        let start = text
+            .find(from)
+            .unwrap_or_else(|| panic!("the text must state {from:?}"))
+            + from.len();
+        let rest = &text[start..];
+        let end = rest
+            .find(to)
+            .unwrap_or_else(|| panic!("the text must state {to:?}"));
+        &rest[..end]
+    }
+
+    /// The figure a statement writes, commas and any surrounding punctuation trimmed off.
+    fn figure(text: &str) -> usize {
+        let number: String = text
+            .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
+            .replace(',', "");
+        number
+            .parse()
+            .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
+    }
+
+    /// The last `words` words written before `anchor`.
+    fn stated_before<'a>(text: &'a str, anchor: &str, words: usize) -> &'a str {
+        let at = text
+            .find(anchor)
+            .unwrap_or_else(|| panic!("the text must state {anchor:?}"));
+        let head = text[..at].trim_end();
+        let mut start = head.len();
+        for _ in 0..words {
+            let trimmed = head[..start].trim_end();
+            start = trimmed
+                .rfind(char::is_whitespace)
+                .map_or(0, |index| index + 1);
+        }
+        &head[start..]
+    }
+
+    /// The byte figure a statement writes: `16 KiB`.
+    fn bytes(text: &str) -> usize {
+        let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
+        let number = figure(number);
+        match unit {
+            "KiB" => number * 1024,
+            "MiB" => number * 1024 * 1024,
+            _ => number,
+        }
+    }
+
+    /// The bounds `native-agent-loop.md` states are the ones this crate enforces: the tool-output and
+    /// total tool-result byte bounds, the accumulated-output backstop and the turn cap. Each figure is
+    /// read from the sentence it is written in, so a document that states a bound this crate has moved
+    /// past fails here by name rather than in prose nobody reads.
+    ///
+    /// What it does not read: the prose around the figures — the halt reasons, the tool-class gate,
+    /// the sandbox composition — which the cases above drive, the sandbox's own argument bounds, which
+    /// belong to the crate that launches the process, and the document's own count of the cases beside
+    /// it, which the numeral no longer states because a case added or deleted from this file left it
+    /// silently false.
+    #[test]
+    fn the_contract_states_the_bounds_this_loop_enforces() {
+        let contract = include_str!("../../../docs/contracts/native-agent-loop.md");
+
+        for (label, stated, held) in [
+            (
+                "tool-output bytes",
+                bytes(region(
+                    contract,
+                    "Tool output is bounded at ",
+                    " with a visible marker",
+                )),
+                MAX_EVENT_TEXT_BYTES,
+            ),
+            (
+                "tool-result bytes",
+                bytes(region(contract, "total tool-result text is bounded (", ")")),
+                MAX_TOOL_RESULT_BYTES,
+            ),
+            (
+                "accumulated-output bytes",
+                bytes(stated_before(
+                    contract,
+                    " accumulated-output byte backstop",
+                    2,
+                )),
+                MAX_ACCUMULATED_OUTPUT_BYTES,
+            ),
+            (
+                "turns",
+                figure(region(contract, "on a ", "-turn cap")),
+                MAX_TURNS_PER_RUN as usize,
+            ),
+        ] {
+            assert_eq!(
+                stated, held,
+                "the contract states {stated} {label}, and this loop enforces {held}"
+            );
+        }
+    }
 }

@@ -703,3 +703,110 @@ fn nested_tool_json_and_usage_overruns_are_rejected() {
         Err(ProviderError::ContextLimit)
     );
 }
+
+/// The slice `text` writes between `from` and the next `to` after it.
+fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("the text must state {from:?}"))
+        + from.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(to)
+        .unwrap_or_else(|| panic!("the text must state {to:?}"));
+    &rest[..end]
+}
+
+/// The figure a statement writes, commas and any sentence punctuation trimmed off.
+fn figure(text: &str) -> usize {
+    let number: String = text
+        .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
+        .replace(',', "");
+    number
+        .parse()
+        .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
+}
+
+/// The byte figure a statement writes: `256 KiB`.
+fn bytes(text: &str) -> usize {
+    let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
+    let number = figure(number);
+    match unit {
+        "KiB" => number * 1024,
+        "MiB" => number * 1024 * 1024,
+        _ => number,
+    }
+}
+
+/// The envelope bounds `providers.md` states are the ones this module enforces: the message, part,
+/// tool, depth, node and byte limits, each read from the sentence it is written in. The message and
+/// tool bounds are held to the constants that own them and the part bound to the validation itself;
+/// the depth and node budgets are literals no name exports, so they are read from the source beside
+/// the check that applies them. A document that states a bound this module has moved past fails here
+/// by name rather than in prose nobody reads.
+///
+/// What it does not read: the prose around the figures — what each bound refuses and why — which the
+/// behavioural cases above drive, and the token-budget sentences, which are relationships between
+/// caller-supplied values rather than bounds this module declares.
+#[test]
+fn the_contract_states_the_envelope_bounds_this_module_enforces() {
+    let contract = include_str!("../../../docs/contracts/providers.md");
+    let source = include_str!("../src/provider.rs");
+
+    let sentence = region(contract, "`ProviderRequest` accepts ", ".");
+    let stated_messages = figure(region(sentence, "at most ", " messages"));
+    assert_eq!(
+        stated_messages, MAX_MESSAGES,
+        "the contract states {stated_messages} messages, and this module accepts {MAX_MESSAGES}"
+    );
+    let stated_tools = figure(region(sentence, " and ", " uniquely named tools"));
+    assert_eq!(
+        stated_tools, MAX_TOOLS,
+        "the contract states {stated_tools} tools, and this module accepts {MAX_TOOLS}"
+    );
+
+    let stated_parts = figure(region(sentence, "messages, ", " parts per message"));
+    let model = fixtures().4;
+    let mut over = request();
+    over.messages[0].content = vec![InputPart::Text { text: "x".into() }; stated_parts + 1];
+    assert_eq!(
+        over.validate(&model),
+        Err(ProviderError::InvalidEnvelope),
+        "the contract states {stated_parts} parts per message, and this module accepts more"
+    );
+    over.messages[0].content = vec![InputPart::Text { text: "x".into() }; stated_parts];
+    assert_eq!(
+        over.validate(&model),
+        Ok(()),
+        "the contract states {stated_parts} parts per message, and this module accepts fewer"
+    );
+
+    let schema = region(contract, "bounded to depth ", " nodes");
+    let (depth, nodes) = schema
+        .split_once(" and ")
+        .expect("a depth and a node budget");
+    let stated_depth = figure(depth);
+    let stated_nodes = figure(nodes);
+    assert_eq!(
+        figure(region(source, "if depth > ", " || *remaining == 0")),
+        stated_depth,
+        "the contract states a depth of {stated_depth}, and this module walks {}",
+        figure(region(source, "if depth > ", " || *remaining == 0"))
+    );
+    assert_eq!(
+        figure(region(source, "visit(value, 0, &mut ", ")")),
+        stated_nodes,
+        "the contract states {stated_nodes} nodes, and this module walks {}",
+        figure(region(source, "visit(value, 0, &mut ", ")"))
+    );
+
+    let stated_envelope = bytes(region(
+        contract,
+        "each complete serialized envelope is capped at ",
+        ".",
+    ));
+    assert_eq!(
+        stated_envelope, MAX_ENVELOPE_BYTES,
+        "the contract states a {stated_envelope}-byte envelope, and this module caps {MAX_ENVELOPE_BYTES}"
+    );
+}

@@ -288,7 +288,10 @@ pub fn discover(
         .get("userAgent")
         .and_then(Value::as_str)
         .ok_or(CodexDiscoveryError::MalformedFrame)?;
-    if user_agent.len() > 1024 || user_agent.split_whitespace().next() != Some("symbiote/0.118.0") {
+    // The accepted client name is built from the pinned release, so the constant is the one
+    // owner of the version: a release moved here moves the name this crate accepts with it.
+    let expected = format!("symbiote/{CODEX_VERSION}");
+    if user_agent.len() > 1024 || user_agent.split_whitespace().next() != Some(expected.as_str()) {
         return Err(CodexDiscoveryError::UnsupportedVersion);
     }
     transport.send(

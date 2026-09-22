@@ -896,9 +896,10 @@ fn bytes(text: &str) -> usize {
 /// The version and bounds the protocol's documents state are the ones this crate speaks and
 /// enforces: the version in `protocol.md` (its title, the envelope's exact version, the two
 /// figures in the `hello` sentence, the fixture sentence) and in `host-inventory.md`, and the
-/// three bounds in `protocol.md`, `host.md` and `client-sdk.md`, each read from the sentence
-/// it is written in. A document that states a figure `CURRENT_VERSION` or the constants have
-/// moved past fails here by name rather than in prose nobody reads.
+/// three bounds in `protocol.md`, `host.md` and `client-sdk.md`, and the response bound
+/// `work-hierarchy.md` restates, each read from the sentence it is written in. A document that
+/// states a figure `CURRENT_VERSION` or the constants have moved past fails here by name rather
+/// than in prose nobody reads.
 ///
 /// What it does not read: the changelog's history (`v1.20`, `v1.5` …), which states what an
 /// older revision did and stays true when the current one moves.
@@ -908,6 +909,7 @@ fn the_documents_state_the_version_and_bounds_this_crate_enforces() {
     let host = include_str!("../../../docs/contracts/host.md");
     let inventory = include_str!("../../../docs/contracts/host-inventory.md");
     let sdk = include_str!("../../../docs/contracts/client-sdk.md");
+    let hierarchy = include_str!("../../../docs/contracts/work-hierarchy.md");
     let current = (CURRENT_VERSION.major, CURRENT_VERSION.minor);
 
     for (label, stated) in [
@@ -990,6 +992,11 @@ fn the_documents_state_the_version_and_bounds_this_crate_enforces() {
             "the client SDK document's bound",
             bytes(region(sdk, "`RequestTooLarge` for the ", " bound")),
             MAX_REQUEST_BYTES,
+        ),
+        (
+            "the work hierarchy document's response bound",
+            bytes(region(hierarchy, "Server responses retain the", " bound")),
+            MAX_RESPONSE_BYTES,
         ),
     ] {
         assert_eq!(

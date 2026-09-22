@@ -20,7 +20,7 @@ transports share identical state logic.
   `RequestTooLarge` for the 64 KiB bound — refused client-side before any
   transport is touched, after the same parse the daemon will apply, so
   offline misfires never become transport noise.
-- **Response classification.** Exactly four terminal outcomes exist:
+- **Response classification.** Terminal outcomes exist:
   `Ok(body)` with the typed `ResponseBody`; `Refused(protocol error)` with
   the daemon's typed error preserved; `Transport` (the command's
   disposition is unknown); and `Unparseable` (including a response version
