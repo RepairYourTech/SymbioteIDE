@@ -564,3 +564,129 @@ fn invalid_known_usage_subsets_and_totals_reject_construction_and_wire_without_a
         "unknown input is not zero and cannot disprove a cached subset"
     );
 }
+
+/// The slice `text` writes between `from` and the next `to` after it.
+fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("the text must state {from:?}"))
+        + from.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(to)
+        .unwrap_or_else(|| panic!("the text must state {to:?}"));
+    &rest[..end]
+}
+
+/// The figure a statement writes, commas and all.
+fn figure(text: &str) -> usize {
+    text.trim()
+        .replace(',', "")
+        .parse()
+        .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
+}
+
+/// The bounds `runtime-events.md` states are the ones this module enforces: the `EventText` byte
+/// bound, the three defaults `TrackerLimits::default()` retains, and the configured hard maxima a
+/// tracker accepts. Each figure is read from the sentence it is written in, so a document that
+/// states a bound this module has moved past fails here by name rather than in prose nobody reads.
+///
+/// What it does not read: the prose around the figures — what a bound refuses and why — which the
+/// behavioural cases above drive, and the document's own count of the cases beside it, which the
+/// numeral no longer states because deleting one case from this file left every suite green.
+#[test]
+fn the_contract_states_the_bytes_and_limits_this_module_enforces() {
+    let contract = include_str!("../../../docs/contracts/runtime-events.md");
+
+    let stated = figure(region(contract, "diagnostic to ", " UTF-8 **bytes**"));
+    assert_eq!(
+        stated, MAX_EVENT_TEXT_BYTES,
+        "the contract states an event-text bound of {stated} bytes, and this module bounds {MAX_EVENT_TEXT_BYTES}"
+    );
+
+    let defaults = TrackerLimits::default();
+    for (label, stated, retained) in [
+        (
+            "replay entries",
+            figure(region(contract, "Defaults retain ", " replay entries")),
+            defaults.replay_capacity,
+        ),
+        (
+            "distinct tool calls",
+            figure(region(
+                contract,
+                "replay entries, at most ",
+                " distinct tool calls",
+            )),
+            defaults.max_tool_calls,
+        ),
+        (
+            "event identities",
+            figure(region(
+                contract,
+                "distinct tool calls and at most ",
+                " event identities",
+            )),
+            defaults.max_events,
+        ),
+    ] {
+        assert_eq!(
+            stated, retained,
+            "the contract's default retains {stated} {label}, and TrackerLimits::default() retains {retained}"
+        );
+    }
+
+    // The maxima are held to what a tracker accepts, not to the literal the validator writes: the
+    // documented set is accepted whole and one past it is refused, so a moved ceiling reds here.
+    let maxima = [
+        figure(region(
+            contract,
+            "Configured hard maxima are ",
+            " retained entries",
+        )),
+        figure(region(contract, "retained entries, ", " tool identities")),
+        figure(region(
+            contract,
+            "tool identities and ",
+            " event identities",
+        )),
+    ];
+    let at_maxima = TrackerLimits {
+        replay_capacity: maxima[0],
+        max_tool_calls: maxima[1],
+        max_events: maxima[2],
+    };
+    assert!(
+        SessionTracker::new(binding(), at_maxima).is_ok(),
+        "the contract's hard maxima {maxima:?} are refused by this module"
+    );
+    for (label, past) in [
+        (
+            "retained entries",
+            TrackerLimits {
+                replay_capacity: maxima[0] + 1,
+                ..at_maxima
+            },
+        ),
+        (
+            "tool identities",
+            TrackerLimits {
+                max_tool_calls: maxima[1] + 1,
+                ..at_maxima
+            },
+        ),
+        (
+            "event identities",
+            TrackerLimits {
+                max_events: maxima[2] + 1,
+                ..at_maxima
+            },
+        ),
+    ] {
+        assert_eq!(
+            SessionTracker::new(binding(), past).unwrap_err(),
+            EventError::InvalidLimits,
+            "the contract's maximum of {label} is not the limit this module enforces"
+        );
+    }
+}

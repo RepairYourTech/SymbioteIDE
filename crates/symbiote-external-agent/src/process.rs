@@ -22,12 +22,14 @@ use symbiote_domain::{HostId, RootId, Timestamp};
 use symbiote_runtime_transport::{TransportError, TransportLimits};
 
 /// Frames are bounded and duplicate-key-rejected by the shared transport.
-const MAX_BUFFERED_NOTIFICATIONS: usize = 1024;
+pub(crate) const MAX_BUFFERED_NOTIFICATIONS: usize = 1024;
 const MAX_BUFFERED_SERVER_REQUESTS: usize = 256;
 const MAX_METHOD_BYTES: usize = 256;
-const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
+/// The production transport's poll window, which the driver's silence budget is
+/// stated against.
+pub(crate) const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 /// How long `call` waits for its correlated response before failing.
-const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a cancel waits for the process to die before giving up.
 const CANCEL_TIMEOUT: Duration = Duration::from_millis(500);
 
