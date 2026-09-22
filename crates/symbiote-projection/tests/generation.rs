@@ -267,3 +267,83 @@ fn unsupported_fifo_does_not_block_and_generation_symlink_is_never_followed() {
     );
     assert!(root.0.join("generation-alias").is_symlink());
 }
+
+/// The slice `text` writes between `from` and the next `to` after it.
+fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("the text must state {from:?}"))
+        + from.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(to)
+        .unwrap_or_else(|| panic!("the text must state {to:?}"));
+    &rest[..end]
+}
+
+/// The figure a statement writes, digit separators and surrounding punctuation trimmed off.
+fn figure(text: &str) -> usize {
+    let number: String = text
+        .trim_matches(|c: char| !c.is_ascii_digit() && c != ',' && c != '_')
+        .replace(['_', ','], "");
+    number
+        .parse()
+        .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
+}
+
+/// The byte figure a statement writes: `1 MiB`.
+fn bytes(text: &str) -> usize {
+    let (number, unit) = text.trim().split_once(' ').expect("a figure and a unit");
+    let number = figure(number);
+    match unit {
+        "KiB" => number * 1024,
+        "MiB" => number * 1024 * 1024,
+        _ => number,
+    }
+}
+
+/// The bounds `projection.md` states are the ones this module enforces: the file count, the per-file
+/// and total byte bounds, and the modes a published file and a generation directory carry. The
+/// constants are module-private, so each figure is read from the sentence it is written in and from
+/// the declaration beside the check that applies it.
+///
+/// What it does not read: the prose around the figures — the symlink refusals, the descriptor-relative
+/// opens, the manifest bound — which the cases above drive against a real filesystem.
+#[test]
+fn the_contract_states_the_bounds_this_module_enforces() {
+    let contract = include_str!("../../../docs/contracts/projection.md");
+    let source = include_str!("../src/generation.rs");
+
+    let stated_file = bytes(region(contract, "files, ", " per file"));
+    let stated_total = bytes(region(contract, "per file and ", " total"));
+    let stated_files = figure(region(contract, "allows at most ", " files"));
+    let stated_file_mode = figure(region(contract, "files use 0", " and generation"));
+    let stated_directory_mode = figure(region(contract, "directories 0", "."));
+
+    let enforced_file = figure(region(source, "const MAX_FILE: usize = ", ";"));
+    let enforced_multiple = figure(region(source, "const MAX_TOTAL: usize = ", " * MAX_FILE"));
+    let enforced_files = figure(region(source, "const MAX_FILES: usize = ", ";"));
+    let enforced_file_mode = figure(region(source, "} else { 0", " };"));
+    let enforced_directory_mode = figure(region(source, "if directory { 0", " } else"));
+
+    for (label, stated, enforced) in [
+        ("files per generation", stated_files, enforced_files),
+        ("bytes per file", stated_file, enforced_file),
+        (
+            "bytes per generation",
+            stated_total,
+            enforced_file * enforced_multiple,
+        ),
+        ("file mode", stated_file_mode, enforced_file_mode),
+        (
+            "directory mode",
+            stated_directory_mode,
+            enforced_directory_mode,
+        ),
+    ] {
+        assert_eq!(
+            stated, enforced,
+            "the contract states {stated} {label}, and this module enforces {enforced}"
+        );
+    }
+}
