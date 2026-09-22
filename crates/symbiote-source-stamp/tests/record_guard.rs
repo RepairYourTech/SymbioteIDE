@@ -433,7 +433,7 @@ fn a_build_driven_into_its_own_directory_inside_the_workspace_is_checked_ok() {
 ///   what *this* binary's build read. Measured before a green had to rest on the
 ///   producing unit, the same package's library satisfied the rule and the
 ///   record was called complete having never been compared with this build; on
-///   this workspace 45 units satisfied it while exactly one is the binary.
+///   this workspace several units satisfied it while exactly one is the binary.
 #[test]
 fn a_unit_of_another_package_is_not_evidence_for_this_binary() {
     let fixture = Fixture::new("collision");

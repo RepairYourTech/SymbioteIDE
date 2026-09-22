@@ -29,7 +29,7 @@ is exactly what drifts:
   spelling cargo does not write is invisible from that suite alone. Measured, its
   fixture wrote every input absolute while rustc writes a package's own sources
   relative to the directory cargo ran in — so dropping the checker's relative
-  resolution failed none of that suite's tests then, and five of them now.
+  resolution failed none of that suite's tests then, and fails several of them now.
   `HandFixtureAgreementTests` puts the same shapes in front of the build below and
   asserts the fixture's letters are cargo's, so a drift is a failure here rather
   than a rule nobody measured.
@@ -430,7 +430,7 @@ class HandFixtureAgreementTests(unittest.TestCase):
         branch every real build's sources take (a relative token, resolved against
         the workspace) was reached by none of the hand suite's tests, which is
         measured — dropping that branch from the checker failed no test of it, and
-        five with the fixture spelling them as cargo does.
+        fails tests of it with the fixture spelling them as cargo does.
         """
         # Cargo's own letters, from the unit whose source includes a generated
         # file: the one dep-info here that names a build output.

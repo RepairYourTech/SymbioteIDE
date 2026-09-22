@@ -482,9 +482,9 @@ class CompletenessTests(unittest.TestCase):
 
         A build script writes into `OUT_DIR`, under the profile directory the check
         is handed, and the record names the build script rather than what it wrote.
-        Measured, a build driven into `<workspace>/build-output` left 353 such
-        inputs under it, and a rule that excused the name `target` instead refused
-        the binary for every one of them.
+        Measured, a build driven into `<workspace>/build-output` left such inputs
+        under it, and a rule that excused the name `target` instead refused the
+        binary for every one of them.
         """
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory, target_dir="build-output/debug")
@@ -621,12 +621,12 @@ class CompletenessTests(unittest.TestCase):
         Cargo writes a unit's output into `deps` and links it into the profile
         directory under the artifact name, so the profile file *is* that unit's
         output, and the file in `deps` sharing it is the unit that produced the
-        binary. Measured on this workspace, `symbioted` shares its file with exactly
-        one output while 11 units name its `bin-symbioted` target — and those are
-        not the same evidence: ten of them read 7 workspace files and one reads 10.
+        binary. Measured on a build of this workspace, `symbioted` shares its file
+        with exactly one output while several units name its `bin-symbioted`
+        target — and those are not the same evidence: their read sets differ.
         Measured too, with the producing unit's dep-info gone and a same-target
-        sibling's left, a rule satisfied by any unit of the target read 13 units and
-        reported the record covered.
+        sibling's left, a rule satisfied by any unit of the target read the
+        sibling's evidence and reported the record covered.
 
         The two shapes are the two cargo writes: a binary's output named after the
         crate it compiles (`demo-9a`), and a library's `libdemo-9a.rlib`, whose
@@ -682,11 +682,11 @@ class CompletenessTests(unittest.TestCase):
 
         One package compiles several units whose dep-info files are spelled with
         its binary's crate name — its library, its documentation, and the test
-        harnesses anything that has run `cargo test` leaves. Measured on this
-        workspace, 45 units satisfy a rule reading the crate name of `symbioted`
-        and exactly one of them is the binary; the other 44 are its library, its
-        documentation and its test harnesses, each of which leaves the same dep-info
-        for a *different* compilation. So with the binary's own unit gone and any of
+        harnesses anything that has run `cargo test` leaves. Measured on a build of
+        this workspace, several units satisfy a rule reading the crate name of
+        `symbioted` and exactly one of them is the binary; the rest are its library,
+        its documentation and its test harnesses, each of which leaves the same
+        dep-info for a *different* compilation. So with the binary's own unit gone and any of
         those present the record read clean against evidence that never described
         the build, which is what a stale binary needs to pass.
 

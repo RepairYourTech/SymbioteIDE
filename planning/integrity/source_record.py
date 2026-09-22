@@ -597,17 +597,20 @@ def unit_fingerprints(target_dir):
     target — ``bin-symbioted``, ``lib-symbiote_host``, ``test-bin-symbioted``,
     ``doc-lib-symbiote_host`` — and a package's library, documentation and test
     harnesses write dep-info files spelled with its binary's crate name too.
-    Measured on this workspace: 45 units satisfy a rule reading the crate name of
-    ``symbioted``, and exactly one of them is the binary — the rest are its
-    library, its documentation and its test harnesses, any of which stood in for
-    the binary's own evidence.
+    A rule reading that name is satisfied by several units of this workspace and
+    exactly one of them is the unit that built the binary — a package's library, its
+    documentation and its test harnesses write dep-info files spelled with its
+    binary's crate name, and units of an earlier build of the same target survive in
+    the directory beside them — any of which stood in for the binary's own evidence.
+    How many is a function of what has been built rather than a fact of the tree, so
+    it is stated as that property and not as a count.
 
     A hash no fingerprint places, or one more than one place names, is not an
     identity and is left out rather than guessed at: a unit this cannot place is
     not counted as evidence about any build, and the requirement that a green
     rest on the unit that compiles the binary is then what refuses the comparison.
     A directory naming several targets names all of them, since one hash can be
-    this build's library and its tests — measured, three do here.
+    this build's library and its tests.
     """
     fingerprints = Path(target_dir) / FINGERPRINT_DIRECTORY
     packages = {}
@@ -680,11 +683,11 @@ def driven_unit(target_dir, binary):
     library target is one of the entry-point tests — an output's own name is not
     its dep-info's, and the hash is.
 
-    Measured on this workspace, whose ``symbioted`` shares its file with exactly
-    one output, ``deps/symbioted-c177b639b331cbe6``, out of the 11 units whose
-    fingerprints name the ``bin-symbioted`` target — and those 11 are not the same
-    evidence: ten of them read 7 workspace files while one reads 10, and a stale
-    one names a generated record from a different build-script run of the package.
+    Measured on a build of this workspace, whose ``symbioted`` shares its file
+    with exactly one output, ``deps/symbioted-c177b639b331cbe6``, several units
+    name the ``bin-symbioted`` target — and those are not the same evidence: their
+    read sets differ, and a stale one names a generated record from a different
+    build-script run of the package.
 
     Returns that hash, or ``None`` where cargo's relation is not there to read at
     all: a platform that copies the artifact rather than linking it, or a binary no
@@ -774,9 +777,8 @@ def workspace_reads(dep_info_files, workspace, target_dir):
     wire file states those are the files a check excuses. That directory is the one
     this check was *given* — cargo's target directory, or the profile directory
     under it, whatever it is called — rather than a name: measured, a build driven
-    into `<workspace>/build-output` left 353 inputs under it that no record can
-    name, and a rule reading the name `target` refused the binary for every one of
-    them.
+    into `<workspace>/build-output` left reads under it that no record can name,
+    and a rule reading the name `target` refused the binary for every one of them.
 
     Everything else a unit read is what the record owes, whatever it is called and
     wherever it sits: the names a walk skips are the walk's rule, and a check that
@@ -1044,10 +1046,10 @@ def check(workspace, target_dir, binaries, metadata):
         # compared with was called complete rather than unmeasured. A unit of the
         # driven *package* is not enough either, nor one sharing its crate name, nor
         # even one of the same target: measured, a foreign `guard-<hash>.d`
-        # satisfied a rule reading the package alone, 45 units satisfy one reading
-        # the crate name of `symbioted` while exactly one is the binary, and 11 name
-        # its `bin-symbioted` target while their read sets differ (7 files against
-        # 10) — each of those stands in for a different compilation.
+        # satisfied a rule reading the package alone, several units satisfy one
+        # reading the crate name of `symbioted` while exactly one is the binary, and
+        # several name its `bin-symbioted` target while their read sets differ —
+        # each of those stands in for a different compilation.
         built = driven_unit(target_dir, binary)
         if built is not None:
             # Cargo's own uplift names the unit, so a dep-info carrying its hash is
