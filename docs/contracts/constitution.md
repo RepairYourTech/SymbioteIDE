@@ -10,17 +10,17 @@ Each concern has one owner, and a channel never depends on another channel:
 
 - `catalog.rs` — the inventory and nothing else: `Fact`, `Invariant`, `INVARIANTS` and `EXPLANATIONS`, plus the normative sentences the constitution states once and more than one invariant depends on, held in one constant each so no clause has two owners.
 - `document.rs` — the document channel, the embedded constitution it reads, and the coverage map parsed out of it.
-- `repository.rs` — the repository channel: the tree walk, the manifest key heuristics, the four facts, and the checks this tree provides, which a coverage row's check names resolve against.
+- `repository.rs` — the repository channel: the tree walk, the manifest key heuristics, the facts the invariants assert about the tree, and the checks this tree provides, which a coverage row's check names resolve against.
 - `harness.rs` — the test channel: what cargo and the workflows' own discovery commands actually compile and run.
-- `report.rs` — the verdict vocabulary (`Outcome`, `Coverage`, `Report`), the assembly of the three channels in `evaluate`, and the committed encoding.
+- `report.rs` — the verdict vocabulary (`Outcome`, `Coverage`, `Report`), the assembly of the channels in `evaluate`, and the committed encoding.
 - `claims.rs` — this contract document's own claims about the report, read from the document itself and resolved against the committed artifact.
 - `lib.rs` — the crate documentation, the module map, the re-exports, and the workspace root the tests and example locate from.
 
 The channels depend on `report` for `Outcome` and never on one another, so a change to one channel's rules lands in that channel's file and surfaces as drift in the committed artifact rather than as an unremarked difference. `--write` regenerates that artifact and is idempotent.
 
-## Three channels, and why each can fail
+## The channels, and why each can fail
 
-`evaluate(root)` checks every invariant through three channels and reports one verdict per channel. A channel that finds nothing to check is a failure rather than a pass, so an invariant cannot be satisfied by silence.
+`evaluate(root)` checks every invariant through its channels and reports one verdict per channel. A channel that finds nothing to check is a failure rather than a pass, so an invariant cannot be satisfied by silence.
 
 - **document** — the required clause must appear verbatim in the constitution, and each forbidden authorization must be absent. The document is embedded with `include_str!`, so the check reads the text compiled into this binary and never a different file a later run might find. Required clauses are quoted exactly: editing a normative sentence without editing the ledger fails `the_constitution_conforms_and_every_binding_resolves`, which is how the ledger and the document cannot drift apart. The `forbidden` list is how the non-goals (`CN-10`) stop being merely an absence of lines: a later edit that writes `Electron is eligible` into the document is an authorization the build can see.
 - **repository** — a fact of the tree. `no_electron` reads every `Cargo.toml` and `package.json` outside build output and dependency caches and refuses an Electron dependency in a key position. `no_go_core` refuses Go source or a `go.mod`. `forbid_unsafe_rust` requires the workspace's `unsafe_code = "forbid"` and that every crate manifest inherits it with `[lints] workspace = true`. `strict_typescript` requires the workbench's `"strict": true` and a `typecheck` script. The manifest walks fail rather than pass when they find nothing to read.

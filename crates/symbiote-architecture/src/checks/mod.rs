@@ -1,6 +1,6 @@
 //! The refusals this repository's ledger, workspace and contracts must survive.
 //!
-//! Two entry points — [`problems`] for the ledger, the workspace and the
+//! The entry points — [`problems`] for the ledger, the workspace and the
 //! contracts, and [`governance`] for the repository's own archival record — and
 //! one subject per file: the
 //! ledger's own records and facts (`records`), the workspace artifacts and the

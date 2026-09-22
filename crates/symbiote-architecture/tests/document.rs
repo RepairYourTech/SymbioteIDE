@@ -1,6 +1,7 @@
 //! What this repository's documents claim about its contract (#173), held to the
 //! crate that owns the facts: every name `docs/contracts/architecture.md` writes in a
-//! code span is something this crate has, and every ceiling `docs/proofs/linux-shell.md`
+//! code span is something this crate has, the surface that document writes for the join
+//! is the surface `checks/mod.rs` defines, and every ceiling `docs/proofs/linux-shell.md`
 //! states for a measurement is the maximum the committed contract predeclares. A rename,
 //! or a threshold the contract moves, fails a case here rather than leaving a document
 //! citing a name nobody can run or a bar the machine no longer enforces — the bar's
@@ -252,6 +253,149 @@ fn the_contract_document_names_only_cases_this_crate_holds() {
         cases >= 5,
         "the document cites the cases its claims rest on: {cases}"
     );
+}
+
+/// The entry points `checks/mod.rs` defines, from the module's own source: a `pub fn`
+/// written at the top level, which is how the join exposes one. The subjects it
+/// composes are private modules, so nothing else in that file is part of its surface.
+fn entry_points_of(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub fn "))
+        .map(|rest| rest.split(['(', '<']).next().unwrap_or_default().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// The subjects the join composes, from the same source: a `mod x;` declaration.
+fn subjects_of(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| line.strip_prefix("mod "))
+        .filter_map(|rest| rest.strip_suffix(';'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The names a module's own doc writes between `open`/`close` around a code span —
+/// `[\u{60}problems\u{60}]` for an entry point, `(\u{60}records\u{60})` for a subject. The two
+/// forms are how that doc marks the two lists, so each is read as the list it is.
+fn doc_names(doc: &str, open: char, close: char) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = doc;
+    while let Some(at) = rest.find(open) {
+        let after = &rest[at + open.len_utf8()..];
+        if let Some(span) = after.strip_prefix('`') {
+            if let Some(end) = span.find('`') {
+                if let Some(tail) = span[end + 1..].strip_prefix(close) {
+                    names.push(span[..end].to_owned());
+                    rest = tail;
+                    continue;
+                }
+            }
+        }
+        rest = after;
+    }
+    names
+}
+
+/// A lower-case bare name: how a row writes an entry point, as opposed to the path of
+/// the module the row is about or a type it names.
+fn is_bare_name(span: &str) -> bool {
+    !span.is_empty()
+        && span
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+/// The document's account of the join is the module's own surface: every entry point
+/// `checks/mod.rs` defines is named in the row this document writes for that file and in
+/// the module's own doc, every subject it composes is named in the module's own doc and
+/// has a row of its own here, and neither copy names an entry point or a subject the
+/// module does not define. The two lists are derived from the source, so a third entry
+/// point or a seventh subject fails this case by name rather than leaving a list a reader
+/// would take for the whole of the surface — which is what the numeral both copies used to
+/// carry in front of those lists could not do, and why neither states one now.
+///
+/// What it does not read: a signature, a body, whether an entry point is public for
+/// another reason, or which entry point asks which subject — the row's own words say that,
+/// and this case holds the names it needs to say it about.
+#[test]
+fn the_document_names_the_surface_the_join_defines() {
+    let root = workspace_root();
+    let module = "crates/symbiote-architecture/src/checks/mod.rs";
+    let source = std::fs::read_to_string(root.join(module)).expect("the join module");
+    let entry_points = entry_points_of(&source);
+    let subjects = subjects_of(&source);
+    assert!(
+        entry_points.len() >= 2 && subjects.len() >= 2,
+        "the join exposes entry points and composes subjects: {entry_points:?}, {subjects:?}"
+    );
+
+    let module_doc: String = source
+        .lines()
+        .filter(|line| line.trim_start().starts_with("//!"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let document = std::fs::read_to_string(root.join("docs/contracts/architecture.md"))
+        .expect("the contract document");
+    let row = document
+        .lines()
+        .find(|line| line.starts_with("| `checks/mod.rs` |"))
+        .expect("the document writes a row for the join");
+    let listed = doc_names(&module_doc, '[', ']');
+    let composed = doc_names(&module_doc, '(', ')');
+
+    for name in &entry_points {
+        assert!(
+            row.contains(name.as_str()),
+            "the document's row for {module} names every entry point it defines, and it does not name {name}"
+        );
+        assert!(
+            listed.contains(name),
+            "the module's own doc lists every entry point it defines, and it does not list {name}"
+        );
+    }
+    for subject in &subjects {
+        assert!(
+            composed.contains(subject),
+            "the module's own doc names every subject it composes, and it does not name {subject}"
+        );
+        assert!(
+            document.contains(&format!("`checks/{subject}.rs`")),
+            "the document writes a row for every subject the join composes, and it has none for checks/{subject}.rs"
+        );
+    }
+
+    for named in &listed {
+        assert!(
+            entry_points.contains(named),
+            "the module's own doc lists {named} as an entry point, and the join defines no such one"
+        );
+    }
+    for named in &composed {
+        assert!(
+            subjects.contains(named),
+            "the module's own doc names {named} as a subject, and the join composes no such module"
+        );
+    }
+    let stated: Vec<&str> = row
+        .split_once("entry point")
+        .map(|(_, tail)| tail.split('`').skip(1).step_by(2).collect())
+        .unwrap_or_default();
+    assert!(
+        !stated.is_empty(),
+        "the join's row says which of the names it writes are entry points: {row}"
+    );
+    for span in stated {
+        if !is_bare_name(span) {
+            continue;
+        }
+        assert!(
+            entry_points.iter().any(|name| name.as_str() == span),
+            "the join's row writes {span} as an entry point, and the join defines no such one"
+        );
+    }
 }
 
 /// The bar the proof record states is the contract's own data (#173): every ceiling it
