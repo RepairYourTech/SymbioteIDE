@@ -96,7 +96,13 @@ or the owner a part of the criterion is routed to. Nothing here reports a criter
 - **This suite's cases are held by presence**, as the registry's, parity's, policy's and
   release's are: the chain reading holds that the job runs the suite, not what is inside it.
   The rule driver's case accounting walks the files its own rows state their refusals in, and
-  none of them is this suite — so deleting a case here is caught only by the diff.
+  none of them is this suite — so deleting a case here is caught only by the diff. Measured in
+  a clone, one edit at a time with the edited file restored byte-identically after each:
+  deleting one case left each suite green at one case fewer (registry 41→40, parity 22→21,
+  policy 51→50, release 43→42, this suite 37→36), and gutting one case's body to `pass` left
+  every count unmoved, with the integrity suite at 238 cases OK and the driver reporting
+  `62/62 rules bit; 0 missing tests; 0 stale anchors; 0 silent; 10/10 cases held by their
+  refusals; 0 files of the live tree moved (none)`, exit 0, in all ten states.
 - **The standing boundaries stand**: the comparison-vacuity class the guard's own comparisons
   carry, the coordinated multi-file removal as the external root of trust, and no claim here
   about a shell that has not been selected.
