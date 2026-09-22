@@ -859,4 +859,84 @@ mod tests {
             8
         );
     }
+
+    /// The slice `text` writes between `from` and the next `to` after it.
+    fn region<'a>(text: &'a str, from: &str, to: &str) -> &'a str {
+        let start = text
+            .find(from)
+            .unwrap_or_else(|| panic!("the text must state {from:?}"))
+            + from.len();
+        let rest = &text[start..];
+        let end = rest
+            .find(to)
+            .unwrap_or_else(|| panic!("the text must state {to:?}"));
+        &rest[..end]
+    }
+
+    /// The figure a statement writes, surrounding punctuation trimmed off.
+    fn figure(text: &str) -> usize {
+        let number: String = text
+            .trim_matches(|c: char| !c.is_ascii_digit() && c != ',')
+            .replace(',', "");
+        number
+            .parse()
+            .unwrap_or_else(|_| panic!("a figure, not {text:?}"))
+    }
+
+    /// The identity figures `worktrees.md` states are the ones this module derives: the hex
+    /// characters and digest bits in the worktree id and the branch suffix, and the branch length
+    /// bound the reservation check applies. Each is read from the sentence it is written in and from
+    /// the width or the comparison that applies it, so a document that states an identity this module
+    /// has moved past fails here by name rather than in prose nobody reads.
+    ///
+    /// What it does not read: the prose around the figures — the ref-format rules, the reserved
+    /// namespace, the marker's mode and fsync — which the cases above drive against a real git.
+    #[test]
+    fn the_contract_states_the_identities_this_module_derives() {
+        let contract = include_str!("../../../docs/contracts/worktrees.md");
+        let source = include_str!("lib.rs");
+
+        let stated_identity_hex = figure(region(contract, "`st-` plus ", " hex characters"));
+        let stated_identity_bits = figure(region(contract, " carrying a ", "-bit digest"));
+        let stated_suffix_hex = figure(region(contract, "<stream>/<", "-hex>"));
+        let stated_suffix_bits = figure(region(contract, "the suffix carries a ", "-bit digest"));
+        let stated_branch_bytes =
+            figure(region(contract, "branch length is bounded to ", " bytes"));
+
+        let enforced_branch_bytes =
+            figure(region(source, "if branch.len() > ", " || !branch.split"));
+
+        for (label, stated, enforced) in [
+            (
+                "hex characters in a worktree id",
+                stated_identity_hex,
+                2 * WORKTREE_ID_DIGEST_BYTES,
+            ),
+            (
+                "digest bits in a worktree id",
+                stated_identity_bits,
+                8 * WORKTREE_ID_DIGEST_BYTES,
+            ),
+            (
+                "hex characters in a branch suffix",
+                stated_suffix_hex,
+                2 * BRANCH_SUFFIX_DIGEST_BYTES,
+            ),
+            (
+                "digest bits in a branch suffix",
+                stated_suffix_bits,
+                8 * BRANCH_SUFFIX_DIGEST_BYTES,
+            ),
+            (
+                "bytes in a branch",
+                stated_branch_bytes,
+                enforced_branch_bytes,
+            ),
+        ] {
+            assert_eq!(
+                stated, enforced,
+                "the contract states {stated} {label}, and this module derives {enforced}"
+            );
+        }
+    }
 }
