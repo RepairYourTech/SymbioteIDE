@@ -276,8 +276,14 @@ class TheReadings(unittest.TestCase):
 
     def test_a_matrix_reading_prints_the_rows_of_one_matrix(self):
         report = P.matrix_report(P.matrices(), "runtime")
-        self.assertEqual(report["count"], len([one for one in P.matrices().rows
-                                               if one["matrix"] == "runtime"]))
+        expected = [one for one in P.matrices().rows if one["matrix"] == "runtime"]
+        self.assertTrue(expected, "the committed matrices carry rows for the matrix below")
+        # The rows themselves, not only their number: a reading held by a count the same reader
+        # produced cannot tell an empty list, or another matrix's rows, from the ones it read.
+        self.assertEqual([one["capability"] for one in report["rows"]],
+                         [one["capability"] for one in expected],
+                         "the reading prints the rows of the matrix it names, in the file's order")
+        self.assertEqual(report["count"], len(expected))
         self.assertTrue(all(one["class"] in P.CLASSES for one in report["rows"]))
         with self.assertRaises(P.Refused):
             P.matrix_report(P.matrices(), "no-such-matrix")
