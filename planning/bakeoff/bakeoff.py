@@ -15,7 +15,7 @@ reader could resolve. This record is that join, and it holds what it can be held
   committed body capture reduces bodies (its own scope says so, and #38's entry carries
   no checkbox line), so the issue's words are not carried here and a field beside the
   number would be a claim no rule holds; the words are the issue's, read at the issue;
-* a carrier is the contract's own three kinds, one level up from its `answers`: an
+* a carrier is the contract's own kinds, one level up from its `answers`: an
   `obligation` the contract declares and a run must exercise, a `measurement` it
   predeclares, or an `elsewhere` naming the issue that owns a criterion the contract does
   not carry — and each is read back against its owner, so a carrier that resolves to
@@ -41,7 +41,7 @@ ROOT = HERE.parents[1]
 RECORD = HERE / "bakeoff.json"
 PROGRAM = "planning/integrity/generated/registry.json"
 
-# The carriers a criterion can answer to, the three kinds the contract's own answers use: an
+# The carriers a criterion can answer to, the kinds the contract's own answers use: an
 # obligation it declares, a measurement it predeclares, or the issue that owns what neither
 # carries. A criterion naming two kinds at once is refused, the way an answer is.
 CARRIERS: tuple[str, ...] = ("obligation", "measurement", "elsewhere")

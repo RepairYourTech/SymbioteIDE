@@ -94,7 +94,8 @@ record names that the tree does not carry is a refusal, in both directions.
   have. What is held offline is the *set*: every dependency the manifests declare is recorded, none
   the tree does not declare is, and each is filed under the class the widest table it appears in
   implies. A crate relicensing upstream, or a new transitive licence, is not caught here — the
-  transitive closure is pinned by `Cargo.lock` (exact versions and checksums, 434 packages) and its
+  transitive closure is pinned by `Cargo.lock` (exact versions and checksums, **434** packages) and
+  its
   licences are not enumerated, because this tree carries no per-package licence record and
   inventing one is what the issue forbids. That half is
   [#434](https://github.com/RepairYourTech/SymbioteIDE/issues/434)'s (signed artifacts, SBOM and

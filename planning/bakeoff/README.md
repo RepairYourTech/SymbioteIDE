@@ -74,7 +74,7 @@ or the owner a part of the criterion is routed to. Nothing here reports a criter
 - **The criteria's words are not carried here, because nothing in this tree holds them.**
   The program records how many acceptance items #38's body stated and pins the body's hash
   (`body_sha256`), and the only committed body capture reduces bodies — its own scope says it is
-  not an exact-body provenance claim, and #38's captured body is 194 bytes with zero checkbox
+  not an exact-body provenance claim, and #38's captured body is 196 bytes with zero checkbox
   lines — so the words are not in this tree to be read back. The rows therefore state the
   number and the carriers, a field beside them is refused, and a reader reads each criterion's
   words at the issue; what is held is the count, the routing and that nothing unheld is carried.
