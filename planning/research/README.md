@@ -99,10 +99,12 @@ every other dimension and every identity alone.
 
 ## What this does not claim
 
-- **The dossiers are a seed, not the market.** Four products — Orca, Traycer, BridgeMind One and
-  T3 Code — carry atomic claims, and only where an official source was retrieved on 2026-09-20;
-  the other six universe entries declare a research gap and nothing else. The launch-baseline
-  universe is not researched, and #171's dossiers for it are owed.
+- **The dossiers are a seed, not the market.** Orca, Traycer, BridgeMind One and T3 Code carry
+  atomic claims, and only where an official source was retrieved on 2026-09-20; the other universe
+  entries declare a research gap and nothing else. The launch-baseline universe is not researched,
+  and #171's dossiers for it are owed. No case reads this file: the registry's own records are what
+  the suite checks, so a count written here is a copy nothing refuses, and the counts that stood
+  beside these names are gone rather than left to drift.
 - **Excerpts are what was retrieved, not a full reading.** Each excerpt is the text the source
   returned for the query that found it, recorded on the date it was retrieved. Nothing here fetched
   a page in full or judged whether the product delivers what it says.

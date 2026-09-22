@@ -98,7 +98,7 @@ or the owner a part of the criterion is routed to. Nothing here reports a criter
   the rule driver's case accounting walks only the files its rows state their refusals in — none
   of which is one of those suites — so a case emptied here still passes and is caught only by the
   diff, while a case deleted here is visible in the change that deletes it rather than only in its
-  diff. The measurement, the counts of all five suites and the caveat on the method are stated
+  diff. The measurement, the counts of those suites and the caveat on the method are stated
   once, with the case that reads them from these suites' own test files, in
   [the reader's own README](../integrity/README.md); this file does not restate them.
 - **The standing boundaries stand**: the comparison-vacuity class the guard's own comparisons

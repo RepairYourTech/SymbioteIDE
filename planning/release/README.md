@@ -15,14 +15,14 @@ As committed: **8** metrics (2 measured, 6 delegated), **4** gates, **7** non-go
 `graph-precision-recall`, `recovery`, `latency`, `mobile-control` and `delivery` are each defined
 with what they measure and their unit. A metric's `source` is where its value comes from: `measured`
 names the case in this tree that produces it, `delegated` names the issue that owns it and why this
-record does not restate the definition. Two are measured here — `recovery` by
+record does not restate the definition. The measured ones are named here — `recovery` by
 `crates/symbiote-architecture/tests/audit.rs`'s
 `the_committed_history_recovers_what_the_ledger_publishes`, and `delivery` by the chain case that
-holds `.github/workflows/roadmap-integrity.yml` — and six are delegated: #456 (quality), #435 (task
+holds `.github/workflows/roadmap-integrity.yml` — and the rest are delegated: #456 (quality), #435 (task
 success), #329 (context efficiency), #385 (graph precision/recall), #375 (latency) and #407 (mobile
 control). Both measured metrics carry a stated narrowing with the issues that own the wider metric.
 
-**Four release gates** — `technical-preview`, `alpha`, `beta`, `stable` — each with what it permits,
+**Four gates** — `technical-preview`, `alpha`, `beta`, `stable` — each with what it permits,
 what it withholds, the metrics it requires, the non-goals that bound it and the registers it tracks.
 Every gate requires `golden-path`: a candidate that cannot name the case and the committed trace
 carrying a client request to the evidence it publishes does not pass. A gate is not a status: no
@@ -40,9 +40,9 @@ the gap where one does.
 **Two registers regressions are tracked against**, read rather than restated: the constitutional
 invariants from `docs/contracts/constitution-report.json` and the competitor-parity rows from
 `planning/parity/matrices.json`. Each register names the case that holds its own artifact, and every
-figure this file writes beside a noun — here, in the figures above, and in the limits below — is held
-against those files by one case, so a copy that moves without the others reds by name rather than
-going unread.
+figure this file writes beside one of the record's own nouns — here, in the figures above, and in
+the limits below — is held against those files by one case, as a numeral or as the word for it, so a
+copy that moves without the others reds by name rather than going unread.
 
 **The concerns reviewed** are the applicability marks the licensing and trust policy already
 carries, read from `planning/policy/policy.json`: five concerns, each `required`,
@@ -72,12 +72,12 @@ python3 planning/release/release.py --registers  # each register and what it car
 | a golden path with a missing artifact, an undeclared case, or no owner | a candidate oweing evidence that does not exist |
 | a register whose source is missing, carries nothing, or whose holding case no file declares | a regression register that cannot bound a change |
 | a concern reviewed that the policy record does not mark, or one it marks that is not reviewed | applicability assumed rather than checked |
-| a concern marked outside the three marks, or tracked by an issue the program lacks | a mark that cannot be read |
+| a concern marked outside the marks the policy record states, or tracked by an issue the program lacks | a mark that cannot be read |
 
 ## Limits, with their measurement
 
-- **Six of the eight metrics are delegated, and the two measured ones are narrowed.** This tree
-  measures the architecture evidence chain's recovery and the delivery of its own checks
+- **The metrics this tree does not measure are delegated, and the measured ones are narrowed.**
+  This tree measures the architecture evidence chain's recovery and the delivery of its own checks
   (`--registers` reads 24 invariants and 18 parity rows); it measures no release candidate's
   quality, task success, context efficiency, graph precision/recall, latency or mobile control,
   and `--metrics` prints the owner of each. The narrowings are named on the metrics themselves.
@@ -90,8 +90,8 @@ python3 planning/release/release.py --registers  # each register and what it car
 - **The registers are read from their owners, never restated.** A regression the constitution
   report or the parity matrices do not carry cannot be tracked here, and a register whose artifact
   carries nothing is refused.
-- **Applicability belongs to the policy record.** This record reviews the five marks
-  `planning/policy/policy.json` carries and refuses a reviewed concern the policy record does not
+- **Applicability belongs to the policy record.** This record reviews the concerns
+  `planning/policy/policy.json` marks and refuses a reviewed concern the policy record does not
   mark, or one it marks that is not reviewed; it does not select a licence, a level or a mark.
 - **The figures above are held.** `test_release.py` reads this file and refuses a figure that
   disagrees with the record, the report or the matrices, so a count that nothing carries cannot go

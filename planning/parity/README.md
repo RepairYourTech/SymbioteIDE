@@ -88,8 +88,8 @@ the file measures.
   its decision and that a workflow names where it leaves the product. They cannot hold whether a
   stance is *right*: nothing here runs a competitor or measures Symbiote's own behaviour beyond the
   requirements and decisions it cites.
-- **The evidence is #171's, and thin.** Only four products carry claims in the registry, so most of
-  the eighteen axes are `UNKNOWN` with a research question rather than a market level — including the
+- **The evidence is #171's, and thin.** Only the products that registry carries claims for are read
+  here, so most of the axes are `UNKNOWN` with a research question rather than a market level — including the
   whole knowledge matrix, which no codebase-knowledge product has a claim for. Criterion 8 of #172
   (Living Developer Knowledge table stakes versus differentiators) cannot be met from this registry.
 - **No product fact is repeated here.** Where a row needs to say what a competitor does, it points at

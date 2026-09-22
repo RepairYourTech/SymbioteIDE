@@ -328,6 +328,14 @@ class HonestEdits(unittest.TestCase):
         self.assertEqual(release.problems(row, TREE, PROGRAM), [])
 
 
+# The words this case reads where the README writes a figure as one: a count written twice is a
+# count one of the copies can leave stale while the case stays green, and the prose states several of
+# the record's own figures in words — "**Four gates**", "**Seven non-goals**", "**Two registers**",
+# "five concerns" — beside the numerals the paragraph above them carries.
+NUMBER_WORDS = ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+                "ten", "eleven", "twelve")
+
+
 class ReadmeFigures(unittest.TestCase):
     def test_the_readme_states_the_numbers_this_record_carries(self):
         readme = re.sub(r"\s+", " ", (release.HERE / "README.md").read_text())
@@ -341,12 +349,14 @@ class ReadmeFigures(unittest.TestCase):
                           len(RECORD["gates"]), goals, len(RECORD["registers"]),
                           registers.get("constitution", 0), registers.get("parity", 0),
                           len(RECORD["concerns"]["reviewed"])])
-        # And every other place this file writes one of those figures in the `N <noun>` form is the
-        # same figure: a number written twice is a number one of the copies can leave stale while
-        # this case stays green, which is how the registers paragraph carried an unread 18 until a
-        # pass removed it. The limit, stated: a figure written another way — a bare `(18)` beside a
-        # path — is not read by this, so the descriptive sentences name the files rather than
-        # repeat a count.
+        # And every other place this file writes one of those figures beside one of the record's
+        # own nouns is the same figure, as a numeral or as the word for it: a count written twice is
+        # a count one of the copies can leave stale while this case stays green, which is how the
+        # registers paragraph carried an unread 18 until a pass removed it, and how "Four gates" sat
+        # beside "**4** gates" until this scan read it. The limit, stated: a figure
+        # written another way — a bare `(18)` beside a path, or a count of something this record
+        # does not carry — is not read by this, so the descriptive sentences name the files rather
+        # than repeat a count.
         held = {
             "metrics": count,
             "measured": sources.get("measured", 0),
@@ -358,10 +368,14 @@ class ReadmeFigures(unittest.TestCase):
             "parity rows": registers.get("parity", 0),
             "concerns": len(RECORD["concerns"]["reviewed"]),
         }
+        spelled = "|".join(NUMBER_WORDS)
         for noun, expected in held.items():
-            written = re.findall(rf"(\d+)\s+{noun}\b", readme.replace("**", ""))
+            written = re.findall(rf"(\d+|{spelled})\s+{noun}\b", readme.replace("**", ""),
+                                 flags=re.IGNORECASE)
             self.assertTrue(written, f"the README no longer states how many {noun} the record carries")
-            self.assertEqual([int(one) for one in written], [expected] * len(written),
+            counted = [int(one) if one.isdigit() else NUMBER_WORDS.index(one.lower()) + 1
+                       for one in written]
+            self.assertEqual(counted, [expected] * len(counted),
                              f"the README states {written} {noun} where the record carries {expected}")
 
 
