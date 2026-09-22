@@ -178,7 +178,7 @@ impl Options {
 
 /// The flags each command can honor. A flag outside this set is a usage error
 /// that names it, never a silent no-op. Every daemon command maps a request
-/// over the socket, so all five daemon-facing flags apply to each of them
+/// over the socket, so every daemon-facing flag applies to each of them
 /// (`--policy` is consulted only for a dangerous operation and `--yes` only
 /// authorizes one, but both are valid flags on any daemon command). The local
 /// commands honor only what they use: `schema` publishes and compares

@@ -5,7 +5,7 @@
 //! invariant named by the [product constitution](../../../docs/architecture/product-constitution.md)
 //! and by issue #170 into a record with a stable identifier, the exact normative
 //! text it depends on, and the checks that must pass for it to hold. Each
-//! invariant is evaluated through three channels, and a channel that finds
+//! invariant is evaluated through its channels, and a channel that finds
 //! nothing to check is a failure rather than a pass:
 //!
 //! * **document** — [`document`]: a required clause of the constitution must be
@@ -32,7 +32,7 @@
 //! Each concern has one owner: [`catalog`] holds the inventory and nothing else,
 //! [`document`], [`repository`] and [`harness`] each own one channel's rules,
 //! [`claims`] owns the contract document's own claims about the report, and
-//! [`report`] owns the verdict vocabulary, the assembly of the three channels
+//! [`report`] owns the verdict vocabulary, the assembly of the channels
 //! and the committed encoding. A channel depends on [`report`] for the verdict
 //! type and never on another channel, so a change to one channel's rules lands
 //! in that channel's file. Where an invariant is an integration obligation owned
