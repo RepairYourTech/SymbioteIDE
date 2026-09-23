@@ -1352,4 +1352,240 @@ mod tests {
             );
         }
     }
+
+    fn small_usage() -> TokenUsage {
+        TokenUsage::Known {
+            input_tokens: 1,
+            output_tokens: 1,
+            cached_input_tokens: None,
+            reasoning_tokens: None,
+        }
+    }
+
+    /// A transport that proposes the declared, non-shell `edit_file` tool for
+    /// `continuations` turns and then stops. Propose-only turns keep the
+    /// conversation small, so the turn cap is what the run meets.
+    struct Proposes {
+        continuations: u32,
+    }
+    impl InferenceTransport for Proposes {
+        fn request(
+            &mut self,
+            request: &ProviderRequest,
+            _model: &ModelDescriptor,
+        ) -> Result<ProviderResponse, ProviderError> {
+            if self.continuations == 0 {
+                return Ok(stop_response(request, "done"));
+            }
+            self.continuations -= 1;
+            Ok(ProviderResponse {
+                schema_version: request.schema_version,
+                request_id: request.request_id.clone(),
+                provider_id: request.provider_id.clone(),
+                model_id: request.model_id.clone(),
+                text: "t".into(),
+                tool_calls: vec![ProviderToolCall {
+                    call_id: RequestId::new(format!("call-{}", self.continuations)).unwrap(),
+                    name: "edit_file".into(),
+                    arguments: serde_json::json!({"path": "a.rs"}),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+                usage: small_usage(),
+            })
+        }
+    }
+
+    /// The turn cap is the declaration's at both edges: a run whose 64th turn
+    /// stops is admitted, and the 65th is refused with `TurnCapReached`
+    /// before any provider call. The contract case above only compares the
+    /// numeral.
+    #[test]
+    fn the_turn_cap_admits_its_last_turn_and_refuses_the_next() {
+        let task = task();
+        let dispatch = dispatch(&task);
+        let mut at = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        let run = at
+            .run(
+                "Run to the cap",
+                &mut Proposes {
+                    continuations: MAX_TURNS_PER_RUN - 1,
+                },
+            )
+            .unwrap();
+        assert_eq!(run.turns, MAX_TURNS_PER_RUN);
+        assert_eq!(run.halted, Some(HaltReason::Stop));
+        let mut past = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        assert_eq!(
+            past.run(
+                "Run past the cap",
+                &mut Proposes {
+                    continuations: MAX_TURNS_PER_RUN,
+                },
+            ),
+            Err(LoopError::TurnCapReached)
+        );
+        assert_eq!(past.halted, Some(HaltReason::TurnCapReached));
+        assert_eq!(past.turns, MAX_TURNS_PER_RUN);
+    }
+
+    /// A transport that proposes the declared, executable `shell` tool for
+    /// `results` turns and then stops.
+    struct RunsShell {
+        results: u32,
+    }
+    impl InferenceTransport for RunsShell {
+        fn request(
+            &mut self,
+            request: &ProviderRequest,
+            _model: &ModelDescriptor,
+        ) -> Result<ProviderResponse, ProviderError> {
+            if self.results == 0 {
+                return Ok(stop_response(request, "done"));
+            }
+            self.results -= 1;
+            Ok(ProviderResponse {
+                schema_version: request.schema_version,
+                request_id: request.request_id.clone(),
+                provider_id: request.provider_id.clone(),
+                model_id: request.model_id.clone(),
+                text: String::new(),
+                tool_calls: vec![ProviderToolCall {
+                    call_id: RequestId::new(format!("call-{}", self.results)).unwrap(),
+                    name: "shell".into(),
+                    arguments: serde_json::json!({"program": "ls", "arguments": []}),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+                usage: small_usage(),
+            })
+        }
+    }
+
+    /// One scripted output per shell call, in order.
+    struct SizedOutput {
+        sizes: std::collections::VecDeque<usize>,
+    }
+    impl tools::ShellToolExecutor for SizedOutput {
+        fn run_shell(
+            &mut self,
+            _invocation: &tools::ShellInvocation,
+            _worktree: &std::path::Path,
+        ) -> Result<(Vec<u8>, Option<i32>), tools::ToolExecError> {
+            let size = self
+                .sizes
+                .pop_front()
+                .expect("one scripted output per tool call");
+            Ok((vec![b'x'; size], Some(0)))
+        }
+    }
+
+    /// The tool-result budget is the declaration's, driven through the real
+    /// loop. Results are read back within the crate's own output bound and
+    /// accumulate in the conversation, so three states are what the budget's
+    /// far edge can show:
+    ///
+    ///  * a run whose accumulated results stay under it completes;
+    ///  * a run whose accumulated results cross it halts at it with
+    ///    `BudgetExhausted`, with the request that carried those results still
+    ///    inside the SDK's envelope;
+    ///  * a run whose accumulated results *meet* it exactly is not stopped by
+    ///    it — the budget's own `>` is strict — and what refuses the following
+    ///    request is the envelope, not this budget. The sum cannot sit between
+    ///    those two states by one result's worth: the envelope and the budget
+    ///    are the same number, so a set at the budget cannot be carried.
+    #[test]
+    fn the_tool_result_budget_halts_the_run_that_crosses_it() {
+        let task = task();
+        let dispatch = dispatch(&task);
+        let worktree =
+            std::env::temp_dir().join(format!("symbiote-result-bound-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&worktree);
+        let run = |sizes: Vec<usize>| {
+            let results = sizes.len() as u32;
+            let mut session = NativeSession::new(&dispatch, model(), Timestamp(20))
+                .unwrap()
+                .with_tool_execution(
+                    Box::new(SizedOutput {
+                        sizes: sizes.into(),
+                    }),
+                    worktree.clone(),
+                );
+            let outcome = session
+                .run("Run the tools", &mut RunsShell { results })
+                .map(|_| ());
+            (outcome, session.halted, session.tool_result_bytes)
+        };
+        let under = run(vec![16_000; 16]);
+        assert_eq!(under.0, Ok(()));
+        assert_eq!(under.1, Some(HaltReason::Stop));
+        assert_eq!(under.2, 16 * 16_000);
+        assert!(under.2 < MAX_TOOL_RESULT_BYTES);
+        let crossed = run(vec![16_000; 17]);
+        assert_eq!(crossed.0, Err(LoopError::BudgetExhausted));
+        assert_eq!(crossed.1, Some(HaltReason::BudgetExhausted));
+        assert_eq!(crossed.2, 17 * 16_000);
+        assert!(crossed.2 > MAX_TOOL_RESULT_BYTES);
+        let met = run(vec![16_384; 16]);
+        assert_eq!(met.0, Err(LoopError::EnvelopeMismatch));
+        assert_eq!(met.1, Some(HaltReason::EnvelopeMismatch));
+        assert_eq!(met.2, MAX_TOOL_RESULT_BYTES);
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
+
+    /// The 512 KiB accumulated-output backstop cannot fire through this loop.
+    /// It is exactly twice the SDK's 256 KiB provider envelope, and every
+    /// response text is carried back into the next request, so two maximal
+    /// responses cannot both be sent: the request that would carry the first
+    /// is refused with `EnvelopeMismatch` while the backstop is still a whole
+    /// envelope away. This drives the largest response the envelope admits
+    /// and records which bound actually fires; reaching the backstop needs a
+    /// context path that does not re-send every prior text (compaction),
+    /// which this crate does not have.
+    #[test]
+    fn the_envelope_bound_refuses_before_the_accumulated_backstop_can_fire() {
+        use symbiote_runtime_sdk::provider::MAX_ENVELOPE_BYTES;
+        let task = task();
+        let dispatch = dispatch(&task);
+        struct Huge {
+            bytes: usize,
+            first: bool,
+        }
+        impl InferenceTransport for Huge {
+            fn request(
+                &mut self,
+                request: &ProviderRequest,
+                _model: &ModelDescriptor,
+            ) -> Result<ProviderResponse, ProviderError> {
+                if !self.first {
+                    return Ok(stop_response(request, "done"));
+                }
+                self.first = false;
+                Ok(ProviderResponse {
+                    schema_version: request.schema_version,
+                    request_id: request.request_id.clone(),
+                    provider_id: request.provider_id.clone(),
+                    model_id: request.model_id.clone(),
+                    text: "x".repeat(self.bytes),
+                    tool_calls: vec![ProviderToolCall {
+                        call_id: RequestId::new("call-huge").unwrap(),
+                        name: "edit_file".into(),
+                        arguments: serde_json::json!({"path": "a.rs"}),
+                    }],
+                    finish_reason: FinishReason::ToolCalls,
+                    usage: small_usage(),
+                })
+            }
+        }
+        let bytes = MAX_ENVELOPE_BYTES - 400;
+        let mut session = NativeSession::new(&dispatch, model(), Timestamp(20)).unwrap();
+        assert_eq!(
+            session.run("Send a maximal envelope", &mut Huge { bytes, first: true },),
+            Err(LoopError::EnvelopeMismatch)
+        );
+        assert_eq!(session.halted, Some(HaltReason::EnvelopeMismatch));
+        assert_eq!(
+            session.accumulated_output_bytes, bytes,
+            "the first response was absorbed; the second request is what the envelope refused"
+        );
+        assert!(session.accumulated_output_bytes < MAX_ACCUMULATED_OUTPUT_BYTES);
+    }
 }

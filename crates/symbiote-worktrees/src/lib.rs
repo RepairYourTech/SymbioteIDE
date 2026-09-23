@@ -657,6 +657,25 @@ mod tests {
                 WorktreeError::InvalidSeed
             );
         }
+        // The bound's own edge: the longest seed the contract admits (its
+        // separately-sentence-bounded end is held below) derives rather than
+        // merely passing the character gate, and one character past it is
+        // refused in the loop above.
+        let contract = include_str!("../../../docs/contracts/worktrees.md");
+        let stated_seed_bytes: usize = figure(region(contract, "policy seed (1–", " characters"));
+        assert_eq!(
+            stated_seed_bytes, MAX_SEED_BYTES,
+            "the contract admits seeds up to {stated_seed_bytes} characters, and this crate bounds {MAX_SEED_BYTES}"
+        );
+        let longest = "x".repeat(MAX_SEED_BYTES);
+        assert_eq!(policy_seed(&longest).unwrap(), longest.as_str());
+        let derived = Derived::derive(DeriveInputs {
+            project_id: &ProjectId::new("demo").unwrap(),
+            root_id: &symbiote_domain::RootId::new("root").unwrap(),
+            stream_id: &symbiote_domain::ChangeStreamId::new("s").unwrap(),
+            seed: &longest,
+        });
+        assert!(derived.is_ok(), "a {MAX_SEED_BYTES}-byte seed is in bounds");
         assert!(!ref_component(".starts-with-dot"));
         assert!(!ref_component("ends.lock"));
         assert!(!ref_component("a..b"));

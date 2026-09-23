@@ -143,3 +143,20 @@ fn published_inspector_inputs_are_valid_and_carry_no_observed_authority() {
             .all(|resource| !resource.is_eligible())
     );
 }
+
+/// `agent-environment.md` states the parser limits input to 1 MiB, and the
+/// bound is the parser's own: a document of exactly `MAX_MANIFEST_BYTES`
+/// bytes parses (the padding is JSON-legal whitespace, so the shape is
+/// unchanged), and one byte past it is refused before any field is read.
+/// The case above only asserts its fixture is *under* the bound.
+#[test]
+fn a_manifest_at_the_byte_bound_parses_and_one_past_is_refused() {
+    let base = json!({"schema_version":1,"project_id":"project-a"}).to_string();
+    let at = format!(
+        "{base}{}",
+        " ".repeat(symbiote_config::MAX_MANIFEST_BYTES - base.len())
+    );
+    assert_eq!(at.len(), symbiote_config::MAX_MANIFEST_BYTES);
+    assert!(ProjectManifest::parse(&at).is_ok());
+    assert!(ProjectManifest::parse(&format!("{at} ")).is_err());
+}

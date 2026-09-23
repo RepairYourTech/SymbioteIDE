@@ -214,3 +214,16 @@ fn unsupported_platform_never_claims_operating_system_probe_success() {
         Err(PulseError::Unknown)
     );
 }
+
+/// The sample lifetime bound is the declaration's, at its far edge: a pulse
+/// whose window is exactly `MAX_TTL_MS` validates, and one millisecond past
+/// it does not. The rejection case above drives only the clearly-stale side
+/// with a literal past the bound; this drives the bound itself.
+#[test]
+fn a_sample_at_the_lifetime_bound_validates_and_one_past_does_not() {
+    let mut sample = pulse();
+    sample.expires_at = Timestamp(1_000 + MAX_TTL_MS);
+    assert_eq!(sample.validate(), Ok(()));
+    sample.expires_at = Timestamp(1_001 + MAX_TTL_MS);
+    assert_eq!(sample.validate(), Err(PulseError::Invalid));
+}

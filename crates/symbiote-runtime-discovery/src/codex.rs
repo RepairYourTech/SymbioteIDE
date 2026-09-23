@@ -377,3 +377,115 @@ pub fn discover(
     }
     Err(CodexDiscoveryError::LimitExceeded)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// The pinned handshake against a scripted reply queue. Inline, so the
+    /// private bounds below are the declarations driven; the integration
+    /// fixture proves the same protocol at the crate boundary.
+    struct Scripted(VecDeque<Value>);
+    impl DiscoveryTransport for Scripted {
+        fn send(&mut self, _: &Value, _: Duration) -> Result<(), CodexDiscoveryError> {
+            Ok(())
+        }
+        fn recv(&mut self, _: Duration) -> Result<Value, CodexDiscoveryError> {
+            self.0.pop_front().ok_or(CodexDiscoveryError::Transport)
+        }
+    }
+    fn item(id: &str) -> Value {
+        json!({"id":id,"model":"gpt-5.4","isDefault":true,"hidden":false,
+            "defaultReasoningEffort":"medium",
+            "supportedReasoningEfforts":[{"reasoningEffort":"medium","description":"ignored"}],
+            "displayName":"ignored","description":"ignored"})
+    }
+    /// One `model/list` reply carrying `ids`, answered as the request whose
+    /// ordinal is `index`.
+    fn page(index: usize, ids: &[String], cursor: Option<&str>) -> Value {
+        let data: Vec<Value> = ids.iter().map(|id| item(id)).collect();
+        json!({"id": 3 + index, "result": {"data": data, "nextCursor": cursor}})
+    }
+    fn ids(prefix: &str, count: usize) -> Vec<String> {
+        (0..count).map(|i| format!("{prefix}{i:03}")).collect()
+    }
+    fn scripted(pages: Vec<Value>, notifications: usize) -> Scripted {
+        let mut replies: VecDeque<Value> = VecDeque::new();
+        for _ in 0..notifications {
+            replies.push_back(json!({"method":"account/updated","params":{"ignored":"private"}}));
+        }
+        replies.push_back(
+            json!({"id":1,"result":{"userAgent":format!("symbiote/{CODEX_VERSION} (Linux)")}}),
+        );
+        replies.push_back(json!({"id":2,"result":{"requiresOpenaiAuth":true,"account":null}}));
+        for page in pages {
+            replies.push_back(page);
+        }
+        Scripted(replies)
+    }
+    fn discover_script(replies: Scripted) -> Result<CodexProbeReport, CodexDiscoveryError> {
+        let mut replies = replies;
+        discover(&mut replies, Duration::from_secs(5))
+    }
+
+    /// The notification budget is the declaration's at its far edge: the
+    /// last frame it admits still leaves the handshake finishable, and one
+    /// past it ends the run. (The integration fixture drives only the
+    /// refusal, with a literal past the bound.)
+    #[test]
+    fn a_frame_flood_at_the_notification_bound_still_completes() {
+        let at = discover_script(scripted(
+            vec![page(0, &["picker.one".into()], None)],
+            MAX_NOTIFICATIONS,
+        ))
+        .unwrap();
+        assert_eq!(at.models.len(), 1);
+        let past = discover_script(scripted(
+            vec![page(0, &["picker.one".into()], None)],
+            MAX_NOTIFICATIONS + 1,
+        ));
+        assert_eq!(past, Err(CodexDiscoveryError::LimitExceeded));
+    }
+
+    /// The page bound is the declaration's, not one item less: a page of
+    /// exactly `PAGE_SIZE` distinct models is listed, and one item past it
+    /// is refused before any of the page is absorbed.
+    #[test]
+    fn a_page_at_the_item_bound_is_listed_and_one_past_is_refused() {
+        let at = discover_script(scripted(vec![page(0, &ids("m", PAGE_SIZE), None)], 0)).unwrap();
+        assert_eq!(at.models.len(), PAGE_SIZE);
+        let past = discover_script(scripted(vec![page(0, &ids("m", PAGE_SIZE + 1), None)], 0));
+        assert_eq!(past, Err(CodexDiscoveryError::LimitExceeded));
+    }
+
+    /// The model total is the page budget times the page bound, so its far
+    /// edge is the page cap: eight full pages list every admissible model
+    /// (`MAX_PAGES * PAGE_SIZE == MAX_MODELS`), and a ninth page — the only
+    /// shape that could exceed the total — is refused by the page budget
+    /// before the total check can ever see it.
+    #[test]
+    fn the_full_pagination_lists_every_admissible_model_and_a_ninth_page_is_refused() {
+        let full = |pages: usize, cursor_at_end: bool| {
+            let mut replies = Vec::new();
+            for p in 0..pages {
+                let cursor = if p + 1 == pages && !cursor_at_end {
+                    None
+                } else {
+                    Some(format!("next-{p}"))
+                };
+                replies.push(page(
+                    p,
+                    &ids(&format!("p{p}_"), PAGE_SIZE),
+                    cursor.as_deref(),
+                ));
+            }
+            replies
+        };
+        let at = discover_script(scripted(full(MAX_PAGES, false), 0)).unwrap();
+        assert_eq!(at.models.len(), MAX_PAGES * PAGE_SIZE);
+        assert_eq!(at.models.len(), MAX_MODELS);
+        let past = discover_script(scripted(full(MAX_PAGES + 1, true), 0));
+        assert_eq!(past, Err(CodexDiscoveryError::LimitExceeded));
+    }
+}
