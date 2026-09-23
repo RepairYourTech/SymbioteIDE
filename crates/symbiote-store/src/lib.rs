@@ -876,6 +876,36 @@ impl Store {
         read_task(&self.connection, id)
     }
 
+    /// Every registered Project, in registration order, each record
+    /// identity-checked exactly as [`Self::project`] reads one. Registration
+    /// is the only operation that inserts a Project row, so insertion order is
+    /// registration order; the list therefore carries canonical records and
+    /// names no path, filename or Host location — a Project's identity is its
+    /// stable `ProjectId`, and a Root's observed placement lives on the Root.
+    ///
+    /// Order is the whole list's own fact and is fixed here rather than by the
+    /// caller: a registry that reordered itself between reads would make
+    /// "most recently registered" an inference each client rediscovers.
+    pub fn projects(&self) -> Result<Vec<Project>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, body FROM projects ORDER BY rowid")?;
+        let rows =
+            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut projects = Vec::new();
+        for row in rows {
+            let (id, body) = row?;
+            let project: Project = serde_json::from_str(&body)?;
+            if project.id.as_str() != id {
+                return Err(StoreError::Integrity(
+                    "project key differs from body".into(),
+                ));
+            }
+            projects.push(project);
+        }
+        Ok(projects)
+    }
+
     /// Reads the Change Stream a task belongs to (via the task's recorded
     /// stream id): the worktree id, branch, and base commit that dispatch
     /// provisioning validates and materializes against. Integrity-checked

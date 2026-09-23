@@ -316,6 +316,46 @@ fn project(id: &str) -> Value {
         "roots":[{"id":format!("root-{id}"),"project_id":id,"revision":0,"repository":null,"host_paths":{}}],
         "roles":[{"id":format!("lead-{id}"),"project_id":id,"revision":0,"name":"Lead","operating_contract":{"id":"lead-contract","revision":1}}]}})
 }
+#[test]
+fn the_project_registry_is_listed_in_order_and_survives_a_restart() {
+    let mut host = Host::new();
+    // Identifiers chosen so registration order and identifier order disagree:
+    // a daemon that sorted its registry could not hide behind a fixture where
+    // the two coincide.
+    ok(&host.call(request("register-zeta", project("zeta"))));
+    ok(&host.call(request("register-alpha", project("alpha"))));
+    let listed = host.call(request("list-projects", json!({"kind":"list_projects"})));
+    let listed_ids: Vec<&str> = ok(&listed)["data"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|project| project["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed_ids, vec!["zeta", "alpha"]);
+    // Each entry is the canonical record the single-record read answers, so a
+    // listing cannot report a name the Project does not hold.
+    assert_eq!(ok(&listed)["data"]["projects"][0]["name"], json!("zeta"));
+    assert_eq!(
+        ok(&host.call(request(
+            "read-zeta",
+            json!({"kind":"get_project","project_id":"zeta"})
+        )))["data"],
+        ok(&listed)["data"]["projects"][0]
+    );
+    // The registry is durable: the same order after a crash and restart.
+    host.crash();
+    host.start();
+    let after = host.call(request("list-projects-2", json!({"kind":"list_projects"})));
+    assert_eq!(ok(&after)["data"], ok(&listed)["data"]);
+    // A registry read changes nothing: it is neither a mutation nor a journal
+    // event. Only the two registrations replayed, and no third event exists.
+    let journal = host.call(request(
+        "registry-events",
+        json!({"kind":"read_journal","project_id":"zeta","after":0,"limit":100}),
+    ));
+    assert_eq!(ok(&journal)["data"]["events"].as_array().unwrap().len(), 1);
+}
+
 fn task(id: &str, project: &str) -> Value {
     json!({"kind":"create_task","task":{"id":id,"project_id":project,"root_id":format!("root-{project}"),"role_id":format!("lead-{project}"),
       "origin":{"kind":"objective","work":{"project_id":project,"id":{"kind":"objective","id":format!("maintenance-{project}")}}},

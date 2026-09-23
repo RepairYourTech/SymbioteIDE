@@ -209,6 +209,25 @@ fn project_draft() -> ProjectDraft {
         }],
     }
 }
+/// One canonical Project record with a stable identity and no roots: enough
+/// for a registry listing, which carries records rather than placements.
+fn project_record(id: &str) -> Project {
+    Project {
+        id: ProjectId::new(id).unwrap(),
+        revision: Revision(0),
+        name: format!("Project {id}"),
+        owner: UserId::new("user-a").unwrap(),
+        roots: BTreeSet::new(),
+        lead: RoleId::new(format!("lead-{id}")).unwrap(),
+        disposition: RecordDisposition::Active,
+        provenance: Provenance {
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+            actor: Actor::User(UserId::new("user-a").unwrap()),
+            external_references: vec![],
+        },
+    }
+}
 fn task_draft() -> TaskDraft {
     TaskDraft {
         origin: TaskOrigin::Objective(WorkRef {
@@ -561,6 +580,80 @@ fn authorization_is_per_operation_project_and_loaded_resource() {
             &request(Operation::Shutdown {})
         )
         .is_ok()
+    );
+}
+
+#[test]
+fn the_registry_listing_is_scoped_by_the_callers_own_read_grants() {
+    let records = vec![
+        project_record("registry-one"),
+        project_record("registry-two"),
+        project_record("registry-three"),
+    ];
+    // The local owner sees every record, in the order it supplied them.
+    assert_eq!(
+        authorized_projects(
+            &Principal::local_owner(UserId::new("local").unwrap()),
+            records.clone()
+        ),
+        records
+    );
+    // A restricted caller sees exactly the Projects it may read: Read on the
+    // second record admits that record alone, and the order is preserved.
+    let reader = Principal::restricted(
+        UserId::new("reader").unwrap(),
+        BTreeMap::from([(
+            records[1].id.clone(),
+            BTreeSet::from([ProjectPermission::Read]),
+        )]),
+    );
+    assert_eq!(
+        authorized_projects(&reader, records.clone()),
+        vec![records[1].clone()]
+    );
+    // A caller that may manage a Project but not read it does not see it in
+    // its registry: the listing applies the same Read rule GetProject applies
+    // to one record, so authorization cannot be widened by asking for a list.
+    let manager = Principal::restricted(
+        UserId::new("manager").unwrap(),
+        BTreeMap::from([(
+            records[2].id.clone(),
+            BTreeSet::from([ProjectPermission::ManageWork]),
+        )]),
+    );
+    assert!(authorized_projects(&manager, records.clone()).is_empty());
+    // A caller with no grants sees an empty registry, never every Project.
+    let stranger = Principal::restricted(UserId::new("stranger").unwrap(), BTreeMap::new());
+    assert!(authorized_projects(&stranger, records).is_empty());
+}
+
+#[test]
+fn the_registry_listing_is_admitted_and_carries_no_identity_to_claim() {
+    // The gate admits the operation for any authenticated caller; the scoping
+    // is the per-record read rule above, never the connection.
+    for principal in [
+        principal(),
+        Principal::restricted(UserId::new("stranger").unwrap(), BTreeMap::new()),
+    ] {
+        assert!(authorize(&principal, &request(Operation::ListProjects {})).is_ok());
+    }
+    // The request names no Project and no identity: there is no field in which
+    // a caller could claim to read another's registry.
+    let wire = serde_json::to_value(request(Operation::ListProjects {})).unwrap();
+    assert_eq!(wire["operation"], json!({"kind": "list_projects"}));
+    assert_eq!(wire["operation"].as_object().unwrap().len(), 1);
+    // The response is the declared `projects` kind carrying canonical records.
+    let body = Response::success(
+        &request(Operation::ListProjects {}),
+        ResponseBody::Projects {
+            projects: vec![project_record("registry-one")],
+        },
+    );
+    let encoded = serde_json::to_value(body).unwrap();
+    assert_eq!(encoded["result"]["Ok"]["kind"], json!("projects"));
+    assert_eq!(
+        encoded["result"]["Ok"]["data"]["projects"][0]["id"],
+        json!("registry-one")
     );
 }
 

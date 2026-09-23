@@ -1131,6 +1131,16 @@ fn execute(
             .project(project_id)
             .map(ResponseBody::Project)
             .map_err(storage_error),
+        Operation::ListProjects {} => {
+            // The registry is scoped record by record, not by the connection:
+            // `authorized_projects` applies the same per-Project Read rule
+            // `GetProject` applies to one record. Order is the store's
+            // registration order and is preserved.
+            let projects = store.projects().map_err(storage_error)?;
+            Ok(ResponseBody::Projects {
+                projects: authorized_projects(principal, projects),
+            })
+        }
         Operation::ObserveRootPlacement {
             project_id,
             root_id,

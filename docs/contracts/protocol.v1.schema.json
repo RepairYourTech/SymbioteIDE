@@ -1308,6 +1308,20 @@
           },
           {
             "additionalProperties": false,
+            "description": "The caller's Project registry: every registered Project it may read.\nThe Host answers with the records the authenticated caller is\nauthorized for, so the list is scoped by the same per-Project\nauthorization `GetProject` applies to one record rather than by the\nconnection. The list names no path: a Project's identity is its stable\n`ProjectId`.",
+            "properties": {
+              "kind": {
+                "const": "list_projects",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "expected_revision": {
                 "format": "uint64",
@@ -6207,6 +6221,36 @@
               },
               "kind": {
                 "const": "project",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The caller's authorized Project registry, in registration order. Each\nentry is a canonical Project record, never a projection or a path. A\nrecord-list response is a named field so the envelope stays an object\nwith its own `kind`.",
+            "properties": {
+              "data": {
+                "additionalProperties": false,
+                "properties": {
+                  "projects": {
+                    "items": {
+                      "$ref": "#/$defs/Project"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "projects"
+                ],
+                "type": "object"
+              },
+              "kind": {
+                "const": "projects",
                 "type": "string"
               }
             },

@@ -280,6 +280,13 @@ pub enum Operation {
     GetProject {
         project_id: ProjectId,
     },
+    /// The caller's Project registry: every registered Project it may read.
+    /// The Host answers with the records the authenticated caller is
+    /// authorized for, so the list is scoped by the same per-Project
+    /// authorization `GetProject` applies to one record rather than by the
+    /// connection. The list names no path: a Project's identity is its stable
+    /// `ProjectId`.
+    ListProjects {},
     ObserveRootPlacement {
         project_id: ProjectId,
         root_id: RootId,
@@ -364,9 +371,11 @@ impl Operation {
             | Self::GetResourceConsent { project_id, .. }
             | Self::GetTask { project_id, .. }
             | Self::ReadJournal { project_id, .. } => Some(project_id),
-            Self::Hello { .. } | Self::Health {} | Self::Shutdown {} | Self::GetHostPulse {} => {
-                None
-            }
+            Self::Hello { .. }
+            | Self::Health {}
+            | Self::Shutdown {}
+            | Self::GetHostPulse {}
+            | Self::ListProjects {} => None,
         }
     }
     pub fn is_mutation(&self) -> bool {
@@ -595,6 +604,20 @@ impl Principal {
     }
 }
 
+/// The Projects a registry listing may return for this principal: exactly the
+/// records it may read, in the order it supplied them. The rule lives beside
+/// [`authorize`] so the listing's per-record rule and the single-record rule
+/// `GetProject` applies cannot drift apart — both ask [`Principal::permits`]
+/// for the same [`ProjectPermission::Read`], and neither asks the connection.
+/// A local owner sees every record; a restricted caller sees only its granted
+/// Projects, so one caller's registry cannot enumerate another's.
+pub fn authorized_projects(principal: &Principal, projects: Vec<Project>) -> Vec<Project> {
+    projects
+        .into_iter()
+        .filter(|project| principal.permits(&project.id, ProjectPermission::Read))
+        .collect()
+}
+
 pub fn authorize(principal: &Principal, request: &Request) -> Result<(), ProtocolError> {
     request.validate()?;
     let permitted = match &request.operation {
@@ -727,6 +750,12 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // identity and that the path is a real repository on it.
             principal.permits(project_id, ProjectPermission::Register)
         }
+        // A registry listing is authorized record by record, not by the
+        // connection: the Host returns only the Projects this principal may
+        // read (the same permission `GetProject` applies to one record), so a
+        // restricted caller cannot enumerate Projects it holds no grant on.
+        // This gate admits the operation; it never widens that filter.
+        Operation::ListProjects {} => true,
         Operation::GetProject { project_id }
         | Operation::GetTask { project_id, .. }
         | Operation::GetResourceConsent { project_id, .. } => {
@@ -1461,6 +1490,13 @@ pub enum ResponseBody {
     TaskOrigin(Option<TaskOrigin>),
     Hello(ServerHello),
     Project(Project),
+    /// The caller's authorized Project registry, in registration order. Each
+    /// entry is a canonical Project record, never a projection or a path. A
+    /// record-list response is a named field so the envelope stays an object
+    /// with its own `kind`.
+    Projects {
+        projects: Vec<Project>,
+    },
     Task(Box<Task>),
     ResourceConsent(Box<ResourceConsent>),
     Receipt(Receipt),
