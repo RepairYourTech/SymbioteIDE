@@ -6,9 +6,25 @@ Canonical owners: [#176](https://github.com/RepairYourTech/SymbioteIDE/issues/17
 
 `symbiote-config` exports strict serde contracts and JSON Schema generation through `cargo run -p symbiote-config --example config_schema`. `ProjectManifest::parse` accepts v1 partial declarations with explicit `schema_version` and stable `project_id`. Missing collections are empty; absent optional fields remain unspecified. Opening a declaration needs neither a harness installation nor provider credentials. No project identity is inferred from its display name.
 
-Manifest intent includes portable relative roots, declared commands, Lead Role reference, per-Role runtime/profile/provider/entitlement references and independently assigned skills/MCPs/hooks/rules/permission policies, environment and harness requirements, orchestration/context/verification/documentation/Git/delivery policy references, graph profile and learning/telemetry/retention/delegation/goal/analytics preferences. References deliberately do not resolve or install anything. `RuntimeKind` comes from the domain crate; assignments reference Roles instead of duplicating their lifecycle.
+Manifest intent is the declared field set of the portable contracts below: the first table names every field of each, and the case named in Evidence derives each row from the schema its declaration generates, so a field added, dropped or renamed in the Rust declaration fails there by name. A declaration the manifest reaches that this table does not carry is named in the second table with the document that owns its fields, and a declaration named there that the manifest no longer reaches fails the same case. The scope table below already places machine bindings and secret bytes outside inheritance.
 
-Unknown core fields are rejected. Future namespaced extension payloads under `extensions` round trip unchanged and are never interpreted or executed. Sorted maps/sets give deterministic serialization. `managed` is a separate source/revision map keyed by field path; fields without entries remain user-authored. Importers must preserve user content and supply authentic provenance; this library cannot certify importer authorship.
+| Declaration | Fields |
+| --- | --- |
+| `ProjectManifest` | `schema_version`, `project_id`, `name`, `roots`, `commands`, `lead_role_ref`, `roles`, `harness_requirements`, `environment_requirements`, `agent_environments`, `policies`, `graph_profile_ref`, `extensions`, `managed` |
+| `Command` | `program`, `args`, `root_ref` |
+| `RoleAssignment` | `runtime_kind`, `runtime_profile_ref`, `provider_connection_ref`, `entitlement_ref`, `resources` |
+| `Resources` | `skills`, `mcps`, `hooks`, `rules`, `permission_policy_refs` |
+| `Policies` | `preferences`, `orchestration_ref`, `context_ref`, `verification_gate_refs`, `documentation_ref`, `git_workflow_ref`, `delivery_target_refs` |
+| `Settings` | `learning`, `telemetry`, `retention_days`, `delegation`, `goal_execution`, `analytics` |
+| `ManagedField` | `source`, `revision` |
+
+| Declaration not carried here | Owning document |
+| --- | --- |
+| `EnvironmentDocument` | [agent environment](agent-environment.md) |
+
+References deliberately do not resolve or install anything. `RuntimeKind` comes from the domain crate; assignments reference Roles instead of duplicating their lifecycle. Portable relative roots stand for a Project's roots, declared commands for its build and run entry points, Roles for the runtime/profile/provider/entitlement binding plus independently assigned skills/MCPs/hooks/rules/permission policies, the two requirement sets for harness installation and environment preconditions, the policy references for orchestration/context/verification/documentation/Git/delivery, `graph_profile_ref` for the graph profile, and `Settings` for the learning/telemetry/retention/delegation/goal/analytics preferences.
+
+Unknown core fields are rejected. Future namespaced extension payloads under `extensions` round trip unchanged and are never interpreted or executed. `canonical_json` is a fixed point of `parse`, which the round-trip cases hold; whether a container's iteration order is the same in another process is not measured here, so the containers' ordering is a declaration choice rather than a claimed guarantee. `managed` is a separate source/revision map keyed by field path; fields without entries remain user-authored. Importers must preserve user content and supply authentic provenance; this library cannot certify importer authorship.
 
 Portable root syntax uses `/` separators and canonical relative components. A single `.` denotes the manifest directory. Empty/parent/dot interior components, control characters (including NUL), Windows-invalid characters, reserved device names (also with extensions), and trailing dots/spaces are rejected on every Host. Ordinary Unicode and interior spaces are allowed. This is a conservative declaration policy, not filesystem existence, symlink-containment, case-collision or OS path-length verification. Host-specific paths belong in local `MachineBindings` and require separate Host validation.
 
@@ -42,7 +58,7 @@ Unspecified preferences inherit. More-specific supplied values override; unequal
 
 ## Evidence and remaining acceptance
 
-`cargo test -p symbiote-config` covers partial manifests without auth, both unsupported migration directions, unknown core/auth fields, portable-root rejection, extension determinism, managed-source separation, distinct Project preferences, controller-local switching/restore, local overrides/provenance, equal-scope conflicts, Role resources across runtime changes, disjoint/conflicting/delete-edit merges and storage classification, and holds this table's specificity and classification for every scope against the scope declarations and the resolver (`tests/scopes.rs`).
+`cargo test -p symbiote-config` covers partial manifests without auth, both unsupported migration directions, unknown core/auth fields, portable-root rejection, extension determinism, managed-source separation, distinct Project preferences, controller-local switching/restore, local overrides/provenance, equal-scope conflicts, Role resources across runtime changes, disjoint/conflicting/delete-edit merges and storage classification; it holds this table's specificity and classification for every scope against the scope declarations and the resolver (`tests/scopes.rs`), and holds the field table above against the schema each named declaration generates (`tests/manifest_fields.rs`).
 
 Pending #176/#179 acceptance: actual client simultaneous-controller isolation and rename/restore; physical scope storage and authorization; real credentials/provider/billing validation; complete policy compilation and runtime resource projection; clone/open on a second Host; import/diff/repair/export commands; user-content-preserving native projection; migration application/recovery; exact-commit review and checks. No mocks are counted as these integrations. Runtime availability blocks dependent execution only, never parsing a Project declaration.
 
