@@ -1049,3 +1049,227 @@ fn the_contract_names_only_response_kinds_this_crate_declares() {
         );
     }
 }
+
+/// The example targets this crate's manifest declares, as (name, path) pairs: the owner of the
+/// names every document that tells a reader to run one is compared against, read here rather than
+/// restated, so a target renamed or removed in the manifest moves every reading of it in the same
+/// change.
+fn declared_examples(manifest: &str) -> Vec<(String, String)> {
+    fn quoted(line: &str, key: &str) -> Option<String> {
+        let anchor = format!("{key} = \"");
+        let start = line.find(&anchor)? + anchor.len();
+        let rest = &line[start..];
+        Some(rest[..rest.find('"')?].to_string())
+    }
+    let mut examples: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(Option<String>, Option<String>)> = None;
+    let close = |current: &mut Option<(Option<String>, Option<String>)>,
+                 examples: &mut Vec<(String, String)>| {
+        if let Some((Some(name), Some(path))) = current.take() {
+            examples.push((name, path));
+        }
+    };
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line == "[[example]]" {
+            close(&mut current, &mut examples);
+            current = Some((None, None));
+            continue;
+        }
+        if line.starts_with('[') {
+            close(&mut current, &mut examples);
+            continue;
+        }
+        if let Some((name, path)) = current.as_mut() {
+            if name.is_none() {
+                *name = quoted(line, "name");
+            } else if path.is_none() {
+                *path = quoted(line, "path");
+            }
+        }
+    }
+    close(&mut current, &mut examples);
+    examples
+}
+
+/// Every markdown file this repository ships, found by walking it rather than listed here, so a
+/// document added anywhere in the tree is read by whatever case scans the surface it states.
+fn markdown_documents(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            if !matches!(name.as_str(), ".git" | "target" | "node_modules") {
+                found.extend(markdown_documents(&path));
+            }
+        } else if name.ends_with(".md") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// The drift check the document tells a reader to run is the comparison this crate makes: it
+/// accepts the committed artifact and names the first line an edited one differs at, so
+/// `protocol.md`'s `--check` sentence is held by a case rather than by the example's own code.
+///
+/// What it does not read: which line a *shortened* artifact should report beyond the first line
+/// the two do not share, which is the drift report's own choice and not a contract.
+#[test]
+fn the_drift_check_accepts_the_committed_artifact_and_names_the_line_an_edited_one_moved() {
+    let root = symbiote_protocol::workspace_root();
+    assert_eq!(
+        schema_drift(&root.join(SCHEMA_PATH)),
+        Ok(()),
+        "the committed artifact is the document these types generate"
+    );
+
+    // The line the report must name is the line this case edits, read from the generated document
+    // rather than from the drift check's own arithmetic, so the two are not the same measurement.
+    let generated = schema_json();
+    let titled = "\"title\": \"Telemetry\"";
+    let line = generated
+        .lines()
+        .position(|one| one.contains(titled))
+        .map(|index| index + 1)
+        .expect("the generated document titles the telemetry schema");
+
+    let edited = root.join(format!(
+        "target/probe-181-drift-{}.json",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(edited.parent().expect("a parent directory")).unwrap();
+    std::fs::write(
+        &edited,
+        generated.replacen(titled, "\"title\": \"TelemetryV2\"", 1),
+    )
+    .unwrap();
+    let drift = schema_drift(&edited).expect_err("an edited artifact is drift");
+    std::fs::remove_file(&edited).unwrap();
+    assert!(
+        drift.contains(&format!("differs at line {line}")),
+        "the drift report names the line that moved ({line}): {drift}"
+    );
+
+    assert!(
+        schema_drift(&root.join("docs/contracts/not-there.json")).is_err(),
+        "an unreadable artifact is reported rather than accepted"
+    );
+}
+
+/// The canonical schema is published where the document says it is (#181's "generate or validate
+/// typed clients and contract tests from a canonical schema"): `protocol.md` names the generator
+/// and the artifact, this crate's manifest declares that example target and the file it points at,
+/// and the committed artifact is byte-for-byte the document these types generate. A renamed
+/// target, a moved or edited artifact, or a wire type that changes without the artifact each reds
+/// here by name, instead of leaving a reader a command whose output nothing compares.
+///
+/// What it does not read: the artifact's own content beyond equality with [`schema_json`] — which
+/// nested record a schema describes is the wire types' business, and each record's own case is
+/// what drives its shape.
+#[test]
+fn the_published_schema_artifact_is_the_document_these_types_generate() {
+    let contract = include_str!("../../../docs/contracts/protocol.md");
+    let generator = region(contract, "generated by `", "`");
+    let target = generator
+        .rsplit("--example ")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    assert!(
+        generator.starts_with("cargo run -p symbiote-protocol"),
+        "the document names the command that generates the schema: {generator}"
+    );
+    let artifact = region(contract, "committed at `", "`");
+    assert_eq!(
+        artifact, SCHEMA_PATH,
+        "the document names the artifact this crate publishes"
+    );
+
+    let manifest = include_str!("../Cargo.toml");
+    let declared = declared_examples(manifest);
+    let (_, path) = declared
+        .iter()
+        .find(|(name, _)| name == &target)
+        .unwrap_or_else(|| {
+            panic!("the manifest declares no example target called {target}: {declared:?}")
+        });
+    let root = symbiote_protocol::workspace_root();
+    assert!(
+        root.join("crates/symbiote-protocol").join(path).is_file(),
+        "the manifest's example target {target} points at {path}, which is not a file"
+    );
+
+    let committed = std::fs::read_to_string(root.join(SCHEMA_PATH)).unwrap_or_else(|error| {
+        panic!("the committed artifact {SCHEMA_PATH} is readable: {error}")
+    });
+    assert!(
+        committed == schema_json(),
+        "the committed artifact {SCHEMA_PATH} is not the document these types generate; \
+         regenerate it with `cargo run -p symbiote-protocol --example protocol_schema -- --write`"
+    );
+}
+
+/// The generator command is stated by three documents — `protocol.md` as the artifact's owner,
+/// `host.md` where a reader prepares request files, and the repository `README.md` as the entry
+/// point — and a reader arriving at any of them must get a command this crate can actually run.
+/// The manifest owns the target names, the walk finds the documents rather than listing them, and
+/// the document set is the figure this case holds: a target renamed in any copy, or a copy added
+/// or dropped, moves in the same change instead of leaving a reader a command nothing checks.
+///
+/// What it does not read: the flags each copy adds beyond the target (host.md passes `--locked`),
+/// which belong to the command the document is teaching, and whether three copies is the right
+/// number — that the documents keep the readers' entry points is the editors' judgement, the
+/// figure here only refuses to let one move silently.
+#[test]
+fn every_document_that_states_the_schema_command_names_a_declared_example_target() {
+    const COMMAND: &str = "cargo run -p symbiote-protocol --example ";
+    let root = symbiote_protocol::workspace_root();
+    let declared = declared_examples(include_str!("../Cargo.toml"));
+    assert!(
+        !declared.is_empty(),
+        "this crate declares no example target, so no documented command can run"
+    );
+
+    let mut stating = Vec::new();
+    for document in markdown_documents(&root) {
+        let Ok(text) = std::fs::read_to_string(&document) else {
+            continue;
+        };
+        let named = document
+            .strip_prefix(&root)
+            .unwrap_or(&document)
+            .display()
+            .to_string();
+        for rest in text.split(COMMAND).skip(1) {
+            let target: String = rest
+                .chars()
+                .take_while(|one| !one.is_whitespace() && *one != '`')
+                .collect();
+            assert!(
+                declared.iter().any(|(name, _)| name == &target),
+                "{named} tells a reader to run `{COMMAND}{target}`, and the manifest declares \
+                 {declared:?}"
+            );
+            if !stating.contains(&named) {
+                stating.push(named.clone());
+            }
+        }
+    }
+    stating.sort();
+    assert_eq!(
+        stating,
+        [
+            "README.md",
+            "docs/contracts/host.md",
+            "docs/contracts/protocol.md"
+        ],
+        "the documents stating the schema command moved; each is a reader's entry point, so this \
+         figure moves with them"
+    );
+}
