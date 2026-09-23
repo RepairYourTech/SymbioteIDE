@@ -221,6 +221,13 @@ fn unknown_or_unbounded_requirements_cannot_be_stored() {
     value = binding();
     value.fallbacks.push(value.primary.clone());
     assert_eq!(value.validate(), Err(BindingError::DuplicateProfile));
+    // The contract's binding bound is the one `parse` applies, so it is driven
+    // at both edges: a well-formed document exactly at the bound is read, and
+    // one byte past it is refused before parsing.
+    let json = serde_json::to_string(&binding()).unwrap();
+    let at_bound = format!("{json}{}", " ".repeat(MAX_BINDING_BYTES - json.len()));
+    assert_eq!(at_bound.len(), MAX_BINDING_BYTES);
+    assert!(BindingConfiguration::parse(&at_bound).is_ok());
     assert!(BindingConfiguration::parse(&" ".repeat(MAX_BINDING_BYTES + 1)).is_err());
 }
 

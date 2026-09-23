@@ -748,6 +748,32 @@ fn the_contract_states_the_envelope_bounds_this_module_enforces() {
         "the contract states {stated_parts} parts per message, and this module accepts fewer"
     );
 
+    // The count bounds are the ones this module applies, so they are driven
+    // through the same surface: a request at each bound is read, and one past
+    // it is refused.
+    let mut counted = request();
+    counted.messages = vec![counted.messages[0].clone(); MAX_MESSAGES];
+    assert_eq!(counted.validate(&model), Ok(()));
+    counted.messages = vec![counted.messages[0].clone(); MAX_MESSAGES + 1];
+    assert_eq!(
+        counted.validate(&model),
+        Err(ProviderError::InvalidEnvelope)
+    );
+
+    let tool = |index: usize| ToolDefinition {
+        name: format!("tool-{index}"),
+        description: "d".into(),
+        input_schema: json!({"type": "object"}),
+    };
+    let mut counted = request();
+    counted.tools = (0..MAX_TOOLS).map(tool).collect();
+    assert_eq!(counted.validate(&model), Ok(()));
+    counted.tools = (0..MAX_TOOLS + 1).map(tool).collect();
+    assert_eq!(
+        counted.validate(&model),
+        Err(ProviderError::InvalidEnvelope)
+    );
+
     let schema = region(contract, "bounded to depth ", " nodes");
     let (depth, nodes) = schema
         .split_once(" and ")
