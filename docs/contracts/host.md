@@ -9,7 +9,24 @@ cargo build --workspace --locked
 target/debug/symbioted --state-dir /absolute/private/state-directory
 ```
 
-The parent directory must exist. A new final directory is created mode 0700; an existing shared, foreign-owned or symlink directory is refused without changing its permissions. The local socket is mode 0600. Each connection uses Linux SO_PEERCRED to establish same-UID ownership; this is an explicit local-owner policy, not remote or Preview authentication. No TCP listener is opened. An exclusive lock prevents a second daemon replacing the live socket; restart replaces only a stale owned socket after acquiring that lock.
+`--state-dir` and `--config-dir` are optional. Without them the Host resolves its own directories from the environment, in the order the CLI already applies to a policy — an explicit flag, then this Host's override variable, then the XDG base directory the specification names, then the specification's default under `$HOME`:
+
+| Directory | Flag | Override | XDG base | Default under `$HOME` |
+| --- | --- | --- | --- | --- |
+| State: the socket, the canonical store, the lock and Host identity | `--state-dir` | `$SYMBIOTE_HOST_STATE_DIR` | `$XDG_STATE_HOME/symbiote` | `.local/state/symbiote` |
+| Configuration: where the operator configuration is discovered | `--config-dir` | `$SYMBIOTE_HOST_CONFIG_DIR` | `$XDG_CONFIG_HOME/symbiote` | `.config/symbiote` |
+
+What lives under each resolved directory, by name — the layout this document owns and
+`crates/symbiote-host/tests/paths.rs` holds the Host's own declarations to:
+
+| Role | Directory | File name |
+| --- | --- | --- |
+| Control socket | state directory | `host.sock` |
+| Canonical store | state directory | `control.sqlite3` |
+| Operator lock | state directory | `host.lock` |
+| Operator configuration | configuration directory | `operator.json` |
+
+An empty override means unset, exactly as an empty `$SYMBIOTE_CLI_POLICY` does. A relative `XDG_*` value is ignored — the specification's own rule — so the `$HOME` default applies; a relative value in either override variable is refused instead, because ignoring operator intent would run the Host somewhere the operator did not name. With no flag, no override and no absolute `HOME` the Host refuses and names what was missing rather than writing to the working directory. The parent directory must exist. A new final directory is created mode 0700, and a directory the Host cannot create is reported by name rather than as a bare os error; an existing shared, foreign-owned or symlink directory is refused without changing its permissions. A state directory whose socket path would not fit the Linux socket path bound is refused by name before anything binds. With no `--operator-config` the Host looks for the operator configuration named above under the configuration directory, and a file that is not there means no operator provisioning; the cache, log and runtime directories are not resolved, because nothing in this daemon writes to them (see the pending list). The local socket is mode 0600. Each connection uses Linux SO_PEERCRED to establish same-UID ownership; this is an explicit local-owner policy, not remote or Preview authentication. No TCP listener is opened. An exclusive lock prevents a second daemon replacing the live socket; restart replaces only a stale owned socket after acquiring that lock.
 
 Send a request from another terminal:
 
@@ -178,4 +195,4 @@ with real envelopes and must fail validation, and a unit test pins each
 fixture's `const` value and the policy's authorizable-kind `enum` to the
 binary's own constants and operation table. See [cli.md](cli.md).
 
-The noninteractive authorization requirement (#54: "explicit flags/policies") is met by `--yes` for a single invocation and by the policy file for unattended runs; that is a policy, not a general config profile. Linux only: Windows/macOS authentication transports, authenticated WebSocket, XDG defaults, user service packaging, upgrades/drain, workforce execution, process supervision, filesystem permissions, credential vaults, durable budget/outbox effects and GUI attachment remain owned by their canonical issues. Administrative scope beyond the gate is still pending on #54: remote endpoint selection and pairing, shell completion, config profiles and the remaining documented environment variables beyond `SYMBIOTE_CLI_POLICY`, redaction, and goal/child intervention commands. No Host or Preview permission claim is inferred from a same-UID local connection. The separate fixed-workload lifecycle spike is not silently promoted into production process supervision. Broad #180/#181/#43 acceptance remains open.
+The noninteractive authorization requirement (#54: "explicit flags/policies") is met by `--yes` for a single invocation and by the policy file for unattended runs; that is a policy, not a general config profile. Linux only: Windows/macOS authentication transports, authenticated WebSocket, the cache/log/runtime directories and user service packaging (this Host resolves its state and configuration directories, which `tests/paths.rs` drives through the real binary), upgrades/drain, workforce execution, process supervision, filesystem permissions, credential vaults, durable budget/outbox effects and GUI attachment remain owned by their canonical issues. Administrative scope beyond the gate is still pending on #54: remote endpoint selection and pairing, shell completion, config profiles and the remaining documented environment variables beyond `SYMBIOTE_CLI_POLICY`, redaction, and goal/child intervention commands. No Host or Preview permission claim is inferred from a same-UID local connection. The separate fixed-workload lifecycle spike is not silently promoted into production process supervision. Broad #180/#181/#43 acceptance remains open.

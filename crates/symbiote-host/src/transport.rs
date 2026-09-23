@@ -9,6 +9,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::paths::{LOCK_FILE, SOCKET_FILE};
+
 pub const FRAME_LIMIT: usize = 65_536;
 
 fn invalid(message: &str) -> io::Error {
@@ -16,11 +18,20 @@ fn invalid(message: &str) -> io::Error {
 }
 
 /// Refuses shared or symlink state directories. Never changes an existing directory's permissions.
+///
+/// A directory the Host cannot create — most often because its parent is missing, which is what a
+/// resolved `$XDG_STATE_HOME` default looks like on a fresh account — reports the directory it was
+/// asked for. The os error alone (`No such file or directory`) names nothing an operator can act on.
 pub fn private_directory(path: &Path) -> io::Result<()> {
     match fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
+        Err(e) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!("state directory {}: {e}", path.display()),
+            ));
+        }
     }
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || metadata.uid() != geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
@@ -47,7 +58,7 @@ impl LocalListener {
             .truncate(false)
             .mode(0o600)
             .custom_flags(OFlag::O_NOFOLLOW.bits())
-            .open(directory.join("host.lock"))?;
+            .open(directory.join(LOCK_FILE))?;
         let metadata = lock.metadata()?;
         if !metadata.is_file()
             || metadata.uid() != geteuid().as_raw()
@@ -57,7 +68,7 @@ impl LocalListener {
         }
         let lock = Flock::lock(lock, FlockArg::LockExclusiveNonblock)
             .map_err(|(_, error)| io::Error::new(io::ErrorKind::AddrInUse, error))?;
-        let path = directory.join("host.sock");
+        let path = directory.join(SOCKET_FILE);
         match fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_socket() && meta.uid() == geteuid().as_raw() => {
                 fs::remove_file(&path)?
@@ -170,7 +181,7 @@ pub fn exchange(directory: &Path, request: &[u8]) -> io::Result<Vec<u8>> {
             "request must be a single bounded JSON frame",
         ));
     }
-    let mut stream = UnixStream::connect(directory.join("host.sock"))?;
+    let mut stream = UnixStream::connect(directory.join(SOCKET_FILE))?;
     LocalListener::authenticate(&stream)?;
     stream.write_all(request)?;
     stream.write_all(b"\n")?;

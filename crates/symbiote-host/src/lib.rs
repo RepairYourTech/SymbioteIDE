@@ -32,6 +32,9 @@ pub mod limits;
 /// Operator provisioning (#54): the explicit configuration file that turns
 /// dispatch activation into a working execution path.
 pub mod operator;
+/// The Host's own directories (#180): the XDG base directories, the explicit overrides, and the
+/// refusals that keep an unresolved Host from writing where nobody intended.
+pub mod paths;
 pub mod runner;
 mod service;
 /// The sandboxed shell-tool executor composition (#218/#465): production
@@ -74,7 +77,7 @@ pub fn serve_full(
         "local-uid-{}",
         nix::unistd::geteuid()
     ))?);
-    let mut store = Store::open(directory.join("control.sqlite3"))?;
+    let mut store = Store::open(directory.join(paths::DATABASE_FILE))?;
     if worker_transports.reservation_base().is_ok() {
         eprintln!(
             "symbioted: operator provisioning active (reservation base + configured transports)"
