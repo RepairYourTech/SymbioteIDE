@@ -1117,6 +1117,84 @@ fn project_relationships_and_idempotency_are_atomic() {
 }
 
 #[test]
+fn the_registry_lists_every_registered_project_in_registration_order() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    assert!(store.projects().unwrap().is_empty());
+    // The identifiers are chosen so registration order and identifier order
+    // disagree: a registry that sorted its answer could not hide behind a
+    // fixture where the two coincide.
+    let (zeta, _, _) = register(&mut store, "zeta");
+    let (alpha, _, _) = register(&mut store, "alpha");
+    let (mu, _, _) = register(&mut store, "mu");
+    let listed = store.projects().unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|project| project.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["project-zeta", "project-alpha", "project-mu"]
+    );
+    // Each entry is the canonical record the single-record read answers, not a
+    // projection of it, so a listing cannot report a name or revision the
+    // canonical state does not hold.
+    assert_eq!(listed, vec![zeta.clone(), alpha.clone(), mu.clone()]);
+    for project in [&zeta, &alpha, &mu] {
+        assert_eq!(&store.project(&project.id).unwrap(), project);
+    }
+    drop(store);
+    // A restart reads the same registry in the same order.
+    let store = Store::open(temp.database()).unwrap();
+    assert_eq!(store.projects().unwrap(), vec![zeta, alpha, mu]);
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn a_moved_root_does_not_move_the_projects_registry_identity() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, roots, roles) = records("move");
+    store
+        .register_project(
+            id!(CommandId, "register-move"),
+            project.clone(),
+            roots.clone(),
+            roles,
+        )
+        .unwrap();
+    let before = store.projects().unwrap();
+    // The observed placement is a Root fact. Relocating the repository moves
+    // the Root's host path and leaves the Project's identity — and therefore
+    // what the registry lists — exactly as it was, so a moved Project
+    // reconnects to its stable identity rather than acquiring a new one.
+    store
+        .observe_root_placement(
+            id!(CommandId, "place-move"),
+            &project.id,
+            &roots[0].id,
+            &id!(HostId, "host-move"),
+            "/srv/moved/repo",
+            Revision(0),
+            &id!(UserId, "owner"),
+            Timestamp(20),
+        )
+        .unwrap();
+    let after = store.projects().unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after[0].id, project.id);
+    assert_eq!(
+        store
+            .root(&roots[0].id)
+            .unwrap()
+            .host_paths
+            .get(&id!(HostId, "host-move"))
+            .map(String::as_str),
+        Some("/srv/moved/repo")
+    );
+    store.integrity_check().unwrap();
+}
+
+#[test]
 fn task_creation_rejects_cross_project_foreign_keys_and_shared_workspace() {
     let mut store = Store::memory().unwrap();
     register(&mut store, "one");

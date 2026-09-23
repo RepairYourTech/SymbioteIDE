@@ -122,6 +122,16 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "list-projects",
+            summary: "list the Projects this caller may read",
+            usage: "list-projects",
+            kind: Some("list_projects"),
+            build: |_, map| {
+                plain("kind", serde_json::json!("list_projects"), map);
+                Ok(())
+            },
+        },
+        Command {
             name: "create-task",
             summary: "create a Task from a draft (JSON file)",
             usage: "create-task <task.json>",
