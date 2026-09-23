@@ -718,7 +718,6 @@ fn nested_tool_json_and_usage_overruns_are_rejected() {
 #[test]
 fn the_contract_states_the_envelope_bounds_this_module_enforces() {
     let contract = include_str!("../../../docs/contracts/providers.md");
-    let source = include_str!("../src/provider.rs");
 
     let sentence = region(contract, "`ProviderRequest` accepts ", ".");
     let stated_messages: usize = figure(region(sentence, "at most ", " messages"));
@@ -774,23 +773,56 @@ fn the_contract_states_the_envelope_bounds_this_module_enforces() {
         Err(ProviderError::InvalidEnvelope)
     );
 
+    // The schema bounds are driven through the same surface as every other bound here rather
+    // than read out of the module's text: a tool schema nested as deeply as the contract states
+    // validates and one level deeper is refused, and a schema whose walk is exactly the stated
+    // node budget validates while one carrying a single value more is refused.
     let schema = region(contract, "bounded to depth ", " nodes");
     let (depth, nodes) = schema
         .split_once(" and ")
         .expect("a depth and a node budget");
     let stated_depth: usize = figure(depth);
     let stated_nodes: usize = figure(nodes);
+
+    let nested = |levels: usize| {
+        let mut value = json!({});
+        for _ in 0..levels {
+            value = json!({"nested": value});
+        }
+        value
+    };
+    let carrying = |schema: serde_json::Value| {
+        let mut request = request();
+        request.tools = vec![ToolDefinition {
+            name: "tool-0".into(),
+            description: "d".into(),
+            input_schema: schema,
+        }];
+        request
+    };
     assert_eq!(
-        figure::<usize>(region(source, "if depth > ", " || *remaining == 0")),
-        stated_depth,
-        "the contract states a depth of {stated_depth}, and this module walks {}",
-        figure::<usize>(region(source, "if depth > ", " || *remaining == 0"))
+        carrying(nested(stated_depth)).validate(&model),
+        Ok(()),
+        "the contract states a depth of {stated_depth}, and this module refuses a schema that deep"
     );
     assert_eq!(
-        figure::<usize>(region(source, "visit(value, 0, &mut ", ")")),
-        stated_nodes,
-        "the contract states {stated_nodes} nodes, and this module walks {}",
-        figure::<usize>(region(source, "visit(value, 0, &mut ", ")"))
+        carrying(nested(stated_depth + 1)).validate(&model),
+        Err(ProviderError::InvalidEnvelope),
+        "the contract states a depth of {stated_depth}, and this module accepts one deeper"
+    );
+
+    // The object and its array are two of the values the walk counts, so the leaves carry the
+    // budget less two.
+    let leaves = |count: usize| json!({"x": vec![json!(1); count]});
+    assert_eq!(
+        carrying(leaves(stated_nodes - 2)).validate(&model),
+        Ok(()),
+        "the contract states {stated_nodes} nodes, and this module refuses a schema that carries them"
+    );
+    assert_eq!(
+        carrying(leaves(stated_nodes - 1)).validate(&model),
+        Err(ProviderError::InvalidEnvelope),
+        "the contract states {stated_nodes} nodes, and this module accepts one more"
     );
 
     let stated_envelope: usize = bytes(region(

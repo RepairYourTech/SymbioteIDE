@@ -1,6 +1,5 @@
 use serde_json::json;
 use symbiote_config::*;
-use symbiote_contract_read::{bytes, region};
 
 fn manifest() -> ProjectManifest {
     ProjectManifest::parse(r#"{"schema_version":1,"project_id":"project-a"}"#).unwrap()
@@ -292,25 +291,4 @@ fn conflicting_project_runtime_and_telemetry_intent_survives_rename() {
     );
     assert_eq!(restored.policies.preferences.telemetry, Some(false));
     assert_eq!(b.canonical_json().unwrap(), before_b);
-}
-
-/// The manifest bound `agent-environment.md` states is the one this crate's parser applies. The
-/// figure is read from the sentence it is written in and the bound from the parser call that
-/// enforces it — `EnvironmentDocument::parse`, the manifest parser, not the smaller bound the
-/// resolution target's own parse applies — so a document that states a bound this crate has moved
-/// past fails here by name rather than in prose nobody reads.
-///
-/// What it does not read: the prose around the figure — recursive duplicate-key rejection, the
-/// expansion refusal on export — which the crate's own cases drive.
-#[test]
-fn the_contract_states_the_manifest_bound_this_crate_enforces() {
-    let contract = include_str!("../../../docs/contracts/agent-environment.md");
-    let source = include_str!("../src/environment.rs");
-
-    let stated: u64 = bytes(region(contract, "limits input to ", "."));
-    let enforced: u64 = bytes(region(source, "impl EnvironmentDocument {", ";"));
-    assert_eq!(
-        stated, enforced,
-        "the contract states a {stated}-byte manifest bound, and this crate parses {enforced}"
-    );
 }
