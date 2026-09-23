@@ -25,6 +25,8 @@ mod preparation_tests;
 mod provider_tests;
 #[path = "route_tests.rs"]
 mod route_tests;
+#[path = "transfer_tests.rs"]
+mod transfer_tests;
 fn sha(c: char) -> CommitSha {
     CommitSha::new(c.to_string().repeat(40)).unwrap()
 }

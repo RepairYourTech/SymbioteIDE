@@ -19,6 +19,7 @@ mod preparation;
 mod provider;
 mod route;
 mod team;
+mod transfer;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
@@ -955,6 +956,21 @@ impl Store {
         audit_connection(&snapshot)?;
         snapshot.commit()?;
         Ok(())
+    }
+
+    /// The adapter's canonical state as one document keyed by stable identity: every table this
+    /// schema declares, its rows in insertion order, with the identity columns and foreign keys
+    /// exactly as stored. No secret value can appear, because none is stored here.
+    pub fn export(&self) -> Result<String> {
+        transfer::export(&self.connection)
+    }
+
+    /// Replace an empty store's state with a document `export` produced. Refuses a store that
+    /// holds anything, a document from another schema version or application, and a document
+    /// whose table set is not this schema's; a refusal — including one raised by the constraint
+    /// or the journal audit — leaves the store exactly as it was.
+    pub fn restore_into(&mut self, document: &str) -> Result<()> {
+        transfer::restore(&mut self.connection, document)
     }
 }
 
