@@ -13,7 +13,7 @@ CREATE TABLE task_origins (
  body TEXT NOT NULL CHECK(json_valid(body))
 ) STRICT;
 PRAGMA user_version=3;";
-const MAX_WORK_ITEMS: usize = 4096;
+pub(super) const MAX_WORK_ITEMS: usize = 4096;
 fn validate_graph(graph: &[WorkItem]) -> Result<()> {
     validate_work_graph(graph)?;
     Ok(())

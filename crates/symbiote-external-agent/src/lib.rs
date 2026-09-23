@@ -1926,6 +1926,87 @@ mod tests {
         assert!(session.events().len() <= MAX_TURN_NOTIFICATION_FRAMES + 8);
     }
 
+    /// The frame budget is the declaration's at its far edge. It counts
+    /// every frame the turn absorbs, the terminal one included, so the run
+    /// whose ignored frames fill every slot but the completion's completes,
+    /// while one more ignored frame puts the completion itself past the
+    /// budget and the turn is a lost transport. The flood case drives only
+    /// the refusal side.
+    #[test]
+    fn the_turn_frame_budget_admits_its_last_frame() {
+        let frames = |ignored: usize| {
+            let mut transport = transport_with(
+                (0..ignored)
+                    .map(|_| {
+                        serde_json::json!({"method": "thread/status/changed",
+                            "params": {"threadId": "thr-1", "status": "idle"}})
+                    })
+                    .collect(),
+            );
+            transport
+                .notifications
+                .push_back(Some(turn_completed("completed")));
+            transport
+        };
+        let mut at = session();
+        at.start_turn(
+            "fix the bug",
+            "/tmp/worktree",
+            &mut frames(MAX_TURN_NOTIFICATION_FRAMES - 1),
+        )
+        .expect("the last frame the budget admits is not a lost harness");
+        let mut past = session();
+        assert_eq!(
+            past.start_turn(
+                "fix the bug",
+                "/tmp/worktree",
+                &mut frames(MAX_TURN_NOTIFICATION_FRAMES),
+            ),
+            Err(DriverError::TransportFailed)
+        );
+    }
+
+    /// The silence budget is the declaration's at its far edge: exactly
+    /// `MAX_EMPTY_NOTIFICATION_POLLS` empty polls leave the turn completable,
+    /// and one more poll reads as a lost harness. The derived comment case
+    /// holds the numeral this drives.
+    #[test]
+    fn the_silence_budget_admits_its_last_empty_poll() {
+        let silence = |polls: usize| {
+            std::iter::repeat_n(None, polls)
+                .chain(std::iter::once(Some(turn_completed("completed"))))
+                .collect::<std::collections::VecDeque<_>>()
+        };
+        let mut patient = session();
+        let mut transport = transport_with(Vec::new());
+        transport.notifications = silence(MAX_EMPTY_NOTIFICATION_POLLS);
+        patient
+            .start_turn("fix the bug", "/tmp/worktree", &mut transport)
+            .expect("silence at the poll budget is still the harness thinking");
+        let mut lost = session();
+        let mut transport = transport_with(Vec::new());
+        transport.notifications = silence(MAX_EMPTY_NOTIFICATION_POLLS + 1);
+        assert_eq!(
+            lost.start_turn("fix the bug", "/tmp/worktree", &mut transport),
+            Err(DriverError::TransportFailed)
+        );
+    }
+
+    /// The report bound is the declaration's at its far edge: a report of
+    /// exactly `MAX_REPORT_BYTES` is filed as evidence, and one byte past it
+    /// is refused (the invalid-input case drives that side).
+    #[test]
+    fn a_completion_report_at_the_byte_bound_is_filed() {
+        let mut session = session();
+        session
+            .request_completion(&"x".repeat(MAX_REPORT_BYTES))
+            .expect("a report at the bound is evidence the Host may read");
+        assert_eq!(
+            session.request_completion("again"),
+            Err(DriverError::AlreadyComplete)
+        );
+    }
+
     #[test]
     fn native_dispatch_is_refused_by_the_external_driver() {
         let host_id = HostId::new("host").unwrap();

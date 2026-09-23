@@ -620,6 +620,26 @@ mod tests {
             )
             .is_ok()
         );
+        // The byte bound is the pair's other half, and the count above does
+        // not stand in for it: objects each at the item cap sum to exactly
+        // the list total and resolve. A list one object longer (below) does
+        // not.
+        let source = FixedSource {
+            item: Some(WorkItemText {
+                description: "d".into(),
+                requirements: (0..8).map(|_| "x".repeat(MAX_ITEM_BYTES)).collect(),
+                constraints: vec![],
+                risks: vec![],
+                acceptance: vec![],
+            }),
+        };
+        assert!(
+            resolve_context(
+                &source,
+                inputs(&dispatch, &task, &project, &work, access(&project))
+            )
+            .is_ok()
+        );
         // Total-bytes overflow: each over-long item truncates to the 8 KiB
         // item cap, so NINE of them push the list total past its 64 KiB
         // budget (9 x 8192 > 65536).

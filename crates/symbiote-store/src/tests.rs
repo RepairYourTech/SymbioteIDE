@@ -820,6 +820,65 @@ impl Drop for Temporary {
     }
 }
 
+/// The work-item bound `work-hierarchy.md` states (held against the domain's own
+/// graph declaration in that crate's contract case) is the count this store reads
+/// and writes, driven at its far edge rather than compared as a numeral. At
+/// exactly `MAX_WORK_ITEMS` recorded items the reading path serves one and the
+/// writing path refuses a further creation; one item more — a state only a direct
+/// write can produce, since the store itself refuses the next creation — is
+/// refused as a set rather than served truncated, so the declaration it matches
+/// cannot be raised above the document's figure without reding here.
+#[test]
+fn the_work_item_bound_is_the_count_this_store_reads_and_writes() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, roles) = register(&mut store, "work-bound");
+    let role = roles[0].clone();
+    let items: Vec<WorkItem> = (0..work::MAX_WORK_ITEMS)
+        .map(|index| new_work(&project, &role, &format!("bound-{index}")))
+        .collect();
+    let insert = |connection: &rusqlite::Connection, item: &WorkItem| {
+        connection
+            .execute(
+                "INSERT INTO work_items(id,project_id,role_id,revision,body) VALUES (?1,?2,?3,0,?4)",
+                params![
+                    item.id().key(),
+                    item.project_id().as_str(),
+                    item.role_id().as_str(),
+                    serde_json::to_string(item).unwrap()
+                ],
+            )
+            .unwrap();
+    };
+    // One transaction: the fixture writes a full set, it does not pay 4,096
+    // durable commits for it.
+    {
+        let transaction = store.connection.transaction().unwrap();
+        for item in &items {
+            insert(&transaction, item);
+        }
+        transaction.commit().unwrap();
+    }
+    assert_eq!(work::MAX_WORK_ITEMS, items.len());
+    assert_eq!(
+        store.work_item(&project.id, items[0].id()).unwrap().id(),
+        items[0].id(),
+        "a full set is served, not refused"
+    );
+    assert!(matches!(
+        store.create_work_item(
+            id!(CommandId, "bound-over"),
+            new_work(&project, &role, "bound-over")
+        ),
+        Err(StoreError::InvalidInitialState)
+    ));
+    insert(&store.connection, &new_work(&project, &role, "bound-past"));
+    assert!(matches!(
+        store.work_item(&project.id, items[0].id()),
+        Err(StoreError::InvalidInitialState)
+    ));
+}
+
 fn records(suffix: &str) -> (Project, Vec<Root>, Vec<Role>) {
     let project_id = id!(ProjectId, format!("project-{suffix}"));
     let root_id = id!(RootId, format!("root-{suffix}"));

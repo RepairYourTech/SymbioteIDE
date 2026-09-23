@@ -487,6 +487,40 @@ mod tests {
         assert_eq!(first[0], "-c");
     }
 
+    /// The wrapper's capture cap has no observable effect through this
+    /// crate's surface: the read-back bound (a quarter of it) truncates the
+    /// bytes first, and the executor removes the capture file after reading
+    /// it, so no fixture can see a file that reached the cap. What is
+    /// visible is the script that applies it, and that is what this holds:
+    /// the numeral the wrapper runs is the declaration, so moving either one
+    /// alone reds here rather than silently leaving the backstop stale.
+    #[test]
+    fn the_wrapper_capture_cap_is_the_numeral_the_script_uses() {
+        assert!(
+            WRAPPER_SCRIPT.contains(&format!("head -c {WRAPPER_CAPTURE_CAP_BYTES}")),
+            "the wrapper must cap its capture at {WRAPPER_CAPTURE_CAP_BYTES} bytes: {WRAPPER_SCRIPT}"
+        );
+    }
+
+    /// The read-back bound is the declaration's, at both edges: a capture
+    /// file of exactly `MAX_SHELL_OUTPUT_BYTES` is returned whole and not
+    /// marked truncated, and one byte past it yields exactly that many bytes
+    /// with the truncation visible. Drive of the same bound the wrapper's
+    /// `head -c` backstop bounds from above.
+    #[test]
+    fn the_capture_read_back_is_bounded_at_the_declared_byte() {
+        let fixture = WorktreeFixture::new("capture-bound");
+        let capture = fixture.worktree.join(TOOL_OUTPUT_FILE);
+        std::fs::write(&capture, vec![b'x'; MAX_SHELL_OUTPUT_BYTES]).unwrap();
+        let (buffer, truncated) = SandboxShellExecutor::read_output(&fixture.worktree).unwrap();
+        assert_eq!(buffer.len(), MAX_SHELL_OUTPUT_BYTES);
+        assert!(!truncated, "a capture at the bound is not truncated");
+        std::fs::write(&capture, vec![b'x'; MAX_SHELL_OUTPUT_BYTES + 1]).unwrap();
+        let (buffer, truncated) = SandboxShellExecutor::read_output(&fixture.worktree).unwrap();
+        assert_eq!(buffer.len(), MAX_SHELL_OUTPUT_BYTES);
+        assert!(truncated, "one byte past the bound is visibly truncated");
+    }
+
     // Real-sandbox composition tests. They require the trusted launcher
     // binary (built by the workspace gauntlet: `cargo test --workspace`
     // compiles every package's bins) and /usr/bin/bwrap (installed by CI).

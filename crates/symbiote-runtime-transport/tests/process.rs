@@ -180,6 +180,133 @@ fn diagnostics_have_bounded_lines_and_loss_is_visible() {
     assert!(third.entries[0].truncated);
 }
 
+/// The four figures `runtime-transport.md` states are the defaults'
+/// behaviour, driven at both edges through the transport itself rather than
+/// only compared as numerals: a frame exactly at the frame bound is sent and
+/// received (one byte past each is refused), exactly the queue depth is
+/// readable (one more overflows), exactly the diagnostic line bound is kept
+/// whole (one more truncates visibly), and exactly the diagnostic capacity
+/// is retained (one more is counted as dropped).
+#[test]
+fn the_contracts_leftmost_limits_are_the_values_this_transport_enforces() {
+    let defaults = TransportLimits::default();
+
+    // Frame bytes, send side: the serialization of this frame is exactly the
+    // default bound, and one byte more is refused before any write.
+    // The child reads its stdin, so a full-size frame drains instead of
+    // filling the pipe: the bound under test is the frame limit, not the
+    // kernel buffer.
+    let mut transport = spawn("/bin/cat >/dev/null", defaults);
+    let at = json!({"value": "x".repeat(defaults.max_frame_bytes - 12)});
+    assert_eq!(
+        serde_json::to_vec(&at).unwrap().len(),
+        defaults.max_frame_bytes
+    );
+    transport.send(&at, SECOND).unwrap();
+    let past = json!({"value": "x".repeat(defaults.max_frame_bytes - 11)});
+    assert_eq!(
+        transport.send(&past, SECOND),
+        Err(TransportError::FrameTooLarge)
+    );
+    transport.cancel(SECOND).unwrap();
+
+    // Frame bytes, receive side: a line exactly at the bound is a frame; one
+    // byte past it fails the read rather than yielding a short frame.
+    let filler = defaults.max_frame_bytes - 12;
+    let mut at = spawn(
+        &format!(
+            "s=$(head -c {filler} /dev/zero | tr '\\0' x); printf '{{\"value\":\"%s\"}}\n' \"$s\"; exec 1>&-; /bin/sleep 1"
+        ),
+        defaults,
+    );
+    let frame = at.recv(SECOND).unwrap();
+    assert_eq!(frame["value"].as_str().unwrap().len(), filler);
+    let mut past = spawn(
+        &format!(
+            "s=$(head -c {} /dev/zero | tr '\\0' x); printf '{{\"value\":\"%s\"}}\n' \"$s\"; exec 1>&-; /bin/sleep 1",
+            filler + 1
+        ),
+        defaults,
+    );
+    assert_eq!(past.recv(SECOND), Err(TransportError::FrameTooLarge));
+
+    // Queue depth: exactly the default depth is readable, and one frame past
+    // it overflows the bounded queue instead of growing without bound.
+    let mut full = spawn(
+        &format!(
+            "i=0; while [ $i -lt {} ]; do printf '{{}}\\n'; i=$((i+1)); done; /bin/sleep 1",
+            defaults.frame_queue_capacity
+        ),
+        defaults,
+    );
+    for _ in 0..defaults.frame_queue_capacity {
+        assert_eq!(full.recv(SECOND).unwrap(), json!({}));
+    }
+    full.cancel(SECOND).unwrap();
+    let mut flooded = spawn(
+        &format!(
+            "i=0; while [ $i -lt {} ]; do printf '{{}}\\n'; i=$((i+1)); done; /bin/sleep 1",
+            defaults.frame_queue_capacity + 1
+        ),
+        defaults,
+    );
+    wait_until(|| flooded.failure().is_some());
+    assert_eq!(
+        flooded.recv(SECOND),
+        Err(TransportError::FrameQueueOverflow)
+    );
+
+    // Diagnostic line bytes: exactly the bound is kept whole; one byte past
+    // it yields the bound's prefix marked truncated.
+    let mut long = spawn(
+        &format!(
+            "s=$(head -c {} /dev/zero | tr '\\0' x); printf '%s\\n' \"$s\" >&2; exec 2>&-; /bin/sleep 1",
+            defaults.max_diagnostic_bytes
+        ),
+        defaults,
+    );
+    wait_until(|| long.diagnostics_finished());
+    let entries = long.diagnostics();
+    assert_eq!(entries.entries[0].text.len(), defaults.max_diagnostic_bytes);
+    assert!(!entries.entries[0].truncated);
+    let mut longer = spawn(
+        &format!(
+            "s=$(head -c {} /dev/zero | tr '\\0' x); printf '%s\\n' \"$s\" >&2; exec 2>&-; /bin/sleep 1",
+            defaults.max_diagnostic_bytes + 1
+        ),
+        defaults,
+    );
+    wait_until(|| longer.diagnostics_finished());
+    let entries = longer.diagnostics();
+    assert_eq!(entries.entries[0].text.len(), defaults.max_diagnostic_bytes);
+    assert!(entries.entries[0].truncated);
+
+    // Diagnostic capacity: exactly the default capacity is retained; one
+    // more line is counted as dropped, never silently discarded.
+    let mut kept = spawn(
+        &format!(
+            "i=0; while [ $i -lt {} ]; do printf 'd\\n' >&2; i=$((i+1)); done; exec 2>&-; /bin/sleep 1",
+            defaults.diagnostic_queue_capacity
+        ),
+        defaults,
+    );
+    wait_until(|| kept.diagnostics_finished());
+    let entries = kept.diagnostics();
+    assert_eq!(entries.entries.len(), defaults.diagnostic_queue_capacity);
+    assert_eq!(entries.dropped, 0);
+    let mut dropped = spawn(
+        &format!(
+            "i=0; while [ $i -lt {} ]; do printf 'd\\n' >&2; i=$((i+1)); done; exec 2>&-; /bin/sleep 1",
+            defaults.diagnostic_queue_capacity + 1
+        ),
+        defaults,
+    );
+    wait_until(|| dropped.diagnostics_finished());
+    let entries = dropped.diagnostics();
+    assert_eq!(entries.entries.len(), defaults.diagnostic_queue_capacity);
+    assert_eq!(entries.dropped, 1);
+}
+
 fn live(pid: u32) -> bool {
     fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()

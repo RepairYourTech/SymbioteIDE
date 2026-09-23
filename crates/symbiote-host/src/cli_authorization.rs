@@ -210,3 +210,66 @@ pub fn load_policy(path: &Path) -> Result<Policy, PolicyError> {
         expires_at: parsed.expires_at,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use symbiote_contract_read::{figure, region};
+
+    // Unique per (process, call) so parallel tests cannot see each other's
+    // file; the bin's own load_policy tests write theirs the same way.
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+
+    /// A private policy file of an exact byte length. The padding is
+    /// JSON-legal whitespace, so the document keeps the schema's shape and
+    /// the only thing the length changes is the size gate.
+    fn policy_file(len: usize) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        const BODY: &str = r#"{"schema":"symbiote.cli-policy/v1","authorize":["shutdown"]}"#;
+        let padded = format!("{BODY}{}", " ".repeat(len - BODY.len()));
+        assert_eq!(padded.len(), len);
+        let path = std::env::temp_dir().join(format!(
+            "symbiote-cli-policy-bound-{}-{}",
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, padded).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
+
+    /// The figure `cli.md` states for a policy file is the bound this parser
+    /// applies: the document's sentence and `POLICY_LIMIT` are compared in
+    /// both directions, so moving either the prose or the constant reds here
+    /// (the census could not see this one: the figure had no declaration a
+    /// case named).
+    #[test]
+    fn the_contract_states_the_policy_byte_bound_this_parser_enforces() {
+        let contract = include_str!("../../../docs/contracts/cli.md");
+        let stated_kib: u64 = figure(region(contract, "bounded at ", "."));
+        assert_eq!(
+            stated_kib * 1024,
+            POLICY_LIMIT,
+            "cli.md bounds a policy file at {stated_kib} KiB, and this parser enforces {POLICY_LIMIT} bytes"
+        );
+    }
+
+    /// The bound is the declaration's at its far edge: a file of exactly
+    /// `POLICY_LIMIT` bytes is read whole and honored, while one byte past it
+    /// is refused as unreadable — never partially interpreted. The bin's
+    /// cases drive the schema, ownership and mode refusals; this drives the
+    /// byte edge itself.
+    #[test]
+    fn a_policy_at_the_byte_bound_is_read_and_one_past_it_is_refused() {
+        let at = policy_file(POLICY_LIMIT as usize);
+        assert_eq!(
+            load_policy(&at).map(|policy| policy.authorizes("shutdown", 0)),
+            Ok(true)
+        );
+        std::fs::remove_file(&at).unwrap();
+        let past = policy_file(POLICY_LIMIT as usize + 1);
+        assert_eq!(load_policy(&past), Err(PolicyError::Unreadable));
+        std::fs::remove_file(&past).unwrap();
+    }
+}
