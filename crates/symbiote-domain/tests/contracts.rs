@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use symbiote_contract_read::{bytes, figure, region};
 use symbiote_domain::*;
 
 macro_rules! id {
@@ -986,77 +985,5 @@ fn binding_enforcement_floor_refuses_weaker_host_claims_at_assignment() {
             .contract()
             .enforcement()
             .contains_key(&Control::Network)
-    );
-}
-
-/// The milliseconds a stated lease window writes: `1s–1h`.
-fn window_ms(text: &str) -> (u64, u64) {
-    let (low, high) = text.trim().split_once('–').expect("a window's two ends");
-    let end = |end: &str| {
-        let (value, unit) = end.trim().split_at(end.trim().len() - 1);
-        let value: u64 = figure(value);
-        match unit {
-            "ms" => value,
-            "s" => value * 1_000,
-            "m" => value * 60_000,
-            "h" => value * 3_600_000,
-            other => panic!("an unknown window unit {other:?}"),
-        }
-    };
-    (end(low), end(high))
-}
-
-/// The bounds `work-hierarchy.md` and `scheduling-leases.md` state are the ones this crate enforces:
-/// the work-specification, aggregate, history and graph bounds, and the lease window's two ends. The
-/// work bounds are private constants and literals beside the checks that apply them, so they are read
-/// from the crate's own source; the window is held to the constants that own it. A document that
-/// states a bound this crate has moved past fails here by name rather than in prose nobody reads.
-///
-/// What it does not read: the prose around the figures — the capacity refusals, the graph's kind
-/// vocabulary, the lease state machine — which the crate's own cases drive, and the protocol's
-/// response bound, which the protocol crate holds against its own constant.
-#[test]
-fn the_contracts_state_the_work_and_lease_bounds_this_crate_enforces() {
-    let hierarchy = include_str!("../../../docs/contracts/work-hierarchy.md");
-    let leases = include_str!("../../../docs/contracts/scheduling-leases.md");
-    let work = include_str!("../src/work.rs");
-
-    let stated_spec: u64 = bytes(region(
-        hierarchy,
-        "Work specifications are bounded to ",
-        ",",
-    ));
-    let enforced_spec: u64 = figure(region(work, "const MAX_SPEC_BYTES: usize = ", ";"));
-    assert_eq!(
-        stated_spec, enforced_spec,
-        "the contract states a {stated_spec}-byte specification bound, and this crate bounds {enforced_spec}"
-    );
-
-    let stated_work: u64 = bytes(region(hierarchy, "aggregates to ", ","));
-    let enforced_work: u64 = figure(region(work, "const MAX_WORK_BYTES: usize = ", ";"));
-    assert_eq!(
-        stated_work, enforced_work,
-        "the contract states a {stated_work}-byte aggregate bound, and this crate bounds {enforced_work}"
-    );
-
-    let stated_commands: u64 = figure(region(hierarchy, "histories to", " commands"));
-    let enforced_commands: u64 = figure(region(work, "at most ", " work commands"));
-    assert_eq!(
-        stated_commands, enforced_commands,
-        "the contract states {stated_commands} work commands, and this crate accepts {enforced_commands}"
-    );
-
-    let stated_items: u64 = figure(region(hierarchy, "graph validation to ", " items"));
-    let enforced_items: u64 = figure(region(work, "if items.len() > ", ")"));
-    assert_eq!(
-        stated_items, enforced_items,
-        "the contract states {stated_items} graph items, and this crate validates {enforced_items}"
-    );
-
-    let stated_window = window_ms(region(leases, "the declared ", " window"));
-    let enforced_window = (MIN_LEASE_MS, MAX_LEASE_MS);
-    assert_eq!(
-        stated_window, enforced_window,
-        "the contract states a {stated_window:?} lease window, and this crate declares {enforced_window:?}"
     );
 }

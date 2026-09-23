@@ -8,6 +8,18 @@ use symbiote_domain::{
 
 pub const ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
 
+/// The manifest limits `agent-environment.md` states: layers, policy references and extensions
+/// each capped, the resource declarations across those layers, the grants one resource may
+/// require, and the bytes a symbolic resource reference may carry. Each is named here because the
+/// case that holds the document's figures reads the declaration rather than this file's text; none
+/// is public, because the crate's surface is the manifest it parses, not the bounds it applies.
+pub(crate) const MAX_LAYERS: usize = 128;
+pub(crate) const MAX_POLICY_REFERENCES: usize = 128;
+pub(crate) const MAX_EXTENSIONS: usize = 128;
+pub(crate) const MAX_RESOURCE_DECLARATIONS: usize = 4096;
+pub(crate) const MAX_RESOURCE_GRANTS: usize = 128;
+pub(crate) const MAX_SYMBOLIC_REFERENCE_BYTES: usize = 128;
+
 /// Opaque catalog reference, never a path, executable, credential value or URL.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
@@ -16,7 +28,7 @@ impl ResourceRef {
     pub fn new(value: impl Into<String>) -> Result<Self, EnvironmentError> {
         let value = value.into();
         if value.is_empty()
-            || value.len() > 128
+            || value.len() > MAX_SYMBOLIC_REFERENCE_BYTES
             || !value
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
@@ -329,10 +341,11 @@ impl EnvironmentDocument {
         if self.schema_version != ENVIRONMENT_SCHEMA_VERSION {
             return Err(EnvironmentError::InvalidVersion);
         }
-        if self.layers.len() > 128
-            || self.core_policies.len() > 128
-            || self.extensions.len() > 128
-            || self.layers.iter().map(|l| l.resources.len()).sum::<usize>() > 4096
+        if self.layers.len() > MAX_LAYERS
+            || self.core_policies.len() > MAX_POLICY_REFERENCES
+            || self.extensions.len() > MAX_EXTENSIONS
+            || self.layers.iter().map(|l| l.resources.len()).sum::<usize>()
+                > MAX_RESOURCE_DECLARATIONS
         {
             return Err(EnvironmentError::LimitExceeded);
         }
@@ -349,7 +362,7 @@ impl EnvironmentDocument {
                 if !resources.insert(&resource.id) {
                     return Err(EnvironmentError::DuplicateResource);
                 }
-                if resource.required_grants.len() > 128 {
+                if resource.required_grants.len() > MAX_RESOURCE_GRANTS {
                     return Err(EnvironmentError::LimitExceeded);
                 }
                 if (resource.kind == ResourceKind::Hook) != resource.hook_intent.is_some()

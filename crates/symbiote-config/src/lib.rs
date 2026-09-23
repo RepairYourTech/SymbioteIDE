@@ -618,3 +618,74 @@ pub fn preview_migration(original: Value, to: u32) -> Result<MigrationPreview, D
         original,
     })
 }
+
+/// The manifest bound and the four manifest limits `agent-environment.md` states are the ones this
+/// crate applies. Each figure is read from the sentence it is written in and compared to the
+/// declaration that enforces it — the parser's own bound, `MAX_MANIFEST_BYTES`, not the smaller
+/// bound the resolution target's parse applies — so a document that states a bound this crate has
+/// moved past fails here by name rather than in prose nobody reads. Nothing here is read out of
+/// the crate's source text: every bound has a declaration a case can name.
+///
+/// What it does not read: the prose around the figures — recursive duplicate-key rejection, the
+/// expansion refusal on export — which the crate's own cases drive.
+///
+/// The case lives at the crate root rather than in `tests/` because the limits are crate-private
+/// facts: `environment` names each one once and applies it where the manifest is validated, and a
+/// case at the root reads those declarations while the test name the census records stays the one
+/// it was.
+#[cfg(test)]
+#[test]
+fn the_contract_states_the_manifest_bound_this_crate_enforces() {
+    use symbiote_contract_read::{bytes, figure, region};
+
+    use crate::environment::{
+        MAX_EXTENSIONS, MAX_LAYERS, MAX_POLICY_REFERENCES, MAX_RESOURCE_DECLARATIONS,
+        MAX_RESOURCE_GRANTS, MAX_SYMBOLIC_REFERENCE_BYTES,
+    };
+
+    let contract = include_str!("../../../docs/contracts/agent-environment.md");
+
+    let stated: u64 = bytes(region(contract, "limits input to ", "."));
+    let enforced: u64 = MAX_MANIFEST_BYTES as u64;
+    assert_eq!(
+        stated, enforced,
+        "the contract states a {stated}-byte manifest bound, and this crate parses {enforced}"
+    );
+
+    // The same sentence's own limits: 128 layers, policy references and extensions, 4096 resource
+    // declarations, 128 grants per resource and 128 bytes per symbolic reference.
+    let caps: u64 = figure(region(contract, "Limits are ", " layers"));
+    for (label, held) in [
+        ("layers", MAX_LAYERS),
+        ("policy references", MAX_POLICY_REFERENCES),
+        ("extensions", MAX_EXTENSIONS),
+    ] {
+        assert_eq!(
+            caps, held as u64,
+            "the contract states {caps} {label}, and this crate bounds {held}"
+        );
+    }
+    let declarations: u64 = figure(region(contract, "extensions, ", " resource declarations"));
+    assert_eq!(
+        declarations, MAX_RESOURCE_DECLARATIONS as u64,
+        "the contract states {declarations} resource declarations, and this crate bounds {MAX_RESOURCE_DECLARATIONS}"
+    );
+    let grants: u64 = figure(region(
+        contract,
+        "resource declarations, ",
+        " grants per resource",
+    ));
+    assert_eq!(
+        grants, MAX_RESOURCE_GRANTS as u64,
+        "the contract states {grants} grants per resource, and this crate bounds {MAX_RESOURCE_GRANTS}"
+    );
+    let reference_bytes: u64 = figure(region(
+        contract,
+        "grants per resource and ",
+        " bytes per symbolic",
+    ));
+    assert_eq!(
+        reference_bytes, MAX_SYMBOLIC_REFERENCE_BYTES as u64,
+        "the contract states a {reference_bytes}-byte symbolic reference, and this crate bounds {MAX_SYMBOLIC_REFERENCE_BYTES}"
+    );
+}

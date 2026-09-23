@@ -114,8 +114,14 @@ impl std::error::Error for WorkError {}
 fn bounded_text(text: &str, max: usize, nonempty: bool) -> bool {
     text.len() <= max && (!nonempty || !text.trim().is_empty()) && !text.contains('\0')
 }
-const MAX_WORK_BYTES: usize = 262_144;
-const MAX_SPEC_BYTES: usize = 32_768;
+pub(crate) const MAX_WORK_BYTES: usize = 262_144;
+pub(crate) const MAX_SPEC_BYTES: usize = 32_768;
+/// The command history one work item may carry, and the items one graph may span. Both are figures
+/// `work-hierarchy.md` states; they are named here because the case that holds that document reads
+/// these declarations instead of the text beside them. None of the four is public: the crate's
+/// surface is the work it validates, not the bounds it applies.
+pub(crate) const MAX_WORK_COMMANDS: usize = 128;
+pub(crate) const MAX_GRAPH_ITEMS: usize = 4096;
 struct WorkSize(usize, usize);
 impl std::io::Write for WorkSize {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -315,7 +321,7 @@ fn history_decode<'de, D: serde::Deserializer<'de>>(
     impl<'de> serde::de::Visitor<'de> for History {
         type Value = Vec<WorkCommand>;
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("at most 128 work commands")
+            write!(f, "at most {MAX_WORK_COMMANDS} work commands")
         }
         fn visit_seq<A: serde::de::SeqAccess<'de>>(
             self,
@@ -323,7 +329,7 @@ fn history_decode<'de, D: serde::Deserializer<'de>>(
         ) -> Result<Self::Value, A::Error> {
             let mut history = Vec::new();
             while let Some(command) = seq.next_element()? {
-                if history.len() == 128 {
+                if history.len() == MAX_WORK_COMMANDS {
                     return Err(serde::de::Error::custom("work history limit"));
                 }
                 history.push(command);
@@ -431,7 +437,7 @@ impl WorkItem {
         if command.expected_revision != self.revision {
             return Err(WorkError::RevisionConflict);
         }
-        if self.history.len() >= 128 {
+        if self.history.len() >= MAX_WORK_COMMANDS {
             return Err(WorkError::ResourceLimit);
         }
         if command.at.0 < self.history.last().map_or(self.created_at.0, |c| c.at.0) {
@@ -612,7 +618,7 @@ impl TaskOrigin {
 /// Validates current parent/dependency edges; historical edges remain observational.
 /// Cross-Project references require explicit authorization by the Host before use.
 pub fn validate_work_graph(items: &[WorkItem]) -> Result<(), WorkError> {
-    if items.len() > 4096 {
+    if items.len() > MAX_GRAPH_ITEMS {
         return Err(WorkError::ResourceLimit);
     }
     let mut index = BTreeMap::new();

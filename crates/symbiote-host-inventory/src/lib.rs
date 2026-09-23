@@ -8,6 +8,10 @@ pub use symbiote_runtime_discovery::Fact;
 pub mod linux;
 pub const PULSE_VERSION: u32 = 1;
 pub const MAX_TTL_MS: u64 = 30_000;
+/// The lifetime a pulse's observations carry, the figure `host-inventory.md` states. One owner:
+/// both stamping constructors below carry it, and the case that holds the document drives the
+/// stamp through `telemetry_disabled` rather than reading this file.
+const SAMPLE_LIFETIME_MS: u64 = 5_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -243,7 +247,7 @@ impl HostPulse {
             observation
                 .observed_at
                 .0
-                .checked_add(5_000)
+                .checked_add(SAMPLE_LIFETIME_MS)
                 .ok_or(PulseError::Invalid)?,
         );
         let unsupported = observation
@@ -284,7 +288,10 @@ impl HostPulse {
             host_id,
             observation_id,
             at,
-            Timestamp(at.0.checked_add(5_000).ok_or(PulseError::Invalid)?),
+            Timestamp(
+                at.0.checked_add(SAMPLE_LIFETIME_MS)
+                    .ok_or(PulseError::Invalid)?,
+            ),
         )
     }
     pub fn disabled(

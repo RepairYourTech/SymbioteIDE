@@ -13,6 +13,11 @@ pub const PROVIDER_CONTRACT_VERSION: u32 = 1;
 pub const MAX_ENVELOPE_BYTES: usize = 256 * 1024;
 pub const MAX_MESSAGES: usize = 128;
 pub const MAX_TOOLS: usize = 64;
+/// The JSON a tool schema may walk: the nesting depth and the values visited. The figures
+/// `providers.md` states; named here so the walk below applies a declaration and the case that
+/// holds that document drives the behaviour rather than reading this file.
+const MAX_SCHEMA_DEPTH: usize = 32;
+const MAX_SCHEMA_NODES: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -304,7 +309,7 @@ fn tool_name(name: &str) -> bool {
 
 fn validate_json(value: &Value) -> Result<(), ProviderError> {
     fn visit(value: &Value, depth: usize, remaining: &mut usize) -> Result<(), ProviderError> {
-        if depth > 32 || *remaining == 0 {
+        if depth > MAX_SCHEMA_DEPTH || *remaining == 0 {
             return Err(ProviderError::InvalidEnvelope);
         }
         *remaining -= 1;
@@ -323,7 +328,8 @@ fn validate_json(value: &Value) -> Result<(), ProviderError> {
         }
         Ok(())
     }
-    visit(value, 0, &mut 4096)
+    let mut remaining = MAX_SCHEMA_NODES;
+    visit(value, 0, &mut remaining)
 }
 
 fn bounded<T: Serialize>(value: &T) -> Result<(), ProviderError> {
