@@ -61,7 +61,7 @@ pub(crate) fn send(
         Err(error) => {
             let message = format!(
                 "cannot reach the daemon at {}: {error} (is symbioted running with --state-dir {}?)",
-                directory.join("host.sock").display(),
+                directory.join(symbiote_host::paths::SOCKET_FILE).display(),
                 directory.display()
             );
             if options.json {

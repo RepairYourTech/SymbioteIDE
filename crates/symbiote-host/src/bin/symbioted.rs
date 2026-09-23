@@ -7,6 +7,8 @@
 // `symbiote-source-stamp`, which names this file.
 include!(concat!(env!("OUT_DIR"), "/source_record.rs"));
 
+use std::path::PathBuf;
+
 fn main() {
     // Read, not merely declared: a static the binary never reads is one the
     // compiler or linker may drop, and Rust 1.85 does drop this one (`#[used]`
@@ -21,38 +23,66 @@ fn main() {
     }
 }
 
+/// The path a flag's value names, refusing a flag that ends the invocation.
+fn value_of(arguments: &[String], index: &mut usize) -> Result<PathBuf, String> {
+    *index += 1;
+    arguments
+        .get(*index)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{} needs a path", arguments[*index - 1]))
+}
+
+const USAGE: &str = "usage: symbioted [--state-dir DIR] [--config-dir DIR] [--operator-config FILE] \
+                     [--no-telemetry]\n\
+                     without --state-dir the Host uses $SYMBIOTE_HOST_STATE_DIR, else \
+                     $XDG_STATE_HOME/symbiote, else $HOME/.local/state/symbiote; without \
+                     --config-dir or --operator-config it looks for operator.json under \
+                     $SYMBIOTE_HOST_CONFIG_DIR, else $XDG_CONFIG_HOME/symbiote, else \
+                     $HOME/.config/symbiote (a missing file is no operator provisioning)";
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    let arguments: Vec<String> = arguments
-        .into_iter()
+    let arguments: Vec<String> = std::env::args_os()
+        .skip(1)
         .map(|argument| {
             argument
                 .into_string()
                 .map_err(|_| "arguments must be UTF-8".to_string())
         })
         .collect::<Result<_, _>>()?;
-    let telemetry = !arguments.iter().any(|a| a == "--no-telemetry");
-    let positional: Vec<&String> = arguments
-        .iter()
-        .filter(|a| a.as_str() != "--no-telemetry")
-        .collect();
-    // --state-dir DIR [--operator-config FILE]: the operator config is the
-    // explicit provisioning surface (reservation base, fixture model
-    // transport, credential registrations, shell allowlist). Its values
-    // never enter the journal.
-    match positional.as_slice() {
-        [state_flag, state_dir] if state_flag.as_str() == "--state-dir" => {
-            symbiote_host::serve_with_telemetry(std::path::Path::new(state_dir), telemetry)
+
+    let mut telemetry = true;
+    let mut state_dir: Option<PathBuf> = None;
+    let mut config_dir: Option<PathBuf> = None;
+    let mut operator_config: Option<PathBuf> = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--no-telemetry" => telemetry = false,
+            "--state-dir" => state_dir = Some(value_of(&arguments, &mut index)?),
+            "--config-dir" => config_dir = Some(value_of(&arguments, &mut index)?),
+            "--operator-config" => operator_config = Some(value_of(&arguments, &mut index)?),
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            other => return Err(format!("unknown argument {other:?}\n{USAGE}").into()),
         }
-        [state_flag, state_dir, config_flag, config_path]
-            if state_flag.as_str() == "--state-dir"
-                && config_flag.as_str() == "--operator-config" =>
-        {
-            let config = symbiote_host::operator::load(std::path::Path::new(config_path))
-                .map_err(|error| format!("operator config: {error}"))?;
-            let transports = symbiote_host::runner::assemble_operator_transports(config)?;
-            symbiote_host::serve_full(std::path::Path::new(state_dir), telemetry, transports)
-        }
-        _ => Err("usage: symbioted --state-dir PRIVATE_DIRECTORY [--operator-config FILE] [--no-telemetry]".into()),
+        index += 1;
     }
+
+    // One resolution, from the flag or this Host's override or the XDG base
+    // directories: the daemon binds its socket, opens its database and looks
+    // for the operator configuration under the directories this names.
+    let paths =
+        symbiote_host::paths::HostPaths::from_process(state_dir.as_deref(), config_dir.as_deref())?;
+    let config = operator_config.unwrap_or_else(|| paths.operator_config());
+    let transports = match config.exists() {
+        true => {
+            let config = symbiote_host::operator::load(&config)
+                .map_err(|error| format!("operator config {}: {error}", config.display()))?;
+            symbiote_host::runner::assemble_operator_transports(config)?
+        }
+        false => symbiote_host::runner::WorkerTransports::production(),
+    };
+    symbiote_host::serve_full(&paths.state, telemetry, transports)
 }
