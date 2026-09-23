@@ -602,6 +602,24 @@ mod tests {
             ),
             Err(ResolutionError::Overbound)
         );
+        // The bound is the count the contract states, not one less: exactly
+        // MAX_LIST_ITEMS items resolve.
+        let source = FixedSource {
+            item: Some(WorkItemText {
+                description: "d".into(),
+                requirements: (0..MAX_LIST_ITEMS).map(|i| format!("r{i}")).collect(),
+                constraints: vec![],
+                risks: vec![],
+                acceptance: vec![],
+            }),
+        };
+        assert!(
+            resolve_context(
+                &source,
+                inputs(&dispatch, &task, &project, &work, access(&project))
+            )
+            .is_ok()
+        );
         // Total-bytes overflow: each over-long item truncates to the 8 KiB
         // item cap, so NINE of them push the list total past its 64 KiB
         // budget (9 x 8192 > 65536).
