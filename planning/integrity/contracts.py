@@ -47,6 +47,7 @@ HELD = {
     "architecture.md": ("symbiote-architecture", "the_document_writes_a_row_for_every_module_the_crate_declares"),
     "cli.md": ("symbiote-host", "the_contract_document_names_the_commands_and_kinds_the_table_defines"),
     "client-sdk.md": ("symbiote-client-sdk", "the_contract_names_every_outcome_this_crate_classifies_and_none_it_does_not"),
+    "configuration.md": ("symbiote-config", "the_contract_states_the_specificity_and_storage_of_every_scope"),
     "constitution.md": ("symbiote-constitution", "every_channel_the_contract_doc_claims_is_one"),
     "context-credential-resolution.md": ("symbiote-context", "the_contract_states_the_bounds_this_crate_enforces"),
     "external-agent-loop.md": ("symbiote-external-agent", "the_contract_states_the_bounds_this_driver_enforces"),
@@ -74,7 +75,6 @@ HELD = {
 # entry here that a case starts reading is a classification this census moves, and one that
 # disappears fails too.
 NOT_HELD = {
-    "configuration.md": "the layered configuration model: the config crate's own cases drive precedence, so its key order and layering are that crate's bounds and no figure here is read",
     "dispatch-preparation.md": "the dispatch composition's refusal vocabulary and issue routing, which the domain and host cases drive rather than this document's prose",
     "domain.md": "the domain model's shape, which the domain crate's cases and the ontology check read rather than this document's prose",
     "project-team.md": "the team configuration's schema narration: what schema v4 added, which is history the store's migration cases drive",

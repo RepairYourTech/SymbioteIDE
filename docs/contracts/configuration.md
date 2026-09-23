@@ -16,15 +16,17 @@ Portable root syntax uses `/` separators and canonical relative components. A si
 
 | Scope | Specificity | Storage classification | Selection |
 | --- | --- | --- | --- |
-| Application defaults | 1 | Version controlled | Caller-selected defaults |
-| User preferences | 2 | User synchronized | Caller-selected authenticated user |
-| Project policy preferences | 3 | Version controlled | Project identity |
-| Workspace roots | 4 | Version controlled | Project and root |
-| Repository metadata preferences | 5 | Version controlled | Project and repository |
-| Role preferences | 6 | Version controlled | Project and Role |
-| Explicit local override | 7 | Local only | Exact Project/root/repository/Role/controller context |
+| `application` — application defaults | 1 | Version controlled | Caller-selected defaults |
+| `user` — user preferences | 2 | User synchronized | Caller-selected authenticated user |
+| `project` — project policy preferences | 3 | Version controlled | Project identity |
+| `workspace_root` — workspace roots | 4 | Version controlled | Project and root |
+| `repository` — repository metadata preferences | 5 | Version controlled | Project and repository |
+| `role` — role preferences | 6 | Version controlled | Project and Role |
+| `local_override` — explicit local override | 7 | Local only | Exact Project/root/repository/Role/controller context |
 | Machine/Host bindings | Outside inheritance | Local only | Explicit local binding map |
 | Secret bytes | Outside inheritance | Prohibited from config disk serialization | Non-serializable `SecretValue` |
+
+The identifiers in the first column are the scopes' canonical schema names, whatever display terminology a client uses. `crates/symbiote-config` holds this table: the case named below derives the scope set from `enum Scope`'s own schema, the specificity from the order the resolver applies, and the classification from `scope_storage`, so a variant added or removed, a specificity moved in either place, or a classification changed fails there by name.
 
 Unspecified preferences inherit. More-specific supplied values override; unequal values at equal scope return a deterministic diagnostic instead of last-write-wins. Equal values retain every contributing source. Resolved output records ordered source identities, revisions and scope per field, including overridden inputs. Invalid scoped selectors and unknown versions fail. Security permissions and consent authorization are not ordinary overrideable preferences: the Host must enforce authoritative policy intersections before acting on resolved requests. `learning = true` alone is not consent evidence. Authorized-project analytics preference is not source/credential sharing authority.
 
@@ -40,7 +42,7 @@ Unspecified preferences inherit. More-specific supplied values override; unequal
 
 ## Evidence and remaining acceptance
 
-`cargo test -p symbiote-config` covers partial manifests without auth, both unsupported migration directions, unknown core/auth fields, portable-root rejection, extension determinism, managed-source separation, distinct Project preferences, controller-local switching/restore, local overrides/provenance, equal-scope conflicts, Role resources across runtime changes, disjoint/conflicting/delete-edit merges and storage classification.
+`cargo test -p symbiote-config` covers partial manifests without auth, both unsupported migration directions, unknown core/auth fields, portable-root rejection, extension determinism, managed-source separation, distinct Project preferences, controller-local switching/restore, local overrides/provenance, equal-scope conflicts, Role resources across runtime changes, disjoint/conflicting/delete-edit merges and storage classification, and holds this table's specificity and classification for every scope against the scope declarations and the resolver (`tests/scopes.rs`).
 
 Pending #176/#179 acceptance: actual client simultaneous-controller isolation and rename/restore; physical scope storage and authorization; real credentials/provider/billing validation; complete policy compilation and runtime resource projection; clone/open on a second Host; import/diff/repair/export commands; user-content-preserving native projection; migration application/recovery; exact-commit review and checks. No mocks are counted as these integrations. Runtime availability blocks dependent execution only, never parsing a Project declaration.
 
