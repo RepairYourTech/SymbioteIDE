@@ -1,6 +1,7 @@
 //! Runtime integration boundary. Neither adapters nor providers own canonical completion.
 mod adapter;
 mod capabilities;
+pub mod conformance;
 pub mod events;
 pub mod projection;
 pub mod provider;

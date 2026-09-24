@@ -543,8 +543,9 @@ fn control_delivery(
 }
 
 /// What the descriptor holds for one capability. One function, so the four
-/// facts stay four facts wherever they are read.
-fn carrier_delivery(declared: Option<&Support>) -> CarrierDelivery {
+/// facts stay four facts wherever they are read — including the conformance
+/// suite, which reads a declaration through this same function.
+pub(crate) fn carrier_delivery(declared: Option<&Support>) -> CarrierDelivery {
     match declared {
         Some(Support::Supported { .. }) => CarrierDelivery::Declared {},
         Some(Support::Unsupported) => CarrierDelivery::Unsupported {},

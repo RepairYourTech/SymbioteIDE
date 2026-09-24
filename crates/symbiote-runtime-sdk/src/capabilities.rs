@@ -232,16 +232,26 @@ impl RuntimeDescriptor {
         }
         Ok(())
     }
+    /// Whether one evidence reference names this descriptor's own identity —
+    /// adapter, installation, profile, revision, model, host, versions and
+    /// platform. The window is deliberately not read here: freshness needs the
+    /// caller's clock, and [`RuntimeDescriptor::evidence`] is where it is
+    /// applied. This is the one place the comparison is written, so a conformance
+    /// suite cannot disagree with qualification about what naming this runtime
+    /// means.
+    pub fn names_its_own_identity(&self, proof: &ProbeEvidence) -> bool {
+        proof.adapter_id == self.adapter_id
+            && proof.installation == self.installation
+            && proof.profile_id == self.profile_id
+            && proof.profile_revision == self.profile_revision
+            && proof.model_id == self.model_id
+            && proof.host_id == self.host_id
+            && proof.adapter_version == self.adapter_version
+            && proof.upstream_version == self.upstream_version
+            && proof.platform == self.platform
+    }
     fn evidence(&self, proof: &ProbeEvidence, now: Timestamp) -> Result<(), QualificationError> {
-        if proof.adapter_id != self.adapter_id
-            || proof.installation != self.installation
-            || proof.profile_id != self.profile_id
-            || proof.profile_revision != self.profile_revision
-            || proof.model_id != self.model_id
-            || proof.host_id != self.host_id
-            || proof.adapter_version != self.adapter_version
-            || proof.upstream_version != self.upstream_version
-            || proof.platform != self.platform
+        if !self.names_its_own_identity(proof)
             || proof.observed_at > now
             || proof.expires_at <= now
             || proof.observed_at >= proof.expires_at
