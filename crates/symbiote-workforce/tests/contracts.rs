@@ -1,6 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use symbiote_contract_read::{bytes, region};
 use symbiote_domain::*;
+use symbiote_host_inventory::{
+    Fact, HostPulse, PulseProvenance, PulseSource, ResourceObservation, TelemetryMode,
+};
+use symbiote_runtime_sdk::projection::ContractSurface;
+use symbiote_runtime_sdk::{
+    Capability, ControlSupport, IntegrationTier, ProbeEvidence, RuntimeContextLimits,
+    RuntimeDescriptor, RuntimeOwner, SDK_VERSION, Support, Transport,
+};
 use symbiote_workforce::*;
 fn access() -> AccessSnapshot {
     AccessSnapshot {
@@ -9,6 +17,13 @@ fn access() -> AccessSnapshot {
         grants: [Permission::ReadRoot, Permission::ExecuteProcess].into(),
         policy_revision: Revision(0),
     }
+}
+/// The Host's observations for a binding whose fallbacks this case does not
+/// exercise: the primary's own declaration, when it has one, and nothing else.
+/// Every candidate is read by index, so a case that names fallbacks builds the
+/// list the binding's own order asks for.
+fn host_observations(primary: Option<&RuntimeDescriptor>) -> CandidateObservations<'_> {
+    CandidateObservations::new(primary, [])
 }
 fn candidate() -> StaffingCandidate {
     StaffingCandidate {
@@ -255,7 +270,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
         model: b.primary.profile.model.clone(),
         refusal: None,
     };
-    let missing = assess_readiness(&b, &t, None, None, None, Timestamp(10));
+    let missing = assess_readiness(&b, &t, None, &host_observations(None), None, Timestamp(10));
     assert_eq!(missing.status, PrerequisiteStatus::NotReady);
     assert_eq!(missing.checks[1].result, CheckResult::MissingObservation);
     // The provider prerequisite observes exactly what the registry resolved:
@@ -345,7 +360,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
         &b,
         &t,
         Some(&pulse),
-        Some(&descriptor),
+        &host_observations(Some(&descriptor)),
         Some(&resolved),
         Timestamp(10),
     );
@@ -368,7 +383,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
         &b,
         &t,
         Some(&pulse),
-        Some(&descriptor),
+        &host_observations(Some(&descriptor)),
         Some(&refused),
         Timestamp(10),
     );
@@ -393,7 +408,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &observed_binding,
             &t,
             Some(&pulse),
-            Some(&descriptor),
+            &host_observations(Some(&descriptor)),
             Some(&resolved),
             Timestamp(10)
         )
@@ -405,7 +420,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &b,
             &t,
             Some(&pulse),
-            Some(&descriptor),
+            &host_observations(Some(&descriptor)),
             Some(&resolved),
             Timestamp(10)
         )
@@ -423,7 +438,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &observed_binding,
             &t,
             Some(&pulse),
-            Some(&descriptor),
+            &host_observations(Some(&descriptor)),
             Some(&resolved),
             Timestamp(10)
         )
@@ -446,7 +461,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &b,
             &t,
             Some(&pulse),
-            Some(&descriptor),
+            &host_observations(Some(&descriptor)),
             Some(&resolved),
             Timestamp(100)
         )
@@ -459,7 +474,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &b,
             &t,
             Some(&pulse),
-            Some(&descriptor),
+            &host_observations(Some(&descriptor)),
             Some(&resolved),
             Timestamp(10)
         )
@@ -476,7 +491,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &b,
             &t,
             Some(pulse),
-            Some(descriptor),
+            &host_observations(Some(descriptor)),
             Some(&resolved),
             Timestamp(10),
         )
@@ -516,7 +531,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &requiring,
             &t,
             Some(&pulse),
-            Some(&unknown),
+            &host_observations(Some(&unknown)),
             Some(&resolved),
             Timestamp(10)
         )
@@ -529,7 +544,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &requiring,
             &t,
             Some(&pulse),
-            Some(&lacking),
+            &host_observations(Some(&lacking)),
             Some(&resolved),
             Timestamp(10)
         )
@@ -562,7 +577,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &requiring,
             &t,
             Some(&pulse),
-            Some(&stale),
+            &host_observations(Some(&stale)),
             Some(&resolved),
             Timestamp(10)
         )
@@ -629,7 +644,15 @@ fn a_declared_cpu_demand_is_judged_against_the_observed_effective_cpu() {
     let capacity = |pulse: &HostPulse, millicores: Option<u64>| {
         let mut b = binding();
         b.primary.limits.max_cpu_millicores = millicores;
-        assess_readiness(&b, &t, Some(pulse), None, Some(&resolved), Timestamp(10)).checks[1]
+        assess_readiness(
+            &b,
+            &t,
+            Some(pulse),
+            &host_observations(None),
+            Some(&resolved),
+            Timestamp(10),
+        )
+        .checks[1]
             .result
             .clone()
     };
@@ -692,7 +715,14 @@ fn declared_limits_the_host_cannot_bind_are_not_usable() {
     let report = |limits: ResourceLimits| {
         let mut b = binding();
         b.primary.limits = limits;
-        assess_readiness(&b, &t, Some(&pulse), None, Some(&resolved), Timestamp(10))
+        assess_readiness(
+            &b,
+            &t,
+            Some(&pulse),
+            &host_observations(None),
+            Some(&resolved),
+            Timestamp(10),
+        )
     };
     // The fixture's memory ceiling is a bound the Host applies, so the
     // candidate is usable and the check names no refusal.
@@ -745,7 +775,7 @@ fn a_bindable_ceiling_is_enforceable_on_both_lanes() {
     for runtime in [RuntimeKind::NativeSymbiote, RuntimeKind::ExternalHarness] {
         let mut b = binding();
         b.primary.profile.runtime = runtime;
-        let report = assess_readiness(&b, &t, None, None, None, Timestamp(10));
+        let report = assess_readiness(&b, &t, None, &host_observations(None), None, Timestamp(10));
         let check = report
             .checks
             .iter()
@@ -764,7 +794,7 @@ fn a_bindable_ceiling_is_enforceable_on_both_lanes() {
 fn execution_access_follows_what_the_lanes_execution_actually_needs() {
     let t = team();
     let check_of = |b: &BindingConfiguration| {
-        assess_readiness(b, &t, None, None, None, Timestamp(10))
+        assess_readiness(b, &t, None, &host_observations(None), None, Timestamp(10))
             .checks
             .into_iter()
             .find(|c| c.prerequisite == Prerequisite::ExecutionAccess)
@@ -797,6 +827,311 @@ fn execution_access_follows_what_the_lanes_execution_actually_needs() {
     assert_eq!(check_of(&external).result, CheckResult::Rejected);
 }
 
+/// The pulse this Host's own observations are attributed to. Every declaration
+/// below carries this identity unless the case is about an observation the Host
+/// cannot attribute to itself.
+fn observed_pulse() -> HostPulse {
+    HostPulse::new(
+        HostId::new("host").unwrap(),
+        CommandId::new("pulse").unwrap(),
+        Timestamp(1),
+        Timestamp(100),
+        TelemetryMode::Enabled,
+        Fact::Known("linux".into()),
+        Fact::Known("x86_64".into()),
+        ResourceObservation {
+            effective_memory_available_bytes: Fact::Known(1_000_000),
+            effective_memory_limit_bytes: Fact::Known(1_000_000),
+            ..Default::default()
+        },
+        PulseProvenance {
+            source: PulseSource::OperatingSystem,
+            probe_version: "test".into(),
+        },
+    )
+    .unwrap()
+}
+/// The declaration a Host holds for one candidate's profile: exactly the
+/// controls and capabilities the caller names, and that candidate's own tools
+/// and skills. Everything else — the profile revision, the model, the identity
+/// the observation is attributed to — comes from the candidate and the pulse, so
+/// a case cannot describe a declaration that belongs to another profile.
+fn declaration_for(
+    pulse: &HostPulse,
+    candidate: &StaffingCandidate,
+    controls: &[Control],
+    capabilities: &[Capability],
+) -> RuntimeDescriptor {
+    let profile = &candidate.profile;
+    let evidence = ProbeEvidence {
+        artifact: EvidenceId::new("proof").unwrap(),
+        adapter_id: profile.adapter.clone(),
+        installation: profile.installation.clone(),
+        profile_id: profile.id.clone(),
+        profile_revision: profile.revision,
+        model_id: profile.model.clone(),
+        host_id: pulse.host_id.clone(),
+        adapter_version: "1".into(),
+        upstream_version: "1".into(),
+        platform: "linux".into(),
+        observed_at: Timestamp(1),
+        expires_at: Timestamp(100),
+    };
+    RuntimeDescriptor {
+        sdk_version: SDK_VERSION,
+        adapter_id: profile.adapter.clone(),
+        installation: profile.installation.clone(),
+        profile_id: profile.id.clone(),
+        profile_revision: profile.revision,
+        model_id: profile.model.clone(),
+        adapter_version: "1".into(),
+        upstream_version: "1".into(),
+        runtime: profile.runtime,
+        owner: RuntimeOwner::SymbioteNative {},
+        transport: Transport::NativeLoop,
+        tier: IntegrationTier::Detected,
+        host_id: pulse.host_id.clone(),
+        platform: "linux".into(),
+        capabilities: capabilities
+            .iter()
+            .cloned()
+            .map(|capability| {
+                (
+                    capability,
+                    Support::Supported {
+                        evidence: Box::new(evidence.clone()),
+                    },
+                )
+            })
+            .collect(),
+        controls: controls
+            .iter()
+            .cloned()
+            .map(|control| {
+                (
+                    control,
+                    ControlSupport {
+                        strength: EnforcementStrength::HostEnforced,
+                        mechanism: "fixture-proof".into(),
+                        evidence: evidence.clone(),
+                    },
+                )
+            })
+            .collect(),
+        tools: candidate.tools.clone(),
+        skills: candidate.skills.clone(),
+        context_limits: Some(RuntimeContextLimits {
+            context_window_tokens: 1_000,
+            max_output_tokens: 100,
+        }),
+    }
+}
+/// Another candidate for the same Role: another profile, adapter and runtime,
+/// which is what a binding's own fallback list holds. The fixture's access,
+/// context and limits come along, so the binding still validates.
+fn fallback_candidate(profile: &str, runtime: RuntimeKind, adapter: &str) -> StaffingCandidate {
+    let mut candidate = candidate();
+    candidate.profile.id = RuntimeProfileId::new(profile).unwrap();
+    candidate.profile.runtime = runtime;
+    candidate.profile.adapter = AgentRuntimeAdapterId::new(adapter).unwrap();
+    // The external lane is an *installed* harness: a profile of that runtime
+    // without the installation it is a profile of does not validate.
+    candidate.profile.installation = (runtime == RuntimeKind::ExternalHarness)
+        .then(|| InstallationId::new("codex-0-118-0").unwrap());
+    candidate.config_identity = format!("{profile}-config");
+    candidate
+}
+/// Every candidate the binding names is read onto the runtime this Host observed
+/// for that candidate's **own** profile, so a report can say which candidate
+/// would carry the binding. The prerequisite checks stay the assessed
+/// candidate's, and nothing here selects a fallback: a carriage is a statement
+/// about declarations, and the consent a selection would need is the binding's
+/// own policy, which this report does not read as granted.
+#[test]
+fn the_report_reads_every_candidate_the_binding_names() {
+    let pulse = observed_pulse();
+    let mut configuration = binding();
+    let carried = fallback_candidate(
+        "external-worker",
+        RuntimeKind::ExternalHarness,
+        "codex-harness",
+    );
+    let silent = fallback_candidate("absent-worker", RuntimeKind::NativeSymbiote, "native-agent");
+    configuration.fallbacks = vec![carried.clone(), silent];
+    configuration.validate_team(&team()).unwrap();
+    // The primary's declaration carries nothing for the one control the
+    // fixture's policy declares a minimum for; the first fallback's carries it
+    // whole.
+    let primary = declaration_for(&pulse, &configuration.primary, &[], &[Capability::Tools]);
+    let fallback = declaration_for(
+        &pulse,
+        &carried,
+        &[Control::Filesystem],
+        &[Capability::Tools],
+    );
+    let observations = CandidateObservations::new(Some(&primary), [Some(&fallback), None]);
+    let report = assess_readiness(
+        &configuration,
+        &team(),
+        Some(&pulse),
+        &observations,
+        None,
+        Timestamp(10),
+    );
+    // One entry per candidate, in the binding's own order — the primary first.
+    assert_eq!(report.candidates.len(), 3);
+    assert_eq!(report.candidates[0].profile.as_str(), "native");
+    assert_eq!(report.candidates[1].profile.as_str(), "external-worker");
+    assert_eq!(report.candidates[2].profile.as_str(), "absent-worker");
+    // A candidate's own declared runtime and adapter, not the assessed one's.
+    assert_eq!(report.candidates[1].runtime, RuntimeKind::ExternalHarness);
+    assert_eq!(report.candidates[1].adapter.as_str(), "codex-harness");
+    assert_eq!(report.candidates[1].model.as_str(), "model");
+    // A candidate nobody declared a runtime for is named as such, not omitted
+    // and not read as an unobserved fact about the declared ones.
+    assert_eq!(
+        report.candidates[2].observation,
+        CandidateObservation::NotDeclared
+    );
+    let CandidateObservation::Observed { surfaces } = &report.candidates[0].observation else {
+        panic!("the primary's declaration was read");
+    };
+    assert_eq!(
+        surfaces.withheld().into_iter().collect::<Vec<_>>(),
+        vec![ContractSurface::PermissionsAndSandbox]
+    );
+    let CandidateObservation::Observed { surfaces: carriage } = &report.candidates[1].observation
+    else {
+        panic!("the first fallback's declaration was read");
+    };
+    assert!(
+        carriage.is_complete(),
+        "the fallback carries every demanded fact"
+    );
+    assert_eq!(carriage.profile.as_str(), "external-worker");
+    assert_eq!(carriage.binding.as_str(), "binding");
+    // The checks remain the assessed candidate's: the primary is refused by the
+    // surface it carries nothing for, and the report is not ready even though
+    // the binding names a candidate that would carry it.
+    assert_eq!(report.status, PrerequisiteStatus::NotReady);
+    assert_eq!(report.profile_id.as_str(), "native");
+    let surfaces_check = report
+        .checks
+        .iter()
+        .find(|check| check.prerequisite == Prerequisite::RuntimeSurfaces)
+        .unwrap();
+    assert_eq!(surfaces_check.result, CheckResult::Rejected);
+    assert_eq!(
+        surfaces_check.withheld_surfaces,
+        vec![ContractSurface::PermissionsAndSandbox]
+    );
+}
+/// An observation this Host cannot attribute to itself is not a carriage: the
+/// report names the place, and it names no surface, because this Host observed
+/// nothing it may speak for.
+#[test]
+fn an_observation_this_host_cannot_attribute_to_itself_is_not_a_carriage() {
+    let pulse = observed_pulse();
+    let configuration = binding();
+    let mut foreign = declaration_for(
+        &pulse,
+        &configuration.primary,
+        &[Control::Filesystem],
+        &[Capability::Tools],
+    );
+    foreign.host_id = HostId::new("other-host").unwrap();
+    let observations = CandidateObservations::new(Some(&foreign), []);
+    let report = assess_readiness(
+        &configuration,
+        &team(),
+        Some(&pulse),
+        &observations,
+        None,
+        Timestamp(10),
+    );
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(
+        report.candidates[0].observation,
+        CandidateObservation::Unattributed
+    );
+    let surfaces_check = report
+        .checks
+        .iter()
+        .find(|check| check.prerequisite == Prerequisite::RuntimeSurfaces)
+        .unwrap();
+    assert_eq!(surfaces_check.result, CheckResult::Rejected);
+    assert!(
+        surfaces_check.withheld_surfaces.is_empty(),
+        "an observation this Host cannot attribute to itself names no surface"
+    );
+}
+/// The pairing is checked rather than assumed: a descriptor list that is not one
+/// entry per candidate is refused, so one binding's declarations cannot be read
+/// onto another's candidates — and nothing observed at all reads as nothing
+/// declared, never as a judgement.
+#[test]
+fn a_candidate_list_that_is_not_one_entry_per_candidate_is_refused() {
+    let pulse = observed_pulse();
+    let mut configuration = binding();
+    let second = fallback_candidate(
+        "external-worker",
+        RuntimeKind::ExternalHarness,
+        "codex-harness",
+    );
+    configuration.fallbacks = vec![second.clone()];
+    let primary = declaration_for(
+        &pulse,
+        &configuration.primary,
+        &[Control::Filesystem],
+        &[Capability::Tools],
+    );
+    let fallback = declaration_for(
+        &pulse,
+        &second,
+        &[Control::Filesystem],
+        &[Capability::Tools],
+    );
+    // One descriptor for a binding that names two candidates: refused, because
+    // the second entry would otherwise read as a candidate nobody declared.
+    assert!(
+        CandidateObservations::for_configuration(&configuration, &[Some(primary.clone())])
+            .is_none()
+    );
+    let exact = [Some(primary), Some(fallback)];
+    let observations = CandidateObservations::for_configuration(&configuration, &exact).unwrap();
+    assert_eq!(
+        observations.primary().unwrap().profile_id.as_str(),
+        "native"
+    );
+    assert_eq!(
+        observations.candidate(1).unwrap().profile_id.as_str(),
+        "external-worker"
+    );
+    assert!(
+        observations.candidate(2).is_none(),
+        "past the binding's own list there is no candidate"
+    );
+    let report = assess_readiness(
+        &configuration,
+        &team(),
+        Some(&pulse),
+        &CandidateObservations::default(),
+        None,
+        Timestamp(10),
+    );
+    assert!(
+        report
+            .candidates
+            .iter()
+            .all(|candidate| candidate.observation == CandidateObservation::NotDeclared)
+    );
+    let surfaces_check = report
+        .checks
+        .iter()
+        .find(|check| check.prerequisite == Prerequisite::RuntimeSurfaces)
+        .unwrap();
+    assert_eq!(surfaces_check.result, CheckResult::MissingObservation);
+}
 /// The configuration bound `workforce-bindings.md` states is the one this crate enforces: the figure
 /// is read from the sentence it is written in and compared to the constant the parser applies, so a
 /// document that states a bound this crate has moved past fails here by name rather than in prose

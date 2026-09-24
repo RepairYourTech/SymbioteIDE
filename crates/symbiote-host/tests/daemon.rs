@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 22},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 23},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1868,14 +1868,26 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
         checks[7].get("withheld_surfaces").is_none(),
         "a satisfied check names no withheld surface"
     );
-    let surfaces = report["surfaces"]["surfaces"].as_array().unwrap();
+    // One entry per candidate the binding names — this binding names one — and
+    // the assessed candidate's own carriage inside it.
+    let candidates = report["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["profile"], "native-worker");
+    assert_eq!(candidates[0]["observation"]["kind"], "observed");
+    assert_eq!(candidates[0]["profile"], report["profile_id"]);
+    let surfaces = candidates[0]["observation"]["surfaces"]["surfaces"]
+        .as_array()
+        .unwrap();
     assert_eq!(surfaces.len(), 12);
     assert_eq!(surfaces[10]["surface"], "verification_signals");
     assert_eq!(
         surfaces[10]["preventive"]["completion_authority"]["kind"],
         "delivered"
     );
-    assert_eq!(report["surfaces"]["profile"], "native-worker");
+    assert_eq!(
+        candidates[0]["observation"]["surfaces"]["profile"],
+        "native-worker"
+    );
     // The registration enforcement refuses is refused here, by the same name.
     expire_entitlement(&host, "readiness-lapse");
     let lapsed = readiness_probe(&host);
@@ -1898,8 +1910,14 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
             "missing_observation"
         );
     }
+    // Nothing observed is nothing declared, named as such for every candidate
+    // the binding names rather than left as an empty carriage.
+    let bare_candidates = bare_report["candidates"].as_array().unwrap();
+    assert_eq!(bare_candidates.len(), 1);
+    assert_eq!(bare_candidates[0]["profile"], "native-worker");
+    assert_eq!(bare_candidates[0]["observation"]["kind"], "not_declared");
     assert!(
-        bare_report.get("surfaces").is_none(),
+        bare_candidates[0]["observation"].get("surfaces").is_none(),
         "nothing observed is no carriage to publish"
     );
     // A declaration for ANOTHER model is not an observation of this profile,
@@ -1955,7 +1973,9 @@ fn the_readiness_report_names_where_the_declared_runtime_carries_nothing() {
     // The carriage is still published: the surfaces the binding demands are
     // present, with the control that carries nothing named as missing rather
     // than omitted.
-    let surfaces = report["surfaces"]["surfaces"].as_array().unwrap();
+    let surfaces = report["candidates"][0]["observation"]["surfaces"]["surfaces"]
+        .as_array()
+        .unwrap();
     assert_eq!(surfaces.len(), 12);
     assert_eq!(
         surfaces[10]["preventive"]["completion_authority"]["kind"],
@@ -1967,6 +1987,88 @@ fn the_readiness_report_names_where_the_declared_runtime_carries_nothing() {
     // reported once with a reason and once with the surface it would have been
     // carried on.
     assert_eq!(checks[3]["result"], "rejected");
+}
+
+/// Every candidate the binding names is read onto the declared runtime of that
+/// candidate's **own** profile — the primary first, the fallbacks in the
+/// binding's own order — and none of them is selected. The Host observes each
+/// candidate's declaration itself; the checks and the status stay the assessed
+/// candidate's, so a fallback that would carry the binding is visible on the
+/// report while the report still refuses the candidate it assesses.
+#[test]
+fn the_report_reads_every_candidate_the_binding_names_and_selects_none() {
+    // The assessed candidate's declaration carries nothing for the one control
+    // the binding's policy declares a minimum for; the fallback's carries it.
+    let mut bare = runtime_declaration();
+    bare["controls"] = json!({});
+    let mut external = runtime_declaration();
+    external["adapter_id"] = json!("codex-harness");
+    external["installation"] = json!("codex-0-118-0");
+    external["profile_id"] = json!("external-worker");
+    external["runtime"] = json!("EXTERNAL_HARNESS");
+    external["owner"] = json!({"kind": "external", "driver": "codex-app-server"});
+    external["transport"] = json!("structured_rpc");
+    let host = Host::with_operator_config(json!({
+        "reservation_base": std::env::temp_dir()
+            .join("symbiote-readiness-worktrees")
+            .display()
+            .to_string(),
+        "runtime_declarations": [bare, external],
+    }));
+    staffing_composition(&host, Registration::Complete);
+    // The binding the Host holds, read back over the wire and re-configured with
+    // one fallback candidate: the same Role and profile facts, another profile
+    // identity, adapter, installation and runtime. A replacement advances the
+    // binding's revision under exact CAS.
+    let stored = ok(&host.call(request(
+        "read-binding",
+        json!({"kind":"get_binding","project_id":"staffing-demo","binding_id":"engineer-binding"}),
+    )))["data"]
+        .clone();
+    let mut configuration = stored;
+    let mut fallback = configuration["primary"].clone();
+    fallback["profile"]["id"] = json!("external-worker");
+    fallback["profile"]["adapter"] = json!("codex-harness");
+    fallback["profile"]["installation"] = json!("codex-0-118-0");
+    fallback["profile"]["runtime"] = json!("EXTERNAL_HARNESS");
+    fallback["config_identity"] = json!("external-profile");
+    configuration["fallbacks"] = json!([fallback]);
+    configuration["binding"]["revision"] = json!(1);
+    ok(&host.call(request(
+        "add-fallback",
+        json!({"kind":"replace_binding","expected_revision":0,"configuration":configuration}),
+    )));
+    let report = readiness_probe(&host);
+    // The primary is first and is still the assessed candidate: the checks, the
+    // status and `profile_id` speak for it, not for anything a fallback offers.
+    let candidates = report["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0]["profile"], "native-worker");
+    assert_eq!(report["profile_id"], "native-worker");
+    assert_eq!(report["status"], "not_ready");
+    assert_eq!(report["checks"][7]["result"], "rejected");
+    assert_eq!(
+        report["checks"][7]["withheld_surfaces"],
+        json!(["verification_signals"])
+    );
+    // The fallback is read onto its own declaration: its identity, its runtime
+    // and its carriage, which carries every fact the binding demands.
+    assert_eq!(candidates[1]["profile"], "external-worker");
+    assert_eq!(candidates[1]["runtime"], "EXTERNAL_HARNESS");
+    assert_eq!(candidates[1]["adapter"], "codex-harness");
+    assert_eq!(candidates[1]["observation"]["kind"], "observed");
+    assert_eq!(
+        candidates[1]["observation"]["surfaces"]["surfaces"][10]["preventive"]["completion_authority"]
+            ["kind"],
+        "delivered"
+    );
+    // Nothing selects it: the report names what each candidate would carry and
+    // every activation gate is still pending.
+    assert_eq!(
+        report["activation_pending"].as_array().unwrap().len(),
+        6,
+        "{report}"
+    );
 }
 
 /// Capacity is classified from what the Host observed, at both ends: a

@@ -880,20 +880,32 @@ fn execute(
             let registration = store
                 .provider_registration(&binding.primary.profile, now)
                 .map_err(storage_error)?;
-            let descriptor = match workers.declared_runtime_for(&binding.primary.profile) {
-                Some(declared) => Some(
-                    declared
-                        .observe(inventory.host_id(), now)
-                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
-                ),
-                None => None,
-            };
+            // Every candidate the binding names, not only the primary: the
+            // declaration for each of their own profiles, observed with this
+            // Host's identity and a fresh window, in the binding's own order.
+            // The pairing is checked where the report is built rather than
+            // assumed here, so one binding's declarations cannot be read onto
+            // another's candidates.
+            let mut observed = Vec::with_capacity(1 + binding.fallbacks.len());
+            for candidate in std::iter::once(&binding.primary).chain(&binding.fallbacks) {
+                observed.push(match workers.declared_runtime_for(&candidate.profile) {
+                    Some(declared) => Some(
+                        declared
+                            .observe(inventory.host_id(), now)
+                            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+                    ),
+                    None => None,
+                });
+            }
+            let observations =
+                symbiote_workforce::CandidateObservations::for_configuration(&binding, &observed)
+                    .ok_or_else(|| ProtocolError::new(ErrorCode::Internal))?;
             Ok(ResponseBody::BindingReadiness(Box::new(
                 symbiote_workforce::assess_readiness(
                     &binding,
                     &team,
                     Some(&pulse),
-                    descriptor.as_ref(),
+                    &observations,
                     Some(&registration),
                     now,
                 ),
