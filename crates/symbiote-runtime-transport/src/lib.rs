@@ -21,6 +21,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub mod rpc;
+pub mod session;
 
 pub struct SpawnSpec {
     pub executable: PathBuf,
