@@ -13,7 +13,14 @@
 //! completion report that the Host routes through RequestCompletion →
 //! BeginVerification → Complete with independent review. Worker completion is
 //! evidence, never authority.
+//!
+//! [`adapter`] is the other half of that boundary and does not own the turn: it
+//! is the session an adapter is launched through — permit, dispatch binding,
+//! events, lifecycle and disposal — over a [`HarnessProcess`] the caller
+//! installs. The loop above is the turn implementation that integration will
+//! adapt to that process boundary; this slice does not claim that wiring.
 use symbiote_domain::*;
+pub mod adapter;
 pub mod tools;
 
 /// Forwards through mutable references so a session can hold a boxed
