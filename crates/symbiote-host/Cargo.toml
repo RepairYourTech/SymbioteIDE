@@ -35,6 +35,10 @@ symbiote-source-stamp = { path = "../symbiote-source-stamp" }
 # The real-sandbox proofs resolve the launcher through the workflow crate's
 # freshness check, which only test builds carry.
 symbiote-workflow = { path = "../symbiote-workflow", features = ["test-support"] }
+# The client SDK bootstraps from a snapshot against a real daemon over the
+# daemon's own socket: the shared client state must hold against the real
+# transport, not only against scripted frames.
+symbiote-client-sdk = { path = "../symbiote-client-sdk" }
 symbiote-contract-read = { path = "../symbiote-contract-read" }
 
 [lints]

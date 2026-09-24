@@ -1141,6 +1141,20 @@ fn execute(
                 projects: authorized_projects(principal, projects),
             })
         }
+        Operation::Snapshot { project_id } => {
+            // One consistent read: the Project's canonical records with the
+            // cursor of the Project's own journal at the moment of the read.
+            // `authorize` has already required this Principal's Project Read,
+            // and every record here belongs to that Project.
+            let snapshot = store.snapshot(project_id).map_err(storage_error)?;
+            Ok(ResponseBody::Snapshot(Box::new(ProjectSnapshot {
+                project: snapshot.project,
+                roots: snapshot.roots,
+                roles: snapshot.roles,
+                tasks: snapshot.tasks,
+                cursor: JournalCursor(snapshot.cursor),
+            })))
+        }
         Operation::ObserveRootPlacement {
             project_id,
             root_id,

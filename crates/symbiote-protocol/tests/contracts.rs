@@ -658,6 +658,91 @@ fn the_registry_listing_is_admitted_and_carries_no_identity_to_claim() {
 }
 
 #[test]
+fn the_snapshot_is_gated_by_the_projects_own_read_rule_and_names_its_cursor() {
+    let project = project_record("snapshot-one");
+    // The gate is the same per-Project Read rule `GetProject` applies to one
+    // record: a caller that may read the Project may read its snapshot, and a
+    // caller that may only manage it may not.
+    let reader = Principal::restricted(
+        UserId::new("reader").unwrap(),
+        BTreeMap::from([(
+            project.id.clone(),
+            BTreeSet::from([ProjectPermission::Read]),
+        )]),
+    );
+    assert!(
+        authorize(
+            &reader,
+            &request(Operation::Snapshot {
+                project_id: project.id.clone()
+            })
+        )
+        .is_ok()
+    );
+    let manager = Principal::restricted(
+        UserId::new("manager").unwrap(),
+        BTreeMap::from([(
+            project.id.clone(),
+            BTreeSet::from([ProjectPermission::ManageWork]),
+        )]),
+    );
+    assert!(matches!(
+        authorize(
+            &manager,
+            &request(Operation::Snapshot {
+                project_id: project.id.clone()
+            })
+        ),
+        Err(error) if error.code == ErrorCode::PermissionDenied
+    ));
+    let stranger = Principal::restricted(UserId::new("stranger").unwrap(), BTreeMap::new());
+    assert!(
+        authorize(
+            &stranger,
+            &request(Operation::Snapshot {
+                project_id: project.id.clone()
+            })
+        )
+        .is_err()
+    );
+    // The request names exactly one Project and nothing else: it carries no
+    // cursor, limit or scope a caller could use to ask for a partial snapshot
+    // or a point of its own choosing.
+    let wire = serde_json::to_value(request(Operation::Snapshot {
+        project_id: project.id.clone(),
+    }))
+    .unwrap();
+    assert_eq!(
+        wire["operation"],
+        json!({"kind": "snapshot", "project_id": "snapshot-one"})
+    );
+    assert_eq!(wire["operation"].as_object().unwrap().len(), 2);
+    // The response is the declared `snapshot` kind carrying the canonical
+    // records with the cursor they were read at.
+    let body = Response::success(
+        &request(Operation::Snapshot {
+            project_id: project.id.clone(),
+        }),
+        ResponseBody::Snapshot(Box::new(ProjectSnapshot {
+            project: project.clone(),
+            roots: vec![],
+            roles: vec![],
+            tasks: vec![],
+            cursor: JournalCursor(9),
+        })),
+    );
+    let encoded = serde_json::to_value(body).unwrap();
+    assert_eq!(encoded["result"]["Ok"]["kind"], json!("snapshot"));
+    assert_eq!(
+        encoded["result"]["Ok"]["data"]["project"]["id"],
+        json!("snapshot-one")
+    );
+    assert_eq!(encoded["result"]["Ok"]["data"]["cursor"], json!(9));
+    assert_eq!(encoded["result"]["Ok"]["data"]["tasks"], json!([]));
+    assert_eq!(encoded["result"]["Ok"]["data"]["roots"], json!([]));
+}
+
+#[test]
 fn registration_rejects_cross_project_duplicates_machine_state_and_stale_revisions() {
     let mut draft = project_draft();
     draft.roots[0].project_id = ProjectId::new("other").unwrap();

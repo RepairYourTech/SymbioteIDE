@@ -356,6 +356,172 @@ fn the_project_registry_is_listed_in_order_and_survives_a_restart() {
     assert_eq!(ok(&journal)["data"]["events"].as_array().unwrap().len(), 1);
 }
 
+/// The client SDK over the daemon's own socket: one bounded frame per call,
+/// connected fresh each time, exactly as the daemon's transport discipline
+/// requires. Transport failures are the SDK's own `TransportFailure`.
+struct SocketExchange {
+    directory: PathBuf,
+}
+impl symbiote_client_sdk::FrameExchange for SocketExchange {
+    fn exchange(
+        &mut self,
+        request: &[u8],
+    ) -> Result<Vec<u8>, symbiote_client_sdk::TransportFailure> {
+        exchange(&self.directory, request).map_err(|_| symbiote_client_sdk::TransportFailure)
+    }
+}
+
+#[test]
+fn a_client_bootstraps_from_a_snapshot_and_resumes_to_the_cold_replay_state() {
+    let mut host = Host::new();
+    ok(&host.call(request("register-client", project("client"))));
+    ok(&host.call(request("maintenance-client", maintenance("client"))));
+    ok(&host.call(request("create-task-one", task("task-one", "client"))));
+    ok(&host.call(request("create-task-two", task("task-two", "client"))));
+    let project_id = symbiote_domain::ProjectId::new("client").unwrap();
+    let mut socket = SocketExchange {
+        directory: host.directory.clone(),
+    };
+
+    // Bootstrap: one read of the Project's records with the cursor they were
+    // read at, and no journal replay at all.
+    let head_before: usize = ok(&host.call(request(
+        "head-before",
+        json!({"kind":"read_journal","project_id":"client","after":0,"limit":100}),
+    )))["data"]["events"]
+        .as_array()
+        .unwrap()
+        .len();
+    let mut session = symbiote_client_sdk::ClientSession::new();
+    let mut state = session
+        .bootstrap(&mut socket, "boot-client", &project_id)
+        .unwrap();
+    assert_eq!(
+        ok(&host.call(request(
+            "head-after",
+            json!({"kind":"read_journal","project_id":"client","after":0,"limit":100}),
+        )))["data"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        head_before,
+        "a bootstrap read appends no event"
+    );
+    // The cursor the snapshot names is this Project's own journal head, and
+    // the records are the same records the single-record reads answer.
+    let head = host.call(request(
+        "head-cursor",
+        json!({"kind":"read_journal","project_id":"client","after":0,"limit":100}),
+    ));
+    assert_eq!(session.journal_position(&project_id).0, head_before as u64);
+    assert_eq!(
+        serde_json::to_value(state.project().unwrap()).unwrap(),
+        ok(&host.call(request(
+            "read-project",
+            json!({"kind":"get_project","project_id":"client"}),
+        )))["data"],
+    );
+    assert_eq!(state.roots().len(), 1);
+    assert_eq!(state.roles().len(), 1);
+    assert_eq!(state.tasks().len(), 2);
+    for (task_id, task) in state.tasks() {
+        assert_eq!(
+            serde_json::to_value(task).unwrap(),
+            ok(&host.call(request(
+                "read-task",
+                json!({"kind":"get_task","project_id":"client","task_id":task_id.as_str()}),
+            )))["data"],
+            "the snapshot answers the canonical Task record, not a projection"
+        );
+    }
+    // The journal's own head for this Project is the cursor the snapshot
+    // named.
+    assert_eq!(ok(&head)["data"]["next_cursor"], head_before as u64);
+    // A second Project registers after the bootstrap: the global head is now
+    // beyond this Project's head, and the cursor the snapshot named stays
+    // this Project's own.
+    ok(&host.call(request("register-other", project("other"))));
+    let other_head = ok(&host.call(request(
+        "other-head",
+        json!({"kind":"read_journal","project_id":"other","after":0,"limit":100}),
+    )))["data"]["next_cursor"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        session.journal_position(&project_id).0 < other_head,
+        "the snapshot cursor is this Project's head, not the global journal head"
+    );
+
+    // Work after the bootstrap: a resume applies the events after the
+    // snapshot's cursor and reaches the same records a cold replay builds.
+    ok(&host.call(request("create-task-three", task("task-three", "client"))));
+    let outcome = session
+        .resume(
+            &mut socket,
+            &project_id,
+            &mut state,
+            50,
+            16,
+            "resume-client",
+        )
+        .unwrap();
+    assert!(outcome.caught_up);
+    assert!(outcome.applied >= 1);
+    assert_eq!(outcome.duplicates, 0);
+    assert_eq!(outcome.stale_pages, 0);
+    assert!(
+        state
+            .tasks()
+            .contains_key(&symbiote_domain::TaskId::new("task-three").unwrap()),
+        "the resumed state holds the Task created after the bootstrap"
+    );
+    assert_eq!(outcome.cursor.0, session.journal_position(&project_id).0);
+    let mut cold_session = symbiote_client_sdk::ClientSession::new();
+    let mut cold = symbiote_client_sdk::ClientState::default();
+    let cold_outcome = cold_session
+        .resume(&mut socket, &project_id, &mut cold, 50, 16, "cold-client")
+        .unwrap();
+    assert!(cold_outcome.caught_up);
+    assert!(
+        cold_outcome.applied > outcome.applied,
+        "the bootstrap skipped the events before its cursor: {} vs {}",
+        cold_outcome.applied,
+        outcome.applied
+    );
+    assert_eq!(
+        state, cold,
+        "snapshot plus resume equals the cold replay, record for record"
+    );
+
+    // SIGKILL and restart: the journal does not move, and a session restored
+    // with the persisted positions resumes from exactly where it stopped.
+    host.crash();
+    host.start();
+    let mut restored =
+        symbiote_client_sdk::ClientSession::new().with_positions(cold_session.positions().to_vec());
+    let mut carried = cold.clone();
+    let outcome = restored
+        .resume(
+            &mut socket,
+            &project_id,
+            &mut carried,
+            50,
+            16,
+            "after-restart",
+        )
+        .unwrap();
+    assert!(outcome.caught_up);
+    assert_eq!(outcome.applied, 0);
+    assert_eq!(carried, cold);
+    // A fresh bootstrap after the restart answers the same records as the
+    // replay the client carried: the snapshot is not a stale copy.
+    let mut fresh_session = symbiote_client_sdk::ClientSession::new();
+    let fresh = fresh_session
+        .bootstrap(&mut socket, "boot-after-restart", &project_id)
+        .unwrap();
+    assert_eq!(fresh, carried);
+}
+
 fn task(id: &str, project: &str) -> Value {
     json!({"kind":"create_task","task":{"id":id,"project_id":project,"root_id":format!("root-{project}"),"role_id":format!("lead-{project}"),
       "origin":{"kind":"objective","work":{"project_id":project,"id":{"kind":"objective","id":format!("maintenance-{project}")}}},

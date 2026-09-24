@@ -13,11 +13,14 @@
 //! lost responses are recovered by replaying the same command id (the
 //! daemon's journal returns the durable receipt), never by guessing.
 use serde_json::Value;
-use symbiote_domain::{CommandId, ProjectId, RequestId};
+use std::collections::BTreeMap;
+use symbiote_domain::{
+    CommandId, Project, ProjectId, RequestId, Role, RoleId, Root, RootId, Task, TaskId,
+};
 use symbiote_protocol::JournalCursor;
 use symbiote_protocol::{
-    CURRENT_VERSION, MAX_REQUEST_BYTES, ProtocolError, ProtocolVersion, Request, Response,
-    ResponseBody, parse_request,
+    CURRENT_VERSION, EventPayload, JournalEvent, MAX_PAGE_SIZE, MAX_REQUEST_BYTES, ProjectSnapshot,
+    ProtocolError, ProtocolVersion, Request, Response, ResponseBody, parse_request,
 };
 
 /// One connection's durable position in a Project's journal. Resume means:
@@ -70,6 +73,164 @@ pub enum ClientError {
     InvalidOperation,
 }
 
+/// The client's reduced view of one Project: the records a snapshot seeds and
+/// [`ClientSession::resume`] keeps current by applying journal events. It
+/// models exactly the record kinds a snapshot carries — the Project, its
+/// Roots, its Roles and its Tasks — and names every other durable event
+/// [`EventOutcome::NotModeled`] rather than dropping it silently: the durable
+/// cursor still advances over those events, and the state never claims a
+/// record no read or event provided.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClientState {
+    project: Option<Project>,
+    roots: BTreeMap<RootId, Root>,
+    roles: BTreeMap<RoleId, Role>,
+    tasks: BTreeMap<TaskId, Task>,
+}
+
+/// What one durable event did to a [`ClientState`]. Every event lands in
+/// exactly one of these; none is silently skipped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventOutcome {
+    /// The event's record was set (or replaced an earlier revision of it).
+    Applied,
+    /// The event belongs to a different Project than this state holds; it is
+    /// named, never mixed in.
+    ForeignProject,
+    /// The event is durable history this state carries no record for. The
+    /// cursor still advances over it; the state claims nothing about it.
+    NotModeled,
+}
+
+/// What one [`ClientSession::resume`] did. Every page and event is counted by
+/// the classification it got; nothing is inferred.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[must_use]
+pub struct ResumeOutcome {
+    /// Pages the daemon answered.
+    pub pages: usize,
+    /// Events applied to the state (a record was set or replaced).
+    pub applied: usize,
+    /// Durable events this state carries no record for.
+    pub not_modeled: usize,
+    /// Events belonging to a different Project than this state holds. They
+    /// are counted and never mixed in, so a state seeded for one Project
+    /// cannot absorb another's history.
+    pub foreign: usize,
+    /// Events at or below the durable cursor: already applied, never applied
+    /// twice.
+    pub duplicates: usize,
+    /// Pages whose events were all at or below the durable cursor: the daemon
+    /// answered from behind this client's position, which is an observable
+    /// degraded state, not a silent one.
+    pub stale_pages: usize,
+    /// True only when the daemon reported no further events after the last
+    /// page. A resume stopped by its page bound reports false.
+    pub caught_up: bool,
+    /// The durable cursor after the resume.
+    pub cursor: JournalCursor,
+}
+
+/// One resume's bounds, carried together so the page loop is a loop over
+/// pages rather than over arguments.
+#[derive(Clone, Copy)]
+struct ResumeBounds<'a> {
+    project: &'a ProjectId,
+    page_limit: u32,
+    max_pages: usize,
+    command_prefix: &'a str,
+}
+
+impl ClientState {
+    /// The Project record once the state has one (seeded or replayed).
+    pub fn project(&self) -> Option<&Project> {
+        self.project.as_ref()
+    }
+    pub fn roots(&self) -> &BTreeMap<RootId, Root> {
+        &self.roots
+    }
+    pub fn roles(&self) -> &BTreeMap<RoleId, Role> {
+        &self.roles
+    }
+    pub fn tasks(&self) -> &BTreeMap<TaskId, Task> {
+        &self.tasks
+    }
+
+    /// Replaces this state with a snapshot's records. Seeding is total rather
+    /// than a patch: the snapshot is a point in the log, so a state can never
+    /// keep a record no read returned.
+    fn seed(&mut self, snapshot: &ProjectSnapshot) {
+        self.project = Some(snapshot.project.clone());
+        self.roots = snapshot
+            .roots
+            .iter()
+            .cloned()
+            .map(|root| (root.id.clone(), root))
+            .collect();
+        self.roles = snapshot
+            .roles
+            .iter()
+            .cloned()
+            .map(|role| (role.id.clone(), role))
+            .collect();
+        self.tasks = snapshot
+            .tasks
+            .iter()
+            .cloned()
+            .map(|task| (task.id().clone(), task))
+            .collect();
+    }
+
+    /// Applies one durable event to this state and reports what it did. A
+    /// state that holds no Project yet adopts the event's Project (the
+    /// cold-replay path, where the Project is created by its own registration
+    /// event); once a Project is held, another Project's events are
+    /// [`EventOutcome::ForeignProject`] and change nothing.
+    pub fn apply(&mut self, event: &JournalEvent) -> EventOutcome {
+        if self
+            .project
+            .as_ref()
+            .is_some_and(|held| held.id != event.project_id)
+        {
+            return EventOutcome::ForeignProject;
+        }
+        match &event.payload {
+            EventPayload::ProjectRegistered {
+                project,
+                roots,
+                roles,
+            } => {
+                if project.id != event.project_id {
+                    return EventOutcome::ForeignProject;
+                }
+                self.project = Some(project.clone());
+                for root in roots {
+                    self.roots.insert(root.id.clone(), root.clone());
+                }
+                for role in roles {
+                    self.roles.insert(role.id.clone(), role.clone());
+                }
+                EventOutcome::Applied
+            }
+            EventPayload::RootPlacementObserved { root, .. } => {
+                if root.project_id != event.project_id {
+                    return EventOutcome::ForeignProject;
+                }
+                self.roots.insert(root.id.clone(), (**root).clone());
+                EventOutcome::Applied
+            }
+            EventPayload::TaskCreated { task, .. } | EventPayload::TaskChanged { task, .. } => {
+                if task.project_id() != &event.project_id {
+                    return EventOutcome::ForeignProject;
+                }
+                self.tasks.insert(task.id().clone(), (**task).clone());
+                EventOutcome::Applied
+            }
+            _ => EventOutcome::NotModeled,
+        }
+    }
+}
+
 /// A client session: mints protocol-versioned requests with caller-supplied
 /// command ids (idempotency keys) and unique correlations, classifies
 /// responses, and tracks per-Project journal positions for resume.
@@ -117,15 +278,30 @@ impl ClientSession {
         &self.positions
     }
 
-    fn observe_page(&mut self, page: &Value, project: &ProjectId) {
-        let Some(next) = page.get("next_cursor").and_then(Value::as_u64) else {
-            return;
-        };
+    /// Observes a page's cursor without ever moving a durable position
+    /// backwards: a page behind the position this session already read (a
+    /// delayed answer, or a replayed response) is observed as the maximum, not
+    /// as a reset, so resume can never re-apply history it already applied.
+    fn observe_page(&mut self, next: JournalCursor, project: &ProjectId) {
         match self.positions.iter_mut().find(|p| &p.project == project) {
-            Some(position) => position.cursor = JournalCursor(next),
+            Some(position) => position.cursor = position.cursor.max(next),
             None => self.positions.push(JournalPosition {
                 project: project.clone(),
-                cursor: JournalCursor(next),
+                cursor: next,
+            }),
+        }
+    }
+
+    /// Pins a Project's durable cursor to one point. Used only where the
+    /// caller's state was just replaced wholesale (bootstrap): the cursor
+    /// must name the same point the state was read at, even if a stale
+    /// session held a position beyond it.
+    fn pin_position(&mut self, cursor: JournalCursor, project: &ProjectId) {
+        match self.positions.iter_mut().find(|p| &p.project == project) {
+            Some(position) => position.cursor = cursor,
+            None => self.positions.push(JournalPosition {
+                project: project.clone(),
+                cursor,
             }),
         }
     }
@@ -164,15 +340,12 @@ impl ClientSession {
         Ok(request)
     }
 
-    /// Sends one request and classifies the response. On `Ok`, the typed
-    /// body is returned; the SDK also updates journal positions it observes
-    /// (a `Journal` body), so resume works without callers plumbing cursors
-    /// by hand.
-    pub fn call(
-        &mut self,
+    /// Sends one built request and classifies the response without touching
+    /// durable state; the caller decides what may be observed from it.
+    fn exchange_body(
+        &self,
         exchange: &mut impl FrameExchange,
         request: &Request,
-        project: Option<&ProjectId>,
     ) -> Result<ResponseBody, ClientError> {
         let bytes = serde_json::to_vec(request).map_err(|_| ClientError::RequestTooLarge)?;
         if bytes.len() > MAX_REQUEST_BYTES {
@@ -189,25 +362,203 @@ impl ClientSession {
             return Err(ClientError::Unparseable);
         }
         match response.result {
-            Ok(body) => {
-                if let (Some(project), symbiote_protocol::ResponseBody::Journal(page)) =
-                    (project, &body)
-                {
-                    // The caller's project must agree with the operation's
-                    // own — a mismatched hand-off would advance one
-                    // project's cursor with another's next_cursor.
-                    if request.operation.project_id() == Some(project) {
-                        self.observe_page(
-                            &serde_json::json!({
-                                "next_cursor": page.next_cursor.0
-                            }),
-                            project,
-                        );
-                    }
-                }
-                Ok(body)
-            }
+            Ok(body) => Ok(body),
             Err(error) => Err(ClientError::Refused(error)),
+        }
+    }
+
+    /// Sends one request and classifies the response. On `Ok`, the typed body
+    /// is returned; the SDK also observes the cursor of a journal page the
+    /// caller was handed (never moving it backwards), so a direct
+    /// `read_journal` call resumes from the right point without plumbing
+    /// cursors by hand.
+    pub fn call(
+        &mut self,
+        exchange: &mut impl FrameExchange,
+        request: &Request,
+        project: Option<&ProjectId>,
+    ) -> Result<ResponseBody, ClientError> {
+        let body = self.exchange_body(exchange, request)?;
+        if let (Some(project), ResponseBody::Journal(page)) = (project, &body) {
+            // The caller's project must agree with the operation's own — a
+            // mismatched hand-off would advance one project's cursor with
+            // another's next_cursor.
+            if request.operation.project_id() == Some(project) {
+                self.observe_page(page.next_cursor, project);
+            }
+        }
+        Ok(body)
+    }
+
+    /// Bootstraps a Project from one consistent read: asks for the snapshot,
+    /// requires it to name the Project this call asked about (a snapshot for
+    /// another Project is not an answer to this request, refused as
+    /// `Unparseable`), seeds a state from it, and pins the Project's durable
+    /// cursor to the snapshot's own cursor.
+    ///
+    /// The returned state is the snapshot: every record the Project's own
+    /// reads answered at that cursor, with nothing carried over from an
+    /// earlier state. A refusal returns no state and leaves the cursor where
+    /// it was.
+    pub fn bootstrap(
+        &mut self,
+        exchange: &mut impl FrameExchange,
+        command_id: &str,
+        project: &ProjectId,
+    ) -> Result<ClientState, ClientError> {
+        let request = self.build_request(
+            command_id,
+            serde_json::json!({"kind": "snapshot", "project_id": project}),
+        )?;
+        let body = self.exchange_body(exchange, &request)?;
+        let ResponseBody::Snapshot(snapshot) = body else {
+            return Err(ClientError::Unparseable);
+        };
+        if &snapshot.project.id != project {
+            return Err(ClientError::Unparseable);
+        }
+        let mut state = ClientState::default();
+        state.seed(&snapshot);
+        self.pin_position(snapshot.cursor, project);
+        Ok(state)
+    }
+
+    /// Resumes a Project from its durable cursor, applying journal pages to
+    /// `state` until the daemon reports no further events. The rules:
+    ///
+    /// - Only events after the durable cursor are applied. An event at or
+    ///   below it is a duplicate the caller has already applied: counted
+    ///   ([`ResumeOutcome::duplicates`]) and skipped, never applied twice.
+    /// - A page that breaks the daemon's own page contract is refused as
+    ///   `Unparseable` with nothing applied, so neither the state nor the
+    ///   durable cursor moves on a page that was not an answer to this
+    ///   request. Duplicate events are the one tolerated exception: filtered
+    ///   out, they leave the remainder under the same contract, and a page
+    ///   that holds nothing new is a stale page ([`ResumeOutcome::stale_pages`])
+    ///   that stops the resume instead of being re-asked forever.
+    /// - A transport failure stops the resume with the durable cursor at the
+    ///   last applied event, so calling `resume` again continues from exactly
+    ///   there; a refusal is surfaced immediately and unapplied.
+    /// - The loop is bounded by `max_pages`. A resume that stops at the bound
+    ///   reports `caught_up: false` rather than claiming the tail was read.
+    ///
+    /// Each page is a distinct request and so carries a distinct command id
+    /// derived from `command_prefix`.
+    pub fn resume(
+        &mut self,
+        exchange: &mut impl FrameExchange,
+        project: &ProjectId,
+        state: &mut ClientState,
+        page_limit: u32,
+        max_pages: usize,
+        command_prefix: &str,
+    ) -> Result<ResumeOutcome, ClientError> {
+        if page_limit == 0 || page_limit > MAX_PAGE_SIZE {
+            return Err(ClientError::InvalidOperation);
+        }
+        let mut outcome = ResumeOutcome {
+            cursor: self.journal_position(project),
+            ..ResumeOutcome::default()
+        };
+        let bounds = ResumeBounds {
+            project,
+            page_limit,
+            max_pages,
+            command_prefix,
+        };
+        let result = self.resume_pages(exchange, state, bounds, &mut outcome);
+        // The durable cursor is wherever the last applied event left it, on
+        // failure as on success: a transport failure cannot un-apply what the
+        // caller already observed.
+        self.observe_page(outcome.cursor, project);
+        result.map(|()| outcome)
+    }
+
+    fn resume_pages(
+        &mut self,
+        exchange: &mut impl FrameExchange,
+        state: &mut ClientState,
+        bounds: ResumeBounds<'_>,
+        outcome: &mut ResumeOutcome,
+    ) -> Result<(), ClientError> {
+        let ResumeBounds {
+            project,
+            page_limit,
+            max_pages,
+            command_prefix,
+        } = bounds;
+        for index in 0..max_pages {
+            let after = outcome.cursor;
+            let request = self.build_request(
+                &format!("{command_prefix}-{index}"),
+                serde_json::json!({
+                    "kind": "read_journal",
+                    "project_id": project,
+                    "after": after.0,
+                    "limit": page_limit,
+                }),
+            )?;
+            let body = self.exchange_body(exchange, &request)?;
+            let ResponseBody::Journal(page) = body else {
+                return Err(ClientError::Unparseable);
+            };
+            outcome.pages += 1;
+            // The daemon's own page contract comes first: a conforming page
+            // is strictly above the cursor, so nothing needs filtering.
+            if page.validate(project, after, page_limit).is_ok() {
+                for event in &page.events {
+                    Self::apply_event(state, event, outcome);
+                }
+                outcome.cursor = page.next_cursor;
+                if !page.has_more {
+                    outcome.caught_up = true;
+                    break;
+                }
+                continue;
+            }
+            // A page that fails the contract is tolerated for exactly one
+            // fact: events at or below the cursor are duplicates already
+            // applied — a delayed answer. Filter those; the remainder must
+            // then obey the same contract.
+            let remaining: Vec<&JournalEvent> = page
+                .events
+                .iter()
+                .filter(|event| event.sequence > after.0)
+                .collect();
+            outcome.duplicates += page.events.len() - remaining.len();
+            if remaining.is_empty() {
+                outcome.stale_pages += 1;
+                break;
+            }
+            let strictly_increasing = remaining
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence);
+            let last = remaining.last().expect("checked non-empty").sequence;
+            if !strictly_increasing
+                || page.next_cursor.0 != last
+                || remaining.len() > page_limit as usize
+                || page.events.iter().any(|event| &event.project_id != project)
+            {
+                return Err(ClientError::Unparseable);
+            }
+            for event in &remaining {
+                Self::apply_event(state, event, outcome);
+            }
+            outcome.cursor = page.next_cursor;
+            if !page.has_more {
+                outcome.caught_up = true;
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies one event the resume rules accepted and counts what it did.
+    fn apply_event(state: &mut ClientState, event: &JournalEvent, outcome: &mut ResumeOutcome) {
+        match state.apply(event) {
+            EventOutcome::Applied => outcome.applied += 1,
+            EventOutcome::ForeignProject => outcome.foreign += 1,
+            EventOutcome::NotModeled => outcome.not_modeled += 1,
         }
     }
 
@@ -648,5 +999,448 @@ mod tests {
             Err(ClientError::Unparseable)
         );
         let _ = symbiote_protocol::negotiate(&[CURRENT_VERSION]).unwrap();
+    }
+
+    use symbiote_domain::{
+        Actor, ChangeStream, CommitSha, HostId, NewChangeStream, Provenance, RecordDisposition,
+        Revision, RoleContractId, StreamLineage, TaskContractId, Timestamp, VersionedRoleContract,
+        VersionedTaskContract,
+    };
+
+    fn user() -> symbiote_domain::UserId {
+        symbiote_domain::UserId::new("owner").unwrap()
+    }
+    fn project_record(id: &str, roots: &[&str], lead: &str) -> Project {
+        Project {
+            id: ProjectId::new(id).unwrap(),
+            revision: Revision(0),
+            name: format!("Project {id}"),
+            owner: user(),
+            roots: roots.iter().map(|r| RootId::new(*r).unwrap()).collect(),
+            lead: RoleId::new(lead).unwrap(),
+            disposition: RecordDisposition::Active,
+            provenance: Provenance {
+                created_at: Timestamp(10),
+                updated_at: Timestamp(10),
+                actor: Actor::User(user()),
+                external_references: vec![],
+            },
+        }
+    }
+    fn root_record(project: &str, id: &str) -> Root {
+        Root {
+            id: RootId::new(id).unwrap(),
+            project_id: ProjectId::new(project).unwrap(),
+            revision: Revision(0),
+            repository: None,
+            host_paths: BTreeMap::new(),
+        }
+    }
+    fn role_record(project: &str, id: &str) -> Role {
+        Role {
+            id: RoleId::new(id).unwrap(),
+            project_id: ProjectId::new(project).unwrap(),
+            revision: Revision(0),
+            name: "Engineer".into(),
+            operating_contract: VersionedRoleContract {
+                id: RoleContractId::new("role-contract").unwrap(),
+                revision: Revision(1),
+            },
+        }
+    }
+    fn task_fixture(project: &str, task: &str) -> (Task, ChangeStream) {
+        let project_id = ProjectId::new(project).unwrap();
+        let root_id = RootId::new(format!("root-{project}")).unwrap();
+        let role_id = RoleId::new(format!("role-{project}")).unwrap();
+        let task_id = TaskId::new(task).unwrap();
+        let stream_id = symbiote_domain::ChangeStreamId::new(format!("stream-{task}")).unwrap();
+        let record = Task::new(
+            task_id.clone(),
+            project_id.clone(),
+            root_id.clone(),
+            role_id,
+            stream_id.clone(),
+            VersionedTaskContract {
+                id: TaskContractId::new("task-contract").unwrap(),
+                revision: Revision(1),
+            },
+        );
+        let stream = ChangeStream::new(NewChangeStream {
+            id: stream_id,
+            project_id,
+            root_id,
+            tasks: [task_id].into(),
+            originating_chat: symbiote_domain::ChatId::new(format!("chat-{task}")).unwrap(),
+            worktree: symbiote_domain::WorktreeId::new(format!("worktree-{task}")).unwrap(),
+            branch: format!("branch-{task}"),
+            lineage: StreamLineage::Independent,
+            base: CommitSha::new("a".repeat(40)).unwrap(),
+            target: CommitSha::new("b".repeat(40)).unwrap(),
+        })
+        .unwrap();
+        (record, stream)
+    }
+    fn snapshot_body(project: &str, cursor: u64, tasks: Vec<Task>) -> ResponseBody {
+        ResponseBody::Snapshot(Box::new(ProjectSnapshot {
+            project: project_record(
+                project,
+                &[&format!("root-{project}")],
+                &format!("role-{project}"),
+            ),
+            roots: vec![root_record(project, &format!("root-{project}"))],
+            roles: vec![role_record(project, &format!("role-{project}"))],
+            tasks,
+            cursor: JournalCursor(cursor),
+        }))
+    }
+    fn event(sequence: u64, project: &str, payload: EventPayload) -> JournalEvent {
+        JournalEvent {
+            sequence,
+            project_id: ProjectId::new(project).unwrap(),
+            command_id: CommandId::new(format!("cmd-{sequence}")).unwrap(),
+            revision: Revision(0),
+            payload,
+        }
+    }
+    fn registered(project: &str) -> EventPayload {
+        EventPayload::ProjectRegistered {
+            project: project_record(
+                project,
+                &[&format!("root-{project}")],
+                &format!("role-{project}"),
+            ),
+            roots: vec![root_record(project, &format!("root-{project}"))],
+            roles: vec![role_record(project, &format!("role-{project}"))],
+        }
+    }
+    fn created(project: &str, task: &str) -> EventPayload {
+        let (task, stream) = task_fixture(project, task);
+        EventPayload::TaskCreated {
+            task: Box::new(task),
+            stream: Box::new(stream),
+            origin: None,
+        }
+    }
+    fn page_body(events: Vec<JournalEvent>, next_cursor: u64, has_more: bool) -> ResponseBody {
+        ResponseBody::Journal(symbiote_protocol::JournalPage {
+            events,
+            next_cursor: JournalCursor(next_cursor),
+            has_more,
+        })
+    }
+    fn sent_after(frame: &[u8]) -> u64 {
+        match serde_json::from_slice::<Request>(frame).unwrap().operation {
+            symbiote_protocol::Operation::ReadJournal { after, .. } => after.0,
+            other => panic!("expected a read_journal request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bootstrap_seeds_the_state_from_the_snapshot_and_pins_the_cursor() {
+        let project = project();
+        let (task, _) = task_fixture("proj", "task-one");
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![Ok(response_ok(snapshot_body(
+            "proj",
+            7,
+            vec![task.clone()],
+        )))]);
+        let state = session
+            .bootstrap(&mut transport, "boot-1", &project)
+            .unwrap();
+        assert_eq!(
+            state.project(),
+            Some(&project_record("proj", &["root-proj"], "role-proj"))
+        );
+        assert_eq!(state.roots().len(), 1);
+        assert_eq!(state.roles().len(), 1);
+        assert_eq!(state.tasks().get(task.id()), Some(&task));
+        // The durable cursor is the snapshot's own cursor: resume continues
+        // from the exact point the records were read at.
+        assert_eq!(session.journal_position(&project), JournalCursor(7));
+        // The request was the snapshot operation for this Project, and it is
+        // not a mutation: nothing else was sent.
+        let sent: Request = serde_json::from_slice(&transport.sent[0]).unwrap();
+        assert!(matches!(
+            sent.operation,
+            symbiote_protocol::Operation::Snapshot { ref project_id } if project_id == &project
+        ));
+        assert_eq!(transport.sent.len(), 1);
+    }
+
+    #[test]
+    fn bootstrap_refuses_a_snapshot_naming_another_project_and_leaves_the_cursor() {
+        let project = project();
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![Ok(response_ok(snapshot_body("other", 4, vec![])))]);
+        assert_eq!(
+            session.bootstrap(&mut transport, "boot-2", &project),
+            Err(ClientError::Unparseable)
+        );
+        assert_eq!(session.journal_position(&project), JournalCursor(0));
+    }
+
+    #[test]
+    fn resume_applies_every_page_from_the_durable_cursor_and_is_bounded() {
+        let project = project();
+        let mut state = ClientState::default();
+        state.seed(&match snapshot_body("proj", 0, vec![]) {
+            ResponseBody::Snapshot(snapshot) => *snapshot,
+            _ => unreachable!(),
+        });
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![
+            Ok(response_ok(page_body(
+                vec![
+                    event(1, "proj", registered("proj")),
+                    event(2, "proj", created("proj", "task-one")),
+                ],
+                2,
+                true,
+            ))),
+            Ok(response_ok(page_body(
+                vec![event(3, "proj", created("proj", "task-two"))],
+                3,
+                false,
+            ))),
+        ]);
+        let outcome = session
+            .resume(&mut transport, &project, &mut state, 10, 8, "resume")
+            .unwrap();
+        assert_eq!(outcome.pages, 2);
+        assert_eq!(outcome.applied, 3);
+        assert_eq!(outcome.not_modeled, 0);
+        assert_eq!(outcome.duplicates, 0);
+        assert_eq!(outcome.stale_pages, 0);
+        assert!(outcome.caught_up);
+        assert_eq!(outcome.cursor, JournalCursor(3));
+        assert_eq!(session.journal_position(&project), JournalCursor(3));
+        assert_eq!(state.tasks().len(), 2);
+        // Each page asked from where the previous one ended, and each page is
+        // a distinct request carrying its own command id.
+        assert_eq!(sent_after(&transport.sent[0]), 0);
+        assert_eq!(sent_after(&transport.sent[1]), 2);
+        let first: Request = serde_json::from_slice(&transport.sent[0]).unwrap();
+        let second: Request = serde_json::from_slice(&transport.sent[1]).unwrap();
+        assert_ne!(first.command_id, second.command_id);
+
+        // A resume stopped by its page bound reports it rather than claiming
+        // the tail was read.
+        let mut state = ClientState::default();
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![Ok(response_ok(page_body(
+            vec![event(1, "proj", registered("proj"))],
+            1,
+            true,
+        )))]);
+        let outcome = session
+            .resume(&mut transport, &project, &mut state, 10, 1, "bounded")
+            .unwrap();
+        assert_eq!(outcome.pages, 1);
+        assert!(!outcome.caught_up);
+        assert_eq!(outcome.cursor, JournalCursor(1));
+    }
+
+    #[test]
+    fn delayed_pages_are_counted_and_never_applied_twice() {
+        let project = project();
+        let mut state = ClientState::default();
+        // The session already read this Project up to cursor 5.
+        let mut session = ClientSession::new().with_positions(vec![JournalPosition {
+            project: project.clone(),
+            cursor: JournalCursor(5),
+        }]);
+        let mut transport = Scripted::new(vec![Ok(response_ok(page_body(
+            vec![
+                event(4, "proj", created("proj", "task-one")),
+                event(5, "proj", registered("proj")),
+            ],
+            5,
+            false,
+        )))]);
+        let outcome = session
+            .resume(&mut transport, &project, &mut state, 10, 4, "delayed")
+            .unwrap();
+        assert_eq!(outcome.applied, 0);
+        assert_eq!(outcome.duplicates, 2);
+        assert_eq!(outcome.stale_pages, 1);
+        assert!(!outcome.caught_up);
+        assert_eq!(outcome.cursor, JournalCursor(5));
+        assert_eq!(session.journal_position(&project), JournalCursor(5));
+        // Nothing was applied: the delayed page is observable, not silently
+        // replayed over state the caller already had.
+        assert!(state.tasks().is_empty());
+        assert!(state.project().is_none());
+    }
+
+    #[test]
+    fn an_out_of_order_page_is_refused_with_nothing_applied() {
+        let project = project();
+        let mut state = ClientState::default();
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![Ok(response_ok(page_body(
+            vec![
+                event(7, "proj", registered("proj")),
+                event(6, "proj", created("proj", "task-one")),
+            ],
+            6,
+            false,
+        )))]);
+        assert_eq!(
+            session.resume(&mut transport, &project, &mut state, 10, 4, "ordered"),
+            Err(ClientError::Unparseable)
+        );
+        assert_eq!(session.journal_position(&project), JournalCursor(0));
+        assert!(state.project().is_none());
+        assert!(state.tasks().is_empty());
+    }
+
+    #[test]
+    fn a_transport_failure_mid_resume_keeps_the_cursor_at_the_last_applied_event() {
+        let project = project();
+        let mut state = ClientState::default();
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![
+            Ok(response_ok(page_body(
+                vec![event(1, "proj", registered("proj"))],
+                1,
+                true,
+            ))),
+            Err(TransportFailure),
+        ]);
+        assert_eq!(
+            session.resume(&mut transport, &project, &mut state, 10, 4, "first"),
+            Err(ClientError::Transport)
+        );
+        // What was applied stays applied; the cursor names the last applied
+        // event, so the next resume continues from exactly there.
+        assert_eq!(session.journal_position(&project), JournalCursor(1));
+        assert!(state.project().is_some());
+        let mut transport = Scripted::new(vec![Ok(response_ok(page_body(
+            vec![event(2, "proj", created("proj", "task-one"))],
+            2,
+            false,
+        )))]);
+        let outcome = session
+            .resume(&mut transport, &project, &mut state, 10, 4, "second")
+            .unwrap();
+        assert!(outcome.caught_up);
+        assert_eq!(sent_after(&transport.sent[0]), 1);
+        assert_eq!(outcome.cursor, JournalCursor(2));
+
+        // The state a reconnect reaches is the state an uninterrupted resume
+        // reaches: the durable cursor carried the position across the failure.
+        let mut uninterrupted = ClientState::default();
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![Ok(response_ok(page_body(
+            vec![
+                event(1, "proj", registered("proj")),
+                event(2, "proj", created("proj", "task-one")),
+            ],
+            2,
+            false,
+        )))]);
+        let outcome = session
+            .resume(&mut transport, &project, &mut uninterrupted, 10, 4, "whole")
+            .unwrap();
+        assert!(outcome.caught_up);
+        assert_eq!(state, uninterrupted);
+    }
+
+    #[test]
+    fn the_reducer_models_the_snapshot_kinds_and_names_the_rest() {
+        let mut state = ClientState::default();
+        assert_eq!(
+            state.apply(&event(1, "proj", registered("proj"))),
+            EventOutcome::Applied
+        );
+        assert_eq!(state.project().unwrap().name, "Project proj");
+        assert_eq!(state.roots().len(), 1);
+        assert_eq!(state.roles().len(), 1);
+        // A placement replaces the Root record it names, including the
+        // observed path — the reducer applies the event's record, not a
+        // guess about it.
+        let mut placed = root_record("proj", "root-proj");
+        placed
+            .host_paths
+            .insert(HostId::new("host-one").unwrap(), "/srv/repo".into());
+        assert_eq!(
+            state.apply(&event(
+                2,
+                "proj",
+                EventPayload::RootPlacementObserved {
+                    root: Box::new(placed.clone()),
+                    expected_revision: Revision(0),
+                    host_id: HostId::new("host-one").unwrap(),
+                    path: "/srv/repo".into(),
+                    actor: user(),
+                    at: Timestamp(11),
+                }
+            )),
+            EventOutcome::Applied
+        );
+        assert_eq!(state.roots().get(&placed.id), Some(&placed));
+        assert_eq!(
+            state.apply(&event(3, "proj", created("proj", "task-one"))),
+            EventOutcome::Applied
+        );
+        assert_eq!(state.tasks().len(), 1);
+        // Durable history this state carries no record for is named, never
+        // dropped silently and never invented into a record.
+        assert_eq!(
+            state.apply(&event(
+                4,
+                "proj",
+                EventPayload::TaskDependenciesSet {
+                    task_id: TaskId::new("task-one").unwrap(),
+                    project_id: ProjectId::new("proj").unwrap(),
+                    edges: vec![],
+                    actor: user(),
+                    at: Timestamp(12),
+                }
+            )),
+            EventOutcome::NotModeled
+        );
+        assert_eq!(state.tasks().len(), 1);
+        // Another Project's history cannot be absorbed into this state.
+        let before = state.clone();
+        assert_eq!(
+            state.apply(&event(5, "other", registered("other"))),
+            EventOutcome::ForeignProject
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn bootstrap_then_resume_reaches_the_state_a_cold_replay_reaches() {
+        let project = project();
+        let log = vec![
+            event(1, "proj", registered("proj")),
+            event(2, "proj", created("proj", "task-one")),
+            event(3, "proj", created("proj", "task-two")),
+        ];
+        // Cold: apply the whole log from the beginning.
+        let mut cold = ClientState::default();
+        for entry in &log {
+            assert_eq!(cold.apply(entry), EventOutcome::Applied);
+        }
+        // Bootstrap: seed from the snapshot at cursor 1 (the state the
+        // registration left) and resume the events after it.
+        let mut session = ClientSession::new();
+        let mut transport = Scripted::new(vec![
+            Ok(response_ok(snapshot_body("proj", 1, vec![]))),
+            Ok(response_ok(page_body(log[1..].to_vec(), 3, false))),
+        ]);
+        let mut booted = session.bootstrap(&mut transport, "boot", &project).unwrap();
+        let outcome = session
+            .resume(&mut transport, &project, &mut booted, 10, 4, "catch-up")
+            .unwrap();
+        assert!(outcome.caught_up);
+        assert_eq!(outcome.applied, 2);
+        assert_eq!(outcome.cursor, JournalCursor(3));
+        // The two paths agree record for record: a bootstrap is not a
+        // shortcut that quietly drops what a replay would have built.
+        assert_eq!(booted, cold);
+        assert_eq!(session.journal_position(&project), JournalCursor(3));
     }
 }

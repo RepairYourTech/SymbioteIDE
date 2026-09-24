@@ -287,6 +287,14 @@ pub enum Operation {
     /// connection. The list names no path: a Project's identity is its stable
     /// `ProjectId`.
     ListProjects {},
+    /// One Project's canonical records — the Project, its Roots, its Roles and
+    /// its Tasks — with the cursor of the Project's own journal at the moment
+    /// of the read: the records include the effect of every event with
+    /// `sequence <= cursor` and of no later event, so a client bootstraps from
+    /// one read instead of replaying the log.
+    Snapshot {
+        project_id: ProjectId,
+    },
     ObserveRootPlacement {
         project_id: ProjectId,
         root_id: RootId,
@@ -370,6 +378,7 @@ impl Operation {
             | Self::RevokeResourceConsent { project_id, .. }
             | Self::GetResourceConsent { project_id, .. }
             | Self::GetTask { project_id, .. }
+            | Self::Snapshot { project_id }
             | Self::ReadJournal { project_id, .. } => Some(project_id),
             Self::Hello { .. }
             | Self::Health {}
@@ -756,6 +765,14 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         // restricted caller cannot enumerate Projects it holds no grant on.
         // This gate admits the operation; it never widens that filter.
         Operation::ListProjects {} => true,
+        // A bootstrap read answers the same Project records the single-record
+        // reads answer (`GetProject`, `GetTask`, the registry), under the same
+        // per-Project Read rule. Roots, Roles and Tasks carry no permission of
+        // their own beyond the Project they belong to, so the Project's Read
+        // is the whole gate and no record can be widened past it.
+        Operation::Snapshot { project_id } => {
+            principal.permits(project_id, ProjectPermission::Read)
+        }
         Operation::GetProject { project_id }
         | Operation::GetTask { project_id, .. }
         | Operation::GetResourceConsent { project_id, .. } => {
@@ -1467,6 +1484,26 @@ pub struct ExpiredLease {
     pub fencing_token: u64,
 }
 
+/// A Project read as one point in its journal: the canonical records the
+/// Project's own reads answer, with the cursor of the Project's journal at the
+/// moment of the read. The records include the effect of every event with
+/// `sequence <= cursor` and of no later event, so a client may resume from
+/// `cursor` rather than replaying the log. A snapshot that cannot fit the
+/// response bound is refused (`resource_exhausted`) rather than truncated: a
+/// partial snapshot would make the cursor claim state the caller never read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSnapshot {
+    pub project: Project,
+    /// The Project's Roots, in registration order.
+    pub roots: Vec<Root>,
+    /// The Project's Roles, in registration order.
+    pub roles: Vec<Role>,
+    /// The Project's Tasks, in creation order.
+    pub tasks: Vec<Task>,
+    pub cursor: JournalCursor,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
@@ -1508,6 +1545,7 @@ pub enum ResponseBody {
     StartedDispatch(Box<StartedDispatch>),
     WorkerRun(Box<WorkerRun>),
     Journal(JournalPage),
+    Snapshot(Box<ProjectSnapshot>),
     Shutdown {},
 }
 

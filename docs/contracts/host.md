@@ -38,7 +38,7 @@ target/debug/symbiote --state-dir /absolute/private/state-directory health
 
 `symbiote --state-dir DIR <command> [args...]` maps onto typed protocol
 operations — `hello`, `health`, `host-pulse`, `shutdown`, `get-project`,
-`list-projects`,
+`list-projects`, `snapshot`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`, `scheduling-projection`,

@@ -132,6 +132,17 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "snapshot",
+            summary: "read a Project's records with the journal cursor they were read at",
+            usage: "snapshot <project_id>",
+            kind: Some("snapshot"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("snapshot"), map);
+                plain("project_id", field(args, 0, "project_id")?.into(), map);
+                Ok(())
+            },
+        },
+        Command {
             name: "create-task",
             summary: "create a Task from a draft (JSON file)",
             usage: "create-task <task.json>",

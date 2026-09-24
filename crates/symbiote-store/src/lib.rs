@@ -242,6 +242,23 @@ pub struct EventPage {
     pub has_more: bool,
 }
 
+/// One Project read as a single consistent set: the canonical records the
+/// Project's own reads answer — the Project, its Roots, its Roles, its Tasks —
+/// together with the cursor of this Project's journal at the moment of the
+/// read. The records and the cursor come from one transaction, and every
+/// journal event carries the record it changed, so the pair is a point in the
+/// log: the records include the effect of every event with `sequence <=`
+/// `cursor` and of no later event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredSnapshot {
+    pub project: Project,
+    pub roots: Vec<Root>,
+    pub roles: Vec<Role>,
+    pub tasks: Vec<Task>,
+    pub cursor: u64,
+}
+
 pub struct Store {
     connection: Connection,
 }
@@ -978,6 +995,98 @@ impl Store {
             events,
             next_cursor,
             has_more,
+        })
+    }
+
+    /// Reads one Project as a single consistent set: its canonical identity
+    /// records (the Project, its Roots, its Roles) and its Tasks, with the
+    /// cursor of this Project's own journal at the moment of the read. The
+    /// records and the cursor come from one transaction, so a client that
+    /// bootstraps from the snapshot and resumes from `cursor` is never
+    /// replaying over state it did not read and never missing state the
+    /// cursor claims it has.
+    ///
+    /// Identity is checked per record exactly as the single-record reads
+    /// check it, so a snapshot cannot serve a Task whose columns disagree
+    /// with its validated body. Order is insertion order: Roots and Roles as
+    /// registration wrote them, Tasks as they were created.
+    pub fn snapshot(&self, project_id: &ProjectId) -> Result<StoredSnapshot> {
+        let read = self.connection.unchecked_transaction()?;
+        let project = self.project(project_id)?;
+        let mut roots = Vec::new();
+        let mut statement =
+            read.prepare("SELECT id, body FROM roots WHERE project_id=?1 ORDER BY rowid")?;
+        let rows = statement.query_map([project_id.as_str()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, body) = row?;
+            let root: Root = serde_json::from_str(&body)?;
+            if root.id.as_str() != id || &root.project_id != project_id {
+                return Err(StoreError::Integrity(
+                    "root columns differ from validated body".into(),
+                ));
+            }
+            roots.push(root);
+        }
+        let mut roles = Vec::new();
+        let mut statement =
+            read.prepare("SELECT id, body FROM roles WHERE project_id=?1 ORDER BY rowid")?;
+        let rows = statement.query_map([project_id.as_str()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, body) = row?;
+            let role: Role = serde_json::from_str(&body)?;
+            if role.id.as_str() != id || &role.project_id != project_id {
+                return Err(StoreError::Integrity(
+                    "role columns differ from validated body".into(),
+                ));
+            }
+            roles.push(role);
+        }
+        let mut tasks = Vec::new();
+        let mut statement = read.prepare(
+            "SELECT id, project_id, root_id, role_id, stream_id, revision, body FROM tasks WHERE project_id=?1 ORDER BY rowid",
+        )?;
+        let rows = statement.query_map([project_id.as_str()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                sql_u64(r, 5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, owner, root, role, stream, revision, body) = row?;
+            let task: Task = serde_json::from_str(&body)?;
+            if task.id().as_str() != id
+                || task.project_id().as_str() != owner
+                || task.root_id().as_str() != root
+                || task.role_id().as_str() != role
+                || task.stream_id().as_str() != stream
+                || task.revision().0 != revision
+            {
+                return Err(StoreError::Integrity(
+                    "task columns differ from validated body".into(),
+                ));
+            }
+            tasks.push(task);
+        }
+        let cursor: u64 = read.query_row(
+            "SELECT coalesce(max(sequence),0) FROM journal WHERE project_id=?1",
+            [project_id.as_str()],
+            |r| sql_u64(r, 0),
+        )?;
+        Ok(StoredSnapshot {
+            project,
+            roots,
+            roles,
+            tasks,
+            cursor,
         })
     }
 
