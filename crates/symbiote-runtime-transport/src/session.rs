@@ -248,10 +248,25 @@ impl Session {
     /// the connection generation's `RpcSession` is the discipline: a replacement
     /// connection is a new generation, and the requests this one never saw answered
     /// come back named instead of being replayed.
+    ///
+    /// Every path ends the process within `timeout`. A fault can arrive while the
+    /// child is still running, so a faulted session is still an ended one: the exit
+    /// returned in that case is the cancellation's own, and the process is not left
+    /// to `Drop`'s later bounded attempt.
     pub fn end(mut self, rpc: Option<RpcSession>, timeout: Duration) -> SessionOutcome {
         let unacknowledged = rpc.map(RpcSession::into_unresolved).unwrap_or_default();
         if let Some(error) = self.transport.failure() {
-            let exit = self.transport.try_wait().ok().flatten();
+            let exit = match self.transport.try_wait() {
+                Ok(Some(exit)) => Some(exit),
+                _ => {
+                    let ended = self
+                        .transport
+                        .cancel(timeout)
+                        .ok()
+                        .map(|report| report.exit);
+                    ended.or_else(|| self.transport.try_wait().ok().flatten())
+                }
+            };
             return SessionOutcome {
                 end: SessionEnd::Faulted { error },
                 exit,

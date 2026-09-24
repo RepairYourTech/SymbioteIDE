@@ -101,6 +101,12 @@ fn a_completed_session_is_classified_by_the_code_its_process_exited_with() {
 
     let mut failed = session("printf '{}\\n'; exit 3", Liveness::Unwatched);
     assert_eq!(failed.recv(SECOND).unwrap(), json!({}));
+    // The frame can arrive before the child has exited, so the exit is observed
+    // rather than assumed: ending a still-running child would be a cancellation.
+    assert!(matches!(
+        failed.recv(SECOND),
+        Err(SessionError::Transport(TransportError::ProcessExited(_)))
+    ));
     let outcome = failed.end(None, SECOND);
     assert_eq!(outcome.end, SessionEnd::Exited);
     assert_eq!(outcome.class(), Some(ExitClass::Failed { code: 3 }));
@@ -113,6 +119,10 @@ fn a_completed_session_is_classified_by_the_code_its_process_exited_with() {
 fn a_signalled_process_is_reported_as_a_signal_rather_than_an_exit_code() {
     let mut signalled = session("printf '{}\\n'; kill -TERM $$", Liveness::Unwatched);
     assert_eq!(signalled.recv(SECOND).unwrap(), json!({}));
+    assert!(matches!(
+        signalled.recv(SECOND),
+        Err(SessionError::Transport(TransportError::ProcessExited(_)))
+    ));
     let outcome = signalled.end(None, SECOND);
     assert_eq!(outcome.end, SessionEnd::Exited);
     assert_eq!(outcome.class(), Some(ExitClass::Signalled { signal: 15 }));
@@ -170,6 +180,33 @@ fn a_transport_fault_is_classified_faulted_and_never_a_clean_exit() {
     );
     assert!(!outcome.is_clean());
     assert!(outcome.unacknowledged.is_empty());
+}
+
+/// A fault can arrive while the child is still running. The session is still the
+/// owner's to end, so a faulted outcome ends the process inside the owner's own
+/// deadline and reports the exit it was reaped with, rather than leaving it to
+/// `Drop` and reporting an unknown final state.
+#[test]
+fn a_faulted_session_still_ends_its_process_within_the_owners_deadline() {
+    let mut faulty = session("printf 'not-json\\n'; /bin/sleep 30", Liveness::Unwatched);
+    assert_eq!(
+        faulty.recv(SECOND),
+        Err(SessionError::Transport(TransportError::MalformedFrame))
+    );
+    let started = Instant::now();
+    let outcome = faulty.end(None, SECOND);
+    assert_eq!(
+        outcome.end,
+        SessionEnd::Faulted {
+            error: TransportError::MalformedFrame
+        }
+    );
+    assert_eq!(outcome.class(), Some(ExitClass::Signalled { signal: 9 }));
+    assert!(!outcome.is_clean());
+    assert!(
+        started.elapsed() < SECOND,
+        "the faulted session was ended inside the owner's deadline"
+    );
 }
 
 /// Silence before the first frame is measured from the session's own start, so a
