@@ -3036,6 +3036,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-client-sdk",
  "symbiote-context",
  "symbiote-contract-read",
  "symbiote-domain",

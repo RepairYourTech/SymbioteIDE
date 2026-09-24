@@ -1322,6 +1322,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "One Project's canonical records — the Project, its Roots, its Roles and\nits Tasks — with the cursor of the Project's own journal at the moment\nof the read: the records include the effect of every event with\n`sequence <= cursor` and of no later event, so a client bootstraps from\none read instead of replaying the log.",
+            "properties": {
+              "kind": {
+                "const": "snapshot",
+                "type": "string"
+              },
+              "project_id": {
+                "$ref": "#/$defs/ProjectId"
+              }
+            },
+            "required": [
+              "kind",
+              "project_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "expected_revision": {
                 "format": "uint64",
@@ -5543,6 +5561,49 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
+      "ProjectSnapshot": {
+        "additionalProperties": false,
+        "description": "A Project read as one point in its journal: the canonical records the\nProject's own reads answer, with the cursor of the Project's journal at the\nmoment of the read. The records include the effect of every event with\n`sequence <= cursor` and of no later event, so a client may resume from\n`cursor` rather than replaying the log. A snapshot that cannot fit the\nresponse bound is refused (`resource_exhausted`) rather than truncated: a\npartial snapshot would make the cursor claim state the caller never read.",
+        "properties": {
+          "cursor": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "$ref": "#/$defs/Project"
+          },
+          "roles": {
+            "description": "The Project's Roles, in registration order.",
+            "items": {
+              "$ref": "#/$defs/Role"
+            },
+            "type": "array"
+          },
+          "roots": {
+            "description": "The Project's Roots, in registration order.",
+            "items": {
+              "$ref": "#/$defs/Root"
+            },
+            "type": "array"
+          },
+          "tasks": {
+            "description": "The Project's Tasks, in creation order.",
+            "items": {
+              "$ref": "#/$defs/Task"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project",
+          "roots",
+          "roles",
+          "tasks",
+          "cursor"
+        ],
+        "type": "object"
+      },
       "ProtocolError": {
         "additionalProperties": false,
         "properties": {
@@ -6438,6 +6499,23 @@
               },
               "kind": {
                 "const": "journal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ProjectSnapshot"
+              },
+              "kind": {
+                "const": "snapshot",
                 "type": "string"
               }
             },

@@ -1195,6 +1195,167 @@ fn a_moved_root_does_not_move_the_projects_registry_identity() {
 }
 
 #[test]
+fn the_snapshot_carries_the_projects_records_and_the_cursor_they_were_read_at() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    // Two Roots and two Roles are registered deliberately: a snapshot that
+    // answered only the first of either would look plausible with one.
+    let (mut project, mut roots, mut roles) = records("one");
+    let mut second_root = roots[0].clone();
+    second_root.id = id!(RootId, "root-one-second");
+    roots.push(second_root);
+    project.roots = roots.iter().map(|root| root.id.clone()).collect();
+    let mut second_role = roles[0].clone();
+    second_role.id = id!(RoleId, "role-one-second");
+    second_role.name = "Reviewer".into();
+    roles.push(second_role);
+    store
+        .register_project(
+            id!(CommandId, "register-one"),
+            project.clone(),
+            roots.clone(),
+            roles.clone(),
+        )
+        .unwrap();
+    let (first, first_stream) = task_records("snapshot-first");
+    store
+        .create_fixture_task(
+            id!(CommandId, "task-snapshot-first"),
+            first.clone(),
+            first_stream,
+        )
+        .unwrap();
+    let (second, second_stream) = task_records("snapshot-second");
+    store
+        .create_fixture_task(
+            id!(CommandId, "task-snapshot-second"),
+            second.clone(),
+            second_stream,
+        )
+        .unwrap();
+    // A second Project is registered after the Tasks: the global journal head
+    // is now beyond this Project's head, so a snapshot that read the global
+    // sequence instead of the Project's own would name the wrong point.
+    let (other_project, other_roots, other_roles) = records("snapshot-other");
+    let other = store
+        .register_project(
+            id!(CommandId, "register-snapshot-other"),
+            other_project,
+            other_roots,
+            other_roles,
+        )
+        .unwrap();
+
+    let snapshot = store.snapshot(&project.id).unwrap();
+    assert_eq!(snapshot.project, store.project(&project.id).unwrap());
+    assert_eq!(snapshot.roots, roots);
+    for root in &snapshot.roots {
+        assert_eq!(&store.root(&root.id).unwrap(), root);
+    }
+    assert_eq!(snapshot.roles, roles);
+    assert_eq!(snapshot.tasks, vec![first.clone(), second.clone()]);
+    for task in &snapshot.tasks {
+        assert_eq!(&store.task(task.id()).unwrap(), task);
+    }
+    assert_eq!(
+        snapshot.cursor,
+        store.events(&project.id, 0, 100).unwrap().next_cursor
+    );
+    assert!(
+        snapshot.cursor < other.sequence,
+        "the cursor is this Project's own head, not the global one"
+    );
+
+    // A snapshot is a value at a point, not a live view: later state moves a
+    // new snapshot's cursor and contents and leaves the earlier one alone.
+    let (third, third_stream) = task_records("snapshot-third");
+    store
+        .create_fixture_task(
+            id!(CommandId, "task-snapshot-third"),
+            third.clone(),
+            third_stream,
+        )
+        .unwrap();
+    let later = store.snapshot(&project.id).unwrap();
+    assert!(later.cursor > snapshot.cursor);
+    assert_eq!(later.tasks, vec![first, second, third]);
+    assert_eq!(snapshot.tasks.len(), 2);
+    // The reads append nothing of their own: registration, one work item (the
+    // second and third Tasks' work command replays), and one task event per
+    // Task — five events, and no snapshot event.
+    assert_eq!(store.events(&project.id, 0, 100).unwrap().events.len(), 5);
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn a_snapshot_is_scoped_to_its_project_and_refuses_an_unknown_one() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (one, _, _) = register(&mut store, "one");
+    let (task, stream) = task_records("scoped");
+    store
+        .create_fixture_task(id!(CommandId, "task-scoped"), task.clone(), stream)
+        .unwrap();
+    let (other, other_roots, other_roles) = register(&mut store, "other");
+    // The second Project has a Task of its own, so a snapshot that stopped
+    // scoping by Project would serve it under the first Project's name.
+    let other_task = Task::new(
+        id!(TaskId, "task-other"),
+        other.id.clone(),
+        id!(RootId, "root-other"),
+        id!(RoleId, "role-other"),
+        id!(ChangeStreamId, "stream-other"),
+        VersionedTaskContract {
+            id: id!(TaskContractId, "task-contract-other"),
+            revision: Revision(1),
+        },
+    );
+    let other_stream = ChangeStream::new(NewChangeStream {
+        id: id!(ChangeStreamId, "stream-other"),
+        project_id: other.id.clone(),
+        root_id: id!(RootId, "root-other"),
+        tasks: BTreeSet::from([id!(TaskId, "task-other")]),
+        originating_chat: id!(ChatId, "chat-other"),
+        worktree: id!(WorktreeId, "worktree-other"),
+        branch: "branch-other".into(),
+        lineage: StreamLineage::Independent,
+        base: sha('a'),
+        target: sha('b'),
+    })
+    .unwrap();
+    store
+        .create_fixture_task(
+            id!(CommandId, "task-other"),
+            other_task.clone(),
+            other_stream,
+        )
+        .unwrap();
+
+    let snapshot = store.snapshot(&one.id).unwrap();
+    assert_eq!(snapshot.project.id, one.id.clone());
+    assert_eq!(snapshot.tasks, vec![task]);
+    assert_eq!(snapshot.roots.len(), 1);
+    assert_eq!(snapshot.roles.len(), 1);
+    assert!(
+        snapshot.cursor < store.snapshot(&other.id).unwrap().cursor,
+        "each Project's cursor is its own head"
+    );
+    // Another Project's snapshot carries that Project's records and no Task of
+    // this one's: a Project read is scoped by the Project it names.
+    let other_snapshot = store.snapshot(&other.id).unwrap();
+    assert_eq!(other_snapshot.project, other);
+    assert_eq!(other_snapshot.roots, other_roots);
+    assert_eq!(other_snapshot.roles, other_roles);
+    assert_eq!(other_snapshot.tasks, vec![other_task]);
+
+    assert!(matches!(
+        store.snapshot(&id!(ProjectId, "project-absent")),
+        Err(StoreError::NotFound)
+    ));
+    store.integrity_check().unwrap();
+}
+
+#[test]
 fn task_creation_rejects_cross_project_foreign_keys_and_shared_workspace() {
     let mut store = Store::memory().unwrap();
     register(&mut store, "one");
