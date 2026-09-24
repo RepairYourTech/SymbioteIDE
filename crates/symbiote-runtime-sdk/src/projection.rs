@@ -415,12 +415,15 @@ impl ContractProjection {
 
     /// Reconcile what the runtime reported it took with what was projected.
     ///
-    /// The report may only narrow. Anything it claims beyond the projection —
-    /// a stronger control, a carrier the projection found missing, unsupported
-    /// or unknown, a carrier on a surface that does not demand it, a blank or
-    /// oversized mechanism — is refused with the typed error rather than
-    /// recorded as an observation. What narrows is returned as an outcome that
-    /// names itself: [`Agreement::Weaker`] retains both strengths,
+    /// The report names one session of this dispatch, and the outcome is of that
+    /// session: a report from another session of the same dispatch — a resumed
+    /// or forked successor — refuses rather than being credited to this one. The
+    /// report may only narrow. Anything it claims beyond the projection — a
+    /// stronger or incomparable control, a carrier the projection found missing,
+    /// unsupported or unknown, a carrier on a surface that does not demand it, a
+    /// blank or oversized mechanism — is refused with the typed error rather
+    /// than recorded as an observation. What narrows is returned as an outcome
+    /// that names itself: [`Agreement::Weaker`] retains both strengths,
     /// [`Agreement::Unreported`] is what silence yields, and
     /// [`HandshakeOutcome::is_exact`] is true only when every demanded carrier
     /// came back at exactly what was projected.
@@ -432,7 +435,10 @@ impl ContractProjection {
         if report.dispatch != self.dispatch {
             return Err(AdapterError::ContractMismatch);
         }
-        if session.dispatch_id != self.dispatch || session.kind != self.runtime {
+        if session.dispatch_id != self.dispatch
+            || session.kind != self.runtime
+            || report.session != session.id
+        {
             return Err(AdapterError::SessionMismatch);
         }
         let mut named = BTreeSet::new();
@@ -479,13 +485,23 @@ impl ContractProjection {
                     (_, None) => Agreement::Unreported,
                     (None, Some(_)) => return Err(AdapterError::ContractMismatch),
                     (Some(realized), Some(stated)) => {
-                        if !realizes(stated, realized) {
-                            return Err(AdapterError::ContractMismatch);
-                        }
                         if stated == realized {
                             Agreement::Exact
-                        } else {
+                        } else if stated == EnforcementStrength::Unsupported
+                            || realizes(stated, realized)
+                        {
+                            // `Unsupported` is the bottom of the order, not an
+                            // upgrade: a runtime reporting it claims nothing, so
+                            // a truthful "nothing carries this" is the
+                            // degradation a caller most needs to see rather than
+                            // a violation. Every other strength that does not
+                            // realize what was delivered — an observed mechanism
+                            // where an emulated one was delivered, say — is a
+                            // mismatch, because the two are incomparable and a
+                            // runtime cannot reclassify its own carrier.
                             Agreement::Weaker
+                        } else {
+                            return Err(AdapterError::ContractMismatch);
                         }
                     }
                 };
@@ -572,6 +588,11 @@ pub struct SurfaceReport {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeHandshake {
     pub dispatch: DispatchId,
+    /// The session this account came from. A dispatch can have more than one — a
+    /// resumed or forked successor is a new session under the same dispatch — so
+    /// a report that named only the dispatch could be reconciled against the
+    /// wrong one.
+    pub session: SessionId,
     /// One entry per surface the runtime has something to say about. A surface
     /// left out is reported as [`Agreement::Unreported`] rather than assumed,
     /// and naming one surface twice refuses: a report is one account of one

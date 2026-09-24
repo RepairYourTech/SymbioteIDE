@@ -280,6 +280,7 @@ fn echo(projection: &ContractProjection, mechanism: &str) -> RuntimeHandshake {
     }
     RuntimeHandshake {
         dispatch: projection.dispatch.clone(),
+        session: SessionId::new("session").unwrap(),
         surfaces,
     }
 }
@@ -288,6 +289,7 @@ fn echo(projection: &ContractProjection, mechanism: &str) -> RuntimeHandshake {
 fn silent(projection: &ContractProjection) -> RuntimeHandshake {
     RuntimeHandshake {
         dispatch: projection.dispatch.clone(),
+        session: SessionId::new("session").unwrap(),
         surfaces: Vec::new(),
     }
 }
@@ -808,6 +810,29 @@ fn a_weaker_report_is_named_and_never_smoothed_into_the_projection() {
         "the projection still says what was delivered: the report does not rewrite it"
     );
     assert!(!outcome.is_exact());
+    // "Nothing carries this" is the strongest report a runtime can make without
+    // claiming anything, so it is the weakest agreement rather than a refusal: a
+    // runtime that cannot enforce a control must be able to say so, and a
+    // verdict that refused it would leave overclaiming as the only way through.
+    let mut report = echo(&projection, "rpc handshake");
+    report_mut(&mut report, ContractSurface::Cleanup)
+        .preventive
+        .insert(Control::Cancellation, EnforcementStrength::Unsupported);
+    let outcome = projection
+        .reconcile(&session(RuntimeKind::ExternalHarness), &report)
+        .unwrap();
+    let state = &outcome
+        .surface(ContractSurface::Cleanup)
+        .unwrap()
+        .preventive[&Control::Cancellation];
+    assert_eq!(state.agreement, Agreement::Weaker);
+    assert_eq!(state.reported, Some(EnforcementStrength::Unsupported));
+    assert_eq!(
+        state.delivered.realized(),
+        Some(EnforcementStrength::HostEnforced),
+        "the workspace still knows what it actually delivered"
+    );
+    assert!(!outcome.is_exact());
 }
 
 #[test]
@@ -833,6 +858,19 @@ fn the_handshake_refuses_another_dispatch_and_another_runtime() {
         Err(AdapterError::SessionMismatch),
         "a native session cannot reconcile an external runtime's projection"
     );
+    // One dispatch, two sessions: a resumed or forked successor is another
+    // session of the same dispatch, so a report that named only the dispatch
+    // could be credited to the session it did not come from.
+    let mut successor = report.clone();
+    successor.session = SessionId::new("successor").unwrap();
+    assert_eq!(
+        projection.reconcile(&session(RuntimeKind::ExternalHarness), &successor),
+        Err(AdapterError::SessionMismatch),
+        "a successor session's report is not this session's report"
+    );
+    let mut successor_session = session(RuntimeKind::ExternalHarness);
+    successor_session.id = SessionId::new("successor").unwrap();
+    assert!(projection.reconcile(&successor_session, &successor).is_ok());
 }
 
 #[test]
