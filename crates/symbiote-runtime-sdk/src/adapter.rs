@@ -216,4 +216,24 @@ pub trait AgentRuntimeAdapter {
             operation: AdapterOperation::Dispose,
         })
     }
+
+    /// Where this adapter places each canonical fact, read onto the descriptor
+    /// the Host already holds. Pure and side-effect free, so an operator can see
+    /// what a runtime can carry before anything is launched.
+    fn projection(&self, dispatch: &Dispatch) -> crate::projection::ContractProjection {
+        crate::projection::ContractProjection::project(dispatch, self.descriptor())
+    }
+
+    /// What the runtime reports it actually took. The default is that it has no
+    /// handshake, which is an explicit error rather than an empty report: a
+    /// report that says nothing is indistinguishable from agreement, and the
+    /// outcome already treats a silent surface as unreported.
+    fn handshake(
+        &self,
+        _session: &Session,
+    ) -> Result<crate::projection::RuntimeHandshake, AdapterError> {
+        Err(AdapterError::Unsupported {
+            operation: AdapterOperation::Handshake,
+        })
+    }
 }
