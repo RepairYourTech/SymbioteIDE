@@ -28,6 +28,8 @@
 
 use crate::projection::{CarrierDelivery, ContractProjection, ContractSurface, carrier_delivery};
 use crate::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use symbiote_domain::{AgentRuntimeAdapterId, Control, Dispatch, DispatchId, EnforcementStrength};
 
@@ -106,8 +108,10 @@ impl RuleOutcome {
 }
 
 /// One capability the module places on a surface, read beside what the
-/// adapter's own projections carry for it. This is the capability matrix.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// adapter's own projections carry for it. This is the capability matrix, and it
+/// is wire data: a published dossier carries these rows as they were read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityRead {
     /// The carrier this row is about.
     pub capability: Capability,
@@ -125,8 +129,9 @@ pub struct CapabilityRead {
 
 /// One control the module places on a surface, with what the descriptor
 /// declares and what the adapter's projections made of it. This is the
-/// enforcement matrix.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// enforcement matrix, and it is wire data for the same reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ControlRead {
     /// The claim this row is about.
     pub control: Control,
@@ -146,8 +151,11 @@ pub struct ControlRead {
     pub realized: bool,
 }
 
-/// What one dispatch's projection published.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What one dispatch's projection published. Wire data for the same reason: a
+/// dossier says which abstract work each of its runs was read over, so a reader
+/// can tell a run over a bare task from a run over a staffed one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DispatchRead {
     /// The dispatch read.
     pub dispatch: DispatchId,

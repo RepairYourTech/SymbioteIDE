@@ -6,7 +6,8 @@ fn main() {
         "provider_response": schemars::schema_for!(symbiote_runtime_sdk::provider::ProviderResponse),
         "contract_projection": schemars::schema_for!(symbiote_runtime_sdk::projection::ContractProjection),
         "runtime_handshake": schemars::schema_for!(symbiote_runtime_sdk::projection::RuntimeHandshake),
-        "handshake_outcome": schemars::schema_for!(symbiote_runtime_sdk::projection::HandshakeOutcome)
+        "handshake_outcome": schemars::schema_for!(symbiote_runtime_sdk::projection::HandshakeOutcome),
+        "compatibility_dossier": schemars::schema_for!(symbiote_runtime_sdk::dossier::CompatibilityDossier)
     });
     println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
 }
