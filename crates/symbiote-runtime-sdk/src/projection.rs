@@ -668,8 +668,9 @@ impl BindingSurfaces {
     /// The surfaces the observed runtime carries nothing for, by the same rule
     /// the contract projection uses. Empty means every demanded carrier is at
     /// least declared; a control carried *weaker* than the binding's minimum is
-    /// withheld here, and its entry in `preventive` names both strengths so the
-    /// degradation is readable rather than inferred from this set.
+    /// `Degraded` and is **not** withheld — its entry in `preventive` names both
+    /// strengths, and whether the minimum is met is qualification's refusal
+    /// rather than a second one read from this set.
     pub fn withheld(&self) -> BTreeSet<ContractSurface> {
         self.surfaces
             .iter()

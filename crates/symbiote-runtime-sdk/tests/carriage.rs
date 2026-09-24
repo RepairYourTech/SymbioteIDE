@@ -270,8 +270,9 @@ fn a_control_the_runtime_never_declares_withholds_its_surface() {
 }
 
 /// A weaker mechanism than the binding's minimum is a degradation with both
-/// strengths kept, and it is withheld: a minimum is what the binding requires,
-/// not what the runtime happens to offer.
+/// strengths kept, and it is **not** withheld: a minimum is what the binding
+/// requires, and whether the runtime meets it is the capability check's refusal
+/// rather than a second one read from this set.
 #[test]
 fn a_control_carried_weaker_than_the_minimum_keeps_both_strengths() {
     let mut observed = descriptor();
