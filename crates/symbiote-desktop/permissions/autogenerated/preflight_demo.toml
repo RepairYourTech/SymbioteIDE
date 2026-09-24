@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preflight-demo"
+description = "Enables the preflight_demo command without any pre-configured scope."
+commands.allow = ["preflight_demo"]
+
+[[permission]]
+identifier = "deny-preflight-demo"
+description = "Denies the preflight_demo command without any pre-configured scope."
+commands.deny = ["preflight_demo"]

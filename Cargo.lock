@@ -3216,6 +3216,7 @@ dependencies = [
  "symbiote-source-stamp",
  "symbiote-trust",
  "symbiote-workflow",
+ "symbiote-workforce",
  "symbiote-worktrees",
 ]
 

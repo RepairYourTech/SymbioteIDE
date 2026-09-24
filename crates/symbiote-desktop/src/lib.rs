@@ -356,6 +356,19 @@ fn start_demo(state: tauri::State<Session>) -> Result<String, String> {
     controller.start_demo().map_err(|error| error.to_string())
 }
 
+/// Compose and prepare the demonstration, then return the Host's binding
+/// readiness report. This command never starts a dispatch; the workbench
+/// renders the report before its separate start action.
+#[tauri::command]
+fn preflight_demo(state: tauri::State<Session>) -> Result<String, String> {
+    let mut guard = lock_session(&state);
+    let controller = guard.as_mut().ok_or("no session")?;
+    let report = controller
+        .preflight_demo()
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&report).map_err(|error| error.to_string())
+}
+
 /// Follows the durable evidence trail to the head; returns the reached
 /// journal cursor.
 #[tauri::command]
@@ -429,6 +442,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             begin_session,
             start_demo,
+            preflight_demo,
             read_journal,
             finish_demo,
             journal_position,
@@ -593,6 +607,7 @@ mod preview_ipc_tests {
             "open_preview",
             "begin_session",
             "start_demo",
+            "preflight_demo",
             "read_journal",
             "finish_demo",
             "journal_position",

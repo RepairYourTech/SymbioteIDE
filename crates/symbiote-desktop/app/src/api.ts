@@ -1,9 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { parseDemoOutcome, type DemoOutcome } from "./outcome";
+import {
+  parsePreflightReport,
+  type PreflightReport,
+} from "./preflight";
 
 export type { DemoOutcome, WorktreeEvidence } from "./outcome";
 export { parseDemoOutcome } from "./outcome";
+export type { PreflightReport } from "./preflight";
+export {
+  observationSummary,
+  parsePreflightReport,
+  withheldSurfaces,
+} from "./preflight";
 
 export function beginSession(
   stateDir: string,
@@ -19,6 +29,11 @@ export function beginSession(
 
 export function startDemo(): Promise<string> {
   return invoke<string>("start_demo");
+}
+
+export async function preflightDemo(): Promise<PreflightReport> {
+  const payload = await invoke<string>("preflight_demo");
+  return parsePreflightReport(payload);
 }
 
 export function readJournal(): Promise<number> {

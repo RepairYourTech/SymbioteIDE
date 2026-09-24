@@ -201,6 +201,12 @@
           "markdownDescription": "Enables the open_preview command without any pre-configured scope."
         },
         {
+          "description": "Enables the preflight_demo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preflight-demo",
+          "markdownDescription": "Enables the preflight_demo command without any pre-configured scope."
+        },
+        {
           "description": "Enables the read_journal command without any pre-configured scope.",
           "type": "string",
           "const": "allow-read-journal",
@@ -241,6 +247,12 @@
           "type": "string",
           "const": "deny-open-preview",
           "markdownDescription": "Denies the open_preview command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preflight_demo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preflight-demo",
+          "markdownDescription": "Denies the preflight_demo command without any pre-configured scope."
         },
         {
           "description": "Denies the read_journal command without any pre-configured scope.",

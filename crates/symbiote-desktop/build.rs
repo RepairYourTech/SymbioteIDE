@@ -10,6 +10,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "begin_session",
             "start_demo",
+            "preflight_demo",
             "read_journal",
             "finish_demo",
             "journal_position",
