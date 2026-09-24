@@ -316,7 +316,16 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
         tier: IntegrationTier::Detected,
         host_id: pulse.host_id.clone(),
         platform: "linux".into(),
-        capabilities: BTreeMap::new(),
+        // The binding names required tools, and the dispatch boundary requires
+        // the `Tools` capability for exactly those resources, so an observation
+        // that declared the tool names but not the capability would be a
+        // declaration this report must not read as carriage.
+        capabilities: BTreeMap::from([(
+            Capability::Tools,
+            Support::Supported {
+                evidence: Box::new(evidence.clone()),
+            },
+        )]),
         controls: BTreeMap::from([(
             Control::Filesystem,
             ControlSupport {
@@ -498,6 +507,10 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
     unknown
         .capabilities
         .insert(Capability::Tools, Support::Unknown);
+    // The satisfied fixture declares the capability a binding with named tools
+    // requires, so the rejection case is an observation that declares neither.
+    let mut lacking = observed.clone();
+    lacking.capabilities.remove(&Capability::Tools);
     assert_eq!(
         assess_readiness(
             &requiring,
@@ -516,7 +529,7 @@ fn real_prerequisite_checks_never_imply_activation_permission() {
             &requiring,
             &t,
             Some(&pulse),
-            Some(&observed),
+            Some(&lacking),
             Some(&resolved),
             Timestamp(10)
         )

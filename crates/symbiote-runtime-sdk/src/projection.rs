@@ -66,7 +66,10 @@
 //! contract's own `CompletionAuthority` claim, and the canonical transition
 //! stays with the domain.
 
-use crate::{AdapterError, Capability, MECHANISM_MAX_BYTES, RuntimeDescriptor, Support, realizes};
+use crate::{
+    AdapterError, Capability, ControlSupport, MECHANISM_MAX_BYTES, RuntimeDescriptor, Support,
+    realizes,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -315,20 +318,7 @@ impl ContractProjection {
                 if let Some(claim) = enforcement.get(control) {
                     preventive.insert(
                         control.clone(),
-                        match descriptor.controls.get(control) {
-                            Some(support) if realizes(claim.strength, support.strength) => {
-                                PreventiveDelivery::Delivered {
-                                    strength: support.strength,
-                                    mechanism: support.mechanism.clone(),
-                                }
-                            }
-                            Some(support) => PreventiveDelivery::Degraded {
-                                claimed: claim.strength,
-                                declared: support.strength,
-                                mechanism: support.mechanism.clone(),
-                            },
-                            None => PreventiveDelivery::Missing {},
-                        },
+                        control_delivery(claim.strength, descriptor.controls.get(control)),
                     );
                 }
             }
@@ -339,12 +329,7 @@ impl ContractProjection {
                 }
                 carried.insert(
                     capability.clone(),
-                    match descriptor.capabilities.get(capability) {
-                        Some(Support::Supported { .. }) => CarrierDelivery::Declared {},
-                        Some(Support::Unsupported) => CarrierDelivery::Unsupported {},
-                        Some(Support::Unknown) => CarrierDelivery::Unknown {},
-                        None => CarrierDelivery::Absent {},
-                    },
+                    carrier_delivery(descriptor.capabilities.get(capability)),
                 );
             }
             surfaces.push(SurfaceProjection {
@@ -396,21 +381,11 @@ impl ContractProjection {
     /// this set alone cannot mistake a degradation for either delivery or
     /// nothing at all.
     pub fn withheld(&self) -> BTreeSet<ContractSurface> {
-        let mut withheld = BTreeSet::new();
-        for entry in &self.surfaces {
-            if entry
-                .preventive
-                .values()
-                .any(|delivery| delivery.realized().is_none())
-                || entry
-                    .carried
-                    .values()
-                    .any(|delivery| !matches!(delivery, CarrierDelivery::Declared {}))
-            {
-                withheld.insert(entry.surface);
-            }
-        }
-        withheld
+        self.surfaces
+            .iter()
+            .filter(|entry| entry_withholds(&entry.preventive, &entry.carried))
+            .map(|entry| entry.surface)
+            .collect()
     }
 
     /// Reconcile what the runtime reported it took with what was projected.
@@ -547,6 +522,52 @@ impl ContractProjection {
     }
 }
 
+/// What the descriptor holds for one control a claim or a minimum is about. One
+/// function, so a contract's claim and a binding's minimum are read the same way.
+fn control_delivery(
+    claimed: EnforcementStrength,
+    declared: Option<&ControlSupport>,
+) -> PreventiveDelivery {
+    match declared {
+        Some(support) if realizes(claimed, support.strength) => PreventiveDelivery::Delivered {
+            strength: support.strength,
+            mechanism: support.mechanism.clone(),
+        },
+        Some(support) => PreventiveDelivery::Degraded {
+            claimed,
+            declared: support.strength,
+            mechanism: support.mechanism.clone(),
+        },
+        None => PreventiveDelivery::Missing {},
+    }
+}
+
+/// What the descriptor holds for one capability. One function, so the four
+/// facts stay four facts wherever they are read.
+fn carrier_delivery(declared: Option<&Support>) -> CarrierDelivery {
+    match declared {
+        Some(Support::Supported { .. }) => CarrierDelivery::Declared {},
+        Some(Support::Unsupported) => CarrierDelivery::Unsupported {},
+        Some(Support::Unknown) => CarrierDelivery::Unknown {},
+        None => CarrierDelivery::Absent {},
+    }
+}
+
+/// Whether one surface carries nothing for a demanded control or a demanded
+/// capability. One function, so a contract's projection and a binding's carriage
+/// cannot disagree about what "withheld" means.
+fn entry_withholds(
+    preventive: &BTreeMap<Control, PreventiveDelivery>,
+    carried: &BTreeMap<Capability, CarrierDelivery>,
+) -> bool {
+    preventive
+        .values()
+        .any(|delivery| delivery.realized().is_none())
+        || carried
+            .values()
+            .any(|delivery| !matches!(delivery, CarrierDelivery::Declared {}))
+}
+
 /// Whether a capability on a surface is demanded by the contract's own facts.
 /// The reference surfaces, hooks, extensions and the worker's own environment
 /// are always demanded; skills and tools are demanded when the binding names
@@ -561,6 +582,162 @@ pub fn demanded(capability: Capability, binding: &WorkforceBinding) -> bool {
         Capability::Skills => !binding.required_skills.is_empty(),
         Capability::Tools => !binding.required_tools.is_empty(),
         _ => false,
+    }
+}
+
+/// Whether a carrier is demanded before a Task Contract exists. The binding
+/// demands what its own policy requires and the capabilities its own named
+/// resources require: the dispatch boundary already adds `Tools` and `Skills`
+/// for exactly those resources, so a report that left them out would contradict
+/// the decision activation makes. The instruction, hook, extension and
+/// environment carriers are demanded by a *compiled contract* — it places the
+/// protocol, the role brief and the task brief on them — so they are the
+/// contract projection's demand rather than this one's.
+fn binding_demands(
+    capability: &Capability,
+    binding: &WorkforceBinding,
+    required_capabilities: &BTreeSet<Capability>,
+) -> bool {
+    if required_capabilities.contains(capability) {
+        return true;
+    }
+    match capability {
+        Capability::Tools => !binding.required_tools.is_empty(),
+        Capability::Skills => !binding.required_skills.is_empty(),
+        _ => false,
+    }
+}
+
+/// One surface of a binding's demand, with what the observed runtime declares
+/// for each carrier. The entries and the delivery vocabulary are the contract
+/// projection's own: what differs is which claims and capabilities are read,
+/// not what a delivery means.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SurfaceCarriage {
+    /// The place this carriage is about.
+    pub surface: ContractSurface,
+    /// One entry for every control the binding declares a minimum for on this
+    /// surface, and none for a control it does not.
+    pub preventive: BTreeMap<Control, PreventiveDelivery>,
+    /// One entry for every capability the binding's own facts require here.
+    pub carried: BTreeMap<Capability, CarrierDelivery>,
+}
+
+/// The surfaces a binding demands, as the runtime the Host observed declares
+/// them, read one step before the contract projection: a binding and the
+/// Host's observation of a runtime, with no Task Contract compiled yet and no
+/// dispatch identity to name.
+///
+/// The demand is the binding's own — the enforcement minimums its policy
+/// declares, the capabilities its policy requires and the tools and skills it
+/// names, which the dispatch boundary requires the same way. Nothing a runtime
+/// advertises becomes a requirement here either, and the twelve surfaces are
+/// the same twelve the contract projection covers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BindingSurfaces {
+    /// The binding whose demand was read.
+    pub binding: BindingId,
+    /// The Role it staffs.
+    pub role: RoleId,
+    /// The runtime the demand was read onto: the descriptor's own identity, so a
+    /// carriage names the exact adapter, installation, profile, model, host and
+    /// versions it was read from.
+    pub adapter: AgentRuntimeAdapterId,
+    pub installation: Option<InstallationId>,
+    pub profile: RuntimeProfileId,
+    pub profile_revision: Revision,
+    pub model: ModelId,
+    pub host: HostId,
+    pub runtime: RuntimeKind,
+    pub adapter_version: String,
+    pub upstream_version: String,
+    pub platform: String,
+    /// Every surface in [`ContractSurface::ALL`], in that order.
+    pub surfaces: Vec<SurfaceCarriage>,
+}
+
+impl BindingSurfaces {
+    /// One surface's carriers, or `None` for a surface this carriage does not
+    /// cover — which no carriage of [`ContractSurface::ALL`] can be.
+    pub fn surface(&self, surface: ContractSurface) -> Option<&SurfaceCarriage> {
+        self.surfaces.iter().find(|entry| entry.surface == surface)
+    }
+
+    /// The surfaces the observed runtime carries nothing for, by the same rule
+    /// the contract projection uses. Empty means every demanded carrier is at
+    /// least declared; a control carried *weaker* than the binding's minimum is
+    /// `Degraded` and is **not** withheld — its entry in `preventive` names both
+    /// strengths, and whether the minimum is met is qualification's refusal
+    /// rather than a second one read from this set.
+    pub fn withheld(&self) -> BTreeSet<ContractSurface> {
+        self.surfaces
+            .iter()
+            .filter(|entry| entry_withholds(&entry.preventive, &entry.carried))
+            .map(|entry| entry.surface)
+            .collect()
+    }
+
+    /// Whether the observed runtime carries every fact the binding demands.
+    /// This is a statement about declarations, not about a launched runtime: the
+    /// handshake is where a runtime says what it actually took.
+    pub fn is_complete(&self) -> bool {
+        self.withheld().is_empty()
+    }
+}
+
+/// Reads a binding's demand onto the runtime the Host observed. Pure and
+/// infallible, exactly as the contract projection is: whether the runtime may run
+/// this binding is qualification's fact, and a projection that gated would be a
+/// second owner of it.
+pub fn binding_surfaces(
+    binding: &WorkforceBinding,
+    minimums: &BTreeMap<Control, EnforcementStrength>,
+    required_capabilities: &BTreeSet<Capability>,
+    descriptor: &RuntimeDescriptor,
+) -> BindingSurfaces {
+    let mut surfaces = Vec::new();
+    for surface in ContractSurface::ALL {
+        let mut preventive = BTreeMap::new();
+        for control in surface.controls() {
+            if let Some(minimum) = minimums.get(control) {
+                preventive.insert(
+                    control.clone(),
+                    control_delivery(*minimum, descriptor.controls.get(control)),
+                );
+            }
+        }
+        let mut carried = BTreeMap::new();
+        for capability in surface.capabilities() {
+            if !binding_demands(capability, binding, required_capabilities) {
+                continue;
+            }
+            carried.insert(
+                capability.clone(),
+                carrier_delivery(descriptor.capabilities.get(capability)),
+            );
+        }
+        surfaces.push(SurfaceCarriage {
+            surface,
+            preventive,
+            carried,
+        });
+    }
+    BindingSurfaces {
+        binding: binding.id.clone(),
+        role: binding.role_id.clone(),
+        adapter: descriptor.adapter_id.clone(),
+        installation: descriptor.installation.clone(),
+        profile: descriptor.profile_id.clone(),
+        profile_revision: descriptor.profile_revision,
+        model: descriptor.model_id.clone(),
+        host: descriptor.host_id.clone(),
+        runtime: descriptor.runtime,
+        adapter_version: descriptor.adapter_version.clone(),
+        upstream_version: descriptor.upstream_version.clone(),
+        platform: descriptor.platform.clone(),
+        surfaces,
     }
 }
 

@@ -45,10 +45,11 @@ new strict protocol version. Existing Projects are not automatically bound.
 ## Readiness is not activation
 
 The read-only assessment separates prerequisite checks from pending activation
-gates, and reports seven: the current Team, Host capacity, the provider
+gates, and reports eight: the current Team, Host capacity, the provider
 registration the candidate profile names, runtime capabilities, runtime
-resources, whether the declared limits can be bound at all, and whether the
-candidate's own lane can execute with the access its snapshot grants. It
+resources, whether the declared limits can be bound at all, whether the
+candidate's own lane can execute with the access its snapshot grants, and the
+runtime surfaces that carry the binding's own demand. It
 consumes existing Runtime SDK and Host Pulse contracts rather than inventing
 successful observations.
 
@@ -121,6 +122,18 @@ operator provides and what it supports, and the Host stamps its own identity
 and a bounded evidence window onto the observation. With no matching
 declaration the Host observes no runtime, so both prerequisites remain
 `missing_observation` rather than passing on an assumption.
+
+Runtime surfaces reads that same observation as the twelve places a workforce
+fact is carried, reports the demand the binding itself makes, and names the
+surfaces the observed runtime carries nothing for. A binding that names required
+tools or skills demands their carrier surfaces — the dispatch boundary requires
+the same capabilities for exactly those resources, so a report omitting them
+would contradict the decision activation makes. The report carries the carriage
+itself, so routing and eligibility read *where* a runtime would carry a fact
+instead of inferring carriage from the runtime's kind. A control the runtime
+carries weaker than the binding's minimum is recorded as a degradation with both
+strengths and is not a withheld surface: whether a minimum is met stays the
+capability check's refusal, so one fact has one owner.
 
 Environment resolution, effective access/resource consent, provider billing and
 model discovery, resource reservations, budget enforcement and Dispatch snapshots

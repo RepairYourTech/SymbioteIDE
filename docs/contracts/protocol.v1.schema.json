@@ -3232,6 +3232,82 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
+      "BindingSurfaces": {
+        "additionalProperties": false,
+        "description": "The surfaces a binding demands, as the runtime the Host observed declares\nthem, read one step before the contract projection: a binding and the\nHost's observation of a runtime, with no Task Contract compiled yet and no\ndispatch identity to name.\n\nThe demand is the binding's own — the enforcement minimums its policy\ndeclares, the capabilities its policy requires and the tools and skills it\nnames, which the dispatch boundary requires the same way. Nothing a runtime\nadvertises becomes a requirement here either, and the twelve surfaces are\nthe same twelve the contract projection covers.",
+        "properties": {
+          "adapter": {
+            "$ref": "#/$defs/AgentRuntimeAdapterId",
+            "description": "The runtime the demand was read onto: the descriptor's own identity, so a\ncarriage names the exact adapter, installation, profile, model, host and\nversions it was read from."
+          },
+          "adapter_version": {
+            "type": "string"
+          },
+          "binding": {
+            "$ref": "#/$defs/BindingId",
+            "description": "The binding whose demand was read."
+          },
+          "host": {
+            "$ref": "#/$defs/HostId"
+          },
+          "installation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/InstallationId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "$ref": "#/$defs/ModelId"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "profile": {
+            "$ref": "#/$defs/RuntimeProfileId"
+          },
+          "profile_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "role": {
+            "$ref": "#/$defs/RoleId",
+            "description": "The Role it staffs."
+          },
+          "runtime": {
+            "$ref": "#/$defs/RuntimeKind"
+          },
+          "surfaces": {
+            "description": "Every surface in [`ContractSurface::ALL`], in that order.",
+            "items": {
+              "$ref": "#/$defs/SurfaceCarriage"
+            },
+            "type": "array"
+          },
+          "upstream_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "role",
+          "adapter",
+          "profile",
+          "profile_revision",
+          "model",
+          "host",
+          "runtime",
+          "adapter_version",
+          "upstream_version",
+          "platform",
+          "surfaces"
+        ],
+        "type": "object"
+      },
       "BlockedReason": {
         "oneOf": [
           {
@@ -3440,6 +3516,67 @@
           "health_check"
         ],
         "type": "string"
+      },
+      "CarrierDelivery": {
+        "description": "What the descriptor holds for one capability the contract demands on a\nsurface. The three refusals stay distinct: a runtime that declares a\ncapability unsupported, one that has not established it, and one that never\nmentioned it are three different facts, and none of them is support.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The descriptor declares the capability supported.",
+            "properties": {
+              "kind": {
+                "const": "declared",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The descriptor declares it unsupported.",
+            "properties": {
+              "kind": {
+                "const": "unsupported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The descriptor has not established it.",
+            "properties": {
+              "kind": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The descriptor does not mention it.",
+            "properties": {
+              "kind": {
+                "const": "absent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ChangeStream": {
         "additionalProperties": false,
@@ -3732,6 +3869,71 @@
           "reserved_output_tokens"
         ],
         "type": "object"
+      },
+      "ContractSurface": {
+        "description": "A place a Workforce Runtime Contract fact must be carried for the runtime to\nact under it. The names describe the *place*, not a harness: an adapter maps\nits own protocol file, brief, sandbox or registration onto these, and a\nruntime that has no place for one has to say so rather than appear to have it.",
+        "oneOf": [
+          {
+            "const": "workforce_protocol",
+            "description": "The stable Workforce Protocol the dispatch was compiled under.",
+            "type": "string"
+          },
+          {
+            "const": "role_operating_contract",
+            "description": "The routed Role's operating contract.",
+            "type": "string"
+          },
+          {
+            "const": "task_contract",
+            "description": "The Task Contract and the context handed to the worker with it.",
+            "type": "string"
+          },
+          {
+            "const": "skills",
+            "description": "The skills the binding requires the worker to hold.",
+            "type": "string"
+          },
+          {
+            "const": "tools_and_mcp",
+            "description": "The tools and MCP registrations the binding requires, and nothing else.",
+            "type": "string"
+          },
+          {
+            "const": "permissions_and_sandbox",
+            "description": "Native permissions and sandboxing: the filesystem, process and network\nconfinement the contract claims over this execution.",
+            "type": "string"
+          },
+          {
+            "const": "hooks_and_events",
+            "description": "Hooks and event delivery the runtime can be driven through.",
+            "type": "string"
+          },
+          {
+            "const": "plugins_and_extensions",
+            "description": "Plugins and extensions the runtime loads.",
+            "type": "string"
+          },
+          {
+            "const": "environment",
+            "description": "The environment the worker runs in: its own profile's home and\nconfiguration rather than the Host's ambient ones.",
+            "type": "string"
+          },
+          {
+            "const": "secret_references",
+            "description": "References to secrets the execution is authorized to use. The projection\nnames the references; no secret value enters it.",
+            "type": "string"
+          },
+          {
+            "const": "verification_signals",
+            "description": "Verification and exit signals the worker produces. Carries signals only:\nthe contract's `CompletionAuthority` claim is what keeps a worker's own\nreport from being completion.",
+            "type": "string"
+          },
+          {
+            "const": "cleanup",
+            "description": "Cleanup and teardown after the execution, under the contract's\n`Cancellation` claim.",
+            "type": "string"
+          }
+        ]
       },
       "Control": {
         "enum": [
@@ -5418,6 +5620,11 @@
             "type": "string"
           },
           {
+            "const": "runtime_surfaces",
+            "description": "Whether the observed runtime carries, on the surfaces the projection\nplaces them, the facts this binding demands: the enforcement minimums its\npolicy declares, the capabilities that policy requires, and the tools and\nskills the binding names — which the dispatch boundary requires the same\nway, so a report that omitted them would contradict the decision\nactivation makes. The refusal names the withheld surfaces, so an operator\nreads *where* the runtime carries nothing rather than only that\nsomething is missing.",
+            "type": "string"
+          },
+          {
             "const": "execution_access",
             "description": "Whether the candidate's own lane can execute at all given the access its\nsnapshot grants. The external lane's dispatch IS a Host-launched\nsandboxed process, and it can never acquire the process grant later\n(capability elevation refuses an `EXTERNAL_HARNESS` dispatch), so a\ncandidate for that lane which does not grant `ExecuteProcess` is\n`rejected` here instead of being reported ready and then refused by the\nsandbox at the transport build.",
             "type": "string"
@@ -5454,6 +5661,13 @@
           },
           "result": {
             "$ref": "#/$defs/CheckResult"
+          },
+          "withheld_surfaces": {
+            "description": "Present exactly on the runtime-surfaces prerequisite, and only when the\nobserved runtime carries nothing for a surface the binding demands: the\nsurfaces themselves, in their declared order, so the refusal names the\nplaces rather than a count.",
+            "items": {
+              "$ref": "#/$defs/ContractSurface"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -5468,6 +5682,73 @@
           "ready_for_preflight"
         ],
         "type": "string"
+      },
+      "PreventiveDelivery": {
+        "description": "What the descriptor holds for one control the contract claims over a surface.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The runtime's own declared control realizes the contract's claim.",
+            "properties": {
+              "kind": {
+                "const": "delivered",
+                "type": "string"
+              },
+              "mechanism": {
+                "type": "string"
+              },
+              "strength": {
+                "$ref": "#/$defs/EnforcementStrength"
+              }
+            },
+            "required": [
+              "kind",
+              "strength",
+              "mechanism"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The runtime carries the control, but weaker than the contract claims —\nan observed or emulated mechanism where the contract claims prevention.\nBoth strengths are retained: the degradation is a fact routing,\npermissions, UI and certification read, not a delivery to assume.",
+            "properties": {
+              "claimed": {
+                "$ref": "#/$defs/EnforcementStrength"
+              },
+              "declared": {
+                "$ref": "#/$defs/EnforcementStrength"
+              },
+              "kind": {
+                "const": "degraded",
+                "type": "string"
+              },
+              "mechanism": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "claimed",
+              "declared",
+              "mechanism"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The descriptor does not list this control at all. Nothing carries it.",
+            "properties": {
+              "kind": {
+                "const": "missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ProbeError": {
         "enum": [
@@ -5799,6 +6080,17 @@
           },
           "status": {
             "$ref": "#/$defs/PrerequisiteStatus"
+          },
+          "surfaces": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BindingSurfaces"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the observed runtime declares for the surfaces this binding demands,\npresent exactly when the Host observed a runtime of this Host for the\ncandidate's own profile. The routing and eligibility read this instead of\ninferring carriage from the runtime's kind: the twelve surfaces, the\ndemand the binding itself makes, and what the runtime declares for each."
           }
         },
         "required": [
@@ -7377,6 +7669,147 @@
           "cancelled"
         ],
         "type": "string"
+      },
+      "SurfaceCarriage": {
+        "additionalProperties": false,
+        "description": "One surface of a binding's demand, with what the observed runtime declares\nfor each carrier. The entries and the delivery vocabulary are the contract\nprojection's own: what differs is which claims and capabilities are read,\nnot what a delivery means.",
+        "properties": {
+          "carried": {
+            "additionalProperties": false,
+            "description": "One entry for every capability the binding's own facts require here.",
+            "properties": {
+              "aggregate_budgets": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "approvals": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "authentication": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "cancellation": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "child_agents": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "child_events": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "child_model_selection": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "child_usage": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "concurrency_limits": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "context_limits": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "depth_limits": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "extensions": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "fork": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "goal_persistence": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "hooks": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "images": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "instructions": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "mcp": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "models": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "native_tasks": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "profile_isolation": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "questions": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "quotas": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "reasoning": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "resume": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "skills": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "streaming": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "structured_messages": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "tools": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "usage": {
+                "$ref": "#/$defs/CarrierDelivery"
+              },
+              "worktree_isolation": {
+                "$ref": "#/$defs/CarrierDelivery"
+              }
+            },
+            "type": "object"
+          },
+          "preventive": {
+            "additionalProperties": false,
+            "description": "One entry for every control the binding declares a minimum for on this\nsurface, and none for a control it does not.",
+            "properties": {
+              "cancellation": {
+                "$ref": "#/$defs/PreventiveDelivery"
+              },
+              "completion_authority": {
+                "$ref": "#/$defs/PreventiveDelivery"
+              },
+              "credentials": {
+                "$ref": "#/$defs/PreventiveDelivery"
+              },
+              "filesystem": {
+                "$ref": "#/$defs/PreventiveDelivery"
+              },
+              "network": {
+                "$ref": "#/$defs/PreventiveDelivery"
+              },
+              "process": {
+                "$ref": "#/$defs/PreventiveDelivery"
+              }
+            },
+            "type": "object"
+          },
+          "surface": {
+            "$ref": "#/$defs/ContractSurface",
+            "description": "The place this carriage is about."
+          }
+        },
+        "required": [
+          "surface",
+          "preventive",
+          "carried"
+        ],
+        "type": "object"
       },
       "Task": {
         "additionalProperties": false,
