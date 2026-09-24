@@ -99,6 +99,40 @@ pub struct ControlSupport {
     pub evidence: ProbeEvidence,
 }
 
+/// How long a mechanism may be named, in bytes — the same unit the descriptor's
+/// own text fields are bounded in. One bound for every place an enforcement
+/// mechanism is recorded: the declared control and the mechanism a runtime
+/// reports back after launch.
+pub const MECHANISM_MAX_BYTES: usize = 256;
+
+/// Whether an actual enforcement strength realizes at least a required one.
+///`ExternallyObserved` and `Emulated` are incomparable — observation is not
+///prevention and emulation is not observation — and `Unsupported` realizes
+///nothing. One function, so qualification and the projection decide the same
+///ordering the same way.
+pub fn realizes(required: EnforcementStrength, actual: EnforcementStrength) -> bool {
+    match required {
+        EnforcementStrength::Native => actual == EnforcementStrength::Native,
+        EnforcementStrength::HostEnforced => matches!(
+            actual,
+            EnforcementStrength::Native | EnforcementStrength::HostEnforced
+        ),
+        EnforcementStrength::ExternallyObserved => matches!(
+            actual,
+            EnforcementStrength::Native
+                | EnforcementStrength::HostEnforced
+                | EnforcementStrength::ExternallyObserved
+        ),
+        EnforcementStrength::Emulated => matches!(
+            actual,
+            EnforcementStrength::Native
+                | EnforcementStrength::HostEnforced
+                | EnforcementStrength::Emulated
+        ),
+        EnforcementStrength::Unsupported => false,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeContextLimits {
@@ -404,27 +438,10 @@ pub fn qualify_profile_with_minimums(
             .controls
             .get(control)
             .ok_or_else(|| QualificationError::MissingControl(control.clone()))?;
-        let meets = match minimum {
-            EnforcementStrength::Native => support.strength == EnforcementStrength::Native,
-            EnforcementStrength::HostEnforced => matches!(
-                support.strength,
-                EnforcementStrength::Native | EnforcementStrength::HostEnforced
-            ),
-            EnforcementStrength::ExternallyObserved => matches!(
-                support.strength,
-                EnforcementStrength::Native
-                    | EnforcementStrength::HostEnforced
-                    | EnforcementStrength::ExternallyObserved
-            ),
-            EnforcementStrength::Emulated => matches!(
-                support.strength,
-                EnforcementStrength::Native
-                    | EnforcementStrength::HostEnforced
-                    | EnforcementStrength::Emulated
-            ),
-            EnforcementStrength::Unsupported => false,
-        };
-        if !meets || support.mechanism.trim().is_empty() || support.mechanism.len() > 256 {
+        if !realizes(*minimum, support.strength)
+            || support.mechanism.trim().is_empty()
+            || support.mechanism.len() > MECHANISM_MAX_BYTES
+        {
             return Err(QualificationError::InsufficientControl(control.clone()));
         }
         descriptor.evidence(&support.evidence, now)?;

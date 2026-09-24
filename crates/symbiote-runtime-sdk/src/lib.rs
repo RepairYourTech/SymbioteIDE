@@ -2,6 +2,7 @@
 mod adapter;
 mod capabilities;
 pub mod events;
+pub mod projection;
 pub mod provider;
 
 pub use adapter::*;
