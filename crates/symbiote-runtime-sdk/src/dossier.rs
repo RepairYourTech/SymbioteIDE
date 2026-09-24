@@ -4,25 +4,26 @@
 //! A tier, an adapter version and a `minimum_version` string in a manifest are
 //! claims a reader has to take on trust. This module is the record behind them:
 //! one [`ConformanceRun`] per upstream version and platform the pack was really
-//! run against, each stamped from the [`RuntimeDescriptor`] the run was made
-//! over, carrying the suite's own outcome and the suite's own two matrices. A
-//! dossier is built *from* a [`ConformanceReport`](crate::conformance::ConformanceReport)
-//! and refuses anything that report did not say, so a pack cannot publish a
-//! capability its own run did not carry, a version it was not run against, or a
-//! run that failed.
+//! run against, each carrying the suite's own outcome and the suite's own two
+//! matrices.
+//!
+//! **A dossier is built from runs, not from records.**
+//! [`CompatibilityDossier::publish`] takes the runtimes themselves and the
+//! abstract work to run them over, evaluates the suite there, and reads the
+//! versions, the platform, the tier and the driver from the descriptor it
+//! evaluated. A caller has no parameter to hand a version, a matrix or an
+//! outcome in through, so a pack cannot publish a capability its own run did not
+//! carry, a version it was not run against, or a run that failed. A
+//! `CompatibilityDossier` that arrives over a wire is a *reader's* input and not
+//! a construction path: holding one against the descriptor the Host has is the
+//! Host's check, and this crate does not pretend to have made it.
 //!
 //! The refusals are the contract, so they are named rather than implied:
 //!
-//! * [`DossierError::TheRunNamesAnotherRuntime`] — the report is not of the
-//!   runtime it would be published under.
 //! * [`DossierError::RulesFailed`] — the run itself failed a rule, so its
-//!   evidence is not a certification.
+//!   evidence is not a certification. The refusal names the rules.
 //! * [`DossierError::NoDispatches`] — the run read no dispatch, so its matrices
 //!   record no demand at all and prove nothing about any work.
-//! * [`DossierError::MatrixAgainstTheDeclaration`] — a matrix row states
-//!   something other than what that runtime's declaration says.
-//! * [`DossierError::MatrixOmitsACarrier`] — a matrix omits a carrier or a
-//!   control this crate places, so it hides one instead of declaring it absent.
 //! * [`DossierError::NoRuns`] — a dossier with no run certifies nothing.
 //! * [`DossierError::MoreThanOnePack`] — the runs name two packs, and a dossier
 //!   is one pack's record.
@@ -34,19 +35,34 @@
 //! still qualifies a runtime against the declaration, and the Host still
 //! authenticates proof. A dossier that claimed more would be a second owner.
 
-use crate::conformance::{CapabilityRead, ConformanceReport, ControlRead, DispatchRead};
-use crate::projection::{ContractSurface, carrier_delivery};
-use crate::{IntegrationTier, RuntimeDescriptor, RuntimeOwner};
+use crate::conformance::{
+    CapabilityRead, ConformanceReport, ControlRead, DispatchRead, run_conformance,
+};
+use crate::projection::ContractSurface;
+use crate::{AgentRuntimeAdapter, IntegrationTier, RuntimeDescriptor, RuntimeOwner};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
-use symbiote_domain::{AgentRuntimeAdapterId, HarnessDriverId};
+use symbiote_domain::{AgentRuntimeAdapterId, Dispatch, HarnessDriverId};
 
 /// The version of the dossier shape itself. A dossier is a published document
 /// with its own vocabulary, so it states which one it speaks rather than
 /// leaving a reader to infer it from a field set.
 pub const DOSSIER_SCHEMA_VERSION: u32 = 1;
+
+/// One runtime a pack publishes evidence for, and the abstract work the suite is
+/// run over. Both are borrowed: publication reads them and builds the record
+/// itself, so a caller cannot hand in a run it wrote.
+pub struct PackRun<'a> {
+    /// The runtime itself. Its descriptor is what the suite reads, which is why
+    /// the versions, the platform, the tier and the driver in the published run
+    /// are this runtime's own.
+    pub adapter: &'a dyn AgentRuntimeAdapter,
+    /// The dispatches to run over: real abstract work, because a conformance
+    /// run against work this crate invented would prove nothing.
+    pub dispatches: Vec<&'a Dispatch>,
+}
 
 /// One rule's outcome as a dossier publishes it: the rule's name, and whether
 /// it held. The prose a rule holds is the suite's own and does not travel on
@@ -71,9 +87,9 @@ pub struct ConformanceRun {
     pub adapter: AgentRuntimeAdapterId,
     pub driver: Option<HarnessDriverId>,
     /// The upstream product version, the adapter's own version and the platform,
-    /// each stamped from the descriptor the run was made over — never supplied
-    /// by the pack, which is the whole point: a version nobody ran against
-    /// cannot appear here.
+    /// each read from the descriptor the run was made over — never supplied by
+    /// the pack, which is the whole point: a version nobody ran against cannot
+    /// appear here.
     pub upstream_version: String,
     pub adapter_version: String,
     pub platform: String,
@@ -108,11 +124,19 @@ pub struct CompatibilityDossier {
 }
 
 impl CompatibilityDossier {
-    /// Publishes the runs a pack produced. Every refusal here is a claim a
-    /// reader would otherwise have to take on trust.
-    pub fn publish(runs: Vec<ConformanceRun>) -> Result<Self, DossierError> {
-        let first = runs.first().ok_or(DossierError::NoRuns)?;
-        for run in &runs[1..] {
+    /// Runs the suite over each runtime the pack names and publishes what it
+    /// found. Every published field is read here: the versions, the platform,
+    /// the tier and the driver from the descriptor, the outcomes and the two
+    /// matrices from the report, and the withheld set from the same report. A
+    /// caller that disagrees with any of it has nothing to hand in.
+    pub fn publish(runs: Vec<PackRun<'_>>) -> Result<Self, DossierError> {
+        let mut records = Vec::with_capacity(runs.len());
+        for run in &runs {
+            let report = run_conformance(run.adapter, &run.dispatches);
+            records.push(ConformanceRun::of(run.adapter.descriptor(), &report)?);
+        }
+        let first = records.first().ok_or(DossierError::NoRuns)?;
+        for run in &records[1..] {
             if identity(run) != identity(first) {
                 return Err(DossierError::MoreThanOnePack {
                     first: identity(first),
@@ -121,7 +145,7 @@ impl CompatibilityDossier {
             }
         }
         let mut seen = BTreeSet::new();
-        for run in &runs {
+        for run in &records {
             if !seen.insert((run.upstream_version.clone(), run.platform.clone())) {
                 return Err(DossierError::TheSameVersionTwice {
                     upstream_version: run.upstream_version.clone(),
@@ -133,7 +157,7 @@ impl CompatibilityDossier {
             schema_version: DOSSIER_SCHEMA_VERSION,
             adapter: first.adapter.clone(),
             driver: first.driver.clone(),
-            runs,
+            runs: records,
         })
     }
 
@@ -160,22 +184,10 @@ impl CompatibilityDossier {
 /// publication untrue, never the pack's intent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DossierError {
-    TheRunNamesAnotherRuntime {
-        declared: String,
-        reported: String,
-    },
     RulesFailed {
         rules: Vec<String>,
     },
     NoDispatches,
-    MatrixAgainstTheDeclaration {
-        carrier: String,
-        stated: String,
-        declared: String,
-    },
-    MatrixOmitsACarrier {
-        missing: Vec<String>,
-    },
     NoRuns,
     MoreThanOnePack {
         first: String,
@@ -189,10 +201,6 @@ pub enum DossierError {
 impl fmt::Display for DossierError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TheRunNamesAnotherRuntime { declared, reported } => write!(
-                f,
-                "the run reports adapter {reported}, and a dossier cannot publish it under {declared}"
-            ),
             Self::RulesFailed { rules } => {
                 write!(
                     f,
@@ -205,22 +213,6 @@ impl fmt::Display for DossierError {
                 write!(
                     f,
                     "the run read no dispatch, so its matrices record no demand"
-                )
-            }
-            Self::MatrixAgainstTheDeclaration {
-                carrier,
-                stated,
-                declared,
-            } => write!(
-                f,
-                "the matrix says {carrier} is {stated} where the declaration says {declared}"
-            ),
-            Self::MatrixOmitsACarrier { missing } => {
-                write!(
-                    f,
-                    "the matrix omits {}: {}",
-                    missing.len(),
-                    missing.join(", ")
                 )
             }
             Self::NoRuns => write!(f, "a dossier with no run certifies nothing"),
@@ -245,20 +237,13 @@ impl std::error::Error for DossierError {}
 
 impl ConformanceRun {
     /// The run, as this runtime's declaration and the suite's report of it
-    /// together make it. Every field is read from one of the two: the versions,
-    /// the platform and the driver from the descriptor, the outcomes and the
-    /// matrices from the report, and both matrices are then read back against
-    /// the declaration so a hand-edited row is refused rather than published.
-    pub fn of(
+    /// together make it. Private on purpose: this is the trusted construction
+    /// boundary, and a record that a caller could build itself would be a way
+    /// around it.
+    fn of(
         descriptor: &RuntimeDescriptor,
         report: &ConformanceReport,
     ) -> Result<Self, DossierError> {
-        if report.adapter != descriptor.adapter_id || report.tier != descriptor.tier {
-            return Err(DossierError::TheRunNamesAnotherRuntime {
-                declared: descriptor.adapter_id.as_str().to_owned(),
-                reported: report.adapter.as_str().to_owned(),
-            });
-        }
         if !report.passed() {
             return Err(DossierError::RulesFailed {
                 rules: report.failures().into_iter().map(str::to_owned).collect(),
@@ -267,56 +252,13 @@ impl ConformanceRun {
         if report.dispatches.is_empty() {
             return Err(DossierError::NoDispatches);
         }
-        let declared_capabilities = expected_capabilities();
-        let named: BTreeSet<String> = report
-            .capabilities
-            .iter()
-            .map(|read| name(&read.capability))
-            .collect();
-        if declared_capabilities != named {
-            return Err(DossierError::MatrixOmitsACarrier {
-                missing: declared_capabilities.difference(&named).cloned().collect(),
-            });
-        }
-        for read in &report.capabilities {
-            let declared = carrier_delivery(descriptor.capabilities.get(&read.capability));
-            if read.declared != declared {
-                return Err(DossierError::MatrixAgainstTheDeclaration {
-                    carrier: name(&read.capability),
-                    stated: format!("{:?}", read.declared),
-                    declared: format!("{declared:?}"),
-                });
-            }
-        }
-        let declared_controls = expected_controls();
-        let named: BTreeSet<String> = report
-            .controls
-            .iter()
-            .map(|read| name(&read.control))
-            .collect();
-        if declared_controls != named {
-            return Err(DossierError::MatrixOmitsACarrier {
-                missing: declared_controls.difference(&named).cloned().collect(),
-            });
-        }
-        for read in &report.controls {
-            let declared = descriptor.controls.get(&read.control);
-            if read.declared != declared.map(|support| support.strength)
-                || read.mechanism.as_deref() != declared.map(|support| support.mechanism.as_str())
-            {
-                return Err(DossierError::MatrixAgainstTheDeclaration {
-                    carrier: name(&read.control),
-                    stated: format!("{:?}", read.declared),
-                    declared: format!("{:?}", declared.map(|support| support.strength)),
-                });
-            }
-        }
         let driver = match &descriptor.owner {
             RuntimeOwner::External { driver } => Some(driver.clone()),
             RuntimeOwner::SymbioteNative {} => None,
         };
         Ok(Self {
             adapter: descriptor.adapter_id.clone(),
+            driver,
             upstream_version: descriptor.upstream_version.clone(),
             adapter_version: descriptor.adapter_version.clone(),
             platform: descriptor.platform.clone(),
@@ -334,7 +276,6 @@ impl ConformanceRun {
             controls: report.controls.clone(),
             dispatches: report.dispatches.clone(),
             withheld: report.withheld(),
-            driver,
         })
     }
 }
@@ -346,33 +287,4 @@ fn identity(run: &ConformanceRun) -> String {
         Some(driver) => format!("{}/{}", run.adapter.as_str(), driver.as_str()),
         None => run.adapter.as_str().to_owned(),
     }
-}
-
-/// Every capability this crate places on a surface, by the name a reader sees:
-/// a matrix that omits one of them is hiding a carrier rather than declaring it
-/// absent.
-fn expected_capabilities() -> BTreeSet<String> {
-    ContractSurface::ALL
-        .iter()
-        .flat_map(|surface| surface.capabilities())
-        .map(name)
-        .collect()
-}
-
-/// Every control this crate places on a surface, by the same names.
-fn expected_controls() -> BTreeSet<String> {
-    ContractSurface::ALL
-        .iter()
-        .flat_map(|surface| surface.controls())
-        .map(name)
-        .collect()
-}
-
-/// The name a refusal uses for a carrier or a claim: the same name the wire
-/// carries, without the quotes the wire puts around it, so a reader can match a
-/// failure to the row it names.
-fn name<T: Serialize>(value: &T) -> String {
-    serde_json::to_string(value)
-        .map(|wire| wire.trim_matches('"').to_owned())
-        .unwrap_or_else(|_| String::from("unnamed"))
 }

@@ -7,7 +7,7 @@ use symbiote_domain::*;
 use symbiote_runtime_sdk::Capability;
 use symbiote_runtime_sdk::conformance::{RULES, run_conformance};
 use symbiote_runtime_sdk::dossier::*;
-use symbiote_runtime_sdk::projection::{CarrierDelivery, ContractSurface};
+use symbiote_runtime_sdk::projection::{ContractProjection, ContractSurface};
 use symbiote_runtime_sdk::*;
 
 /// The Role's own prose. A refusal names the fact that made the publication
@@ -260,11 +260,26 @@ fn dispatch() -> Dispatch {
 
 struct Fixture {
     descriptor: RuntimeDescriptor,
+    /// Whether the adapter's own projection agrees with the descriptor it holds.
+    /// A pack whose projection disagrees with its own declaration fails the
+    /// suite, and that is how a refusal is reached here: by a real run rather
+    /// than by a record somebody edited.
+    truthful: bool,
 }
 
 impl Fixture {
     fn new(descriptor: RuntimeDescriptor) -> Self {
-        Self { descriptor }
+        Self {
+            descriptor,
+            truthful: true,
+        }
+    }
+
+    fn lying(descriptor: RuntimeDescriptor) -> Self {
+        Self {
+            descriptor,
+            truthful: false,
+        }
     }
 }
 
@@ -276,9 +291,21 @@ impl AgentRuntimeAdapter for Fixture {
         permit.validate_at(&self.descriptor, at)?;
         Ok(SessionId::new("session").unwrap())
     }
+    fn projection(&self, dispatch: &Dispatch) -> ContractProjection {
+        let faithful = ContractProjection::project(dispatch, &self.descriptor);
+        if self.truthful {
+            return faithful;
+        }
+        // A projection of another runtime than the one the Host holds: the
+        // suite's own header rule is what refuses this, by name.
+        let mut projection = faithful;
+        projection.runtime = RuntimeKind::NativeSymbiote;
+        projection
+    }
 }
 
-/// The report the suite makes of one runtime over one dispatch.
+/// The suite's own report of one runtime over one dispatch, so a case can hold a
+/// published run against what the suite actually read.
 fn report_of(
     descriptor: &RuntimeDescriptor,
 ) -> symbiote_runtime_sdk::conformance::ConformanceReport {
@@ -287,25 +314,32 @@ fn report_of(
     run_conformance(&adapter, &[&dispatch])
 }
 
-/// The run a pack publishes for the runtime the suite just read.
-fn run_of(descriptor: &RuntimeDescriptor) -> Result<ConformanceRun, DossierError> {
-    ConformanceRun::of(descriptor, &report_of(descriptor))
+/// One runtime, one dispatch, published.
+fn publish_one(descriptor: &RuntimeDescriptor) -> Result<CompatibilityDossier, DossierError> {
+    let adapter = Fixture::new(descriptor.clone());
+    let dispatch = dispatch();
+    CompatibilityDossier::publish(vec![PackRun {
+        adapter: &adapter,
+        dispatches: vec![&dispatch],
+    }])
 }
 
 #[test]
 fn a_dossier_publishes_the_runs_it_was_built_from() {
     let declared = descriptor();
     let report = report_of(&declared);
-    let run = ConformanceRun::of(&declared, &report).expect("a passing run publishes");
-    let dossier = CompatibilityDossier::publish(vec![run.clone()]).expect("one run publishes");
+    let dossier = publish_one(&declared).expect("a passing run publishes");
+    let run = &dossier.runs[0];
 
-    // The versions and the platform are the descriptor's own, never the pack's.
+    // The versions, the platform, the tier and the driver are the descriptor's
+    // own: a caller has no parameter to publish anything else with.
     assert_eq!(dossier.schema_version, DOSSIER_SCHEMA_VERSION);
     assert_eq!(dossier.adapter.as_str(), "adapter");
     assert_eq!(
         dossier.driver.as_ref().map(HarnessDriverId::as_str),
         Some("fixture-driver")
     );
+    assert_eq!(run.adapter.as_str(), "adapter");
     assert_eq!(run.upstream_version, "fixture-1");
     assert_eq!(run.adapter_version, "1.0");
     assert_eq!(run.platform, "linux");
@@ -326,8 +360,8 @@ fn a_dossier_publishes_the_runs_it_was_built_from() {
             .all(|rule| rule.held && rule.failure.is_none())
     );
 
-    // The matrices are the report's rows, unchanged, and the withheld set is
-    // the suite's own reading of the same dispatches.
+    // The matrices, the dispatch reads and the withheld set are the report's
+    // own rows, unchanged.
     assert_eq!(run.capabilities, report.capabilities);
     assert_eq!(run.controls, report.controls);
     assert_eq!(run.dispatches, report.dispatches);
@@ -336,22 +370,32 @@ fn a_dossier_publishes_the_runs_it_was_built_from() {
 
     // The two ways in: the version list, and a lookup that misses cleanly.
     assert_eq!(dossier.versions(), vec!["fixture-1".to_string()]);
-    assert_eq!(dossier.run("fixture-1", "linux"), Some(&run));
+    assert_eq!(dossier.run("fixture-1", "linux"), Some(run));
     assert_eq!(dossier.run("fixture-2", "linux"), None);
     assert_eq!(dossier.run("fixture-1", "macos"), None);
 }
 
 #[test]
 fn two_runs_of_one_pack_publish_both_versions() {
-    let first = run_of(&descriptor()).expect("the first version publishes");
+    let first_adapter = Fixture::new(descriptor());
     let newer = Pack {
         upstream_version: "fixture-2",
         adapter_version: "1.1",
         ..DEFAULT
     };
-    let second = run_of(&descriptor_at(&newer)).expect("the second version publishes");
-    let dossier =
-        CompatibilityDossier::publish(vec![first.clone(), second.clone()]).expect("two publish");
+    let second_adapter = Fixture::new(descriptor_at(&newer));
+    let dispatch = dispatch();
+    let dossier = CompatibilityDossier::publish(vec![
+        PackRun {
+            adapter: &first_adapter,
+            dispatches: vec![&dispatch],
+        },
+        PackRun {
+            adapter: &second_adapter,
+            dispatches: vec![&dispatch],
+        },
+    ])
+    .expect("two versions publish");
 
     assert_eq!(
         dossier.versions(),
@@ -362,27 +406,34 @@ fn two_runs_of_one_pack_publish_both_versions() {
     assert_eq!(dossier.adapter.as_str(), "adapter");
     assert_eq!(dossier.runs[0].adapter_version, "1.0");
     assert_eq!(dossier.runs[1].adapter_version, "1.1");
-    assert_eq!(dossier.run("fixture-2", "linux"), Some(&second));
+    assert!(dossier.run("fixture-2", "linux").is_some());
     assert_eq!(dossier.runs.len(), 2);
 }
 
 #[test]
-fn a_run_of_another_runtime_is_refused() {
-    let other = Pack {
-        adapter: "other-adapter",
-        ..DEFAULT
-    };
-    let report = report_of(&descriptor_at(&other));
-    let refused = ConformanceRun::of(&descriptor(), &report).expect_err("another pack's run");
+fn a_run_that_failed_a_rule_is_refused_and_names_the_rule() {
+    // An adapter whose own projection disagrees with its own declaration: the
+    // suite refuses it by name, and the dossier refuses to publish the run.
+    let adapter = Fixture::lying(descriptor());
+    let dispatch = dispatch();
+    let refused = CompatibilityDossier::publish(vec![PackRun {
+        adapter: &adapter,
+        dispatches: vec![&dispatch],
+    }])
+    .expect_err("a failed run publishes");
     assert_eq!(
         refused,
-        DossierError::TheRunNamesAnotherRuntime {
-            declared: "adapter".into(),
-            reported: "other-adapter".into(),
+        DossierError::RulesFailed {
+            rules: vec![
+                "the_adapters_projection_names_the_runtime_its_own_descriptor_names".to_string()
+            ]
         }
     );
     let text = refused.to_string();
-    assert!(text.contains("other-adapter") && text.contains("adapter"));
+    assert!(
+        text.contains("the_adapters_projection_names_the_runtime_its_own_descriptor_names"),
+        "{text}"
+    );
     assert!(
         !text.contains(ROLE_PROSE),
         "a refusal carries no task content"
@@ -390,113 +441,15 @@ fn a_run_of_another_runtime_is_refused() {
 }
 
 #[test]
-fn a_run_that_failed_a_rule_is_refused_and_names_the_rule() {
-    let declared = descriptor();
-    let mut report = report_of(&declared);
-    // A report whose own outcome was edited is exactly what the refusal is for.
-    let broken = "every_projection_covers_every_surface_in_the_modules_order";
-    let outcome = report
-        .rules
-        .iter_mut()
-        .find(|outcome| outcome.rule.id == broken)
-        .expect("the suite ran that rule");
-    outcome.failure = Some("a projection omitted a surface".into());
-    let refused = ConformanceRun::of(&declared, &report).expect_err("a failed run publishes");
-    assert_eq!(
-        refused,
-        DossierError::RulesFailed {
-            rules: vec![broken.to_string()]
-        }
-    );
-    assert!(refused.to_string().contains(broken));
-}
-
-#[test]
 fn a_run_with_no_dispatch_is_refused() {
-    let declared = descriptor();
-    let adapter = Fixture::new(declared.clone());
-    let report = run_conformance(&adapter, &[]);
-    assert!(report.passed(), "an empty run breaks no rule");
-    let refused = ConformanceRun::of(&declared, &report).expect_err("an empty run proves nothing");
+    let adapter = Fixture::new(descriptor());
+    let refused = CompatibilityDossier::publish(vec![PackRun {
+        adapter: &adapter,
+        dispatches: Vec::new(),
+    }])
+    .expect_err("an empty run proves nothing");
     assert_eq!(refused, DossierError::NoDispatches);
     assert!(refused.to_string().contains("no dispatch"));
-}
-
-#[test]
-fn a_capability_matrix_row_against_the_declaration_is_refused() {
-    let declared = descriptor();
-    let mut report = report_of(&declared);
-    let row = report
-        .capabilities
-        .iter_mut()
-        .find(|row| row.capability == Capability::Tools)
-        .expect("the matrix has a tools row");
-    assert_eq!(row.declared, CarrierDelivery::Declared {});
-    row.declared = CarrierDelivery::Unsupported {};
-    let refused = ConformanceRun::of(&declared, &report).expect_err("an edited row publishes");
-    assert_eq!(
-        refused,
-        DossierError::MatrixAgainstTheDeclaration {
-            carrier: "tools".into(),
-            stated: "Unsupported".into(),
-            declared: "Declared".into(),
-        }
-    );
-    assert!(refused.to_string().contains("tools"));
-}
-
-#[test]
-fn an_enforcement_matrix_row_against_the_declaration_is_refused() {
-    let declared = descriptor();
-    let mut report = report_of(&declared);
-    let row = report
-        .controls
-        .iter_mut()
-        .find(|row| row.control == Control::Filesystem)
-        .expect("the matrix has a filesystem row");
-    assert_eq!(row.mechanism.as_deref(), Some("host sandbox"));
-    row.mechanism = Some("a mechanism the runtime never declared".into());
-    let refused = ConformanceRun::of(&declared, &report).expect_err("an edited row publishes");
-    assert_eq!(
-        refused,
-        DossierError::MatrixAgainstTheDeclaration {
-            carrier: "filesystem".into(),
-            stated: "Some(HostEnforced)".into(),
-            declared: "Some(HostEnforced)".into(),
-        }
-    );
-    // The refusal names the carrier, not the fact: the mechanism is the row that
-    // disagrees, and the row's own strength is the one the declaration has.
-    assert!(refused.to_string().contains("filesystem"));
-}
-
-#[test]
-fn a_matrix_that_omits_a_carrier_is_refused() {
-    let declared = descriptor();
-    let mut report = report_of(&declared);
-    let omitted = report.capabilities.pop().expect("the matrix has rows");
-    let refused = ConformanceRun::of(&declared, &report).expect_err("a short matrix publishes");
-    assert_eq!(
-        refused,
-        DossierError::MatrixOmitsACarrier {
-            missing: vec![
-                serde_json::to_string(&omitted.capability)
-                    .unwrap()
-                    .trim_matches('"')
-                    .to_string()
-            ]
-        }
-    );
-    assert!(refused.to_string().contains("omits"));
-
-    // A control row is held on the same terms: a matrix that drops a claim is
-    // hiding it rather than declaring it absent.
-    let mut report = report_of(&declared);
-    report.controls.pop();
-    assert!(matches!(
-        ConformanceRun::of(&declared, &report),
-        Err(DossierError::MatrixOmitsACarrier { .. })
-    ));
 }
 
 #[test]
@@ -515,9 +468,20 @@ fn a_dossier_with_no_run_certifies_nothing() {
 
 #[test]
 fn the_same_version_twice_is_refused() {
-    let first = run_of(&descriptor()).expect("the run publishes");
-    let refused = CompatibilityDossier::publish(vec![first.clone(), first.clone()])
-        .expect_err("a version twice");
+    let first = Fixture::new(descriptor());
+    let second = Fixture::new(descriptor());
+    let dispatch = dispatch();
+    let refused = CompatibilityDossier::publish(vec![
+        PackRun {
+            adapter: &first,
+            dispatches: vec![&dispatch],
+        },
+        PackRun {
+            adapter: &second,
+            dispatches: vec![&dispatch],
+        },
+    ])
+    .expect_err("a version twice");
     assert_eq!(
         refused,
         DossierError::TheSameVersionTwice {
@@ -533,22 +497,44 @@ fn the_same_version_twice_is_refused() {
         platform: "macos",
         ..DEFAULT
     };
-    let other = run_of(&descriptor_at(&macos)).expect("the second platform publishes");
-    let dossier = CompatibilityDossier::publish(vec![first, other]).expect("both platforms");
+    let other = Fixture::new(descriptor_at(&macos));
+    let dossier = CompatibilityDossier::publish(vec![
+        PackRun {
+            adapter: &first,
+            dispatches: vec![&dispatch],
+        },
+        PackRun {
+            adapter: &other,
+            dispatches: vec![&dispatch],
+        },
+    ])
+    .expect("both platforms publish");
     assert_eq!(dossier.versions(), vec!["fixture-1", "fixture-1"]);
     assert!(dossier.run("fixture-1", "macos").is_some());
+    assert!(dossier.run("fixture-1", "linux").is_some());
 }
 
 #[test]
 fn a_dossier_naming_two_packs_is_refused() {
-    let first = run_of(&descriptor()).expect("the first pack publishes");
+    let first = Fixture::new(descriptor());
     let other = Pack {
         adapter: "other-adapter",
         driver: "other-driver",
         ..DEFAULT
     };
-    let second = run_of(&descriptor_at(&other)).expect("the second pack publishes");
-    let refused = CompatibilityDossier::publish(vec![first, second]).expect_err("two packs");
+    let second = Fixture::new(descriptor_at(&other));
+    let dispatch = dispatch();
+    let refused = CompatibilityDossier::publish(vec![
+        PackRun {
+            adapter: &first,
+            dispatches: vec![&dispatch],
+        },
+        PackRun {
+            adapter: &second,
+            dispatches: vec![&dispatch],
+        },
+    ])
+    .expect_err("two packs");
     assert_eq!(
         refused,
         DossierError::MoreThanOnePack {
@@ -564,7 +550,7 @@ fn a_dossier_naming_two_packs_is_refused() {
 #[test]
 fn a_dossier_travels_as_a_published_document() {
     let declared = descriptor();
-    let dossier = CompatibilityDossier::publish(vec![run_of(&declared).unwrap()]).unwrap();
+    let dossier = publish_one(&declared).expect("the run publishes");
     let wire = serde_json::to_string(&dossier).unwrap();
     assert_eq!(
         serde_json::from_str::<CompatibilityDossier>(&wire).unwrap(),
@@ -588,9 +574,10 @@ fn a_dossier_travels_as_a_published_document() {
     ] {
         assert!(wire.contains(field), "the published form names {field}");
     }
+
     // A published rule row is a name, an outcome and a failure — and nothing
-    // else: the suite's own prose for a rule does not travel, so a reworded rule
-    // cannot make a published dossier read as a different rule.
+    // else: the suite's own prose for a rule does not travel, so a reworded
+    // rule cannot make a published dossier read as a different rule.
     let value = serde_json::to_value(&dossier).unwrap();
     let first = value["runs"][0]["rules"][0]
         .as_object()
@@ -636,17 +623,15 @@ fn the_contract_document_names_the_dossier_and_its_refusals() {
     for name in [
         "CompatibilityDossier",
         "ConformanceRun",
+        "PackRun",
         "run_conformance",
         "DOSSIER_SCHEMA_VERSION",
     ] {
         assert!(contract.contains(name), "the document does not name {name}");
     }
     for refusal in [
-        "TheRunNamesAnotherRuntime",
         "RulesFailed",
         "NoDispatches",
-        "MatrixAgainstTheDeclaration",
-        "MatrixOmitsACarrier",
         "NoRuns",
         "MoreThanOnePack",
         "TheSameVersionTwice",
@@ -656,8 +641,8 @@ fn the_contract_document_names_the_dossier_and_its_refusals() {
             "the document does not name {refusal}"
         );
     }
-    // The surface vocabulary is the same twelve the projection and the carriage
-    // cover: a dossier reports the same places, not a third list of its own.
+    // The two ways in are the only ways in, and a version absent from them is a
+    // version the dossier says nothing about.
     assert!(
         contract.contains("`CompatibilityDossier::run` and `versions` are the only ways in"),
         "the document states the only ways into what a pack publishes"
