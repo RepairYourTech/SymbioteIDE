@@ -135,6 +135,18 @@ carries weaker than the binding's minimum is recorded as a degradation with both
 strengths and is not a withheld surface: whether a minimum is met stays the
 capability check's refusal, so one fact has one owner.
 
+The report reads **every candidate the binding names**, not only the primary: the
+primary first, then the fallbacks in the binding's own order, one entry per
+candidate, each read onto the declared runtime this Host observed for that
+candidate's own profile. A candidate the operator declared no runtime for is
+`not_declared`, and a declaration this Host cannot attribute to its own pulse is
+`unattributed`; neither is read as the other, and neither is reported as a
+carriage. The prerequisite checks, the status and the assessed profile identity
+remain the primary's — reading a fallback is not assessing it — and publishing
+what a candidate would carry is not selecting it: whether a fallback may be used
+at all is the binding's own `fallback_consent` policy, and no consent is recorded
+in this model yet, so none could be read here.
+
 Environment resolution, effective access/resource consent, provider billing and
 model discovery, resource reservations, budget enforcement and Dispatch snapshots
 remain required integrations. Even a contract fixture whose observed prerequisite

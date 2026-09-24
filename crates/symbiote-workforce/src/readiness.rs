@@ -130,6 +130,85 @@ impl PrerequisiteCheck {
         }
     }
 }
+/// The declared runtimes a Host observed for the candidates a binding names, in
+/// the binding's own order: the primary first, then the fallbacks as the binding
+/// lists them. Pairing the two here is what keeps a report from reading a
+/// fallback's runtime onto the primary — [`CandidateObservations::for_configuration`]
+/// refuses a list that does not hold exactly one entry per candidate rather than
+/// reading the mismatch as an absence.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CandidateObservations<'a> {
+    observations: Vec<Option<&'a RuntimeDescriptor>>,
+}
+impl<'a> CandidateObservations<'a> {
+    /// The primary's observation and the fallbacks', in the binding's own order.
+    pub fn new(
+        primary: Option<&'a RuntimeDescriptor>,
+        fallbacks: impl IntoIterator<Item = Option<&'a RuntimeDescriptor>>,
+    ) -> Self {
+        let mut observations = vec![primary];
+        observations.extend(fallbacks);
+        Self { observations }
+    }
+    /// Pairs what the Host observed with the candidates the binding names.
+    /// `None` means the list does not hold one entry per candidate — a caller
+    /// that read one binding's declarations onto another — so the report is not
+    /// built rather than built from the wrong descriptor.
+    pub fn for_configuration(
+        configuration: &BindingConfiguration,
+        observed: &'a [Option<RuntimeDescriptor>],
+    ) -> Option<Self> {
+        if observed.len() != 1 + configuration.fallbacks.len() {
+            return None;
+        }
+        Some(Self::new(
+            observed[0].as_ref(),
+            observed[1..].iter().map(Option::as_ref),
+        ))
+    }
+    /// The candidate at `index` in the binding's own order: index zero is the
+    /// primary, the fallbacks follow.
+    pub fn candidate(&self, index: usize) -> Option<&'a RuntimeDescriptor> {
+        self.observations.get(index).copied().flatten()
+    }
+    /// The candidate the prerequisite checks assess.
+    pub fn primary(&self) -> Option<&'a RuntimeDescriptor> {
+        self.candidate(0)
+    }
+}
+/// What this Host holds for one candidate the binding names. The three cases are
+/// the three facts, never collapsed: an operator who declared nothing, an
+/// observation this Host cannot attribute to itself, and this Host's own
+/// observation of the runtime it would activate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CandidateObservation {
+    /// The operator declared no runtime for this candidate's profile.
+    NotDeclared,
+    /// A runtime was observed for this candidate's profile, but not by this
+    /// Host's own pulse. An observation this Host cannot attribute to itself is
+    /// not a statement about the runtime it would activate.
+    Unattributed,
+    /// This Host's observation of the runtime it declared for this profile, read
+    /// onto the binding's demand: the carriage names, per surface, what the
+    /// declaration carries for every control the binding declares a minimum for
+    /// and every carrier its policy or named resources require.
+    Observed { surfaces: Box<BindingSurfaces> },
+}
+/// One candidate the binding may be staffed with, and what this Host holds for
+/// it. The primary is first and the fallbacks follow in the binding's own order.
+/// The report publishes this and selects nothing: whether a fallback may be used
+/// is the binding's own consent policy, and the choice is activation's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateSurfaces {
+    pub profile: RuntimeProfileId,
+    pub profile_revision: Revision,
+    pub model: ModelId,
+    pub runtime: RuntimeKind,
+    pub adapter: AgentRuntimeAdapterId,
+    pub observation: CandidateObservation,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivationGate {
@@ -147,34 +226,77 @@ pub struct ReadinessReport {
     pub profile_id: RuntimeProfileId,
     pub checks: Vec<PrerequisiteCheck>,
     pub activation_pending: Vec<ActivationGate>,
-    /// What the observed runtime declares for the surfaces this binding demands,
-    /// present exactly when the Host observed a runtime of this Host for the
-    /// candidate's own profile. The routing and eligibility read this instead of
-    /// inferring carriage from the runtime's kind: the twelve surfaces, the
-    /// demand the binding itself makes, and what the runtime declares for each.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surfaces: Option<BindingSurfaces>,
+    /// What this Host holds for each candidate the binding names, the primary
+    /// first and the fallbacks in the binding's own order — one entry per
+    /// candidate, so a report cannot silently omit one. The routing and
+    /// eligibility read this instead of inferring carriage from a runtime's
+    /// kind: for each candidate, the twelve surfaces, the demand the binding
+    /// itself makes, and what the declaration carries for every one of them.
+    pub candidates: Vec<CandidateSurfaces>,
 }
-/// Assesses the primary candidate only. Fallback selection requires new explicit
-/// consent and a separately compiled candidate assessment; none is selected here.
+/// Assesses the primary candidate: the prerequisite checks and the status are
+/// that candidate's, and so is `profile_id`. Every candidate the binding names
+/// is read onto its own observation in `candidates`, which is a statement about
+/// carriage and nothing more — publishing what a fallback would carry is not
+/// selecting it. Fallback selection requires new explicit consent and a
+/// separately compiled candidate assessment; none is selected here, and no
+/// consent is recorded in this model yet, so none could be read here.
 ///
 /// `provider` is the registry resolution the Host already performed for the
-/// candidate's profile (`None` when the registry was not consulted). `descriptor`
-/// is the Host's observation of the declared runtime for that profile (`None`
-/// when the operator declared none). Both are inputs, never invented here: a
-/// check whose observation is absent reports `MissingObservation` rather than a
-/// satisfied prerequisite, and a check whose observation exists but does not
-/// meet the requirement reports `Rejected` — the report never presents an
-/// absence of evidence as a judgement against the Host.
+/// candidate's profile (`None` when the registry was not consulted).
+/// `observations` is the Host's own read of the declared runtimes, paired with
+/// the candidates the binding names (`None` inside it when the operator declared
+/// none for that profile). Both are inputs, never invented here: a check whose
+/// observation is absent reports `MissingObservation` rather than a satisfied
+/// prerequisite, and a check whose observation exists but does not meet the
+/// requirement reports `Rejected` — the report never presents an absence of
+/// evidence as a judgement against the Host.
 pub fn assess_readiness(
     configuration: &BindingConfiguration,
     team: &TeamConfiguration,
     pulse: Option<&HostPulse>,
-    descriptor: Option<&RuntimeDescriptor>,
+    observations: &CandidateObservations<'_>,
     provider: Option<&ProviderResolution>,
     now: Timestamp,
 ) -> ReadinessReport {
     let candidate = &configuration.primary;
+    // Every candidate the binding names, read onto the runtime this Host
+    // observed for that candidate's own profile. This is the one read: the
+    // primary's entry is what the surface check below judges, so the report
+    // cannot state a carriage twice.
+    let candidates = std::iter::once(&configuration.primary)
+        .chain(&configuration.fallbacks)
+        .enumerate()
+        .map(|(index, candidate)| CandidateSurfaces {
+            profile: candidate.profile.id.clone(),
+            profile_revision: candidate.profile.revision,
+            model: candidate.profile.model.clone(),
+            runtime: candidate.profile.runtime,
+            adapter: candidate.profile.adapter.clone(),
+            observation: match observations.candidate(index) {
+                None => CandidateObservation::NotDeclared,
+                // A descriptor observed by another Host — or observed while this
+                // Host holds no pulse at all — is not this Host's observation of
+                // the runtime it would activate.
+                Some(descriptor)
+                    if !pulse.is_some_and(|pulse| pulse.host_id == descriptor.host_id) =>
+                {
+                    CandidateObservation::Unattributed
+                }
+                Some(descriptor) => CandidateObservation::Observed {
+                    surfaces: Box::new(binding_surfaces(
+                        &configuration.binding,
+                        &configuration.policies.minimum_enforcement,
+                        &configuration.policies.required_capabilities,
+                        descriptor,
+                    )),
+                },
+            },
+        })
+        .collect::<Vec<_>>();
+    let assessed = candidates.first().map(|entry| &entry.observation);
+    // The runtime the prerequisite checks judge: the primary's own observation.
+    let descriptor = observations.primary();
     let mut checks = vec![PrerequisiteCheck::new(
         Prerequisite::CurrentTeam,
         if configuration.validate_team(team).is_ok() {
@@ -305,34 +427,30 @@ pub fn assess_readiness(
     // capability check refuses is refused there, and a runtime that declares
     // nothing for a demanded surface is named here with the surfaces it
     // withholds.
-    let carriage = match descriptor {
-        Some(d) if pulse.is_some_and(|p| p.host_id == d.host_id) => Some(binding_surfaces(
-            &configuration.binding,
-            &configuration.policies.minimum_enforcement,
-            &configuration.policies.required_capabilities,
-            d,
-        )),
-        _ => None,
-    };
     checks.push(PrerequisiteCheck {
         prerequisite: Prerequisite::RuntimeSurfaces,
-        result: match (&carriage, descriptor) {
-            (Some(c), _) if c.is_complete() => CheckResult::Satisfied,
-            (Some(_), _) => CheckResult::Rejected,
-            // A descriptor observed on another Host is not an observation of
-            // this Host's runtime, and no descriptor at all is an absence.
-            (None, Some(_)) => CheckResult::Rejected,
-            (None, None) => CheckResult::MissingObservation,
+        result: match assessed {
+            Some(CandidateObservation::Observed { surfaces }) if surfaces.is_complete() => {
+                CheckResult::Satisfied
+            }
+            Some(CandidateObservation::Observed { .. }) => CheckResult::Rejected,
+            // An observation this Host cannot attribute to itself is a
+            // judgement against the runtime it would activate; nothing declared
+            // at all is an absence.
+            Some(CandidateObservation::Unattributed) => CheckResult::Rejected,
+            Some(CandidateObservation::NotDeclared) | None => CheckResult::MissingObservation,
         },
         provider_refusal: None,
         limit_refusal: None,
-        withheld_surfaces: carriage
-            .as_ref()
-            .map(|c| c.withheld().into_iter().collect())
-            .unwrap_or_default(),
+        withheld_surfaces: match assessed {
+            Some(CandidateObservation::Observed { surfaces }) => {
+                surfaces.withheld().into_iter().collect()
+            }
+            _ => Vec::new(),
+        },
     });
     ReadinessReport {
-        surfaces: carriage,
+        candidates,
         status: if checks.iter().all(|c| c.result == CheckResult::Satisfied) {
             PrerequisiteStatus::ReadyForPreflight
         } else {

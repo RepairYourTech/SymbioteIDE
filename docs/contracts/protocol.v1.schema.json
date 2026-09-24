@@ -3351,6 +3351,92 @@
         ],
         "type": "object"
       },
+      "CandidateObservation": {
+        "description": "What this Host holds for one candidate the binding names. The three cases are\nthe three facts, never collapsed: an operator who declared nothing, an\nobservation this Host cannot attribute to itself, and this Host's own\nobservation of the runtime it would activate.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The operator declared no runtime for this candidate's profile.",
+            "properties": {
+              "kind": {
+                "const": "not_declared",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A runtime was observed for this candidate's profile, but not by this\nHost's own pulse. An observation this Host cannot attribute to itself is\nnot a statement about the runtime it would activate.",
+            "properties": {
+              "kind": {
+                "const": "unattributed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "This Host's observation of the runtime it declared for this profile, read\nonto the binding's demand: the carriage names, per surface, what the\ndeclaration carries for every control the binding declares a minimum for\nand every carrier its policy or named resources require.",
+            "properties": {
+              "kind": {
+                "const": "observed",
+                "type": "string"
+              },
+              "surfaces": {
+                "$ref": "#/$defs/BindingSurfaces"
+              }
+            },
+            "required": [
+              "kind",
+              "surfaces"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CandidateSurfaces": {
+        "additionalProperties": false,
+        "description": "One candidate the binding may be staffed with, and what this Host holds for\nit. The primary is first and the fallbacks follow in the binding's own order.\nThe report publishes this and selects nothing: whether a fallback may be used\nis the binding's own consent policy, and the choice is activation's.",
+        "properties": {
+          "adapter": {
+            "$ref": "#/$defs/AgentRuntimeAdapterId"
+          },
+          "model": {
+            "$ref": "#/$defs/ModelId"
+          },
+          "observation": {
+            "$ref": "#/$defs/CandidateObservation"
+          },
+          "profile": {
+            "$ref": "#/$defs/RuntimeProfileId"
+          },
+          "profile_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "runtime": {
+            "$ref": "#/$defs/RuntimeKind"
+          }
+        },
+        "required": [
+          "profile",
+          "profile_revision",
+          "model",
+          "runtime",
+          "adapter",
+          "observation"
+        ],
+        "type": "object"
+      },
       "Capability": {
         "enum": [
           "structured_messages",
@@ -6069,6 +6155,13 @@
             },
             "type": "array"
           },
+          "candidates": {
+            "description": "What this Host holds for each candidate the binding names, the primary\nfirst and the fallbacks in the binding's own order — one entry per\ncandidate, so a report cannot silently omit one. The routing and\neligibility read this instead of inferring carriage from a runtime's\nkind: for each candidate, the twelve surfaces, the demand the binding\nitself makes, and what the declaration carries for every one of them.",
+            "items": {
+              "$ref": "#/$defs/CandidateSurfaces"
+            },
+            "type": "array"
+          },
           "checks": {
             "items": {
               "$ref": "#/$defs/PrerequisiteCheck"
@@ -6080,24 +6173,14 @@
           },
           "status": {
             "$ref": "#/$defs/PrerequisiteStatus"
-          },
-          "surfaces": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/BindingSurfaces"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "What the observed runtime declares for the surfaces this binding demands,\npresent exactly when the Host observed a runtime of this Host for the\ncandidate's own profile. The routing and eligibility read this instead of\ninferring carriage from the runtime's kind: the twelve surfaces, the\ndemand the binding itself makes, and what the runtime declares for each."
           }
         },
         "required": [
           "status",
           "profile_id",
           "checks",
-          "activation_pending"
+          "activation_pending",
+          "candidates"
         ],
         "type": "object"
       },
