@@ -59,6 +59,9 @@ fn authorization_follows_the_operation_not_the_command_name() {
     assert_eq!(risk_of_kind("register_project"), Risk::Mutation);
     assert_eq!(risk_of_kind("create_task"), Risk::Mutation);
     assert_eq!(risk_of_kind("get_host_pulse"), Risk::ReadOnly);
+    // A published record is a read: serving one starts nothing and widens
+    // nothing, so the gate must not ask for authorization to ask for it.
+    assert_eq!(risk_of_kind("get_compatibility_dossier"), Risk::ReadOnly);
     // Grants are dangerous; the matching revocations narrow authority
     // and are not.
     assert!(risk_of_kind("decide_elevation").requires_authorization());

@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 23,
+    minor: 24,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -158,6 +158,18 @@ pub enum Operation {
         binding_id: BindingId,
     },
     GetBindingReadiness {
+        project_id: ProjectId,
+        binding_id: BindingId,
+    },
+    /// The published Compatibility Dossier this Host holds for the runtime this
+    /// binding's primary candidate declares, served whole and named by the run
+    /// inside it that certifies that runtime. The document is served only after
+    /// it has been held against the declaration the Host actually has: a record
+    /// for another pack, a shape this crate does not speak, a rule the record
+    /// does not show as held, a matrix that is not the suite's, a run over no
+    /// work, a version the pack published no run for, or a run of another
+    /// adapter build is refused by name rather than served.
+    GetCompatibilityDossier {
         project_id: ProjectId,
         binding_id: BindingId,
     },
@@ -338,9 +350,9 @@ impl Operation {
     pub fn project_id(&self) -> Option<&ProjectId> {
         match self {
             Self::ReplaceBinding { configuration, .. } => Some(&configuration.binding.project_id),
-            Self::GetBinding { project_id, .. } | Self::GetBindingReadiness { project_id, .. } => {
-                Some(project_id)
-            }
+            Self::GetBinding { project_id, .. }
+            | Self::GetBindingReadiness { project_id, .. }
+            | Self::GetCompatibilityDossier { project_id, .. } => Some(project_id),
             Self::ResolveRoute { request } | Self::RecordRoute { request } => {
                 Some(&request.project_id)
             }
@@ -637,7 +649,13 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::GetBinding { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
-        Operation::GetBindingReadiness { .. } => principal.local_owner,
+        // Readiness and the dossier read are the Host's own observations of its
+        // own operator provisioning, not Project records: a Project Read grant
+        // is not authority over what this Host has installed, and the pack a
+        // record belongs to is not a Project's business.
+        Operation::GetBindingReadiness { .. } | Operation::GetCompatibilityDossier { .. } => {
+            principal.local_owner
+        }
         Operation::ResolveRoute { request } => {
             principal.permits(&request.project_id, ProjectPermission::Read)
         }
@@ -1022,6 +1040,7 @@ pub enum Capability {
     RouteRecording,
     RouteRead,
     BindingReadiness,
+    CompatibilityDossier,
     BindingConfiguration,
     BindingRead,
     HostPulseRead,
@@ -1073,6 +1092,7 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::RouteRecording,
             Capability::RouteRead,
             Capability::BindingReadiness,
+            Capability::CompatibilityDossier,
             Capability::BindingConfiguration,
             Capability::BindingRead,
             Capability::HostPulseRead,
@@ -1513,6 +1533,13 @@ pub struct ProjectSnapshot {
 )]
 pub enum ResponseBody {
     BindingReadiness(Box<symbiote_workforce::ReadinessReport>),
+    /// One pack's published Compatibility Dossier, served whole, and the run
+    /// inside it that this Host held against the runtime it actually has — named
+    /// by the upstream version and platform a reader looks that run up with. The
+    /// run is not copied out of the record: the dossier is served as published
+    /// and these two facts say which of its runs the Host held, so no reader has
+    /// to make the Host's comparison for itself.
+    CompatibilityDossier(Box<DossierHolding>),
     RouteDecision(Box<symbiote_workforce::RouteDecision>),
     TaskDependencies(Vec<symbiote_domain::TaskDependencyEdge>),
     SchedulerSweep {
@@ -1547,6 +1574,19 @@ pub enum ResponseBody {
     Journal(JournalPage),
     Snapshot(Box<ProjectSnapshot>),
     Shutdown {},
+}
+
+/// The published record a Host holds, and the run in it that certifies the
+/// runtime this Host declares. The record is the pack's own document, served
+/// whole; the pair is the Host's answer to which of its runs was held.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DossierHolding {
+    pub dossier: Box<symbiote_runtime_sdk::dossier::CompatibilityDossier>,
+    /// The upstream version of the run this Host held.
+    pub upstream_version: String,
+    /// The platform of the run this Host held.
+    pub platform: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -53,6 +53,16 @@ fn storage_error(error: StoreError) -> ProtocolError {
     protocol_error
 }
 
+/// A dossier read this Host cannot answer. The message names a closed
+/// vocabulary — which refusal this Host hit, never a path, a version, a platform
+/// or an identity the document said — so an operator learns why without the wire
+/// echoing a pack's own file back at it.
+fn dossier_refusal(name: &str) -> ProtocolError {
+    let mut error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    error.message = format!("compatibility dossier not served ({name})");
+    error
+}
+
 fn receipt(receipt: symbiote_store::Receipt) -> ResponseBody {
     ResponseBody::Receipt(Receipt {
         sequence: receipt.sequence,
@@ -914,6 +924,48 @@ fn execute(
         Operation::GetHostPulse {} => inventory
             .pulse()
             .map(|pulse| ResponseBody::HostPulse(Box::new(pulse))),
+        Operation::GetCompatibilityDossier {
+            project_id,
+            binding_id,
+        } => {
+            let binding = store
+                .get_binding(project_id, binding_id)
+                .map_err(storage_error)?;
+            // The runtime a start would use: the binding's own primary candidate.
+            // A fallback is another pack's record, and asking about that binding
+            // asks about that pack.
+            let declared = workers
+                .declared_runtime_for(&binding.primary.profile)
+                .ok_or_else(|| dossier_refusal("no_runtime_declared"))?;
+            let dossier = workers.dossier_for(declared).ok_or_else(|| {
+                // One refusal, named for which of the two ways it is true: an
+                // operator installed no record at all, or the one they installed
+                // is another pack's. Both leave this Host holding nothing for
+                // this runtime, and both say so.
+                dossier_refusal(if workers.has_dossiers() {
+                    "another_pack"
+                } else {
+                    "no_published_dossier"
+                })
+            })?;
+            // The record is held before it is served: the SDK compares what the
+            // document claims about itself with the runtime this Host actually
+            // holds, and the refusal it names is the whole message. A record
+            // that cannot be held is never answered with a partial one.
+            let held = dossier
+                .hold(declared)
+                .map_err(|error| dossier_refusal(error.name()))?;
+            Ok(ResponseBody::CompatibilityDossier(Box::new(
+                DossierHolding {
+                    // The response is owned, so the parsed record is copied into
+                    // it; the Host keeps its own parsed copy for the next read
+                    // rather than re-reading the file.
+                    dossier: Box::new(dossier.clone()),
+                    upstream_version: held.run.upstream_version.clone(),
+                    platform: held.run.platform.clone(),
+                },
+            )))
+        }
         Operation::ReplaceTeam {
             expected_revision,
             team,

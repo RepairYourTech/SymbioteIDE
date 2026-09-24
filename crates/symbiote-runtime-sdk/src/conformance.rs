@@ -92,6 +92,38 @@ pub const RULES: &[ConformanceRule] = &[
     },
 ];
 
+/// The capabilities this module places on a surface, in the order the
+/// capability matrix carries one row each: every surface's own set, in the
+/// module's surface order and the set's own order.
+///
+/// One owner for what a capability row is. The suite that fills the matrix and a
+/// reader that checks a published one read this same list, so a row the suite
+/// would not have written cannot pass as one it did.
+pub fn placed_capabilities() -> BTreeSet<Capability> {
+    ContractSurface::ALL
+        .into_iter()
+        .flat_map(|surface| surface.capabilities())
+        .cloned()
+        .collect()
+}
+
+/// The `(surface, control)` pairs the control matrix carries one row each, in
+/// the module's surface order and each surface's own control order — the same
+/// one owner for a control row's shape, because a control is placed on exactly
+/// one surface and a row without that surface is not this module's row.
+pub fn placed_controls() -> Vec<(ContractSurface, Control)> {
+    ContractSurface::ALL
+        .into_iter()
+        .flat_map(|surface| {
+            surface
+                .controls()
+                .iter()
+                .map(move |control| (surface, control.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// One rule's outcome. A failure is text a reader can act on and never carries
 /// task content: it names the rule's own subject.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,12 +387,7 @@ pub fn run_conformance(
     // declaration is, whether anything demanded it, and whether every place
     // that did reports it as its declaration states.
     let mut capabilities = Vec::new();
-    let places: BTreeSet<Capability> = ContractSurface::ALL
-        .iter()
-        .flat_map(|surface| surface.capabilities())
-        .cloned()
-        .collect();
-    for capability in places {
+    for capability in placed_capabilities() {
         let mut demanded = false;
         let mut carried = true;
         for read in &reads {
@@ -387,37 +414,35 @@ pub fn run_conformance(
     }
 
     let mut controls = Vec::new();
-    for surface in ContractSurface::ALL {
-        for control in surface.controls() {
-            let declared = descriptor.controls.get(control);
-            let mut demanded = false;
-            let mut realized = true;
-            for read in &reads {
-                if !read
-                    .expected
-                    .surface(surface)
-                    .is_some_and(|entry| entry.preventive.contains_key(control))
-                {
-                    continue;
-                }
-                demanded = true;
-                let reported = read
-                    .actual
-                    .surface(surface)
-                    .and_then(|entry| entry.preventive.get(control));
-                if !reported.is_some_and(|delivery| delivery.realized().is_some()) {
-                    realized = false;
-                }
+    for (surface, control) in placed_controls() {
+        let declared = descriptor.controls.get(&control);
+        let mut demanded = false;
+        let mut realized = true;
+        for read in &reads {
+            if !read
+                .expected
+                .surface(surface)
+                .is_some_and(|entry| entry.preventive.contains_key(&control))
+            {
+                continue;
             }
-            controls.push(ControlRead {
-                control: control.clone(),
-                surface,
-                declared: declared.map(|support| support.strength),
-                mechanism: declared.map(|support| support.mechanism.clone()),
-                demanded,
-                realized,
-            });
+            demanded = true;
+            let reported = read
+                .actual
+                .surface(surface)
+                .and_then(|entry| entry.preventive.get(&control));
+            if !reported.is_some_and(|delivery| delivery.realized().is_some()) {
+                realized = false;
+            }
         }
+        controls.push(ControlRead {
+            control,
+            surface,
+            declared: declared.map(|support| support.strength),
+            mechanism: declared.map(|support| support.mechanism.clone()),
+            demanded,
+            realized,
+        });
     }
 
     let dispatches = reads
