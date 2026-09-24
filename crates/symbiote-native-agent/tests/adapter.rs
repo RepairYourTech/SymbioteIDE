@@ -315,12 +315,13 @@ fn permit(dispatch: &Dispatch, descriptor: &RuntimeDescriptor) -> LaunchPermit {
 #[derive(Default)]
 struct MockLog {
     started: Vec<SessionId>,
-    /// A different identity for `start` to answer with, so the adapter's
-    /// refusal can be exercised without another harness implementation.
-    start_as: Option<SessionId>,
+    /// A complete alternate handle for `start` to answer with, so identity and
+    /// generation cleanup can be exercised without another harness implementation.
+    start_as: Option<HarnessSession>,
     turns: Vec<String>,
     disposed: Vec<SessionId>,
     controls: usize,
+    handshakes: usize,
     /// A report the mock answers with instead of its own, so a case can make it
     /// answer for another session or another dispatch.
     report: Option<RuntimeHandshake>,
@@ -356,12 +357,14 @@ impl HarnessProcess for MockHarness {
             .borrow()
             .start_as
             .clone()
-            .unwrap_or_else(|| request.session.clone());
-        self.log.borrow_mut().started.push(started.clone());
-        Ok(HarnessSession {
-            session: started,
-            generation: self.log.borrow().started.len() as u64,
-        })
+            .unwrap_or_else(|| HarnessSession {
+                session: request.session.clone(),
+                generation: self.log.borrow().started.len() as u64 + 1,
+            });
+        if !self.log.borrow().started.contains(&started.session) {
+            self.log.borrow_mut().started.push(started.session.clone());
+        }
+        Ok(started)
     }
 
     fn send(&mut self, session: &HarnessSession, input: &TurnInput) -> Result<(), AdapterError> {
@@ -409,6 +412,7 @@ impl HarnessProcess for MockHarness {
 
     fn handshake(&self, session: &HarnessSession) -> Result<RuntimeHandshake, AdapterError> {
         assert!(self.log.borrow().started.contains(&session.session));
+        self.log.borrow_mut().handshakes += 1;
         if let Some(report) = &self.log.borrow().report {
             return Ok(report.clone());
         }
@@ -596,9 +600,13 @@ fn launch_refuses_a_permit_the_adapter_cannot_still_honour() {
         log.borrow().started.is_empty(),
         "no harness is started for a refused launch"
     );
-    // A harness that answers for another identity has not started this session,
-    // and the adapter binds nothing it cannot place.
-    let wrong = SessionId::new("another-harness-session").unwrap();
+    // A harness that answers for another identity has not started this session.
+    // The handle it returned is still a resource the adapter now owns, so it is
+    // released before the mismatch is reported.
+    let wrong = HarnessSession {
+        session: SessionId::new("another-harness-session").unwrap(),
+        generation: 1,
+    };
     log.borrow_mut().start_as = Some(wrong.clone());
     assert_eq!(
         adapter
@@ -607,15 +615,47 @@ fn launch_refuses_a_permit_the_adapter_cannot_still_honour() {
         AdapterError::SessionMismatch
     );
     assert!(adapter.live_sessions().is_empty());
-    assert_eq!(log.borrow().started, vec![wrong]);
+    assert_eq!(log.borrow().started, vec![wrong.session.clone()]);
+    assert_eq!(log.borrow().disposed, vec![wrong.session]);
     log.borrow_mut().start_as = None;
     log.borrow_mut().started.clear();
+    log.borrow_mut().disposed.clear();
     // The refusals changed nothing: the adapter still launches the permit it can
     // honour, and only then.
     let session = adapter
         .launch(permit(&dispatch, &descriptor), Timestamp(11))
         .expect("the honoured permit launches");
-    assert_eq!(log.borrow().started, vec![session]);
+    assert_eq!(log.borrow().started, vec![session.clone()]);
+
+    // If a broken harness returns the exact complete handle already in the
+    // table, cleanup must not end that live resource.
+    log.borrow_mut().start_as = Some(HarnessSession {
+        session: session.clone(),
+        generation: 1,
+    });
+    assert_eq!(
+        adapter
+            .launch(permit(&dispatch, &descriptor), Timestamp(11))
+            .expect_err("an already-owned handle"),
+        AdapterError::SessionMismatch
+    );
+    assert_eq!(adapter.live_sessions(), vec![session.clone()]);
+    assert!(log.borrow().disposed.is_empty());
+
+    // The same session id at a different generation is not the owned handle, so
+    // it is a newly returned resource and is released.
+    log.borrow_mut().start_as = Some(HarnessSession {
+        session: session.clone(),
+        generation: 2,
+    });
+    assert_eq!(
+        adapter
+            .launch(permit(&dispatch, &descriptor), Timestamp(11))
+            .expect_err("a new generation under the live id"),
+        AdapterError::SessionMismatch
+    );
+    assert_eq!(adapter.live_sessions(), vec![session.clone()]);
+    assert_eq!(log.borrow().disposed, vec![session]);
 }
 
 /// Every later call is bound to a session this adapter started. A harness cannot
@@ -915,6 +955,7 @@ fn the_handshake_is_the_process_report_and_it_may_only_narrow() {
         silent.surfaces.is_empty(),
         "a mock harness has nothing to add"
     );
+    assert_eq!(log.borrow().handshakes, 1);
     let outcome = projection
         .reconcile(&record, &silent)
         .expect("silence is not a disagreement");
@@ -935,8 +976,23 @@ fn the_handshake_is_the_process_report_and_it_may_only_narrow() {
 
     // An honest process report — what the harness was handed, reported back —
     // reconciles exactly, and every demanded carrier is named rather than
-    // inferred from silence.
+    // inferred from silence. A caller record for another dispatch is refused
+    // before the harness is asked to speak for it.
     log.borrow_mut().report = Some(honest_handshake(&session, &projection));
+    let mut caller_dispatch = record.clone();
+    caller_dispatch.dispatch_id = DispatchId::new("native-dispatch-5").unwrap();
+    let handshakes = log.borrow().handshakes;
+    assert_eq!(
+        adapter
+            .handshake(&caller_dispatch)
+            .expect_err("a caller record for another dispatch"),
+        AdapterError::SessionMismatch
+    );
+    assert_eq!(
+        log.borrow().handshakes,
+        handshakes,
+        "the harness was not asked for a foreign caller record"
+    );
     let reported = adapter.handshake(&record).expect("the process reports");
     let exact = projection
         .reconcile(&record, &reported)
@@ -986,11 +1042,17 @@ fn the_handshake_is_the_process_report_and_it_may_only_narrow() {
     let mut external = record.clone();
     external.kind = RuntimeKind::ExternalHarness;
     log.borrow_mut().report = Some(honest_handshake(&session, &projection));
+    let handshakes = log.borrow().handshakes;
     assert_eq!(
         adapter
             .handshake(&external)
             .expect_err("a foreign runtime kind"),
         AdapterError::SessionMismatch
+    );
+    assert_eq!(
+        log.borrow().handshakes,
+        handshakes,
+        "the harness was not asked for a foreign runtime kind"
     );
 }
 

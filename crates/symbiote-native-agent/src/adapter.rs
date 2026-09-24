@@ -25,7 +25,9 @@
 //!   `poll_events`, `control`, `dispose` and `handshake` resolve the session
 //!   through the adapter's own table and refuse
 //!   [`AdapterError::SessionMismatch`] for any identity it did not mint, so a
-//!   harness cannot answer for a session that was never launched.
+//!   harness cannot answer for a session that was never launched. A handle
+//!   returned by a mismatched start is released before the refusal unless it is
+//!   the exact handle already owned for a live session.
 //! * **An event is bound to the session it was polled for.** `poll_events`
 //!   refuses any event whose own binding names another session, dispatch, Host
 //!   or runtime kind, or whose sequence does not advance the caller's cursor,
@@ -220,6 +222,16 @@ impl AgentRuntimeAdapter for NativeAgentAdapter {
         // A harness that started a session under another identity has not
         // started *this* one, and the adapter records nothing it cannot bind.
         if started.session != session {
+            // `start` returning a handle transfers that handle to the adapter,
+            // even when the harness filled the wrong identity in it. Release a
+            // newly returned handle before reporting the mismatch. Compare the
+            // complete handle: a harness that returns one already in our table
+            // has returned an existing resource, and disposing that would end
+            // the live session rather than clean up a failed launch.
+            let already_owned = self.sessions.values().any(|live| live.harness == started);
+            if !already_owned {
+                let _ = self.through_harness(|harness| harness.dispose(&started));
+            }
             return Err(AdapterError::SessionMismatch);
         }
         self.sessions.insert(
@@ -317,6 +329,12 @@ impl AgentRuntimeAdapter for NativeAgentAdapter {
     fn handshake(&self, session: &Session) -> Result<RuntimeHandshake, AdapterError> {
         self.require_harness()?;
         let live = self.live(&session.id)?;
+        // The caller's record is checked before the harness is asked. A caller
+        // cannot use a live session id to make the process produce a report for
+        // another dispatch or runtime kind.
+        if session.dispatch_id != live.dispatch || session.kind != self.descriptor.runtime {
+            return Err(AdapterError::SessionMismatch);
+        }
         let harness = self.harness.as_deref().ok_or(AdapterError::Unavailable)?;
         let report = harness.handshake(&live.harness)?;
         // The report is of *this* session and *this* dispatch. A report about
@@ -325,11 +343,8 @@ impl AgentRuntimeAdapter for NativeAgentAdapter {
         if report.session != session.id {
             return Err(AdapterError::SessionMismatch);
         }
-        if report.dispatch != live.dispatch || session.dispatch_id != live.dispatch {
+        if report.dispatch != live.dispatch {
             return Err(AdapterError::ContractMismatch);
-        }
-        if session.kind != self.descriptor.runtime {
-            return Err(AdapterError::SessionMismatch);
         }
         Ok(report)
     }
