@@ -122,6 +122,18 @@ and a bounded evidence window onto the observation. With no matching
 declaration the Host observes no runtime, so both prerequisites remain
 `missing_observation` rather than passing on an assumption.
 
+Runtime surfaces reads that same observation as the twelve places a workforce
+fact is carried, reports the demand the binding itself makes, and names the
+surfaces the observed runtime carries nothing for. A binding that names required
+tools or skills demands their carrier surfaces — the dispatch boundary requires
+the same capabilities for exactly those resources, so a report omitting them
+would contradict the decision activation makes. The report carries the carriage
+itself, so routing and eligibility read *where* a runtime would carry a fact
+instead of inferring carriage from the runtime's kind. A control the runtime
+carries weaker than the binding's minimum is recorded as a degradation with both
+strengths and is not a withheld surface: whether a minimum is met stays the
+capability check's refusal, so one fact has one owner.
+
 Environment resolution, effective access/resource consent, provider billing and
 model discovery, resource reservations, budget enforcement and Dispatch snapshots
 remain required integrations. Even a contract fixture whose observed prerequisite

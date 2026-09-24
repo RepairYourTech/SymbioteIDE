@@ -2,6 +2,7 @@
 use crate::*;
 use symbiote_domain::{Permission, RuntimeKind, UnboundedLimit};
 use symbiote_host_inventory::{HostPulse, PulseError, PulseRequirements};
+use symbiote_runtime_sdk::projection::{BindingSurfaces, ContractSurface, binding_surfaces};
 use symbiote_runtime_sdk::{QualificationError, RuntimeDescriptor, qualify_profile_with_minimums};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +28,15 @@ pub enum Prerequisite {
     /// reason the run will refuse on, instead of being left to contradict a
     /// satisfied capacity check.
     EnforceableLimits,
+    /// Whether the observed runtime carries, on the surfaces the projection
+    /// places them, the facts this binding demands: the enforcement minimums its
+    /// policy declares, the capabilities that policy requires, and the tools and
+    /// skills the binding names — which the dispatch boundary requires the same
+    /// way, so a report that omitted them would contradict the decision
+    /// activation makes. The refusal names the withheld surfaces, so an operator
+    /// reads *where* the runtime carries nothing rather than only that
+    /// something is missing.
+    RuntimeSurfaces,
     /// Whether the candidate's own lane can execute at all given the access its
     /// snapshot grants. The external lane's dispatch IS a Host-launched
     /// sandboxed process, and it can never acquire the process grant later
@@ -102,6 +112,12 @@ pub struct PrerequisiteCheck {
     /// rather than leaving the operator to discover it by starting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_refusal: Option<UnboundedLimit>,
+    /// Present exactly on the runtime-surfaces prerequisite, and only when the
+    /// observed runtime carries nothing for a surface the binding demands: the
+    /// surfaces themselves, in their declared order, so the refusal names the
+    /// places rather than a count.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withheld_surfaces: Vec<ContractSurface>,
 }
 impl PrerequisiteCheck {
     fn new(prerequisite: Prerequisite, result: CheckResult) -> Self {
@@ -110,6 +126,7 @@ impl PrerequisiteCheck {
             result,
             provider_refusal: None,
             limit_refusal: None,
+            withheld_surfaces: Vec::new(),
         }
     }
 }
@@ -130,6 +147,13 @@ pub struct ReadinessReport {
     pub profile_id: RuntimeProfileId,
     pub checks: Vec<PrerequisiteCheck>,
     pub activation_pending: Vec<ActivationGate>,
+    /// What the observed runtime declares for the surfaces this binding demands,
+    /// present exactly when the Host observed a runtime of this Host for the
+    /// candidate's own profile. The routing and eligibility read this instead of
+    /// inferring carriage from the runtime's kind: the twelve surfaces, the
+    /// demand the binding itself makes, and what the runtime declares for each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surfaces: Option<BindingSurfaces>,
 }
 /// Assesses the primary candidate only. Fallback selection requires new explicit
 /// consent and a separately compiled candidate assessment; none is selected here.
@@ -195,6 +219,7 @@ pub fn assess_readiness(
         },
         provider_refusal: provider.and_then(|resolution| resolution.refusal),
         limit_refusal: None,
+        withheld_surfaces: Vec::new(),
     });
     checks.push(PrerequisiteCheck::new(
         Prerequisite::RuntimeCapabilities,
@@ -256,6 +281,7 @@ pub fn assess_readiness(
             result: CheckResult::Rejected,
             provider_refusal: None,
             limit_refusal: Some(limit),
+            withheld_surfaces: Vec::new(),
         },
     };
     checks.push(enforceable);
@@ -272,7 +298,41 @@ pub fn assess_readiness(
             CheckResult::Rejected
         },
     ));
+    // What the runtime declares for the surfaces this binding demands. The
+    // observation is the same one the capability check reads, and the demand is
+    // the binding's own, so this reports *where* the runtime carries the facts
+    // rather than adding a second verdict on whether it may run: a runtime the
+    // capability check refuses is refused there, and a runtime that declares
+    // nothing for a demanded surface is named here with the surfaces it
+    // withholds.
+    let carriage = match descriptor {
+        Some(d) if pulse.is_some_and(|p| p.host_id == d.host_id) => Some(binding_surfaces(
+            &configuration.binding,
+            &configuration.policies.minimum_enforcement,
+            &configuration.policies.required_capabilities,
+            d,
+        )),
+        _ => None,
+    };
+    checks.push(PrerequisiteCheck {
+        prerequisite: Prerequisite::RuntimeSurfaces,
+        result: match (&carriage, descriptor) {
+            (Some(c), _) if c.is_complete() => CheckResult::Satisfied,
+            (Some(_), _) => CheckResult::Rejected,
+            // A descriptor observed on another Host is not an observation of
+            // this Host's runtime, and no descriptor at all is an absence.
+            (None, Some(_)) => CheckResult::Rejected,
+            (None, None) => CheckResult::MissingObservation,
+        },
+        provider_refusal: None,
+        limit_refusal: None,
+        withheld_surfaces: carriage
+            .as_ref()
+            .map(|c| c.withheld().into_iter().collect())
+            .unwrap_or_default(),
+    });
     ReadinessReport {
+        surfaces: carriage,
         status: if checks.iter().all(|c| c.result == CheckResult::Satisfied) {
             PrerequisiteStatus::ReadyForPreflight
         } else {

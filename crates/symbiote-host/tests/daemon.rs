@@ -1827,7 +1827,7 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
     let report = readiness_probe(&host);
     assert_eq!(report["profile_id"], "native-worker");
     let checks = report["checks"].as_array().unwrap();
-    assert_eq!(checks.len(), 7);
+    assert_eq!(checks.len(), 8);
     // The limits this candidate declares are bindable, so the check the
     // execution boundary shares is satisfied and names no refusal.
     assert_eq!(checks[5]["prerequisite"], "enforceable_limits");
@@ -1857,6 +1857,25 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
     assert_eq!(checks[1]["prerequisite"], "host_capacity");
     assert_eq!(checks[1]["result"], "satisfied");
     assert_eq!(report["status"], "ready_for_preflight");
+    // The surfaces the binding demands, read off the runtime the Host observed:
+    // the declaration carries the one control the binding's policy declares a
+    // minimum for, on the surface that carries it, so nothing is withheld and
+    // the report can say *where* the fact is carried instead of leaving the
+    // client to infer it from the runtime's kind.
+    assert_eq!(checks[7]["prerequisite"], "runtime_surfaces");
+    assert_eq!(checks[7]["result"], "satisfied");
+    assert!(
+        checks[7].get("withheld_surfaces").is_none(),
+        "a satisfied check names no withheld surface"
+    );
+    let surfaces = report["surfaces"]["surfaces"].as_array().unwrap();
+    assert_eq!(surfaces.len(), 12);
+    assert_eq!(surfaces[10]["surface"], "verification_signals");
+    assert_eq!(
+        surfaces[10]["preventive"]["completion_authority"]["kind"],
+        "delivered"
+    );
+    assert_eq!(report["surfaces"]["profile"], "native-worker");
     // The registration enforcement refuses is refused here, by the same name.
     expire_entitlement(&host, "readiness-lapse");
     let lapsed = readiness_probe(&host);
@@ -1873,12 +1892,16 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
     let bare_report = readiness_probe(&bare);
     assert_eq!(bare_report["status"], "not_ready");
     assert_eq!(bare_report["checks"][2]["result"], "satisfied");
-    for check in [3, 4] {
+    for check in [3, 4, 7] {
         assert_eq!(
             bare_report["checks"][check]["result"],
             "missing_observation"
         );
     }
+    assert!(
+        bare_report.get("surfaces").is_none(),
+        "nothing observed is no carriage to publish"
+    );
     // A declaration for ANOTHER model is not an observation of this profile,
     // so the runtime prerequisites stay unobserved — while the registration
     // half of the report is unaffected by which runtime the operator declared.
@@ -1894,12 +1917,56 @@ fn readiness_observes_the_registration_and_the_declared_runtime() {
     staffing_composition(&mismatched, Registration::Complete);
     let mismatched_report = readiness_probe(&mismatched);
     assert_eq!(mismatched_report["checks"][2]["result"], "satisfied");
-    for check in [3, 4] {
+    for check in [3, 4, 7] {
         assert_eq!(
             mismatched_report["checks"][check]["result"],
             "missing_observation"
         );
     }
+}
+
+/// A declaration that carries nothing for a surface the binding demands is
+/// named by that surface, not by a count and not by the runtime's kind. The
+/// same daemon observing the same binding reports the place the fact would have
+/// been carried, so an operator reads where a runtime carries nothing rather
+/// than only that something is missing.
+#[test]
+fn the_readiness_report_names_where_the_declared_runtime_carries_nothing() {
+    let mut bare = runtime_declaration();
+    bare["controls"] = json!({});
+    let host = Host::with_operator_config(json!({
+        "reservation_base": std::env::temp_dir()
+            .join("symbiote-readiness-worktrees")
+            .display()
+            .to_string(),
+        "runtime_declarations": [bare],
+    }));
+    staffing_composition(&host, Registration::Complete);
+    let report = readiness_probe(&host);
+    assert_eq!(report["status"], "not_ready");
+    let checks = report["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 8);
+    assert_eq!(checks[7]["prerequisite"], "runtime_surfaces");
+    assert_eq!(checks[7]["result"], "rejected");
+    assert_eq!(
+        checks[7]["withheld_surfaces"],
+        json!(["verification_signals"])
+    );
+    // The carriage is still published: the surfaces the binding demands are
+    // present, with the control that carries nothing named as missing rather
+    // than omitted.
+    let surfaces = report["surfaces"]["surfaces"].as_array().unwrap();
+    assert_eq!(surfaces.len(), 12);
+    assert_eq!(
+        surfaces[10]["preventive"]["completion_authority"]["kind"],
+        "missing"
+    );
+    // The capability check reads the same observation and judges the same
+    // omission in its own vocabulary, while the surface check names the place:
+    // one fact — the declaration carries nothing for a demanded control —
+    // reported once with a reason and once with the surface it would have been
+    // carried on.
+    assert_eq!(checks[3]["result"], "rejected");
 }
 
 /// Capacity is classified from what the Host observed, at both ends: a
