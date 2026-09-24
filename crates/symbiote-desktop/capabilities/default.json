@@ -9,6 +9,7 @@
     "core:default",
     "allow-begin-session",
     "allow-start-demo",
+    "allow-preflight-demo",
     "allow-read-journal",
     "allow-finish-demo",
     "allow-journal-position",

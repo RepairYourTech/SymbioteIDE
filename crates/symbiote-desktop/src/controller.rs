@@ -18,7 +18,7 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
-use symbiote_workflow::{DemoOutcome, DemoWorkflow, WorkflowError};
+use symbiote_workflow::{DemoOutcome, DemoWorkflow, ReadinessReport, WorkflowError};
 
 /// The daemon binaries the controller spawns. In development they come
 /// from the workspace target directory; a bundled release ships them as
@@ -233,6 +233,15 @@ impl DesktopController {
         Ok(dispatch_id)
     }
 
+    /// Compose and prepare the demonstration without starting its dispatch,
+    /// then return the Host's readiness report. The workbench uses this to
+    /// show every candidate's surface evidence before execution is requested.
+    pub fn preflight_demo(&mut self) -> Result<ReadinessReport, DesktopError> {
+        let report = self.workflow()?.preflight_demo()?;
+        self.persist_positions()?;
+        Ok(report)
+    }
+
     /// Follows the durable evidence trail to the head, advancing and
     /// persisting the driver's tracked positions.
     pub fn read_journal(&mut self) -> Result<u64, DesktopError> {
@@ -407,7 +416,32 @@ fn write_operator_config(
             "value": "fixture-not-a-real-secret"}],
         "shell_executor": {"launcher_path": launcher.display().to_string(),
             "protected_paths": ["/etc", "/var", "/home"],
-            "allowed_programs": ["sh"]}
+            "allowed_programs": ["sh"]},
+        "runtime_declarations": [{
+            "adapter_id": "native-agent",
+            "installation": null,
+            "profile_id": "native-worker",
+            "profile_revision": 1,
+            "model_id": "coding-model",
+            "adapter_version": "0.1.0",
+            "upstream_version": "0.1.0",
+            "runtime": "NATIVE_SYMBIOTE",
+            "owner": {"kind": "symbiote_native"},
+            "transport": "native_loop",
+            "tier": "detected",
+            "platform": "linux",
+            "capabilities": ["tools"],
+            "controls": {"completion_authority": {
+                "strength": "host_enforced",
+                "mechanism": "desktop fixture completion boundary"
+            }},
+            "tools": ["shell"],
+            "skills": [],
+            "context_limits": {
+                "context_window_tokens": 16384,
+                "max_output_tokens": 4096
+            }
+        }]
     });
     let mut file = std::fs::OpenOptions::new()
         .write(true)

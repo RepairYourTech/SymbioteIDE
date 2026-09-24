@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 use symbiote_desktop_lib::controller::{DesktopController, DesktopPaths};
+use symbiote_protocol::ResponseBody;
 
 fn git(repo: &std::path::Path, args: &[&str]) {
     let output = Command::new("git")
@@ -91,6 +92,38 @@ fn desktop_controller_drives_the_first_release_flow_across_a_crash() {
     )
     .expect("controller environment");
     controller.begin_generation().expect("first generation");
+
+    // The UI's pre-flight path composes and prepares the task, but does not
+    // start a dispatch. It must publish the candidate's own surface evidence
+    // before the separate start action is allowed.
+    let preflight = controller.preflight_demo().expect("preflight report");
+    assert_eq!(preflight.candidates.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&preflight).expect("preflight json")["status"],
+        "ready_for_preflight"
+    );
+    assert!(preflight.checks.iter().any(|check| {
+        serde_json::to_value(check).expect("check json")["prerequisite"] == "runtime_surfaces"
+    }));
+    // Preparation is not activation: the task is still Ready after the
+    // pre-flight report, so the report cannot have secretly started a run.
+    let project = symbiote_domain::ProjectId::new("staffing-demo").expect("project");
+    let mut reader = symbiote_workflow::Driver::connect(state_dir).expect("readiness reader");
+    let task = reader
+        .call(
+            "preflight-task-still-ready",
+            serde_json::json!({
+                "kind": "get_task",
+                "project_id": "staffing-demo",
+                "task_id": "staffing-task"
+            }),
+            Some(&project),
+        )
+        .expect("task after preflight");
+    let ResponseBody::Task(task) = task else {
+        panic!("task response after preflight")
+    };
+    assert_eq!(*task.state(), symbiote_domain::TaskState::Ready);
 
     let dispatch_id = controller.start_demo().expect("start half");
     let cursor = controller.read_journal().expect("evidence trail");

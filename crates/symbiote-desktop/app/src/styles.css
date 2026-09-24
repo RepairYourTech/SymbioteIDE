@@ -71,6 +71,33 @@ button:disabled {
   padding: 0.5rem 0.75rem;
 }
 
+.preflight {
+  border: 1px solid #2c313a;
+  border-radius: 8px;
+  margin: 0 0 1rem;
+  padding: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.preflight h2 {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+.preflight ul {
+  margin: 0.35rem 0;
+  padding-left: 1.4rem;
+}
+
+.preflight > ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.preflight strong {
+  color: #e6e9ee;
+}
+
 .log {
   background: #101216;
   border: 1px solid #2c313a;

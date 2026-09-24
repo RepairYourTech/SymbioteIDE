@@ -20,6 +20,7 @@ pub mod demo;
 pub mod socket;
 
 pub use demo::{DemoOutcome, DemoWorkflow};
+pub use symbiote_workforce::ReadinessReport;
 
 use std::path::{Path, PathBuf};
 use symbiote_client_sdk::{ClientError, ClientSession, FrameExchange, TransportFailure};

@@ -235,12 +235,38 @@ impl DemoWorkflow {
         self.start_demo_lane(&STAFFING)
     }
 
+    /// Compose the default lane and read its readiness before any dispatch
+    /// is started. The workbench uses this as a real pre-flight surface:
+    /// setup and preparation are journaled, but the start operation is not
+    /// sent until the operator has seen the report.
+    pub fn preflight_demo(&mut self) -> Result<symbiote_workforce::ReadinessReport, WorkflowError> {
+        self.preflight_demo_lane(&STAFFING)
+    }
+
+    /// The same pre-flight read for an explicit lane. The candidate order
+    /// and every observation belong to the binding; this method does not
+    /// select a fallback or infer a surface from a harness name.
+    pub fn preflight_demo_lane(
+        &mut self,
+        lane: &DemoLane,
+    ) -> Result<symbiote_workforce::ReadinessReport, WorkflowError> {
+        self.compose_demo_lane(lane, false)?;
+        self.binding_readiness(lane)
+    }
+
     /// The same first half, driven for an explicit project lane: every
     /// canonical identity comes from the lane, so ONE daemon can host
     /// several fully isolated projects. Everything here is journaled
     /// canonical state — it survives a daemon SIGKILL, which is exactly
     /// what the restart/resume proof does between the halves.
     pub fn start_demo_lane(&mut self, lane: &DemoLane) -> Result<String, WorkflowError> {
+        self.compose_demo_lane(lane, true)
+    }
+
+    /// Compose a lane and optionally start its prepared dispatch. Keeping the
+    /// switch here means pre-flight and start execute the same canonical
+    /// setup rather than maintaining a second, drifting workbench path.
+    fn compose_demo_lane(&mut self, lane: &DemoLane, start: bool) -> Result<String, WorkflowError> {
         let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
         let repository = self.repository_for(lane);
         let mut git = symbiote_repo::SystemGit::new();
@@ -391,7 +417,32 @@ impl DemoWorkflow {
             "expires_at":ENTITLEMENT_EXPIRY}}),
             Some(&project),
         )?;
-        self.start_lane_tail(lane, &host_id, &base, &target)
+        if start {
+            self.start_lane_tail(lane, &host_id, &base, &target)
+        } else {
+            self.prepare_lane_tail(lane, &base, &target)?;
+            Ok(String::new())
+        }
+    }
+
+    fn binding_readiness(
+        &mut self,
+        lane: &DemoLane,
+    ) -> Result<symbiote_workforce::ReadinessReport, WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
+        let response = self.call(
+            &format!("wf-preflight-{}-{}", lane.project, lane.binding_id),
+            serde_json::json!({
+                "kind": "get_binding_readiness",
+                "project_id": lane.project,
+                "binding_id": lane.binding_id
+            }),
+            Some(&project),
+        )?;
+        match response {
+            ResponseBody::BindingReadiness(report) => Ok(*report),
+            _ => Err(WorkflowError::UnexpectedBody),
+        }
     }
 
     /// The per-lane tail — binding (optional), objective, task, route,
@@ -470,6 +521,19 @@ impl DemoWorkflow {
         base: &str,
         target: &str,
     ) -> Result<String, WorkflowError> {
+        self.prepare_lane_tail(lane, base, target)?;
+        self.start_prepared_lane(lane, host_id)
+    }
+
+    /// Compose the task, route, and dispatch preparation without starting the
+    /// dispatch. This is the boundary the workbench's pre-flight action can
+    /// call without granting execution authority.
+    fn prepare_lane_tail(
+        &mut self,
+        lane: &DemoLane,
+        base: &str,
+        target: &str,
+    ) -> Result<(), WorkflowError> {
         let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
         // 5. Describe the coding task: a classified objective the task
         // hangs off, with the requirements the run's context will carry.
@@ -503,7 +567,7 @@ impl DemoWorkflow {
             "target":target}}}),
             Some(&project),
         )?;
-        // 6. Route, prepare, start.
+        // 6. Route and prepare. No start operation is sent by this helper.
         self.call(
             &format!("wf-route-{}", lane.objective),
             serde_json::json!({"kind":"record_route",
@@ -516,6 +580,15 @@ impl DemoWorkflow {
             serde_json::json!({"kind":"prepare_dispatch","task_id":lane.task}),
             Some(&project),
         )?;
+        Ok(())
+    }
+
+    fn start_prepared_lane(
+        &mut self,
+        lane: &DemoLane,
+        host_id: &str,
+    ) -> Result<String, WorkflowError> {
+        let project = symbiote_domain::ProjectId::new(lane.project).expect("lane project");
         let started = self.call(
             &format!("wf-start-{}", lane.task),
             serde_json::json!({"kind":"start_prepared_task","task_id":lane.task,"host_id":host_id}),

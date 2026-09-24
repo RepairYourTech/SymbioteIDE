@@ -4,12 +4,16 @@ import {
   beginSession,
   finishDemo,
   journalPosition,
+  observationSummary,
   openPreview,
+  preflightDemo,
   readJournal,
   startDemo,
   stopSession,
+  withheldSurfaces,
 } from "./api";
 import type { DemoOutcome } from "./outcome";
+import type { CandidatePreflight, PreflightReport } from "./preflight";
 
 const DEFAULT_STATE_DIR = "/tmp/symbiote-desktop-demo/state";
 const DEFAULT_RESERVATION_BASE = "/tmp/symbiote-desktop-demo/worktrees";
@@ -35,6 +39,56 @@ function errorMessage(error: unknown): string {
 
 function formatOutcome(outcome: DemoOutcome): string {
   return `state=${outcome.task_state} report=${JSON.stringify(outcome.report)} produced=${outcome.worktree.worktree}`;
+}
+
+function formatPreflight(report: PreflightReport): string {
+  return `${report.status}; ${report.candidates
+    .map((candidate) => `${candidate.profile}: ${observationSummary(candidate)}`)
+    .join("; ")}`;
+}
+
+function CandidatePreflightView({ candidate }: { candidate: CandidatePreflight }): ReactElement {
+  const withheld = new Set(withheldSurfaces(candidate));
+  return (
+    <li>
+      <strong>{candidate.profile}</strong> ({candidate.runtime})
+      {candidate.observation.kind === "observed" ? (
+        <>
+          <span> — {observationSummary(candidate)}</span>
+          <ul>
+            {candidate.observation.surfaces.surfaces.map((surface) => (
+              <li key={surface.surface}>
+                {surface.surface}: {withheld.has(surface.surface) ? "withheld" : "declared"}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <span> — {observationSummary(candidate)}</span>
+      )}
+    </li>
+  );
+}
+
+function PreflightView({ report }: { report: PreflightReport }): ReactElement {
+  return (
+    <section className="preflight" aria-live="polite">
+      <h2>Pre-flight surfaces</h2>
+      <p>
+        Status: <strong>{report.status}</strong> for profile <code>{report.profile_id}</code>
+      </p>
+      <ul>
+        {report.candidates.map((candidate, index) => (
+          <li key={`${candidate.profile}-${index}`}>
+            {index === 0 ? "Primary" : `Fallback ${index}`}
+            <ul>
+              <CandidatePreflightView candidate={candidate} />
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function inputValue(event: ChangeEvent<HTMLInputElement>): string {
@@ -67,6 +121,7 @@ export function App(): ReactElement {
   const [reservationBase, setReservationBase] = useState(DEFAULT_RESERVATION_BASE);
   const [repository, setRepository] = useState(DEFAULT_REPOSITORY);
   const [dispatchId, setDispatchId] = useState("");
+  const [preflight, setPreflight] = useState<PreflightReport | null>(null);
   const [outcome, setOutcome] = useState<DemoOutcome | null>(null);
   const [log, setLog] = useState("");
   const [busy, setBusy] = useState(false);
@@ -108,9 +163,10 @@ export function App(): ReactElement {
           type="button"
           disabled={busy}
           onClick={() => {
-            void runAction(busy, setBusy, setLog, "begin", () =>
-              beginSession(stateDir, reservationBase, repository),
-            );
+            void runAction(busy, setBusy, setLog, "begin", async () => {
+              setPreflight(null);
+              return beginSession(stateDir, reservationBase, repository);
+            });
           }}
         >
           Begin session
@@ -131,6 +187,19 @@ export function App(): ReactElement {
           type="button"
           disabled={busy}
           onClick={() => {
+            void runAction(busy, setBusy, setLog, "preflight", async () => {
+              const report = await preflightDemo();
+              setPreflight(report);
+              return formatPreflight(report);
+            });
+          }}
+        >
+          Prepare &amp; pre-flight surfaces
+        </button>
+        <button
+          type="button"
+          disabled={busy || preflight?.status !== "ready_for_preflight"}
+          onClick={() => {
             void runAction(busy, setBusy, setLog, "start-demo", async () => {
               const started = await startDemo();
               setDispatchId(started);
@@ -138,7 +207,7 @@ export function App(): ReactElement {
             });
           }}
         >
-          Describe task &amp; start dispatch
+          Start prepared dispatch
         </button>
         <button
           type="button"
@@ -199,6 +268,7 @@ export function App(): ReactElement {
           Journal position
         </button>
       </fieldset>
+      {preflight !== null ? <PreflightView report={preflight} /> : null}
       <pre className="log" aria-live="polite">
         {log}
       </pre>
