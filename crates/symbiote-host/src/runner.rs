@@ -122,6 +122,11 @@ pub struct WorkerTransports {
     /// this Host's identity and a bounded evidence window) when the profile it
     /// assesses matches, and reports missing runtime evidence when none does.
     runtime_declarations: Vec<symbiote_runtime_sdk::DeclaredRuntime>,
+    /// The published Compatibility Dossier records the operator installed, each
+    /// parsed once at daemon start. They are records, not authority: the Host
+    /// serves one only after holding it against the declared runtime it actually
+    /// has, and refuses the read rather than serving a record it cannot hold.
+    compatibility_dossiers: Vec<symbiote_runtime_sdk::dossier::CompatibilityDossier>,
 }
 
 impl WorkerTransports {
@@ -165,6 +170,43 @@ impl WorkerTransports {
     ) -> Self {
         self.runtime_declarations.push(declaration);
         self
+    }
+
+    /// Installs one published [Compatibility Dossier](symbiote_runtime_sdk::dossier)
+    /// record. The pack it is for is the identity the record itself names, so
+    /// the file an operator pointed at is the only thing the configuration says
+    /// about it.
+    pub fn with_compatibility_dossier(
+        mut self,
+        dossier: symbiote_runtime_sdk::dossier::CompatibilityDossier,
+    ) -> Self {
+        self.compatibility_dossiers.push(dossier);
+        self
+    }
+
+    /// Whether this Host has any published record installed at all. The
+    /// difference between an operator who installed none and one whose file is
+    /// another pack's is two different things to fix, so a refusal that cannot
+    /// find a record for a runtime says which of the two it is.
+    pub fn has_dossiers(&self) -> bool {
+        !self.compatibility_dossiers.is_empty()
+    }
+
+    /// The published record for this exact runtime, by the pack identity the
+    /// record itself names — a record for another pack is not evidence of this
+    /// one, and the comparison is the SDK's own so that choosing which installed
+    /// file to serve and refusing a foreign one cannot disagree.
+    pub fn dossier_for(
+        &self,
+        declared: &symbiote_runtime_sdk::DeclaredRuntime,
+    ) -> Option<&symbiote_runtime_sdk::dossier::CompatibilityDossier> {
+        let driver = match &declared.owner {
+            symbiote_runtime_sdk::RuntimeOwner::External { driver } => Some(driver),
+            symbiote_runtime_sdk::RuntimeOwner::SymbioteNative {} => None,
+        };
+        self.compatibility_dossiers
+            .iter()
+            .find(|dossier| dossier.publishes(&declared.adapter_id, driver))
     }
 
     /// The declaration matching this exact runtime profile: pinned adapter,
@@ -3287,6 +3329,7 @@ mod tests {
             credential_broker: vec![],
             shell_executor: None,
             runtime_declarations: vec![declaration.clone()],
+            compatibility_dossiers: vec![],
         };
         let transports = assemble_operator_transports(config).unwrap();
         assert!(transports.declared_runtime_for(&profile).is_some());
@@ -3312,6 +3355,7 @@ mod tests {
             credential_broker: vec![],
             shell_executor: None,
             runtime_declarations: vec![incoherent],
+            compatibility_dossiers: vec![],
         };
         assert_eq!(
             assemble_operator_transports(config).err(),
@@ -3614,6 +3658,13 @@ pub fn assemble_operator_transports(
             .validate()
             .map_err(|_| "operator runtime declaration")?;
         transports = transports.with_runtime_declaration(declaration.clone());
+    }
+    // The dossier records come last and are read once: a file that is not one
+    // pack's record refuses the daemon here rather than becoming a read that
+    // reports nothing, and a second file for a pack already installed is refused
+    // rather than chosen between.
+    for dossier in crate::operator::load_dossiers(&config.compatibility_dossiers)? {
+        transports = transports.with_compatibility_dossier(dossier);
     }
     Ok(transports)
 }

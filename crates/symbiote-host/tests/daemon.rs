@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 23},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 24},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -2543,5 +2543,360 @@ fn run_started_dispatch_refuses_a_pairing_that_lapsed_after_start() {
     assert_eq!(
         run["result"]["Err"]["message"],
         "dispatch refused by recorded state (unsupported_authentication_billing)"
+    );
+}
+
+/// One published Compatibility Dossier, as an operator's file actually carries
+/// it: the pack's own identity, one run over work the suite read, an outcome
+/// that held for every rule the suite runs, and the two matrices the suite
+/// publishes row for row.
+///
+/// Built from the SDK's own row lists rather than written out by hand, so a case
+/// about serving is about the fact under test and not about a document somebody
+/// had to keep in step with the suite by hand.
+fn published_dossier() -> Value {
+    use symbiote_domain::{Control, DispatchId, EnforcementStrength};
+    use symbiote_runtime_sdk::conformance::{
+        ControlRead, DispatchRead, RULES, placed_capabilities, placed_controls,
+    };
+    use symbiote_runtime_sdk::dossier::{CompatibilityDossier, RuleRead};
+    use symbiote_runtime_sdk::projection::CarrierDelivery;
+    let row = |capability| {
+        json!({
+            "capability": capability,
+            "declared": CarrierDelivery::Declared {},
+            "demanded": true,
+            "carried": true
+        })
+    };
+    let control_row = |control, surface| ControlRead {
+        control,
+        surface,
+        declared: Some(EnforcementStrength::HostEnforced),
+        mechanism: Some("operator-provisioned sandbox".into()),
+        demanded: true,
+        realized: true,
+    };
+    let run = json!({
+        "adapter": "native-agent",
+        "driver": null,
+        "upstream_version": "0.1.0",
+        "adapter_version": "0.1.0",
+        "platform": "linux",
+        "tier": "detected",
+        "rules": RULES.iter().map(|rule| RuleRead { id: rule.id.to_owned(), held: true, failure: None })
+            .collect::<Vec<RuleRead>>(),
+        "capabilities": placed_capabilities().into_iter().map(row).collect::<Vec<Value>>(),
+        "controls": placed_controls().into_iter().map(|(surface, control)| control_row(control, surface))
+            .map(|read| serde_json::to_value(read).unwrap()).collect::<Vec<Value>>(),
+        "dispatches": [DispatchRead {
+            dispatch: DispatchId::new("staffing-dispatch").unwrap(),
+            surfaces: 12,
+            withheld: Vec::new(),
+        }],
+        "withheld": []
+    });
+    let dossier = json!({
+        "schema_version": 1,
+        "adapter": "native-agent",
+        "driver": null,
+        "runs": [run]
+    });
+    // The document this test writes is one the SDK itself accepts as a record;
+    // a case that cannot publish its own fixture cannot test what it serves.
+    serde_json::from_value::<CompatibilityDossier>(dossier.clone()).unwrap();
+    assert!(!placed_controls().is_empty());
+    assert_ne!(Control::Filesystem, Control::Process);
+    dossier
+}
+
+/// An operator's published record on disk: 0600, in a directory of the test's
+/// own, named by the configuration the daemon reads once at start.
+fn installed_dossier(dossier: Value, mode: u32) -> String {
+    let directory = std::env::temp_dir().join(format!(
+        "symbiote-dossier-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("dossier.json");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(serde_json::to_string_pretty(&dossier).unwrap().as_bytes())
+        .unwrap();
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+        .unwrap();
+    path.display().to_string()
+}
+
+/// The configuration a dossier read needs: the operator's declared runtime and
+/// the record it published, with the questions a case is not about left out.
+fn dossier_operator(dossier: Option<Value>) -> Value {
+    let mut config = json!({
+        "reservation_base": std::env::temp_dir()
+            .join("symbiote-dossier-worktrees")
+            .display()
+            .to_string(),
+        "runtime_declarations": [runtime_declaration()],
+    });
+    if let Some(dossier) = dossier {
+        config["compatibility_dossiers"] = json!([installed_dossier(dossier, 0o600)]);
+    }
+    config
+}
+
+/// The read the workbench and the CLI make, read from the published fixture so
+/// the fixture is the request the daemon is actually asked.
+fn dossier_read() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/workforce-bindings/dossier.json"
+    ))
+    .unwrap()
+}
+
+/// The Host serves a pack's published record only after holding it against the
+/// runtime this Host actually declares, and the response names the run inside the
+/// record that was held — so the client is never left repeating the comparison
+/// the Host just made.
+#[test]
+fn the_host_serves_a_published_dossier_it_holds_against_the_declared_runtime() {
+    let host = Host::with_operator_config(dossier_operator(Some(published_dossier())));
+    staffing_composition(&host, Registration::Complete);
+    let response = host.call(dossier_read());
+    assert_eq!(ok(&response)["kind"], "compatibility_dossier");
+    let served = ok(&response)["data"].clone();
+    // The record is served whole, as the pack published it: nothing is
+    // summarized, filtered or re-derived on the way out.
+    assert_eq!(served["dossier"]["schema_version"], 1);
+    assert_eq!(served["dossier"]["adapter"], "native-agent");
+    assert_eq!(served["dossier"]["driver"], Value::Null);
+    let runs = served["dossier"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["upstream_version"], "0.1.0");
+    assert_eq!(runs[0]["platform"], "linux");
+    assert_eq!(runs[0]["adapter_version"], "0.1.0");
+    let rules = runs[0]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), symbiote_runtime_sdk::conformance::RULES.len());
+    assert!(rules.iter().all(|rule| rule["held"] == json!(true)));
+    assert_eq!(runs[0]["capabilities"].as_array().unwrap().len(), 6);
+    assert_eq!(runs[0]["controls"].as_array().unwrap().len(), 6);
+    assert_eq!(runs[0]["dispatches"].as_array().unwrap().len(), 1);
+    // And the run this Host held is named by the pair a reader looks it up with,
+    // rather than left for the client to infer from the declaration it cannot see.
+    assert_eq!(served["upstream_version"], runs[0]["upstream_version"]);
+    assert_eq!(served["platform"], runs[0]["platform"]);
+    // The read changed nothing: the binding is still the one composed, and a
+    // second read answers the same record rather than consuming it.
+    assert_eq!(
+        ok(&host.call(dossier_read()))["data"]["dossier"]["adapter"],
+        "native-agent"
+    );
+    assert_eq!(
+        ok(&host.call(request(
+            "dossier-readiness",
+            json!({"kind":"get_binding_readiness","project_id":"staffing-demo","binding_id":"engineer-binding"}),
+        )))["data"]["status"],
+        "ready_for_preflight",
+        "serving a record is not a dispatch, a lease or a start"
+    );
+}
+
+/// Every way a record fails to be this runtime's evidence is refused by name,
+/// and the refusal names only the refusal: a client is told which fact is
+/// missing without the wire echoing the pack's own document back at it.
+#[test]
+fn a_dossier_the_host_cannot_hold_is_refused_by_name() {
+    let mut foreign = published_dossier();
+    foreign["adapter"] = json!("other-adapter");
+    let mut mixed = published_dossier();
+    mixed["runs"][0]["adapter"] = json!("other-adapter");
+    let mut another_shape = published_dossier();
+    another_shape["schema_version"] = json!(2);
+    let mut unknown_rule = published_dossier();
+    unknown_rule["runs"][0]["rules"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": "a_rule_this_suite_does_not_run", "held": true, "failure": null
+        }));
+    let mut twice = published_dossier();
+    let mut second = twice["runs"][0].clone();
+    second["adapter_version"] = json!("0.2.0");
+    twice["runs"].as_array_mut().unwrap().push(second);
+    let mut unheld = published_dossier();
+    unheld["runs"][0]["rules"][0]["held"] = json!(false);
+    let mut thin_matrix = published_dossier();
+    thin_matrix["runs"][0]["capabilities"] = json!([]);
+    let mut no_work = published_dossier();
+    no_work["runs"][0]["dispatches"] = json!([]);
+    let mut other_version = published_dossier();
+    other_version["runs"][0]["upstream_version"] = json!("9.9.9");
+    let mut other_build = published_dossier();
+    other_build["runs"][0]["adapter_version"] = json!("0.2.0");
+    for (dossier, refusal) in [
+        (Some(foreign), "another_pack"),
+        (Some(mixed), "the_run_names_another_pack"),
+        (Some(another_shape), "unknown_shape"),
+        (Some(unknown_rule), "unknown_rules"),
+        (Some(twice), "the_same_run_twice"),
+        (Some(unheld), "a_rule_did_not_hold"),
+        (Some(thin_matrix), "the_matrices_are_not_the_suites"),
+        (Some(no_work), "the_run_read_no_dispatch"),
+        (Some(other_version), "no_run"),
+        (Some(other_build), "another_adapter_version"),
+        (None, "no_published_dossier"),
+    ] {
+        let host = Host::with_operator_config(dossier_operator(dossier));
+        staffing_composition(&host, Registration::Complete);
+        let response = host.call(dossier_read());
+        assert_eq!(response["result"]["Err"]["code"], "failed_precondition");
+        assert_eq!(
+            response["result"]["Err"]["message"],
+            format!("compatibility dossier not served ({refusal})"),
+            "the refusal names the fact and nothing else"
+        );
+        // Nothing the document said reaches the wire: no identity, no version, no
+        // platform and no path, whatever the file carried.
+        for echo in ["other-adapter", "0.1.0", "0.2.0", "9.9.9", "linux", "/"] {
+            assert!(
+                !response["result"]["Err"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(echo),
+                "the refusal echoes {echo}: {}",
+                response["result"]["Err"]["message"]
+            );
+        }
+    }
+    // A runtime the operator never declared has no record to hold either, and
+    // that is a different thing to fix from a record that is another pack's.
+    let mut undeclared = dossier_operator(Some(published_dossier()));
+    undeclared["runtime_declarations"] = json!([]);
+    let host = Host::with_operator_config(undeclared);
+    staffing_composition(&host, Registration::Complete);
+    let response = host.call(dossier_read());
+    assert_eq!(
+        response["result"]["Err"]["message"],
+        "compatibility dossier not served (no_runtime_declared)"
+    );
+    // And a binding this Host does not hold is the store's own refusal, not a
+    // dossier refusal: the read never reaches the record.
+    let missing = host.call(request(
+        "dossier-missing-binding",
+        json!({"kind":"get_compatibility_dossier","project_id":"staffing-demo","binding_id":"other-binding"}),
+    ));
+    assert_eq!(missing["result"]["Err"]["code"], "not_found");
+}
+
+/// A file that is not one pack's record refuses the daemon at start rather than
+/// becoming a read that reports nothing: an operator learns which file is wrong
+/// from the daemon that would have served it, and no half-read reaches a client.
+#[test]
+fn a_dossier_file_that_is_not_one_packs_record_refuses_the_daemon() {
+    let good = installed_dossier(published_dossier(), 0o600);
+    let world_readable = installed_dossier(published_dossier(), 0o644);
+    let invalid = installed_dossier(
+        json!({"schema_version": 1, "adapter": "native-agent"}),
+        0o600,
+    );
+    let overbound = installed_dossier(
+        json!({
+            "schema_version": 1,
+            "adapter": "native-agent",
+            "driver": null,
+            "runs": [],
+            "padding": "x".repeat(symbiote_host::operator::DOSSIER_FILE_BYTES + 1)
+        }),
+        0o600,
+    );
+    let second = installed_dossier(published_dossier(), 0o600);
+    for (paths, refusal) in [
+        (
+            vec![PathBuf::from("/nonexistent/dossier.json")],
+            "operator compatibility dossier unreadable",
+        ),
+        (
+            vec![PathBuf::from(&world_readable)],
+            "operator compatibility dossier permissions",
+        ),
+        (
+            vec![PathBuf::from(&invalid)],
+            "operator compatibility dossier invalid",
+        ),
+        (
+            vec![PathBuf::from(&overbound)],
+            "operator compatibility dossier overbound",
+        ),
+        (
+            vec![PathBuf::from(&good), PathBuf::from(&second)],
+            "operator compatibility dossier published twice for one pack",
+        ),
+    ] {
+        assert_eq!(
+            symbiote_host::operator::load_dossiers(&paths).expect_err("a refused file"),
+            refusal,
+            "the refusal names which file fact failed"
+        );
+    }
+    // The one file that is a record loads, and the two refusals above are about
+    // the file rather than about the record: the same bytes under 0600 parse.
+    assert_eq!(
+        symbiote_host::operator::load_dossiers(&[PathBuf::from(&good)])
+            .expect("one pack's record")
+            .len(),
+        1
+    );
+    // And the daemon itself refuses to start on one, naming the refusal on the
+    // way out: nothing is served by a Host that could not read its own evidence.
+    let directory = std::env::temp_dir().join(format!(
+        "symbiote-dossier-daemon-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    private_directory(&directory).unwrap();
+    let config_path = directory.join("operator-config.json");
+    let mut config = dossier_operator(None);
+    config["compatibility_dossiers"] = json!([invalid]);
+    let mut file = std::fs::File::create(&config_path).unwrap();
+    file.write_all(serde_json::to_string_pretty(&config).unwrap().as_bytes())
+        .unwrap();
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .unwrap();
+    // Bounded, because a daemon that *accepted* the file is the regression this
+    // case exists to catch: it would keep running, and an unbounded wait would
+    // hang the suite instead of reporting it. The child is killed and reaped
+    // before this case fails.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_symbioted"))
+        .arg("--state-dir")
+        .arg(&directory)
+        .arg("--operator-config")
+        .arg(&config_path)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        match child.try_wait().unwrap() {
+            Some(status) => break Some(status),
+            None if Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            None => {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+        }
+    };
+    let stderr = {
+        let mut text = String::new();
+        let mut pipe = child.stderr.take().expect("the refusal is on stderr");
+        std::io::Read::read_to_string(&mut pipe, &mut text).unwrap();
+        text
+    };
+    let status = status.expect("the daemon started with a file it should have refused");
+    assert!(!status.success(), "the daemon did not start");
+    assert!(
+        stderr.contains("operator compatibility dossier invalid"),
+        "{stderr}"
     );
 }

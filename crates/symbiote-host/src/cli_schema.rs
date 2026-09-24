@@ -64,6 +64,7 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("get_task_origin", Risk::ReadOnly),
     ("get_binding", Risk::ReadOnly),
     ("get_binding_readiness", Risk::ReadOnly),
+    ("get_compatibility_dossier", Risk::ReadOnly),
     ("get_task_dependencies", Risk::ReadOnly),
     ("get_route", Risk::ReadOnly),
     ("resolve_route", Risk::ReadOnly),

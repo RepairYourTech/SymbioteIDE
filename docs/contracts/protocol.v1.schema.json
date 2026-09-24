@@ -626,6 +626,28 @@
           },
           {
             "additionalProperties": false,
+            "description": "The published Compatibility Dossier this Host holds for the runtime this\nbinding's primary candidate declares, served whole and named by the run\ninside it that certifies that runtime. The document is served only after\nit has been held against the declaration the Host actually has: a record\nfor another pack, a shape this crate does not speak, a rule the record\ndoes not show as held, a matrix that is not the suite's, a run over no\nwork, a version the pack published no run for, or a run of another\nadapter build is refused by name rather than served.",
+            "properties": {
+              "binding_id": {
+                "$ref": "#/$defs/BindingId"
+              },
+              "kind": {
+                "const": "get_compatibility_dossier",
+                "type": "string"
+              },
+              "project_id": {
+                "$ref": "#/$defs/ProjectId"
+              }
+            },
+            "required": [
+              "kind",
+              "project_id",
+              "binding_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "kind": {
                 "const": "resolve_route",
@@ -3487,6 +3509,7 @@
           "route_recording",
           "route_read",
           "binding_readiness",
+          "compatibility_dossier",
           "binding_configuration",
           "binding_read",
           "host_pulse_read",
@@ -3592,6 +3615,35 @@
           "observed_at",
           "expires_at",
           "source"
+        ],
+        "type": "object"
+      },
+      "CapabilityRead": {
+        "additionalProperties": false,
+        "description": "One capability the module places on a surface, read beside what the\nadapter's own projections carry for it. This is the capability matrix, and it\nis wire data: a published dossier carries these rows as they were read.",
+        "properties": {
+          "capability": {
+            "$ref": "#/$defs/Capability",
+            "description": "The carrier this row is about."
+          },
+          "carried": {
+            "description": "Whether every place that demands it reports it carried as declared. A\ncapability no dispatch demands is read as carried in the sense its\ndeclaration states: nothing contradicts it.",
+            "type": "boolean"
+          },
+          "declared": {
+            "$ref": "#/$defs/CarrierDelivery",
+            "description": "The descriptor's own declaration, in the projection's own vocabulary, so\nboth readers agree on what four facts are four. A capability the\ndescriptor never mentions is `Absent` rather than assumed."
+          },
+          "demanded": {
+            "description": "Whether any dispatch the suite ran demands this capability.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "capability",
+          "declared",
+          "demanded",
+          "carried"
         ],
         "type": "object"
       },
@@ -3815,6 +3867,45 @@
         "pattern": "^([A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$",
         "type": "string"
       },
+      "CompatibilityDossier": {
+        "additionalProperties": false,
+        "description": "A pack's published record of what it was run against.",
+        "properties": {
+          "adapter": {
+            "$ref": "#/$defs/AgentRuntimeAdapterId",
+            "description": "The pack this dossier is: its adapter, and the harness driver it drives\nwhen it drives an external one."
+          },
+          "driver": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HarnessDriverId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runs": {
+            "description": "One entry per upstream version and platform the pack was run against, in\nthe order the pack published them.",
+            "items": {
+              "$ref": "#/$defs/ConformanceRun"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "The dossier shape this document speaks.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "adapter",
+          "runs"
+        ],
+        "type": "object"
+      },
       "CompositionStep": {
         "oneOf": [
           {
@@ -3919,6 +4010,88 @@
             "type": "object"
           }
         ]
+      },
+      "ConformanceRun": {
+        "additionalProperties": false,
+        "description": "One conformance run, as a pack publishes it.",
+        "properties": {
+          "adapter": {
+            "$ref": "#/$defs/AgentRuntimeAdapterId",
+            "description": "The adapter this run was of, and the harness driver it drives when it\ndrives an external one."
+          },
+          "adapter_version": {
+            "type": "string"
+          },
+          "capabilities": {
+            "description": "The suite's capability matrix, as that run read it.",
+            "items": {
+              "$ref": "#/$defs/CapabilityRead"
+            },
+            "type": "array"
+          },
+          "controls": {
+            "description": "The suite's enforcement matrix, as that run read it.",
+            "items": {
+              "$ref": "#/$defs/ControlRead"
+            },
+            "type": "array"
+          },
+          "dispatches": {
+            "description": "What each dispatch in the run published.",
+            "items": {
+              "$ref": "#/$defs/DispatchRead"
+            },
+            "type": "array"
+          },
+          "driver": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HarnessDriverId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "platform": {
+            "type": "string"
+          },
+          "rules": {
+            "description": "One outcome per rule the suite ran, in the suite's own order.",
+            "items": {
+              "$ref": "#/$defs/RuleRead"
+            },
+            "type": "array"
+          },
+          "tier": {
+            "$ref": "#/$defs/IntegrationTier",
+            "description": "The tier the runtime declared, which implies nothing by itself."
+          },
+          "upstream_version": {
+            "description": "The upstream product version, the adapter's own version and the platform,\neach read from the descriptor the run was made over — never supplied by\nthe pack, which is the whole point: a version nobody ran against cannot\nappear here.",
+            "type": "string"
+          },
+          "withheld": {
+            "description": "The surfaces that run's projections carried nothing for, in this crate's\nown order.",
+            "items": {
+              "$ref": "#/$defs/ContractSurface"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "adapter",
+          "upstream_version",
+          "adapter_version",
+          "platform",
+          "tier",
+          "rules",
+          "capabilities",
+          "controls",
+          "dispatches",
+          "withheld"
+        ],
+        "type": "object"
       },
       "ContextBundleId": {
         "maxLength": 128,
@@ -4031,6 +4204,53 @@
           "completion_authority"
         ],
         "type": "string"
+      },
+      "ControlRead": {
+        "additionalProperties": false,
+        "description": "One control the module places on a surface, with what the descriptor\ndeclares and what the adapter's projections made of it. This is the\nenforcement matrix, and it is wire data for the same reason.",
+        "properties": {
+          "control": {
+            "$ref": "#/$defs/Control",
+            "description": "The claim this row is about."
+          },
+          "declared": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/EnforcementStrength"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The strength the descriptor declares, or `None` when it does not list\nthe control at all."
+          },
+          "demanded": {
+            "description": "Whether any dispatch the suite ran claims this control on its surface.",
+            "type": "boolean"
+          },
+          "mechanism": {
+            "description": "The mechanism the descriptor names, or `None` when it lists no control.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "realized": {
+            "description": "Whether every place that demands it reports it carried — delivered or\ndegraded, since a degradation is realized. A control no dispatch demands\nis read as realized in the sense its declaration states: nothing\ncontradicts it.",
+            "type": "boolean"
+          },
+          "surface": {
+            "$ref": "#/$defs/ContractSurface",
+            "description": "The one surface this module places the control on."
+          }
+        },
+        "required": [
+          "control",
+          "surface",
+          "demanded",
+          "realized"
+        ],
+        "type": "object"
       },
       "CredentialReferenceId": {
         "maxLength": 128,
@@ -4170,6 +4390,58 @@
           "outcome",
           "steps",
           "compiled_at"
+        ],
+        "type": "object"
+      },
+      "DispatchRead": {
+        "additionalProperties": false,
+        "description": "What one dispatch's projection published. Wire data for the same reason: a\ndossier says which abstract work each of its runs was read over, so a reader\ncan tell a run over a bare task from a run over a staffed one.",
+        "properties": {
+          "dispatch": {
+            "$ref": "#/$defs/DispatchId",
+            "description": "The dispatch read."
+          },
+          "surfaces": {
+            "description": "How many surfaces the projection names.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "withheld": {
+            "description": "The surfaces the projection carries nothing for, in the module's order.",
+            "items": {
+              "$ref": "#/$defs/ContractSurface"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "dispatch",
+          "surfaces",
+          "withheld"
+        ],
+        "type": "object"
+      },
+      "DossierHolding": {
+        "additionalProperties": false,
+        "description": "The published record a Host holds, and the run in it that certifies the\nruntime this Host declares. The record is the pack's own document, served\nwhole; the pair is the Host's answer to which of its runs was held.",
+        "properties": {
+          "dossier": {
+            "$ref": "#/$defs/CompatibilityDossier"
+          },
+          "platform": {
+            "description": "The platform of the run this Host held.",
+            "type": "string"
+          },
+          "upstream_version": {
+            "description": "The upstream version of the run this Host held.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dossier",
+          "upstream_version",
+          "platform"
         ],
         "type": "object"
       },
@@ -5379,6 +5651,12 @@
         ],
         "type": "string"
       },
+      "HarnessDriverId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
       "HostId": {
         "maxLength": 128,
         "minLength": 1,
@@ -5459,6 +5737,17 @@
         "maxLength": 128,
         "minLength": 1,
         "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "IntegrationTier": {
+        "enum": [
+          "terminal_compatible",
+          "detected",
+          "managed",
+          "structured",
+          "orchestrator_grade",
+          "certified"
+        ],
         "type": "string"
       },
       "JournalEvent": {
@@ -6462,6 +6751,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "One pack's published Compatibility Dossier, served whole, and the run\ninside it that this Host held against the runtime it actually has — named\nby the upstream version and platform a reader looks that run up with. The\nrun is not copied out of the record: the dossier is served as published\nand these two facts say which of its runs the Host held, so no reader has\nto make the Host's comparison for itself.",
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/DossierHolding"
+              },
+              "kind": {
+                "const": "compatibility_dossier",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "data": {
                 "$ref": "#/$defs/RouteDecision"
@@ -7295,6 +7602,31 @@
             "type": "string"
           }
         ]
+      },
+      "RuleRead": {
+        "additionalProperties": false,
+        "description": "One rule's outcome as a dossier publishes it: the rule's name, and whether\nit held. The prose a rule holds is the suite's own and does not travel on\nthe wire — a reader learns the name and looks it up in the SDK that ran it,\nso a reworded rule cannot make a published dossier read as a different rule.",
+        "properties": {
+          "failure": {
+            "description": "What failed, when something did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "held": {
+            "type": "boolean"
+          },
+          "id": {
+            "description": "The suite's name for this rule, exactly as a report carried it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "held"
+        ],
+        "type": "object"
       },
       "RuntimeContractId": {
         "maxLength": 128,

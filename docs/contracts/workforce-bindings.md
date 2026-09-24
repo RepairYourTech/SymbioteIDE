@@ -23,7 +23,7 @@ Runtime changes do not change Role identity. A single profile may be referenced
 by different Roles, but each binding retains its own effective-intent scopes.
 Sharing an identity is not proof of runtime isolation.
 
-Protocol v1.5 adds `replace_binding`, `get_binding` and `get_binding_readiness`; v1.6 adds [Role routing](role-resolution.md) operations that consume validated Teams.
+Protocol v1.5 adds `replace_binding`, `get_binding` and `get_binding_readiness`; v1.24 adds `get_compatibility_dossier`, which answers from the pack record the operator installed for the runtime this binding's primary candidate declares; v1.6 adds [Role routing](role-resolution.md) operations that consume validated Teams.
 Management requires a separate `ManageBindings` Project grant. Ordinary Team/work
 management and read access do not imply that grant. The Host supplies actor and
 timestamp; clients cannot inject authority. Readiness additionally requires the
@@ -224,10 +224,14 @@ memory bound it does not apply.
 
 With `symbioted --state-dir PRIVATE_DIRECTORY` running, send the Project Team
 `register.json` and `configure.json` fixtures, followed by
-`fixtures/workforce-bindings/configure.json`, `read.json` and `readiness.json`,
-using `symbiote --state-dir PRIVATE_DIRECTORY raw <configure.json>`. Restart and retry the same
+`fixtures/workforce-bindings/configure.json`, `read.json`, `readiness.json` and
+`dossier.json`, using `symbiote --state-dir PRIVATE_DIRECTORY raw <configure.json>`. Restart and retry the same
 configuration command to recover its receipt. The demo references an explicitly
-unresolved Host/profile and must report incomplete readiness.
+unresolved Host/profile and must report incomplete readiness. The dossier read
+answers only where the operator installed a published [Compatibility
+Dossier](runtime-sdk.md) for the runtime it declared: with none installed it is
+refused as `no_published_dossier` rather than answered with an empty record, and
+with one installed for another pack as `another_pack`.
 
 Tests cover revision races, exact retries, Project isolation, Team drift,
 historical replay, tampered state, native/external intent and rejected fallback

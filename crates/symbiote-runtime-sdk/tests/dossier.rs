@@ -5,7 +5,9 @@ use symbiote_domain::*;
 // `symbiote_domain` names a canonical `Capability` record of its own (#36); this
 // test means the runtime adapter's declared capability.
 use symbiote_runtime_sdk::Capability;
-use symbiote_runtime_sdk::conformance::{RULES, run_conformance};
+use symbiote_runtime_sdk::conformance::{
+    RULES, placed_capabilities, placed_controls, run_conformance,
+};
 use symbiote_runtime_sdk::dossier::*;
 use symbiote_runtime_sdk::projection::{ContractProjection, ContractSurface};
 use symbiote_runtime_sdk::*;
@@ -142,6 +144,45 @@ fn descriptor_at(pack: &Pack) -> RuntimeDescriptor {
 /// The pack every case describes unless it is about another one.
 fn descriptor() -> RuntimeDescriptor {
     descriptor_at(&DEFAULT)
+}
+
+/// The operator's form of the same runtime: the identity and the facts, with
+/// the observation identity, the evidence artifact and the window left to the
+/// Host. This is the form a Host actually holds, and therefore the one a reader
+/// holds a published record against.
+fn declared_at(pack: &Pack) -> DeclaredRuntime {
+    let descriptor = descriptor_at(pack);
+    DeclaredRuntime {
+        adapter_id: descriptor.adapter_id.clone(),
+        installation: descriptor.installation.clone(),
+        profile_id: descriptor.profile_id.clone(),
+        profile_revision: descriptor.profile_revision,
+        model_id: descriptor.model_id.clone(),
+        adapter_version: descriptor.adapter_version.clone(),
+        upstream_version: descriptor.upstream_version.clone(),
+        runtime: descriptor.runtime,
+        owner: descriptor.owner.clone(),
+        transport: descriptor.transport.clone(),
+        tier: descriptor.tier.clone(),
+        platform: descriptor.platform.clone(),
+        capabilities: BTreeSet::new(),
+        controls: BTreeMap::new(),
+        tools: descriptor.tools.clone(),
+        skills: descriptor.skills.clone(),
+        context_limits: descriptor.context_limits.clone(),
+    }
+}
+
+/// The declaration the pack every case describes.
+fn declared() -> DeclaredRuntime {
+    declared_at(&DEFAULT)
+}
+
+/// The record as a reader receives it: parsed back out of the published bytes,
+/// so a case edits a *document* — the only form a Host ever holds a pack's
+/// claim in — rather than an in-memory value nobody had to write down.
+fn parsed(dossier: &CompatibilityDossier) -> CompatibilityDossier {
+    serde_json::from_str(&serde_json::to_string(dossier).unwrap()).unwrap()
 }
 
 /// An abstract dispatch staffed with every permission the contract can claim a
@@ -547,6 +588,474 @@ fn a_dossier_naming_two_packs_is_refused() {
 
 /// The dossier is a published document: a pack writes it, a reader parses it,
 /// and the schema a third-party adapter builds against names its fields.
+/// The reader's side: a record parsed back out of its published bytes, held
+/// against the runtime this Host actually has. The holding names the run inside
+/// the record that certifies this runtime and the declaration it was held
+/// against, and serves the record whole.
+#[test]
+fn a_held_record_names_the_run_that_certifies_this_runtime() {
+    let declared = declared();
+    let dossier = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    // The record is this pack's, read the one way the Host both chooses its
+    // installed file and refuses a foreign one.
+    assert!(dossier.publishes(
+        &declared.adapter_id,
+        match &declared.owner {
+            RuntimeOwner::External { driver } => Some(driver),
+            RuntimeOwner::SymbioteNative {} => None,
+        }
+    ));
+    let held = dossier
+        .hold(&declared)
+        .expect("this pack certified this runtime");
+    assert_eq!(held.declared.adapter_id, declared.adapter_id);
+    assert_eq!(held.run.upstream_version, "fixture-1");
+    assert_eq!(held.run.platform, "linux");
+    assert_eq!(held.run.adapter_version, "1.0");
+    // The run is the one inside the record, not a copy of it: the same rows.
+    assert_eq!(Some(held.run), dossier.run("fixture-1", "linux"));
+    assert!(
+        held.run.rules.iter().all(|rule| rule.held),
+        "a held run shows every rule as held"
+    );
+    // A native runtime is not this external pack, even at the same version: the
+    // pack identity includes the driver a pack drives.
+    let mut native = declared.clone();
+    native.owner = RuntimeOwner::SymbioteNative {};
+    native.runtime = RuntimeKind::NativeSymbiote;
+    native.installation = None;
+    assert_eq!(
+        dossier
+            .hold(&native)
+            .expect_err("a native runtime is not an external pack"),
+        HoldError::AnotherPack {
+            stated: "adapter/fixture-driver".into(),
+            held: "adapter".into(),
+        }
+    );
+}
+
+/// A record that is another pack's, or that names a shape this crate does not
+/// speak, is refused before any of its evidence is read: a reader cannot hold a
+/// document whose own identity is not the runtime it has.
+#[test]
+fn a_record_that_is_another_packs_or_another_shape_is_refused() {
+    let declared = declared();
+    let mut foreign = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    foreign.adapter = AgentRuntimeAdapterId::new("other-adapter").unwrap();
+    assert_eq!(
+        foreign.hold(&declared).expect_err("another pack's record"),
+        HoldError::AnotherPack {
+            stated: "other-adapter/fixture-driver".into(),
+            held: "adapter/fixture-driver".into(),
+        }
+    );
+    // A driver is part of the pack's identity, so the same adapter under another
+    // driver is another pack too.
+    let mut other_driver = foreign.clone();
+    other_driver.driver = Some(HarnessDriverId::new("other-driver").unwrap());
+    assert!(matches!(
+        other_driver.hold(&declared),
+        Err(HoldError::AnotherPack { .. })
+    ));
+    // A shape this crate does not publish cannot be read as one it does: the
+    // fields would be somebody else's, whatever they are named.
+    let mut shape = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    shape.schema_version = DOSSIER_SCHEMA_VERSION + 1;
+    assert_eq!(
+        shape.hold(&declared).expect_err("another shape"),
+        HoldError::UnknownShape {
+            stated: DOSSIER_SCHEMA_VERSION + 1,
+        }
+    );
+    assert!(
+        shape
+            .hold(&declared)
+            .unwrap_err()
+            .to_string()
+            .contains("shape")
+    );
+    // And a document whose own runs are not its pack's is a document that mixes
+    // packs, refused before any run is read as this one.
+    let mut mixed = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    mixed.runs[0].adapter = AgentRuntimeAdapterId::new("other-adapter").unwrap();
+    assert_eq!(
+        mixed.hold(&declared).expect_err("a mixed document"),
+        HoldError::TheRunNamesAnotherPack {
+            stated: "other-adapter/fixture-driver".into(),
+            pack: "adapter/fixture-driver".into(),
+        }
+    );
+}
+
+/// The evidence a record carries about outcomes is the one thing a reader cannot
+/// observe for itself, so every way of weakening it is the same refusal: a rule
+/// this suite runs that the record does not show as held.
+#[test]
+fn a_rule_the_record_does_not_show_as_held_is_refused_by_name() {
+    let declared = declared();
+    let first = RULES[0].id.to_string();
+    for edit in [
+        // A row that reports the rule as failed.
+        Box::new(|run: &mut ConformanceRun| run.rules[0].held = false)
+            as Box<dyn Fn(&mut ConformanceRun)>,
+        // A row that claims an outcome beside a failure: the two contradict, and
+        // neither reading of it is evidence.
+        Box::new(|run: &mut ConformanceRun| {
+            run.rules[0].failure = Some("a failure the record also calls held".into())
+        }),
+        // No row at all. A row under another name is refused earlier and by
+        // another name — `UnknownRules`, because a row the suite does not publish
+        // is not a weakened outcome but a rule nobody here runs.
+        Box::new(|run: &mut ConformanceRun| {
+            run.rules.remove(0);
+        }),
+        // A second row beside the held one: two rows are not one outcome, and a
+        // rule that appears twice is not shown as held by either of them.
+        Box::new(|run: &mut ConformanceRun| {
+            let mut second = run.rules[0].clone();
+            second.held = false;
+            run.rules.push(second);
+        }),
+    ] {
+        let mut dossier = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+        edit(&mut dossier.runs[0]);
+        let refused = dossier.hold(&declared).expect_err("an unheld rule");
+        assert_eq!(
+            refused,
+            HoldError::ARuleDidNotHold {
+                rules: vec![first.clone()]
+            },
+            "one rule is not shown as held, and the refusal names it"
+        );
+        let text = refused.to_string();
+        assert!(text.contains(&first), "{text}");
+        assert!(
+            !text.contains(ROLE_PROSE),
+            "a refusal carries no task content"
+        );
+        assert_eq!(refused.name(), "a_rule_did_not_hold");
+    }
+    // Two weakened rules are named together, and a record with every rule held
+    // is not refused for the rules at all.
+    let mut two = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    two.runs[0].rules[0].held = false;
+    two.runs[0].rules[1].failure = Some("also failed".into());
+    assert_eq!(
+        two.hold(&declared)
+            .expect_err("two rules are not shown as held"),
+        HoldError::ARuleDidNotHold {
+            rules: vec![first, RULES[1].id.to_string()]
+        }
+    );
+}
+
+/// A record carries its own vocabulary, so a rule row the suite does not publish
+/// is a row about a rule nobody here runs — and a record with the same version
+/// and platform in two runs cannot say which of the two is the claim. Both are
+/// refused before any of the record's outcomes is believed.
+#[test]
+fn a_rule_the_suite_does_not_publish_and_a_version_twice_are_refused() {
+    let declared = declared();
+    let mut unknown = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    unknown.runs[0].rules.push(RuleRead {
+        id: "a_rule_this_suite_does_not_run".into(),
+        held: true,
+        failure: None,
+    });
+    assert_eq!(
+        unknown.hold(&declared).expect_err("an unknown rule"),
+        HoldError::UnknownRules {
+            rules: vec!["a_rule_this_suite_does_not_run".into()]
+        }
+    );
+    // A known rule's row renamed is the same refusal: the record no longer shows
+    // the suite's rule, and the name it shows instead is one nobody here runs.
+    let mut renamed = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    renamed.runs[0].rules[0].id = "some_other_rule".into();
+    assert_eq!(
+        renamed.hold(&declared).expect_err("a renamed rule row"),
+        HoldError::UnknownRules {
+            rules: vec!["some_other_rule".into()]
+        }
+    );
+    // Two runs for one version and platform: the pair a reader looks a run up
+    // with would name either of them, and a second run that disagrees is exactly
+    // what the publisher refuses to publish.
+    let mut twice = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    let mut second = twice.runs[0].clone();
+    second.adapter_version = "0.9".into();
+    twice.runs.push(second);
+    assert_eq!(
+        twice.hold(&declared).expect_err("the same version twice"),
+        HoldError::TheSameRunTwice {
+            upstream_version: "fixture-1".into(),
+            platform: "linux".into(),
+        }
+    );
+    // The same upstream version on another platform is a different claim, so it
+    // is served rather than refused: only the pair may appear once.
+    let mut platforms = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    let mut macos = platforms.runs[0].clone();
+    macos.platform = "macos".into();
+    platforms.runs.push(macos);
+    assert!(platforms.hold(&declared).is_ok());
+}
+
+/// The two matrices are what a record says was demanded and realized, so a
+/// matrix that is not the one this suite publishes is evidence for nothing:
+/// whether a row is missing, extra, duplicated or on another surface, the reader
+/// is being shown a claim the suite would not have written.
+#[test]
+fn a_matrix_that_is_not_the_suites_is_refused() {
+    let declared = declared();
+    for (what, edit) in [
+        (
+            "capabilities",
+            Box::new(|run: &mut ConformanceRun| {
+                run.capabilities.pop();
+            }) as Box<dyn Fn(&mut ConformanceRun)>,
+        ),
+        (
+            "capabilities",
+            Box::new(|run: &mut ConformanceRun| {
+                run.capabilities[0] = run.capabilities[1].clone();
+            }),
+        ),
+        (
+            "controls",
+            Box::new(|run: &mut ConformanceRun| {
+                run.controls.pop();
+            }),
+        ),
+        (
+            "controls",
+            Box::new(|run: &mut ConformanceRun| {
+                if let Some(row) = run.controls.first_mut() {
+                    row.surface = ContractSurface::WorkforceProtocol;
+                }
+            }),
+        ),
+    ] {
+        let mut dossier = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+        edit(&mut dossier.runs[0]);
+        assert_eq!(
+            dossier.hold(&declared).expect_err("another matrix"),
+            HoldError::TheMatricesAreNotTheSuites { what },
+            "the refusal names which matrix, not a count"
+        );
+    }
+    // The shape both matrices are read against is the suite's own, so a case
+    // cannot hold a record against a shape the suite would not publish, and a
+    // held run carries one row per placed capability and one per placed control.
+    assert_eq!(placed_capabilities().len(), 6);
+    let whole = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    let held = whole.hold(&declared).expect("the whole record is held");
+    assert_eq!(held.run.capabilities.len(), placed_capabilities().len());
+    assert_eq!(held.run.controls.len(), placed_controls().len());
+    assert_eq!(
+        held.run.controls[0].surface,
+        placed_controls()[0].0,
+        "a control row is the surface this module places that control on"
+    );
+    // What a row *says* is the pack's claim rather than a fact this reader can
+    // recompute — a record carries each dispatch's summary, not the work the
+    // suite read — so a value is served as published. The shape is what the
+    // reader holds, and this says so rather than leaving it implied.
+    let mut edited_value = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    edited_value.runs[0].capabilities[0].carried = false;
+    assert!(
+        edited_value.hold(&declared).is_ok(),
+        "a row's value is the pack's claim; only its shape is the reader's check"
+    );
+}
+
+/// A run over no dispatch proves nothing about any work, exactly as it cannot be
+/// published: a document that claims one anyway is refused rather than served.
+#[test]
+fn a_run_that_read_no_dispatch_is_refused() {
+    let declared = declared();
+    let mut dossier = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    dossier.runs[0].dispatches.clear();
+    assert_eq!(
+        dossier.hold(&declared).expect_err("a run over no work"),
+        HoldError::TheRunReadNoDispatch
+    );
+}
+
+/// The version and the platform are the pair a reader looks a run up with, so a
+/// runtime at a version the pack published no run for is refused by name rather
+/// than served the nearest run it does have.
+#[test]
+fn a_version_or_platform_the_dossier_does_not_publish_is_refused() {
+    let declared = declared();
+    let dossier = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    let mut other_version = declared.clone();
+    other_version.upstream_version = "fixture-2".into();
+    assert_eq!(
+        dossier
+            .hold(&other_version)
+            .expect_err("an unpublished version"),
+        HoldError::NoRun {
+            upstream_version: "fixture-2".into(),
+            platform: "linux".into(),
+        }
+    );
+    let mut other_platform = declared.clone();
+    other_platform.platform = "macos".into();
+    assert_eq!(
+        dossier
+            .hold(&other_platform)
+            .expect_err("an unpublished platform"),
+        HoldError::NoRun {
+            upstream_version: "fixture-1".into(),
+            platform: "macos".into(),
+        }
+    );
+    // A second published version is a run the reader may hold, and the holding
+    // names that one rather than the first.
+    let newer = Pack {
+        upstream_version: "fixture-2",
+        adapter_version: "1.1",
+        ..DEFAULT
+    };
+    let second = Fixture::new(descriptor_at(&newer));
+    let dispatch = dispatch();
+    let both = CompatibilityDossier::publish(vec![
+        PackRun {
+            adapter: &Fixture::new(descriptor()),
+            dispatches: vec![&dispatch],
+        },
+        PackRun {
+            adapter: &second,
+            dispatches: vec![&dispatch],
+        },
+    ])
+    .expect("two versions publish");
+    let mut newer_declaration = declared_at(&newer);
+    newer_declaration.adapter_version = "1.1".into();
+    let held = both
+        .hold(&newer_declaration)
+        .expect("the newer version is published");
+    assert_eq!(held.run.upstream_version, "fixture-2");
+    assert_eq!(held.run.adapter_version, "1.1");
+    // The older run is still the refusal this declaration asks about, not the
+    // newer one that happens to exist.
+    assert!(matches!(
+        dossier.hold(&declared),
+        Ok(held) if held.run.upstream_version == "fixture-1"
+    ));
+    // A version this record does publish is held by the declaration that names
+    // it — and by that run's own adapter version, not a neighbour's.
+    other_version.adapter_version = "1.1".into();
+    assert!(matches!(
+        both.hold(&other_version),
+        Ok(held) if held.run.upstream_version == "fixture-2"
+    ));
+}
+
+/// The adapter's own version is per run: a run made with another build of the
+/// adapter is not evidence about this one, however well it passed.
+#[test]
+fn a_run_of_another_adapter_version_is_refused() {
+    let mut declared = declared();
+    declared.adapter_version = "1.1".into();
+    let dossier = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    assert_eq!(
+        dossier.hold(&declared).expect_err("another build's run"),
+        HoldError::AnotherAdapterVersion {
+            stated: "1.0".into(),
+            held: "1.1".into(),
+        }
+    );
+}
+
+/// A boundary that has to name a refusal without repeating the document gets
+/// the refusal's own name and nothing else: no version, no platform, no identity
+/// and no path the file said. The names are stable for the same reason the
+/// published shape is.
+#[test]
+fn every_refusal_has_a_stable_name_that_echoes_nothing() {
+    let mut another_shape = parsed(&publish_one(&descriptor()).expect("the run publishes"));
+    another_shape.schema_version = DOSSIER_SCHEMA_VERSION + 1;
+    let refusals = [
+        (
+            another_shape.hold(&declared()).unwrap_err(),
+            "unknown_shape",
+        ),
+        (
+            HoldError::AnotherPack {
+                stated: "other/fixture-driver".into(),
+                held: "adapter/fixture-driver".into(),
+            },
+            "another_pack",
+        ),
+        (
+            HoldError::TheRunNamesAnotherPack {
+                stated: "other/fixture-driver".into(),
+                pack: "adapter/fixture-driver".into(),
+            },
+            "the_run_names_another_pack",
+        ),
+        (
+            HoldError::UnknownRules {
+                rules: vec!["a_rule_this_suite_does_not_run".into()],
+            },
+            "unknown_rules",
+        ),
+        (
+            HoldError::TheSameRunTwice {
+                upstream_version: "fixture-1".into(),
+                platform: "linux".into(),
+            },
+            "the_same_run_twice",
+        ),
+        (
+            HoldError::ARuleDidNotHold {
+                rules: vec!["descriptor_identity_is_valid".into()],
+            },
+            "a_rule_did_not_hold",
+        ),
+        (
+            HoldError::TheMatricesAreNotTheSuites { what: "controls" },
+            "the_matrices_are_not_the_suites",
+        ),
+        (HoldError::TheRunReadNoDispatch, "the_run_read_no_dispatch"),
+        (
+            HoldError::NoRun {
+                upstream_version: "fixture-2".into(),
+                platform: "linux".into(),
+            },
+            "no_run",
+        ),
+        (
+            HoldError::AnotherAdapterVersion {
+                stated: "1.0".into(),
+                held: "1.1".into(),
+            },
+            "another_adapter_version",
+        ),
+    ];
+    for (refusal, name) in &refusals {
+        assert_eq!(refusal.name(), *name);
+        // A name is a closed lowercase identifier: no digit, no dot, no slash —
+        // nothing a document could have put into it.
+        assert!(
+            !refusal
+                .name()
+                .contains(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '/']),
+            "the refusal's name is not a closed identifier: {}",
+            refusal.name()
+        );
+        // The full text is for an operator reading the Host's own logs and for a
+        // case; it names the facts, and never the role's prose.
+        assert!(!refusal.to_string().contains(ROLE_PROSE));
+    }
+    // Every refusal the module states is named here, so a variant added without
+    // a wire name reds by name rather than reaching a boundary unnamed.
+    assert_eq!(refusals.len(), 10);
+}
+
 #[test]
 fn a_dossier_travels_as_a_published_document() {
     let declared = descriptor();
@@ -626,6 +1135,10 @@ fn the_contract_document_names_the_dossier_and_its_refusals() {
         "PackRun",
         "run_conformance",
         "DOSSIER_SCHEMA_VERSION",
+        "publishes",
+        "hold",
+        "DossierHolding",
+        "HoldError",
     ] {
         assert!(contract.contains(name), "the document does not name {name}");
     }
@@ -635,18 +1148,40 @@ fn the_contract_document_names_the_dossier_and_its_refusals() {
         "NoRuns",
         "MoreThanOnePack",
         "TheSameVersionTwice",
+        "UnknownShape",
+        "AnotherPack",
+        "TheRunNamesAnotherPack",
+        "UnknownRules",
+        "TheSameRunTwice",
+        "ARuleDidNotHold",
+        "TheMatricesAreNotTheSuites",
+        "TheRunReadNoDispatch",
+        "NoRun",
+        "AnotherAdapterVersion",
     ] {
         assert!(
             contract.contains(refusal),
             "the document does not name {refusal}"
         );
     }
-    // The two ways in are the only ways in, and a version absent from them is a
+    // The ways in are the only ways in, and a version absent from them is a
     // version the dossier says nothing about.
     assert!(
-        contract.contains("`CompatibilityDossier::run` and `versions` are the only ways in"),
+        contract
+            .contains("`CompatibilityDossier::run`, `versions` and `hold` are the only ways in"),
         "the document states the only ways into what a pack publishes"
     );
+    // What the reader's check is not is stated in the document too, so a served
+    // record cannot read as a qualification or as authenticated proof.
+    for limit in [
+        "neither qualification nor authentication",
+        "what a row *says* about a run is the pack's claim",
+    ] {
+        assert!(
+            contract.contains(limit),
+            "the document does not state the limit: {limit}"
+        );
+    }
     let surfaces: Vec<ContractSurface> = ContractSurface::ALL.to_vec();
     assert_eq!(surfaces.len(), 12);
 }

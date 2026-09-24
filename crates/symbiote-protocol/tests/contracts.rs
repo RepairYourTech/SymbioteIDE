@@ -173,6 +173,83 @@ fn binding_management_is_separate_from_team_work_and_read_permissions() {
     assert!(parse_request(&serde_json::to_vec(&spoofed).unwrap()).is_err());
 }
 
+/// The dossier read answers from the Host's own operator provisioning — which
+/// pack it has installed a record for — so it is owner authority and no Project
+/// grant, not even the one that manages this Project's bindings. The record it
+/// serves is the pack's own document with the run the Host held named beside it,
+/// so a client is never left making the Host's comparison for itself.
+#[test]
+fn the_compatibility_dossier_read_is_the_hosts_own_record_not_a_projects() {
+    let operation = Operation::GetCompatibilityDossier {
+        project_id: project_id(),
+        binding_id: BindingId::new("binding").unwrap(),
+    };
+    let request = request(operation);
+    assert_eq!(
+        authorize(&principal(), &request).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    let binding_admin = Principal::restricted(
+        UserId::new("staff-admin").unwrap(),
+        BTreeMap::from([(
+            project_id(),
+            BTreeSet::from([ProjectPermission::ManageBindings]),
+        )]),
+    );
+    assert_eq!(
+        authorize(&binding_admin, &request).unwrap_err().code,
+        ErrorCode::PermissionDenied,
+        "authority over a Project's bindings is not authority over this Host's records"
+    );
+    assert!(
+        authorize(
+            &Principal::local_owner(UserId::new("owner").unwrap()),
+            &request
+        )
+        .is_ok()
+    );
+    // A read: it changes no state and starts and ends nothing.
+    assert!(!request.operation.is_mutation());
+    assert_eq!(request.operation.project_id(), Some(&project_id()));
+    assert!(
+        negotiate(&[CURRENT_VERSION])
+            .unwrap()
+            .capabilities
+            .contains(&symbiote_protocol::Capability::CompatibilityDossier)
+    );
+    // The body is the record as published, with the run this Host held named by
+    // the pair a reader looks it up with — the run is inside the record, not
+    // copied out of it beside itself.
+    let dossier: symbiote_runtime_sdk::dossier::CompatibilityDossier = serde_json::from_value(
+        json!({"schema_version": 1, "adapter": "native-agent", "driver": null, "runs": []}),
+    )
+    .unwrap();
+    let body = ResponseBody::CompatibilityDossier(Box::new(DossierHolding {
+        dossier: Box::new(dossier.clone()),
+        upstream_version: "0.1.0".into(),
+        platform: "linux".into(),
+    }));
+    let wire = serde_json::to_value(&body).unwrap();
+    assert_eq!(wire["kind"], "compatibility_dossier");
+    assert_eq!(wire["data"]["dossier"]["adapter"], "native-agent");
+    assert_eq!(wire["data"]["upstream_version"], "0.1.0");
+    assert_eq!(wire["data"]["platform"], "linux");
+    assert!(wire["data"]["dossier"].get("runs").is_some());
+    assert_eq!(
+        serde_json::from_value::<ResponseBody>(wire).unwrap(),
+        body,
+        "the served record round-trips as itself"
+    );
+    // The request round-trips too, and a request that tried to carry the record
+    // in the envelope is not a request: the record arrives in the response only.
+    let sent = serde_json::to_string(&request).unwrap();
+    assert!(sent.contains("get_compatibility_dossier"));
+    assert_eq!(parse_request(sent.as_bytes()).unwrap(), request);
+    let mut spoofed = serde_json::to_value(&request).unwrap();
+    spoofed["operation"]["dossier"] = json!({"schema_version": 1});
+    assert!(parse_request(&serde_json::to_vec(&spoofed).unwrap()).is_err());
+}
+
 #[test]
 fn host_pulse_requires_host_owner_even_with_project_permissions() {
     let req = request(Operation::GetHostPulse {});
@@ -345,7 +422,7 @@ fn work_references_require_read_access_even_after_reference_is_removed() {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":23},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":24},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -354,7 +431,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor": 23},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor": 24},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 

@@ -10,6 +10,11 @@
 //! live model turn still requires the real Responses-API transport, which
 //! remains gated on explicit user authorization for credentials and
 //! billing. Nothing here attempts live execution.
+//!
+//! The [Compatibility Dossier](symbiote_runtime_sdk::dossier) documents an
+//! operator installs are read by the same discipline, because they are the same
+//! kind of authority: operator-owned files, read once at start, never written
+//! back and never journalled.
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -59,6 +64,14 @@ pub struct OperatorConfig {
     /// report's runtime prerequisites unobserved rather than assumed.
     #[serde(default)]
     pub runtime_declarations: Vec<symbiote_runtime_sdk::DeclaredRuntime>,
+    /// The published [Compatibility Dossier](symbiote_runtime_sdk::dossier)
+    /// files this Host has installed, one per Harness Pack the operator
+    /// provisioned here. The pack each file claims is the identity inside it,
+    /// never a name beside it: the configuration says where a record is, and the
+    /// record says which pack it is. An absent list leaves every dossier read a
+    /// refusal rather than an absence the Host would have to report twice.
+    #[serde(default)]
+    pub compatibility_dossiers: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -127,6 +140,57 @@ pub fn load(path: &std::path::Path) -> Result<OperatorConfig, OperatorConfigErro
         return Err(OperatorConfigError::Overbound);
     }
     serde_json::from_slice(&bytes).map_err(|_| OperatorConfigError::Invalid)
+}
+
+/// The bound on one published dossier file. A record is a document a pack
+/// wrote: the Host reads it once, out of operator state, and a document larger
+/// than the operator configuration it sits beside is the only one it refuses to
+/// read rather than growing the daemon for.
+pub const DOSSIER_FILE_BYTES: usize = 256 * 1024;
+
+/// Reads the published [Compatibility Dossier](symbiote_runtime_sdk::dossier)
+/// files the operator installed: each 0600, bounded, and parsed as one pack's
+/// record.
+///
+/// A file that cannot be read as one pack's record refuses the daemon rather
+/// than becoming a silent absence — a Host that could not read a pack's evidence
+/// would otherwise serve nothing while reporting nothing. Two files claiming one
+/// pack are refused for the same reason a reader must not have to choose between
+/// two records for the same pack: which one is authoritative would be a fact
+/// nobody declared.
+pub fn load_dossiers(
+    paths: &[PathBuf],
+) -> Result<Vec<symbiote_runtime_sdk::dossier::CompatibilityDossier>, &'static str> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut loaded: Vec<symbiote_runtime_sdk::dossier::CompatibilityDossier> =
+        Vec::with_capacity(paths.len());
+    for path in paths {
+        let meta =
+            std::fs::metadata(path).map_err(|_| "operator compatibility dossier unreadable")?;
+        if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
+            return Err("operator compatibility dossier permissions");
+        }
+        let file =
+            std::fs::File::open(path).map_err(|_| "operator compatibility dossier unreadable")?;
+        let mut bytes = Vec::new();
+        (&file)
+            .take(DOSSIER_FILE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "operator compatibility dossier unreadable")?;
+        if bytes.len() > DOSSIER_FILE_BYTES {
+            return Err("operator compatibility dossier overbound");
+        }
+        let dossier: symbiote_runtime_sdk::dossier::CompatibilityDossier =
+            serde_json::from_slice(&bytes).map_err(|_| "operator compatibility dossier invalid")?;
+        if loaded
+            .iter()
+            .any(|other| other.publishes(&dossier.adapter, dossier.driver.as_ref()))
+        {
+            return Err("operator compatibility dossier published twice for one pack");
+        }
+        loaded.push(dossier);
+    }
+    Ok(loaded)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
