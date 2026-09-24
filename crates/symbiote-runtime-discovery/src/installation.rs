@@ -18,7 +18,7 @@ const MAX_CONFIG_ROOTS: usize = 32;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_OBSERVATION_AGE: u64 = 86_400_000;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutableIdentity {
     /// The path the Host was asked to inspect, retained without executing it.
@@ -36,6 +36,15 @@ pub enum InstallationChannel {
     Portable,
 }
 
+impl fmt::Debug for ExecutableIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutableIdentity")
+            .field("requested_path", &"<redacted>")
+            .field("resolved_path", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigRootSource {
@@ -44,7 +53,17 @@ pub enum ConfigRootSource {
     IsolatedHome,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+impl fmt::Debug for ConfigRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConfigRoot")
+            .field("identity", &self.identity)
+            .field("path", &"<redacted>")
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigRoot {
     /// Host-owned opaque identity; never an account name, token or email.
@@ -147,7 +166,7 @@ impl fmt::Display for InstallationError {
 }
 impl std::error::Error for InstallationError {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ExecutableInspection<'a> {
     pub installation_id: InstallationId,
     pub host_id: HostId,
@@ -159,6 +178,22 @@ pub struct ExecutableInspection<'a> {
     pub observed_at: Timestamp,
     pub expires_at: Timestamp,
     pub provenance: ProbeProvenance,
+}
+
+impl fmt::Debug for ExecutableInspection<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutableInspection")
+            .field("installation_id", &self.installation_id)
+            .field("host_id", &self.host_id)
+            .field("runtime_kind", &self.runtime_kind)
+            .field("adapter_id", &self.adapter_id)
+            .field("requested_path", &"<redacted>")
+            .field("trusted_root", &"<redacted>")
+            .field("channel", &self.channel)
+            .field("observed_at", &self.observed_at)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

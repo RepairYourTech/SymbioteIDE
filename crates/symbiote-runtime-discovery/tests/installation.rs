@@ -82,6 +82,8 @@ fn metadata_inspection_does_not_execute_the_candidate_and_roundtrips_unknowns() 
     assert_eq!(record.interface, symbiote_runtime_discovery::Fact::Unknown);
     assert_eq!(record.update_availability, UpdateAvailability::Unknown);
     assert_eq!(fs::read(&path).unwrap(), before);
+    let debug = format!("{record:?}");
+    assert!(!debug.contains(path.to_str().unwrap()));
     let encoded = serde_json::to_string(&record).unwrap();
     assert_eq!(
         serde_json::from_str::<ExecutableInstallation>(&encoded).unwrap(),
@@ -154,6 +156,8 @@ fn protocol_confirmation_publishes_only_the_facts_the_probe_supplied() {
     assert_eq!(record.config_roots, vec![config_root()]);
     assert_eq!(record.observed_at, Timestamp(11));
     assert_eq!(record.expires_at, Timestamp(30));
+    let debug = format!("{record:?}");
+    assert!(!debug.contains("/home/agent/.codex"));
     assert!(
         serde_json::to_string(&record)
             .unwrap()
