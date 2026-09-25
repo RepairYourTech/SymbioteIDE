@@ -608,7 +608,10 @@ fn a_candidate_the_bounded_answer_did_not_read_is_never_offered_for_scheduling()
         symbiote_domain::MAX_GRAPH_REPORT_TASKS
     );
     // Every considered task is Ready with no gates, so all of them are offered.
-    assert_eq!(projection.schedulable.len(), symbiote_domain::MAX_GRAPH_REPORT_TASKS);
+    assert_eq!(
+        projection.schedulable.len(),
+        symbiote_domain::MAX_GRAPH_REPORT_TASKS
+    );
     // The task past the bound is not offered, and it is not dropped either: the
     // answer says it could not read it. Defaulting its gates to zero would offer
     // a task for scheduling while saying nothing about the prerequisite it waits
@@ -629,10 +632,12 @@ fn a_candidate_the_bounded_answer_did_not_read_is_never_offered_for_scheduling()
         count - symbiote_domain::MAX_GRAPH_REPORT_TASKS,
         "each unconsidered candidate is reported as unread, not as free"
     );
-    assert!(projection
-        .blocked
-        .iter()
-        .any(|entry| entry.task_id == beyond && entry.reason == BlockedReason::NotConsidered));
+    assert!(
+        projection
+            .blocked
+            .iter()
+            .any(|entry| entry.task_id == beyond && entry.reason == BlockedReason::NotConsidered)
+    );
 }
 
 #[test]
