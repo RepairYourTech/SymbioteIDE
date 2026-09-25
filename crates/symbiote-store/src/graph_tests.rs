@@ -229,9 +229,37 @@ fn an_incoming_edge_whose_index_disagrees_with_its_body_is_refused() {
     .unwrap();
     assert!(store.task_graph(&project.id).is_ok());
 
-    // The row's index says it names b; the record it projects names c. The
-    // incoming read has to check that the same way the owned read does, or it
-    // answers a gate off a body nothing else vouches for.
+    // The row's index says `blocks`; the record it projects says `requires`.
+    // The kind is the part the answer is built from, so a read that skipped
+    // this check would read a tampered row as a provenance edge, drop b's only
+    // gate, and report that nothing holds it back.
+    let retag = |store: &mut Store, kind: &str| {
+        store
+            .connection
+            .execute(
+                "UPDATE task_dependencies SET body=?1 WHERE project_id=?2 AND task_id=?3",
+                params![
+                    format!(
+                        "{{\"kind\":\"{kind}\",\"target\":{{\"project_id\":\"{}\",\"task_id\":\"{}\"}}}}",
+                        project.id.as_str(),
+                        b.as_str()
+                    ),
+                    project.id.as_str(),
+                    a.as_str(),
+                ],
+            )
+            .unwrap();
+    };
+    retag(&mut store, "requires");
+    assert!(matches!(
+        store.task_graph(&project.id),
+        Err(StoreError::Integrity(reason)) if reason.contains("dependency")
+    ));
+
+    // The target is checked the same way, even though the emitted edge takes
+    // its other end from the row owner: a row whose body names a third task is
+    // still a row nothing vouches for.
+    retag(&mut store, "blocks");
     store
         .connection
         .execute(
