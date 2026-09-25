@@ -217,40 +217,78 @@ fn an_incoming_edge_whose_index_disagrees_with_its_body_is_refused() {
     let temp = Temporary::new();
     let mut store = Store::open(temp.database()).unwrap();
     let (project, _, _) = register(&mut store, "one");
-    let a = graph_task(&mut store, "index-a");
+    let (other, _, _) = register(&mut store, "two");
     let b = graph_task(&mut store, "index-b");
+    // The blocking task lives in the other Project, so the only reader of its
+    // row is the incoming read. A check the owned read would happen to catch
+    // cannot stand in for the one being proved here.
+    let (their_task, their_stream) = task_records("index-theirs");
+    let their_task = Task::new(
+        their_task.id().clone(),
+        other.id.clone(),
+        other.roots.iter().next().unwrap().clone(),
+        id!(RoleId, "role-two"),
+        their_task.stream_id().clone(),
+        VersionedTaskContract {
+            id: id!(TaskContractId, "task-contract-index-theirs"),
+            revision: Revision(1),
+        },
+    );
+    let their_stream = ChangeStream::new(NewChangeStream {
+        id: their_stream.id().clone(),
+        project_id: other.id.clone(),
+        root_id: other.roots.iter().next().unwrap().clone(),
+        tasks: BTreeSet::from([their_task.id().clone()]),
+        originating_chat: id!(ChatId, "chat-index-theirs"),
+        worktree: id!(WorktreeId, "worktree-index-theirs"),
+        branch: "symbiote/index-theirs".into(),
+        lineage: StreamLineage::Independent,
+        base: sha('a'),
+        target: sha('b'),
+    })
+    .unwrap();
+    let origin = register_work_target(&mut store, &their_task).unwrap();
+    store
+        .create_task(
+            id!(CommandId, "create-index-theirs"),
+            their_task.clone(),
+            their_stream,
+            origin,
+        )
+        .unwrap();
     set_edges(
         &mut store,
-        "index-ab",
-        &project.id,
-        &a,
+        "index-blocks",
+        &other.id,
+        their_task.id(),
         [blocks(&project.id, &b)],
     )
     .unwrap();
-    assert!(store.task_graph(&project.id).is_ok());
+    let honest = store.task_graph(&project.id).unwrap();
+    assert_eq!(honest.blockers.len(), 1);
+    assert_eq!(honest.blockers[0].gates[0].kind, TaskDependencyKind::Blocks);
 
     // The row's index says `blocks`; the record it projects says `requires`.
     // The kind is the part the answer is built from, so a read that skipped
-    // this check would read a tampered row as a provenance edge, drop b's only
-    // gate, and report that nothing holds it back.
-    let retag = |store: &mut Store, kind: &str| {
+    // this check would take a tampered row as provenance, drop b's only gate,
+    // and report that nothing holds it back.
+    let retag = |store: &mut Store, body: String| {
         store
             .connection
             .execute(
                 "UPDATE task_dependencies SET body=?1 WHERE project_id=?2 AND task_id=?3",
-                params![
-                    format!(
-                        "{{\"kind\":\"{kind}\",\"target\":{{\"project_id\":\"{}\",\"task_id\":\"{}\"}}}}",
-                        project.id.as_str(),
-                        b.as_str()
-                    ),
-                    project.id.as_str(),
-                    a.as_str(),
-                ],
+                params![body, other.id.as_str(), their_task.id().as_str()],
             )
             .unwrap();
     };
-    retag(&mut store, "requires");
+    retag(
+        &mut store,
+        format!(
+            "{{\"kind\":\"requires\",\"target\":{{\"project_id\":\"{}\",\"task_id\":\"{}\"}}}}",
+            project.id.as_str(),
+            b.as_str()
+        ),
+    );
     assert!(matches!(
         store.task_graph(&project.id),
         Err(StoreError::Integrity(reason)) if reason.contains("dependency")
@@ -259,21 +297,13 @@ fn an_incoming_edge_whose_index_disagrees_with_its_body_is_refused() {
     // The target is checked the same way, even though the emitted edge takes
     // its other end from the row owner: a row whose body names a third task is
     // still a row nothing vouches for.
-    retag(&mut store, "blocks");
-    store
-        .connection
-        .execute(
-            "UPDATE task_dependencies SET body=?1 WHERE project_id=?2 AND task_id=?3",
-            params![
-                format!(
-                    "{{\"kind\":\"blocks\",\"target\":{{\"project_id\":\"{}\",\"task_id\":\"task-index-c\"}}}}",
-                    project.id.as_str()
-                ),
-                project.id.as_str(),
-                a.as_str(),
-            ],
-        )
-        .unwrap();
+    retag(
+        &mut store,
+        format!(
+            "{{\"kind\":\"blocks\",\"target\":{{\"project_id\":\"{}\",\"task_id\":\"task-index-c\"}}}}",
+            project.id.as_str()
+        ),
+    );
     assert!(matches!(
         store.task_graph(&project.id),
         Err(StoreError::Integrity(reason)) if reason.contains("dependency")

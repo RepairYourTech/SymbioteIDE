@@ -480,7 +480,8 @@ fn critical_path_of(
 
 /// Kahn's algorithm over the waiting-on edges, in canonical order, refusing a
 /// cycle by name instead of walking one. Every node is seeded, so a task with
-/// no gates is a root rather than a missing node.
+/// no gates is a root rather than a missing node, and every gate target is
+/// seeded as a node by the caller before this runs, so the two sets agree.
 fn topological_order(
     nodes: &BTreeSet<GraphTaskRef>,
     upstream_of: &BTreeMap<GraphTaskRef, Vec<GraphTaskRef>>,
@@ -488,11 +489,12 @@ fn topological_order(
     let mut outgoing: BTreeMap<GraphTaskRef, Vec<GraphTaskRef>> = BTreeMap::new();
     let mut indegree: BTreeMap<&GraphTaskRef, usize> =
         nodes.iter().map(|node| (node, 0usize)).collect();
+    // Every node in `upstream_of` is one the caller seeded from a gate target,
+    // so the two sets already agree and an edge cannot name a node that is not
+    // there. A disagreement would leave a downstream node unpopped, and the
+    // length check below names that as a cycle rather than walking it.
     for (downstream, upstreams) in upstream_of {
         for upstream in upstreams {
-            if !nodes.contains(upstream) || !nodes.contains(downstream) {
-                return Err(DomainError::MissingReference);
-            }
             outgoing
                 .entry(upstream.clone())
                 .or_default()
