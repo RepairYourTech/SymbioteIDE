@@ -471,7 +471,7 @@ fn critical_path_of(
         length,
         open: chain
             .iter()
-            .filter(|task| state_of(task).is_some_and(|state| !state.is_completed()))
+            .filter(|task| state_of(task).is_some_and(|state| !state.is_closed()))
             .count(),
         truncated: length > chain.len(),
         chain,

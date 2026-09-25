@@ -39,6 +39,16 @@ fn requires(project: &ProjectId, task: &TaskId) -> TaskDependencyEdge {
     }
 }
 
+fn blocks(project: &ProjectId, task: &TaskId) -> TaskDependencyEdge {
+    TaskDependencyEdge {
+        kind: TaskDependencyKind::Blocks,
+        target: TaskDependencyTarget {
+            project_id: project.clone(),
+            task_id: task.clone(),
+        },
+    }
+}
+
 fn task_command(command: &str, expected_revision: Revision, action: TaskAction) -> TaskCommand {
     TaskCommand {
         id: id!(CommandId, command),
@@ -150,6 +160,96 @@ fn the_dag_report_counts_canonical_rows_and_names_nothing_else() {
     // A read writes nothing: the journal is exactly what was recorded before
     // the reads, and the reads are not in it.
     assert_eq!(journaled(&store), before_reads + 1);
+}
+
+#[test]
+fn an_incoming_block_is_read_as_a_dependency_of_the_task_it_blocks() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    let a = graph_task(&mut store, "block-a");
+    let b = graph_task(&mut store, "block-b");
+    // `blocks` is recorded on the blocking task, so the row that names b is
+    // owned by a. Reading b's graph has to find the gate on the other end of
+    // that row, never the gate b already knows: naming the task as its own
+    // blocker would be a self-edge, and the honest answer for that is `Cycle`.
+    set_edges(
+        &mut store,
+        "block-ab",
+        &project.id,
+        &a,
+        [blocks(&project.id, &b)],
+    )
+    .unwrap();
+
+    let report = store.task_graph(&project.id).unwrap();
+    assert_eq!(report.blockers.len(), 1);
+    let blocked = &report.blockers[0];
+    assert_eq!(blocked.task.task_id, b);
+    assert_eq!(blocked.gates[0].kind, TaskDependencyKind::Blocks);
+    assert_eq!(blocked.gates[0].target.task_id, a);
+    assert_eq!(blocked.gates[0].target_state, TaskState::Ready);
+    // The chain runs upstream first, from the blocking task to the blocked one.
+    assert_eq!(report.critical_path.length, 2);
+    assert_eq!(
+        report
+            .critical_path
+            .chain
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect::<Vec<_>>(),
+        vec![a.clone(), b]
+    );
+    assert_eq!(report.critical_path.open, 2);
+    // The blocking task's own answer names no blocker: it is not waiting on
+    // anything, it is the thing being waited on.
+    let mine = store.task_dependencies(&project.id, &a).unwrap();
+    assert_eq!(mine.len(), 1);
+    assert!(
+        mine.iter()
+            .all(|edge| edge.kind == TaskDependencyKind::Blocks),
+        "the row is still stored on the blocking task, unrewritten: {mine:?}"
+    );
+}
+
+#[test]
+fn an_incoming_edge_whose_index_disagrees_with_its_body_is_refused() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    let a = graph_task(&mut store, "index-a");
+    let b = graph_task(&mut store, "index-b");
+    set_edges(
+        &mut store,
+        "index-ab",
+        &project.id,
+        &a,
+        [blocks(&project.id, &b)],
+    )
+    .unwrap();
+    assert!(store.task_graph(&project.id).is_ok());
+
+    // The row's index says it names b; the record it projects names c. The
+    // incoming read has to check that the same way the owned read does, or it
+    // answers a gate off a body nothing else vouches for.
+    store
+        .connection
+        .execute(
+            "UPDATE task_dependencies SET body=?1 WHERE project_id=?2 AND task_id=?3",
+            params![
+                format!(
+                    "{{\"kind\":\"blocks\",\"target\":{{\"project_id\":\"{}\",\"task_id\":\"task-index-c\"}}}}",
+                    project.id.as_str()
+                ),
+                project.id.as_str(),
+                a.as_str(),
+            ],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.task_graph(&project.id),
+        Err(StoreError::Integrity(reason)) if reason.contains("dependency")
+    ));
 }
 
 #[test]

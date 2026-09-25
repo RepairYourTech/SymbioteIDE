@@ -133,13 +133,19 @@ impl Store {
     /// an incoming dependency (the store enforces exactly that one this way);
     /// the other kinds are recorded provenance and are fetched so the domain
     /// can leave them out of the answer explicitly.
+    ///
+    /// Read from the blocked task's side, each edge names the *owner* of the
+    /// row — the task whose record the `blocks` edge was written on — because
+    /// that is the upstream work. Handing back the stored target would name
+    /// the blocked task as its own upstream, and that self-edge is precisely
+    /// what the reader refuses as a cycle.
     fn incoming_edges(
         &self,
         project: &ProjectId,
         task: &TaskId,
     ) -> Result<BTreeSet<TaskDependencyEdge>> {
         let mut statement = self.connection.prepare(
-            "SELECT project_id,kind,target_project,target_task,body FROM task_dependencies WHERE target_project=?1 AND target_task=?2 ORDER BY project_id,kind,target_project,target_task",
+            "SELECT project_id,task_id,kind,target_project,target_task,body FROM task_dependencies WHERE target_project=?1 AND target_task=?2 ORDER BY project_id,task_id,kind",
         )?;
         let rows = statement.query_map(params![project.as_str(), task.as_str()], |r| {
             Ok((
@@ -148,17 +154,24 @@ impl Store {
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
             ))
         })?;
         let mut edges = BTreeSet::new();
         for row in rows {
-            let (_owner, kind, target_project, target_task, body) = row?;
-            edges.insert(dependency_edge(
-                &kind,
-                &target_project,
-                &target_task,
-                &body,
-            )?);
+            let (owner_project, owner_task, kind, target_project, target_task, body) = row?;
+            // The index is still checked against the record it projects, so a
+            // row whose columns disagree with its body is refused, never read.
+            let stored = dependency_edge(&kind, &target_project, &target_task, &body)?;
+            edges.insert(TaskDependencyEdge {
+                kind: stored.kind,
+                target: TaskDependencyTarget {
+                    project_id: ProjectId::new(&owner_project)
+                        .map_err(|_| StoreError::Integrity("bad dependency owner".into()))?,
+                    task_id: TaskId::new(&owner_task)
+                        .map_err(|_| StoreError::Integrity("bad dependency owner".into()))?,
+                },
+            });
         }
         Ok(edges)
     }

@@ -87,7 +87,7 @@ projection](scheduling-leases.md); this read does not restate it. It answers,
 for one Project, from recorded task rows and dependency edges only:
 
 * **Progress** — a count per canonical Task state, in lifecycle order, plus the
-  whole `total`, the `considered` count, the `gates` read, and how many Tasks
+  whole `total`, the `considered` count, the `considered_gates` read, and how many Tasks
   are `closed` (`Completed` or `Cancelled`) against `open`. There is no
   percentage field and no way to express one: a caller that wants a fraction
   divides these counts itself, from canonical state, rather than reporting a

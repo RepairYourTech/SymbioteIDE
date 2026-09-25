@@ -201,6 +201,40 @@ fn a_state_is_closed_but_not_completed() -> bool {
 }
 
 #[test]
+fn a_cancelled_chain_member_is_closed_and_never_counted_as_open_work() {
+    // a <- b <- c, where a was cancelled and b finished anyway.
+    let report = task_graph_report(&inputs(
+        vec![
+            row(ALPHA, "a", "s1", TaskState::Cancelled),
+            row(ALPHA, "b", "s1", TaskState::Completed),
+            row(ALPHA, "c", "s1", TaskState::Ready),
+        ],
+        vec![
+            owned("b", [edge(TaskDependencyKind::Requires, ALPHA, "a")]),
+            owned("c", [edge(TaskDependencyKind::Requires, ALPHA, "b")]),
+        ],
+        Vec::new(),
+        vec![
+            (reference(ALPHA, "a"), TaskState::Cancelled),
+            (reference(ALPHA, "b"), TaskState::Completed),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(report.critical_path.length, 3);
+    // "Not closed" is one fact across the whole report: the cancelled member is
+    // out of the closure, out of `progress.open`, and out of the chain's `open`
+    // count. Counting it open would answer that a withdrawn task is work still
+    // to do, and would make the chain disagree with the progress beside it.
+    assert_eq!(report.critical_path.open, 1);
+    assert_eq!(report.progress.open, 1);
+    assert_eq!(report.progress.closed, 2);
+    assert_eq!(report.remaining, vec![reference(ALPHA, "c")]);
+    // It is still named in the chain: a closed member of the longest recorded
+    // chain is history, not a gap, and dropping it would shorten a real chain.
+    assert_eq!(report.critical_path.chain.len(), 3);
+}
+
+#[test]
 fn the_critical_path_is_the_longest_recorded_chain_into_open_work() {
     // a <- b <- c <- d, with d open and the others done but recorded.
     let chain = vec![
