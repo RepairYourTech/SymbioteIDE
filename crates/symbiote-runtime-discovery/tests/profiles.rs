@@ -251,6 +251,38 @@ fn invalid_profile_specs_duplicates_and_shared_roots_are_named_refusals() {
         ),
         Err(ProfileError::DuplicatePath)
     );
+    let trailing = PathBuf::from(format!("{}/", shared.display()));
+    assert_eq!(
+        resolve_profiles(
+            &[
+                spec("one", "config_one", "ONE_HOME", "one", None),
+                spec("two", "config_two", "TWO_HOME", "two", None),
+            ],
+            &environment(&[("ONE_HOME", &shared), ("TWO_HOME", &trailing)]),
+            &root,
+            Timestamp(10),
+            Timestamp(20),
+            provenance(),
+        ),
+        Err(ProfileError::DuplicatePath)
+    );
+    assert_eq!(
+        resolve_profiles(
+            &[
+                spec("one", "config_one", "ONE_HOME", "a/b", None),
+                spec("two", "config_two", "TWO_HOME", "a//b", None),
+            ],
+            &environment(&[
+                ("ONE_HOME", &root.join("first-override")),
+                ("TWO_HOME", &root.join("second-override")),
+            ]),
+            &root,
+            Timestamp(10),
+            Timestamp(20),
+            provenance(),
+        ),
+        Err(ProfileError::DuplicatePath)
+    );
     assert_eq!(
         resolve_profiles(
             std::slice::from_ref(&valid),

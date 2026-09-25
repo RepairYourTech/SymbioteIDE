@@ -172,12 +172,14 @@ fn validate_spec(spec: &ProfileSpec) -> Result<(), ProfileError> {
 }
 
 fn text_path(path: &Path) -> Result<String, ProfileError> {
-    let value = path.to_str().ok_or(ProfileError::InvalidPath)?;
-    if valid_absolute(path) {
-        Ok(value.to_owned())
-    } else {
-        Err(ProfileError::InvalidPath)
+    if !valid_absolute(path) {
+        return Err(ProfileError::InvalidPath);
     }
+    let canonical: PathBuf = path.components().collect();
+    canonical
+        .to_str()
+        .map(str::to_owned)
+        .ok_or(ProfileError::InvalidPath)
 }
 
 impl ProfileObservation {
@@ -234,7 +236,7 @@ pub fn resolve_profiles(
     let mut profile_ids = BTreeSet::new();
     let mut config_ids = BTreeSet::new();
     let mut variables = BTreeSet::new();
-    let mut defaults = BTreeSet::new();
+    let mut defaults: BTreeSet<PathBuf> = BTreeSet::new();
     for spec in specs {
         validate_spec(spec)?;
         if !profile_ids.insert(spec.profile_id.clone()) {
@@ -246,7 +248,11 @@ pub fn resolve_profiles(
         if !variables.insert(spec.environment_variable.clone()) {
             return Err(ProfileError::DuplicateEnvironment);
         }
-        if !defaults.insert(spec.default_relative_path.clone()) {
+        if !defaults.insert(
+            Path::new(&spec.default_relative_path)
+                .components()
+                .collect(),
+        ) {
             return Err(ProfileError::DuplicatePath);
         }
     }
@@ -266,7 +272,8 @@ pub fn resolve_profiles(
                 ConfigRootSource::ProfileDefault,
             ),
         };
-        if !paths.insert(text_path(&path)?) {
+        let path_text = text_path(&path)?;
+        if !paths.insert(path_text.clone()) {
             return Err(ProfileError::DuplicatePath);
         }
         observations.push(ProfileObservation {
@@ -275,7 +282,7 @@ pub fn resolve_profiles(
             instance_name: spec.instance_name.clone(),
             config_identity: spec.config_identity.clone(),
             account_ref: spec.account_ref.clone(),
-            path: text_path(&path)?,
+            path: path_text,
             source,
             observed_at,
             expires_at,
