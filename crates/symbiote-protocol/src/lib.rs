@@ -192,13 +192,14 @@ pub enum Operation {
     /// and task identifiers a foreign harness uses for its own work, with the
     /// status that harness reported. Recording them is a Project edit and
     /// needs `ManageWork`; reading them is a Project read. Neither operation
-    /// carries a canonical status, an actor or a timestamp: the links are
-    /// observations, and only the store's own `observed_at` is authority-
-    /// assigned, so a client cannot record a link that completes a Task.
+    /// carries a canonical status, an actor or a time: the links are
+    /// observations, and `observed_at` is the Host's own, applied to every
+    /// claim it records, so a client cannot say when it saw a foreign claim
+    /// and cannot record a link that completes a Task.
     SetTaskForeignLinks {
         project_id: ProjectId,
         task_id: TaskId,
-        links: Vec<ForeignTaskLink>,
+        links: Vec<ForeignLinkClaim>,
     },
     GetTaskForeignLinks {
         project_id: ProjectId,
@@ -542,11 +543,15 @@ impl Request {
                 // The wire holds the same rules the store holds, by asking the
                 // same declaration rather than restating them: a link set that
                 // could not be recorded is refused at the boundary, not after a
-                // round trip.
+                // round trip. The claim carries no time, so the set validated
+                // here is the set the Host would stamp and store.
                 symbiote_domain::ForeignTaskLinks {
                     project_id: project_id.clone(),
                     task_id: task_id.clone(),
-                    links: links.iter().cloned().collect(),
+                    links: links
+                        .iter()
+                        .map(|claim| claim.observed_at(Timestamp(0)))
+                        .collect(),
                 }
                 .validate()
                 .map_err(|_| invalid())
@@ -1683,6 +1688,42 @@ pub enum ResponseBody {
     Journal(JournalPage),
     Snapshot(Box<ProjectSnapshot>),
     Shutdown {},
+}
+
+/// What a caller may say about a foreign runtime's own work, and nothing else:
+/// the identifiers as the foreign system gave them and the status that foreign
+/// system reported. The observation *time* is deliberately absent — it is not
+/// the caller's to set, so a client cannot backdate or postdate an
+/// observation, and the Host stamps it from the moment it records the set.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForeignLinkClaim {
+    /// Which foreign system these identifiers belong to.
+    pub system: ExternalSystem,
+    /// Whether this names the foreign system's session or its task.
+    pub kind: ForeignItemKind,
+    /// The foreign system's own identifier, verbatim.
+    pub foreign_id: String,
+    /// The foreign session the item belongs to, when the foreign system
+    /// reports one.
+    pub foreign_session_id: Option<String>,
+    /// The foreign system's own claim about the item.
+    pub foreign_status: ForeignStatus,
+}
+
+impl ForeignLinkClaim {
+    /// The canonical record this claim becomes, observed at the instant the
+    /// authority recorded it.
+    pub fn observed_at(&self, at: Timestamp) -> ForeignTaskLink {
+        ForeignTaskLink {
+            system: self.system,
+            kind: self.kind,
+            foreign_id: self.foreign_id.clone(),
+            foreign_session_id: self.foreign_session_id.clone(),
+            foreign_status: self.foreign_status,
+            observed_at: at,
+        }
+    }
 }
 
 /// The published record a Host holds, and the run in it that certifies the

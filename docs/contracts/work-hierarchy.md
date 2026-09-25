@@ -86,7 +86,9 @@ did — as a bounded set of observations, never as Project truth. Each link name
 the harness whose identifier it is, whether it names that harness's session or
 its task, the identifier verbatim, the foreign session it sits in when the
 harness reports one, the status that harness reported, and when the Host
-recorded the observation.
+recorded the observation. The request names no time: the claim a caller sends
+carries the identifiers and the foreign status only, and the Host stamps the
+instant it records the set, so no client can say when it saw a foreign claim.
 
 The references grant nothing. A link never creates a Task, never advances or
 completes one, never satisfies a completion gate and never becomes a dependency
@@ -98,9 +100,10 @@ record, exactly as a dependency edge is. Writing one is a Project edit
 (`ManageWork` on the owning Project) and reading one is a Project read, through
 `set_task_foreign_links` and `get_task_foreign_links` (protocol v1.26). A
 foreign system is not a principal: a harness's report reaches this record only
-through an authenticated caller, and journal history re-checks the owning
-Project on read. Recording links does not classify a Task either — the origin
-requirement below still applies to every new Task.
+through an authenticated caller, and every recorded link is stamped with the
+authority's own instant whether or not the caller sent one. Recording links does
+not classify a Task either — the origin requirement below still applies to
+every new Task.
 
 Refusals are named and whole. A reference to a system that is not a harness, a
 blank or control-character identifier, and a session link that names another

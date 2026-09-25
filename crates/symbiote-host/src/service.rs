@@ -392,16 +392,17 @@ fn execute(
             links,
         } => {
             // The Host owns the observation time and the journal entry; the
-            // wire carries no actor, no timestamp and no canonical status, so
-            // a foreign harness's own `complete` is stored as that harness's
-            // claim and the Task it is held against does not move.
+            // wire carries no actor, no time and no canonical status, so a
+            // foreign harness's own `complete` is stored as that harness's
+            // claim, stamped when this Host recorded it, and the Task it is
+            // held against does not move.
             let at = foreign_link_timestamp(store, request)?;
             store
                 .set_task_foreign_links(
                     request.command_id.clone(),
                     project_id.clone(),
                     task_id.clone(),
-                    links.iter().cloned().collect(),
+                    links.iter().map(|claim| claim.observed_at(at)).collect(),
                     principal.user_id().clone(),
                     at,
                 )

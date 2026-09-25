@@ -3086,8 +3086,8 @@ fn foreign_runtime_links_persist_survive_restart_and_complete_nothing() {
     // A foreign harness's own session and its own todo inside that session,
     // the todo reported as complete by the harness that owns it.
     let links = json!([
-        {"system":"harness","kind":"session","foreign_id":"codex-session-01","foreign_status":"active","observed_at":1},
-        {"system":"harness","kind":"task","foreign_id":"codex-todo-7","foreign_session_id":"codex-session-01","foreign_status":"complete","observed_at":1}
+        {"system":"harness","kind":"session","foreign_id":"codex-session-01","foreign_status":"active"},
+        {"system":"harness","kind":"task","foreign_id":"codex-todo-7","foreign_session_id":"codex-session-01","foreign_status":"complete"}
     ]);
     let set = |command: &str, task_id: &str, links: Value| {
         request(
@@ -3116,6 +3116,15 @@ fn foreign_runtime_links_persist_survive_restart_and_complete_nothing() {
         .expect("the harness's own complete is served as itself");
     assert_eq!(done["kind"], "task");
     assert_eq!(done["foreign_id"], "codex-todo-7");
+    // The observation time is the Host's own: a request cannot name one, and
+    // what comes back is the instant this daemon recorded the set.
+    for link in &served_links {
+        let observed = link["observed_at"].as_u64().expect("a stamped link");
+        assert!(
+            observed > 1_700_000_000_000,
+            "a link carries the Host's own instant, not a caller's: {observed}"
+        );
+    }
     // The property the whole surface exists for: the canonical Task is exactly
     // what it was. A foreign `complete` is not canonical completion, and the
     // Task's revision did not move by a single event.
@@ -3145,35 +3154,35 @@ fn foreign_runtime_links_persist_survive_restart_and_complete_nothing() {
     let refusals = [
         (
             "foreign-wrong-system",
-            json!([{"system":"ci","kind":"session","foreign_id":"codex-session-02","foreign_status":"active","observed_at":1}]),
+            json!([{"system":"ci","kind":"session","foreign_id":"codex-session-02","foreign_status":"active"}]),
             "invalid_request",
         ),
         (
             "foreign-nested-session",
-            json!([{"system":"harness","kind":"session","foreign_id":"codex-session-03","foreign_session_id":"other","foreign_status":"active","observed_at":1}]),
+            json!([{"system":"harness","kind":"session","foreign_id":"codex-session-03","foreign_session_id":"other","foreign_status":"active"}]),
             "invalid_request",
         ),
         (
             "foreign-blank-id",
-            json!([{"system":"harness","kind":"session","foreign_id":"   ","foreign_status":"active","observed_at":1}]),
+            json!([{"system":"harness","kind":"session","foreign_id":"   ","foreign_status":"active"}]),
             "invalid_request",
         ),
         (
             "foreign-long-id",
-            json!([{"system":"harness","kind":"session","foreign_id":"s".repeat(257),"foreign_status":"active","observed_at":1}]),
+            json!([{"system":"harness","kind":"session","foreign_id":"s".repeat(257),"foreign_status":"active"}]),
             "invalid_request",
         ),
         (
             "foreign-two-observations",
             json!([
-                {"system":"harness","kind":"session","foreign_id":"codex-session-04","foreign_status":"active","observed_at":1},
-                {"system":"harness","kind":"session","foreign_id":"codex-session-04","foreign_status":"complete","observed_at":2}
+                {"system":"harness","kind":"session","foreign_id":"codex-session-04","foreign_status":"active"},
+                {"system":"harness","kind":"session","foreign_id":"codex-session-04","foreign_status":"complete"}
             ]),
             "invalid_request",
         ),
         (
             "foreign-ghost-task",
-            json!([{"system":"harness","kind":"session","foreign_id":"codex-session-05","foreign_status":"active","observed_at":1}]),
+            json!([{"system":"harness","kind":"session","foreign_id":"codex-session-05","foreign_status":"active"}]),
             "not_found",
         ),
     ];

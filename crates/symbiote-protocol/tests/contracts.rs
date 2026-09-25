@@ -1640,18 +1640,18 @@ fn every_document_that_states_the_schema_command_names_a_declared_example_target
 /// read to serve, with nothing on the wire that could move canonical state.
 #[test]
 fn foreign_runtime_links_are_a_project_edit_and_a_project_read() {
-    let link = ForeignTaskLink {
+    let claim = ForeignLinkClaim {
         system: ExternalSystem::Harness,
         kind: ForeignItemKind::Task,
         foreign_id: "codex-todo-7".into(),
         foreign_session_id: Some("codex-session-01".into()),
         foreign_status: ForeignStatus::Complete,
-        observed_at: Timestamp(10),
     };
+    let link = claim.observed_at(Timestamp(10));
     let set = request(Operation::SetTaskForeignLinks {
         project_id: project_id(),
         task_id: TaskId::new("task-a").unwrap(),
-        links: vec![link.clone()],
+        links: vec![claim.clone()],
     });
     let get = request(Operation::GetTaskForeignLinks {
         project_id: project_id(),
@@ -1706,12 +1706,10 @@ fn foreign_runtime_links_are_a_project_edit_and_a_project_read() {
         hello
             .capabilities
             .contains(&symbiote_protocol::Capability::ForeignLinkRead)
-    );
-    // The wire form of a link has no canonical status, actor or timestamp to
-    // forge: `observed_at` is the only time on the wire and it is the
-    // authority's own to set, and a `task_state` field is refused rather than
-    // ignored.
-    let wire = serde_json::to_value(&link).unwrap();
+    ); // The wire form of a claim has no canonical status, actor or time to
+    // forge: the observation time is not a field a caller can send, and a
+    // `task_state` field is refused rather than ignored.
+    let wire = serde_json::to_value(&claim).unwrap();
     let fields: BTreeSet<&str> = wire
         .as_object()
         .unwrap()
@@ -1725,15 +1723,29 @@ fn foreign_runtime_links_are_a_project_edit_and_a_project_read() {
             "foreign_session_id",
             "foreign_status",
             "kind",
-            "observed_at",
             "system",
         ])
     );
-    let forged = json!({
-        "system": "harness", "kind": "task", "foreign_id": "codex-todo-7",
-        "foreign_status": "complete", "observed_at": 10, "task_state": "completed"
-    });
-    assert!(serde_json::from_value::<ForeignTaskLink>(forged).is_err());
+    for extra in [
+        json!({"observed_at": 10}),
+        json!({"task_state": "completed"}),
+        json!({"actor": "user-a"}),
+    ] {
+        let mut forged = wire.clone();
+        for (name, value) in extra.as_object().unwrap() {
+            forged[name] = value.clone();
+        }
+        assert!(
+            serde_json::from_value::<ForeignLinkClaim>(forged.clone()).is_err(),
+            "a claim carrying {extra} must be refused: {forged}"
+        );
+        let mut operation = serde_json::to_value(&set).unwrap();
+        operation["operation"]["links"] = json!([forged]);
+        assert!(
+            parse_request(operation.to_string().as_bytes()).is_err(),
+            "a request carrying {extra} must be refused"
+        );
+    }
     // The response serves the foreign claim as itself: the body is a list of
     // links, not a Task and not a status.
     let body = ResponseBody::TaskForeignLinks(vec![link.clone()]);
@@ -1744,14 +1756,14 @@ fn foreign_runtime_links_are_a_project_edit_and_a_project_read() {
         !served.to_string().contains("task_state"),
         "a served link set never looks like canonical state: {served}"
     );
-    // An operation whose links the domain refuses is refused before it is
+    // An operation whose claims the domain refuses is refused before it is
     // authorized: the wire validator holds the same bounds the store does.
     let over = request(Operation::SetTaskForeignLinks {
         project_id: project_id(),
         task_id: TaskId::new("task-a").unwrap(),
-        links: vec![ForeignTaskLink {
+        links: vec![ForeignLinkClaim {
             foreign_id: "s".repeat(MAX_FOREIGN_ID_BYTES + 1),
-            ..link
+            ..claim
         }],
     });
     assert_eq!(

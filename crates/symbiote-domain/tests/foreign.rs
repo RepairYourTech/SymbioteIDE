@@ -226,6 +226,15 @@ fn the_contract_states_the_foreign_reference_bounds_and_refusals_enforced() {
     // Prose phrases are read from the section with its line breaks flattened,
     // so a rewrap does not red this case while a removed claim does.
     let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The claim a client sends is the canonical record minus the time: the
+    // Host stamps that, so the wire cannot say when a foreign claim was seen.
+    let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "the claim a caller sends carries the identifiers and the foreign status only",
+        "no client can say when it saw a foreign claim",
+    ] {
+        assert!(flat.contains(phrase), "the section must state: {phrase}");
+    }
     for operation in ["set_task_foreign_links", "get_task_foreign_links"] {
         assert!(
             section.contains(operation),

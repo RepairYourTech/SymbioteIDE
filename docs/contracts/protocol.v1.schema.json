@@ -404,6 +404,42 @@
         ],
         "type": "string"
       },
+      "ForeignLinkClaim": {
+        "additionalProperties": false,
+        "description": "What a caller may say about a foreign runtime's own work, and nothing else:\nthe identifiers as the foreign system gave them and the status that foreign\nsystem reported. The observation *time* is deliberately absent — it is not\nthe caller's to set, so a client cannot backdate or postdate an\nobservation, and the Host stamps it from the moment it records the set.",
+        "properties": {
+          "foreign_id": {
+            "description": "The foreign system's own identifier, verbatim.",
+            "type": "string"
+          },
+          "foreign_session_id": {
+            "description": "The foreign session the item belongs to, when the foreign system\nreports one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "foreign_status": {
+            "$ref": "#/$defs/ForeignStatus",
+            "description": "The foreign system's own claim about the item."
+          },
+          "kind": {
+            "$ref": "#/$defs/ForeignItemKind",
+            "description": "Whether this names the foreign system's session or its task."
+          },
+          "system": {
+            "$ref": "#/$defs/ExternalSystem",
+            "description": "Which foreign system these identifiers belong to."
+          }
+        },
+        "required": [
+          "system",
+          "kind",
+          "foreign_id",
+          "foreign_status"
+        ],
+        "type": "object"
+      },
       "ForeignStatus": {
         "description": "What the foreign system says about its own item, in the foreign system's\nown vocabulary. `Complete` is the harness saying its todo is done; it is\nnot `TaskState::Completed`, it is not evidence, and no gate reads it.",
         "enum": [
@@ -414,47 +450,6 @@
           "unknown"
         ],
         "type": "string"
-      },
-      "ForeignTaskLink": {
-        "additionalProperties": false,
-        "description": "One foreign system's own identifier for one of its own items, held against\nthe canonical Task it was observed for.\n\nThe identifier is recorded as the foreign system gave it, not parsed into\none of this crate's identities: it is evidence that the foreign item exists,\nnot a canonical ID. A record that does name this Task is still not a Task,\nand a `foreign_status` of `complete` is still not completion.",
-        "properties": {
-          "foreign_id": {
-            "description": "The foreign system's own identifier, verbatim.",
-            "type": "string"
-          },
-          "foreign_session_id": {
-            "description": "The foreign session the item belongs to, when the foreign system\nreports one. A session link does not name another session.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "foreign_status": {
-            "$ref": "#/$defs/ForeignStatus",
-            "description": "The foreign system's own claim about the item, at `observed_at`."
-          },
-          "kind": {
-            "$ref": "#/$defs/ForeignItemKind",
-            "description": "Whether this names the foreign system's session or its task."
-          },
-          "observed_at": {
-            "$ref": "#/$defs/Timestamp",
-            "description": "When the authority recorded this observation — the Host's clock, not\nthe foreign system's and never a caller-set field on the wire."
-          },
-          "system": {
-            "$ref": "#/$defs/ExternalSystem",
-            "description": "Which foreign system these identifiers belong to. A runtime session or\ntask reference is a harness's own, so only `Harness` is admissible: a\nGitHub issue or a CI run is an external reference for another purpose\nand naming one here would claim a foreign runtime that does not exist."
-          }
-        },
-        "required": [
-          "system",
-          "kind",
-          "foreign_id",
-          "foreign_status",
-          "observed_at"
-        ],
-        "type": "object"
       },
       "HostId": {
         "maxLength": 128,
@@ -791,7 +786,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "The foreign runtime references held for one canonical Task: the session\nand task identifiers a foreign harness uses for its own work, with the\nstatus that harness reported. Recording them is a Project edit and\nneeds `ManageWork`; reading them is a Project read. Neither operation\ncarries a canonical status, an actor or a timestamp: the links are\nobservations, and only the store's own `observed_at` is authority-\nassigned, so a client cannot record a link that completes a Task.",
+            "description": "The foreign runtime references held for one canonical Task: the session\nand task identifiers a foreign harness uses for its own work, with the\nstatus that harness reported. Recording them is a Project edit and\nneeds `ManageWork`; reading them is a Project read. Neither operation\ncarries a canonical status, an actor or a time: the links are\nobservations, and `observed_at` is the Host's own, applied to every\nclaim it records, so a client cannot say when it saw a foreign claim\nand cannot record a link that completes a Task.",
             "properties": {
               "kind": {
                 "const": "set_task_foreign_links",
@@ -799,7 +794,7 @@
               },
               "links": {
                 "items": {
-                  "$ref": "#/$defs/ForeignTaskLink"
+                  "$ref": "#/$defs/ForeignLinkClaim"
                 },
                 "type": "array"
               },

@@ -101,6 +101,15 @@ fn foreign_link_sets_replace_replay_and_survive_restart() {
     ];
     let receipt = set_links(&mut store, "foreign-initial", &project, &task, &links, 11).unwrap();
     assert!(!receipt.replayed);
+    // The observation time is the authority's, not the caller's: every stored
+    // link carries the instant the command was recorded.
+    for recorded in store.task_foreign_links(&project, &task).unwrap() {
+        assert_eq!(
+            recorded.observed_at,
+            Timestamp(11),
+            "a caller's own observed_at is overwritten before it is recorded"
+        );
+    }
     let replay = set_links(&mut store, "foreign-initial", &project, &task, &links, 11).unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.sequence, receipt.sequence);
@@ -109,7 +118,31 @@ fn foreign_link_sets_replace_replay_and_survive_restart() {
         2,
         "an identical retry records nothing twice"
     );
-    // Replacement supersedes the set; the journal keeps the first one.
+    // A caller's own observation time is overwritten before it is recorded:
+    // the stored link carries the instant the command was recorded.
+    let mut backdated = session_link("codex-session-03");
+    backdated.observed_at = Timestamp(1);
+    set_links(
+        &mut store,
+        "foreign-stamped",
+        &project,
+        &task,
+        &[backdated],
+        13,
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .task_foreign_links(&project, &task)
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
+            .observed_at,
+        Timestamp(13),
+        "a backdated claim is recorded as the authority observed it"
+    );
+    // Replacement supersedes the set; the journal keeps every earlier one.
     set_links(
         &mut store,
         "foreign-replace",
@@ -132,13 +165,23 @@ fn foreign_link_sets_replace_replay_and_survive_restart() {
         .iter()
         .filter(|event| matches!(event.payload, EventPayload::TaskForeignLinksSet { .. }))
         .count();
-    assert_eq!(history, 2, "both sets are readable as history");
+    assert_eq!(history, 3, "every set is readable as history");
     drop(store);
     let store = Store::open(temp.database()).unwrap();
     assert_eq!(
         store.task_foreign_links(&project, &task).unwrap().len(),
         1,
         "the durable record is what survived the restart"
+    );
+    assert_eq!(
+        store
+            .task_foreign_links(&project, &task)
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
+            .foreign_id,
+        "codex-session-02"
     );
     assert_eq!(
         store

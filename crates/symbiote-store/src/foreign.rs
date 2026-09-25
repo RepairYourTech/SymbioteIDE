@@ -105,6 +105,12 @@ impl Store {
     /// said about their own work; it never advances task state, never creates
     /// a Task, and never satisfies a completion gate — a `complete` status a
     /// harness reported is stored as that harness's claim and read back as it.
+    ///
+    /// `at` is the authority's own instant, and it is also what every link is
+    /// stamped with: a caller's `observed_at` is overwritten before the set is
+    /// validated, journaled or written, so neither the record nor the journal
+    /// can say a foreign claim was observed at a time the authority did not
+    /// record it.
     pub fn set_task_foreign_links(
         &mut self,
         command_id: CommandId,
@@ -118,7 +124,13 @@ impl Store {
         let set = ForeignTaskLinks {
             project_id: project.clone(),
             task_id: task.clone(),
-            links,
+            links: links
+                .into_iter()
+                .map(|mut link| {
+                    link.observed_at = at;
+                    link
+                })
+                .collect(),
         };
         set.validate().map_err(|_| StoreError::InvalidForeignLink)?;
         if at.0 > i64::MAX as u64 {
