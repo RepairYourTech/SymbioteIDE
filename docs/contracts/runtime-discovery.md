@@ -131,8 +131,10 @@ read grants no activation, credential, installation or billing authority.
 There is no client write path. The document is installed by an operator on the
 machine with `symbiote publish-runtime-inventory DOCUMENT --state-dir DIR`
 (see [cli.md](cli.md)), which re-validates it whole, requires every record to
-name that state directory's own Host identity, and installs it atomically at
-mode 0600 so a reader sees the old document or the new one. A refused document is
+name that state directory's own Host identity — so a document a real discovery
+run built for it is installable, and one built for another machine is not — and
+installs it atomically at mode 0600 so a reader sees the old document or the new
+one. A refused document is
 named and leaves the Host serving what it already held. What a discovery run
 produces and an operator publishes is still two steps with a person in the
 middle: this slice makes the inventory durable and readable, not discovered on a
@@ -187,11 +189,16 @@ absolute path, an empty worktree under a private 0700 parent, and a separate
 protected Host directory. The optional
 `--inventory-document=PATH` names a file to write the inventory document this
 run produced, so the document an operator publishes into a Host is the one a real
-discovery run built; the file is the producer's output and carries no Host
-identity of its own, so the Host still installs it only after checking every
-record against its own. It is spelled as an option rather than a fourth
-positional because the protected-directory list is variadic: a trailing path
-would be read as one more protected directory and refused. The sandbox runs `/usr/bin/codex` with a disposable
+discovery run built, and the optional `--host-id=ID` names the Host its records
+belong to. Both are options rather than positionals because the
+protected-directory list is variadic: a trailing path would be read as one more
+protected directory and refused. The Host identity is not a label — a Host
+installs a document only when every record in it names that Host's own identity,
+so a document built for the default `discovery-host` is refused by a real Host
+as another Host's. An operator who wants the document installed passes the
+identity from the target state directory's `host-id`; the default keeps the
+proof honest about what it is, an offline compatibility check that names no real
+machine. The sandbox runs `/usr/bin/codex` with a disposable
 `/home/agent` HOME, an empty environment, read-only project and isolated network.
 Initialization must report `/home/agent/.codex`. No real account directory is
 mounted. The runner checks cancellation errors; descendant cleanup remains
