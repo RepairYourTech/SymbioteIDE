@@ -53,6 +53,7 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("hello", Risk::ReadOnly),
     ("health", Risk::ReadOnly),
     ("get_host_pulse", Risk::ReadOnly),
+    ("get_runtime_inventory", Risk::ReadOnly),
     ("get_project", Risk::ReadOnly),
     ("list_projects", Risk::ReadOnly),
     ("snapshot", Risk::ReadOnly),

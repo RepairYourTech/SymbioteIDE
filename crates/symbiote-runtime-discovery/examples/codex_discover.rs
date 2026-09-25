@@ -37,10 +37,39 @@ impl DiscoveryTransport for Probe {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let inputs: Vec<_> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // Positional inputs are the helper, an empty worktree, and the protected
+    // Host directories — the last of them variadic, so an option cannot be
+    // appended to them and be mistaken for one. The two options are therefore
+    // spelled as options: `--inventory-document=PATH` names where this run
+    // writes the inventory document it produced, and `--host-id=ID` names the
+    // Host those records belong to.
+    //
+    // The Host identity matters to more than a label: a Host serves a published
+    // inventory only when every record in it names that Host's own identity, so
+    // a document built for `discovery-host` cannot be published into a real
+    // Host's state directory. An operator who wants the document installed
+    // passes the identity from that directory's `host-id`; the default keeps
+    // the proof honest about what it is, an offline compatibility check that
+    // names no real machine.
+    let mut inputs: Vec<PathBuf> = Vec::new();
+    let mut document: Option<PathBuf> = None;
+    let mut host_id = String::from("discovery-host");
+    for argument in std::env::args_os().skip(1) {
+        let argument = argument.to_string_lossy().into_owned();
+        if let Some(path) = argument.strip_prefix("--inventory-document=") {
+            document = Some(PathBuf::from(path));
+        } else if let Some(identity) = argument.strip_prefix("--host-id=") {
+            host_id = identity.to_owned();
+        } else {
+            inputs.push(PathBuf::from(argument));
+        }
+    }
+    let host_id = HostId::new(host_id)?;
     if inputs.len() != 3 {
         return Err(
-            "expected absolute helper, private empty worktree, protected Host directory".into(),
+            "expected absolute helper, private empty worktree, protected Host directory, \
+             optional --inventory-document=PATH --host-id=ID"
+                .into(),
         );
     }
     if std::fs::read_dir(&inputs[1])?.next().is_some() {
@@ -52,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         project_id: ProjectId::new("discovery-project")?,
         role_id: RoleId::new("discovery-role")?,
         profile_id: RuntimeProfileId::new("discovery-profile")?,
-        host_id: HostId::new("discovery-host")?,
+        host_id: host_id.clone(),
         resource_ref: "offline-codex-discovery".into(),
         fingerprint: fingerprint_command(
             &root,
@@ -100,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .ok_or("profile resolution returned no profile")?;
     let installation = ExecutableInstallation::inspect(ExecutableInspection {
         installation_id: InstallationId::new("codex-system-installation")?,
-        host_id: HostId::new("discovery-host")?,
+        host_id: host_id.clone(),
         runtime_kind: RuntimeKind::ExternalHarness,
         adapter_id: AgentRuntimeAdapterId::new("codex-harness")?,
         requested_path: std::path::Path::new("/usr/bin/codex"),
@@ -180,6 +209,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         probe.process.child_id(),
         &report,
     )?])?;
+    // An optional fourth argument writes the document this run produced, so the
+    // inventory an operator publishes into a Host is the one a real discovery
+    // run built rather than a hand-written stand-in. The file is the producer's
+    // output, not Host state: the Host installs it under its own name, mode and
+    // identity check when an operator publishes it.
+    if let Some(path) = &document {
+        std::fs::write(path, serde_json::to_string(&inventory)?)?;
+    }
     println!(
         "{}",
         serde_json::json!({
@@ -197,6 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "listed_models": report.models.len(),
             "inventory_records": inventory.records().len(),
             "inventory_schema_version": inventory.schema_version(),
+            "inventory_document": document.as_ref().map(|path| path.display().to_string()),
             "model_usability": "unknown",
             "model_turn_started": false,
             "profile": "fresh_disposable_home",

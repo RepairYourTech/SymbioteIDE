@@ -262,6 +262,113 @@ fn host_pulse_requires_host_owner_even_with_project_permissions() {
     spoof["operation"]["host_id"] = json!("another-host");
     assert!(parse_request(&serde_json::to_vec(&spoof).unwrap()).is_err());
 }
+/// The runtime inventory read is owner authority over this Host's own machine,
+/// not a Project record: a Project Read grant is not authority over what an
+/// operator installed here, and the response carries the discovery document
+/// whole rather than a filtered view of it. A read is not a mutation, and the
+/// record cannot be smuggled in through the request envelope.
+#[test]
+fn the_runtime_inventory_read_is_owner_authority_and_serves_the_document_whole() {
+    let req = request(Operation::GetRuntimeInventory {});
+    assert_eq!(
+        authorize(&principal(), &req).unwrap_err().code,
+        ErrorCode::PermissionDenied,
+        "a Project Read grant does not reach this Host's own inventory"
+    );
+    assert!(authorize(&Principal::local_owner(UserId::new("owner").unwrap()), &req).is_ok());
+    assert!(!req.operation.is_mutation(), "a read changes nothing");
+    assert!(req.operation.project_id().is_none(), "no Project scopes it");
+    assert!(
+        negotiate(&[CURRENT_VERSION])
+            .unwrap()
+            .capabilities
+            .contains(&symbiote_protocol::Capability::RuntimeInventoryRead),
+        "a client negotiates the capability it needs to ask"
+    );
+    // The identity a request would try to name is refused at the envelope: the
+    // Host is the only source of which Host this is.
+    for key in ["host_id", "inventory", "records", "principal"] {
+        let mut spoof = serde_json::to_value(&req).unwrap();
+        spoof["operation"][key] = json!("another-host");
+        assert!(
+            parse_request(&serde_json::to_vec(&spoof).unwrap()).is_err(),
+            "{key} is not a field this operation carries"
+        );
+    }
+    // The body is the document the Host published, served as itself: a stale
+    // record is still a record, and the reader sees its own `expires_at`.
+    let observation = json!({
+        "config_identity": "codex-default",
+        "profile_id": "profile-1",
+        "installation_id": "installation-1",
+        "host_id": "host-a",
+        "runtime_kind": "EXTERNAL_HARNESS",
+        "adapter_id": "adapter-1",
+        "version": {"status": "known", "value": "0.118.0"},
+        "interface": {"status": "known", "value": {"name": "app_server", "version": "0.118.0"}},
+        "facts": {
+            "health": {"status": "known", "value": "reachable"},
+            "authentication": {"status": "known", "value": {"mode": "none", "state": "required", "account_ref": null}},
+            "models": {"status": "unknown"},
+            "methods": {"initialize": "available"},
+            "isolation": {"status": "unknown"}
+        },
+        "observed_at": 1000,
+        "expires_at": 2000,
+        "provenance": {"probe_id": "probe-1", "source": "sandboxed_probe", "adapter_revision": "0.118.0"}
+    });
+    let document = json!({
+        "schema_version": 1,
+        "records": [{
+            "schema_version": 1,
+            "intent": {
+                "profile_id": "profile-1",
+                "installation_id": "installation-1",
+                "host_id": "host-a",
+                "runtime_kind": "EXTERNAL_HARNESS",
+                "adapter_id": "adapter-1",
+                "instance_name": "Codex",
+                "config_identity": "codex-default"
+            },
+            "observation": observation
+        }]
+    });
+    let body = ResponseBody::RuntimeInventory(Box::new(
+        symbiote_runtime_discovery::Inventory::parse(&document.to_string()).unwrap(),
+    ));
+    let response = Response::success(&req, body.clone());
+    let bytes = encode_response(&response).unwrap();
+    assert!(
+        bytes.len() < MAX_RESPONSE_BYTES,
+        "a served inventory is inside the response bound the transport frames"
+    );
+    let wire = serde_json::to_value(&response).unwrap();
+    assert_eq!(wire["result"]["Ok"]["kind"], "runtime_inventory");
+    assert_eq!(wire["result"]["Ok"]["data"]["schema_version"], 1);
+    assert_eq!(
+        wire["result"]["Ok"]["data"]["records"][0]["observation"]["expires_at"], 2000,
+        "a record past its own expiry is served with the expiry it carries"
+    );
+    assert_eq!(
+        serde_json::from_value::<ResponseBody>(wire["result"]["Ok"].clone()).unwrap(),
+        body,
+        "the served document round-trips as itself"
+    );
+    // The request round-trips, and the wire kind is the one the operation
+    // table and the schema publish.
+    let sent = serde_json::to_string(&req).unwrap();
+    assert!(sent.contains("get_runtime_inventory"));
+    assert_eq!(parse_request(sent.as_bytes()).unwrap(), req);
+    let schema = schema_json();
+    assert!(schema.contains("get_runtime_inventory"));
+    assert!(schema.contains("runtime_inventory_read"));
+    // A version the Host does not publish is not admitted by the response body
+    // either: the served document is validated, not echoed.
+    let mut wrong = document.clone();
+    wrong["schema_version"] = json!(2);
+    assert!(symbiote_runtime_discovery::Inventory::parse(&wrong.to_string()).is_err());
+}
+
 fn project_draft() -> ProjectDraft {
     ProjectDraft {
         id: project_id(),
@@ -422,7 +529,7 @@ fn work_references_require_read_access_even_after_reference_is_removed() {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":24},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":25},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -431,7 +538,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor": 24},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor": 25},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 

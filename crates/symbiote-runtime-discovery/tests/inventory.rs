@@ -1,3 +1,4 @@
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use symbiote_domain::*;
 use symbiote_runtime_discovery::*;
@@ -266,4 +267,52 @@ fn unknown_fact_cannot_silently_discard_claimed_payload() {
     ] {
         assert!(serde_json::from_str::<Fact<String>>(input).is_err());
     }
+}
+
+/// The published schema for an inventory states the same version and the same
+/// record bound the parser enforces, so a schema-only consumer cannot admit a
+/// document this crate would refuse to deserialize — the version a Host would
+/// serve from a file it re-validates, and the bound that decides whether a
+/// document fits the response it is carried in.
+#[test]
+fn the_published_inventory_schema_states_the_version_and_bound_the_parser_enforces() {
+    let schema = serde_json::to_value(schemars::schema_for!(Inventory)).unwrap();
+    assert_eq!(schema["properties"]["schema_version"]["const"], json!(1));
+    assert_eq!(
+        schema["properties"]["records"]["maxItems"],
+        json!(MAX_INVENTORY_RECORDS)
+    );
+    assert_eq!(schema["additionalProperties"], json!(false));
+    let valid = json!({
+        "schema_version": 1,
+        "records": [serde_json::to_value(record()).unwrap()],
+    });
+    assert!(
+        serde_json::from_value::<Inventory>(valid.clone()).is_ok(),
+        "the schema's own example is one the parser accepts"
+    );
+    // A version the parser refuses is one the schema refuses: the two agree in
+    // both directions, not only where the parser is stricter.
+    let wrong_version = json!({"schema_version": 2, "records": []});
+    assert!(serde_json::from_value::<Inventory>(wrong_version.clone()).is_err());
+    assert_ne!(
+        wrong_version["schema_version"],
+        schema["properties"]["schema_version"]["const"]
+    );
+    // A record past the stated bound is refused by the parser, and the bound the
+    // schema states is the bound the parser applies.
+    let many: Vec<_> = (0..=MAX_INVENTORY_RECORDS)
+        .map(|index| {
+            let mut value = serde_json::to_value(record()).unwrap();
+            value["intent"]["profile_id"] = json!(format!("profile-{index}"));
+            value
+        })
+        .collect();
+    let over = json!({"schema_version": 1, "records": many});
+    assert!(serde_json::from_value::<Inventory>(over).is_err());
+    // And the servable document bound is the figure the Host applies, stated
+    // once by this crate, and it is the parser's own ceiling tightened rather
+    // than an unrelated second limit.
+    assert_eq!(MAX_PUBLISHED_BYTES, 512 * 1024);
+    const { assert!(MAX_PUBLISHED_BYTES < 4_194_304) };
 }

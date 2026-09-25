@@ -13,9 +13,18 @@ pub(crate) struct InventoryService {
     nonce: String,
     sequence: u64,
     cached: Option<(Instant, HostPulse)>,
+    /// The [runtime inventory](../../../docs/contracts/runtime-discovery.md) this Host serves.
+    /// It is held here rather than threaded through every dispatch signature because it is
+    /// this Host's own read of its own state directory, exactly as the pulse is: the daemon
+    /// resolves both from the state directory once, at startup.
+    published: crate::runtime_inventory::Published,
 }
 impl InventoryService {
-    pub(crate) fn new(host_id: HostId, enabled: bool) -> std::io::Result<Self> {
+    pub(crate) fn new(
+        host_id: HostId,
+        enabled: bool,
+        published: crate::runtime_inventory::Published,
+    ) -> std::io::Result<Self> {
         let mut bytes = [0u8; 16];
         File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         Ok(Self {
@@ -24,10 +33,20 @@ impl InventoryService {
             nonce: bytes.iter().map(|b| format!("{b:02x}")).collect(),
             sequence: 0,
             cached: None,
+            published,
         })
     }
     pub(crate) fn host_id(&self) -> &HostId {
         &self.host_id
+    }
+    /// The re-validated inventory, or the named reason this Host will not serve one. The
+    /// pulse is cached for a second because it is a live measurement; this is not cached at
+    /// all, because the file is the durable record and a read after a republish is the new
+    /// document.
+    pub(crate) fn runtime_inventory(
+        &self,
+    ) -> Result<symbiote_runtime_discovery::Inventory, crate::runtime_inventory::Refusal> {
+        self.published.read()
     }
     pub(crate) fn pulse(&mut self) -> Result<HostPulse, ProtocolError> {
         let started = Instant::now();

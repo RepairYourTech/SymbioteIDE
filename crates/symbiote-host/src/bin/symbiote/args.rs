@@ -184,14 +184,21 @@ impl Options {
 /// (`--policy` is consulted only for a dangerous operation and `--yes` only
 /// authorizes one, but both are valid flags on any daemon command). The local
 /// commands honor only what they use: `schema` publishes and compares
-/// documents, so `--write` and `--check`; `help` renders the command table, so
-/// nothing. `--help`/`-h` is the one universal flag, honored by every command
-/// (and by no command), because it is answered from the table alone.
+/// documents, so `--write` and `--check`; `publish-runtime-inventory` writes
+/// into the private state directory, so `--state-dir`; `help` renders the
+/// command table, so nothing. `--help`/`-h` is the one universal flag, honored
+/// by every command (and by no command), because it is answered from the table
+/// alone.
 pub(crate) fn honored_flags(command: &str) -> Flags {
     match command {
         "schema" => Flags {
             write: true,
             check: true,
+            help: true,
+            ..Flags::default()
+        },
+        "publish-runtime-inventory" => Flags {
+            state_dir: true,
             help: true,
             ..Flags::default()
         },

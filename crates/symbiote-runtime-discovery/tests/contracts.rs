@@ -178,3 +178,82 @@ fn the_accepted_client_name_is_built_from_the_pinned_release() {
         "the accepted client name must not be restated as a version figure beside the constant"
     );
 }
+
+/// The durable read surface this document publishes is the one the Host
+/// implements: the file name, the bound, the whole refusal vocabulary, the local
+/// command that installs a document, and the protocol version the read rides on.
+/// Each figure is read from the sentence that writes it and compared with the
+/// code, so a moved constant or a renamed file reds here by name.
+#[test]
+fn the_durable_inventory_read_surface_is_named_and_bound() {
+    let contract = include_str!("../../../docs/contracts/runtime-discovery.md");
+    let section = region(
+        contract,
+        "## Durable Host inventory read surface",
+        "\n## Deterministic diagnostics",
+    );
+    // The refusal vocabulary is closed: the document names every name the Host
+    // can answer with, and answers with no other.
+    let host = include_str!("../../symbiote-host/src/runtime_inventory.rs");
+    for refusal in [
+        "Absent",
+        "Unsafe",
+        "Unreadable",
+        "Unparseable",
+        "Oversized",
+        "ForeignHost",
+    ] {
+        assert!(host.contains(refusal), "the Host module declares {refusal}");
+    }
+    for name in [
+        "no_published_inventory",
+        "unsafe_inventory_file",
+        "unreadable_inventory",
+        "unparseable_inventory",
+        "oversized_inventory",
+        "foreign_host_inventory",
+    ] {
+        assert!(section.contains(name), "the section must name {name}");
+    }
+    // The bound, the file name and the command are stated once each and are the
+    // ones the code uses.
+    assert!(section.contains("`runtime-inventory.json`"));
+    assert!(
+        include_str!("../../symbiote-host/src/paths.rs")
+            .contains(r#"RUNTIME_INVENTORY_FILE: &str = "runtime-inventory.json""#),
+        "the Host publishes the file name the document states"
+    );
+    let stated: usize = region(section, "The published bound is ", " KiB")
+        .trim()
+        .parse()
+        .expect("a KiB figure");
+    assert_eq!(
+        stated * 1024,
+        symbiote_runtime_discovery::MAX_PUBLISHED_BYTES,
+        "the document's bound is the one this crate carries and the Host applies"
+    );
+    assert!(section.contains("`symbiote publish-runtime-inventory DOCUMENT --state-dir DIR`"));
+    assert!(section.contains("`get_runtime_inventory` (protocol v1.25)"));
+    // The Host-side reader carries the discipline the section describes, and no
+    // write path a client could reach.
+    for discipline in [
+        "O_NOFOLLOW",
+        "metadata.nlink() != 1",
+        "metadata.uid() != nix::unistd::geteuid().as_raw()",
+        "metadata.mode() & 0o777 != 0o600",
+    ] {
+        assert!(
+            host.contains(discipline),
+            "the read must apply {discipline}"
+        );
+    }
+    assert!(!host.contains("Command::new"));
+    // The install is atomic: a rename over the published name, never a
+    // truncating write of the same name, so a reader sees the old document or
+    // the new one and never a partial write.
+    assert!(
+        host.contains("std::fs::rename(&temporary, &path)"),
+        "the publisher installs by rename"
+    );
+    assert!(!host.contains("fs::copy"));
+}

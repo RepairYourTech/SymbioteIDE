@@ -36,6 +36,10 @@ pub mod operator;
 /// refusals that keep an unresolved Host from writing where nobody intended.
 pub mod paths;
 pub mod runner;
+/// The runtime inventory this Host publishes and serves (#186): the private,
+/// bounded file a discovery document is installed into, and the re-validated
+/// read the `get_runtime_inventory` operation answers from.
+pub mod runtime_inventory;
 mod service;
 /// The sandboxed shell-tool executor composition (#218/#465): production
 /// `ShellToolExecutor` over `symbiote-sandbox::launch` plus the operator's
@@ -44,11 +48,20 @@ pub mod shell_executor;
 pub mod transport;
 
 use std::path::Path;
-use symbiote_domain::UserId;
+use symbiote_domain::{HostId, UserId};
 use symbiote_protocol::{
     CURRENT_VERSION, ErrorCode, Principal, ProtocolError, Response, encode_response, parse_request,
 };
 use symbiote_store::Store;
+
+/// This Host's own stable identity for a state directory, from the private file
+/// the daemon loads at startup. The CLI's local `publish-runtime-inventory`
+/// command publishes into the same directory, so it has to resolve the same
+/// identity the daemon will require every record to name — resolving it twice
+/// would be two owners for one fact.
+pub fn host_identity(directory: &Path) -> Result<HostId, Box<dyn std::error::Error>> {
+    Ok(identity::load(directory)?)
+}
 
 pub fn serve(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
     serve_with_telemetry(directory, true)
@@ -70,7 +83,12 @@ pub fn serve_full(
     mut worker_transports: runner::WorkerTransports,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let local = transport::LocalListener::bind(directory)?;
-    let mut inventory = inventory::InventoryService::new(identity::load(directory)?, telemetry)?;
+    let host_id = identity::load(directory)?;
+    let mut inventory = inventory::InventoryService::new(
+        host_id.clone(),
+        telemetry,
+        runtime_inventory::Published::new(directory, host_id),
+    )?;
     // The same authenticated OS owner is the explicit bootstrap policy. This
     // adapter must never be exposed as an unauthenticated remote or Preview API.
     let principal = Principal::local_owner(UserId::new(format!(

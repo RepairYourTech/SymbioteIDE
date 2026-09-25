@@ -487,7 +487,7 @@ fn the_flag_surface_the_help_and_the_contract_state_is_the_tables_rows() {
         );
         rest = &after[end..];
     }
-    assert_eq!(rows.len(), 3, "the table declares one arm per command kind");
+    assert_eq!(rows.len(), 4, "the table declares one arm per command kind");
 
     let mut universal = rows[0].clone();
     for row in &rows[1..] {
@@ -921,6 +921,151 @@ fn write_policy(contents: &str, mode: u32) -> PathBuf {
 
 fn remove(path: &Path) {
     std::fs::remove_file(path).unwrap();
+}
+
+/// A private Host state directory and a discovery document naming whatever
+/// Host identity that directory resolves to. The test removes both.
+fn state_and_document(host: &str) -> (PathBuf, PathBuf) {
+    static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "symbiote-cli-publish-unit-{}-{sequence}",
+        std::process::id(),
+    ));
+    symbiote_host::transport::private_directory(&directory).unwrap();
+    let document = std::env::temp_dir().join(format!(
+        "symbiote-cli-publish-document-{}-{sequence}",
+        std::process::id(),
+    ));
+    std::fs::write(&document, discovery_document(host)).unwrap();
+    (directory, document)
+}
+
+/// One valid inventory record naming `host`, in the wire shape the discovery
+/// contract parses. A discovery run produces this; here it stands in for one,
+/// because what this command is measured on is what it does with the document,
+/// not how the document was obtained.
+fn discovery_document(host: &str) -> String {
+    format!(
+        r#"{{"schema_version":1,"records":[{{"schema_version":1,"intent":{{"profile_id":"profile-1","installation_id":"installation-1","host_id":"{host}","runtime_kind":"EXTERNAL_HARNESS","adapter_id":"adapter-1","instance_name":"Codex","config_identity":"codex-default"}},"observation":{{"config_identity":"codex-default","profile_id":"profile-1","installation_id":"installation-1","host_id":"{host}","runtime_kind":"EXTERNAL_HARNESS","adapter_id":"adapter-1","version":{{"status":"known","value":"0.118.0"}},"interface":{{"status":"known","value":{{"name":"app_server","version":"0.118.0"}}}},"facts":{{"health":{{"status":"known","value":"reachable"}},"authentication":{{"status":"known","value":{{"mode":"none","state":"required","account_ref":null}}}},"models":{{"status":"unknown"}},"methods":{{"initialize":"available"}},"isolation":{{"status":"unknown"}}}},"observed_at":1000,"expires_at":2000,"provenance":{{"probe_id":"probe-1","source":"sandboxed_probe","adapter_revision":"0.118.0"}}}}}}]}}"#
+    )
+}
+
+/// The local publish command is the only way a discovery document reaches a
+/// Host, so it is driven end to end here: it installs a document the daemon
+/// will serve, it names a refusal instead of installing a bad one, it never
+/// opens a socket, and it accepts only the flags the applicability table
+/// grants it.
+#[test]
+fn the_publish_command_installs_what_the_host_serves_and_names_every_refusal() {
+    let (directory, _) = state_and_document("unused");
+    // The identity is the one the daemon would load, so the records the
+    // command accepts are the records the read will serve — and the Host mints
+    // that identity on first start, so the document has to be written after it
+    // resolves rather than guessed before.
+    let identity = symbiote_host::host_identity(&directory).unwrap();
+    let document = directory.join("discovery.json");
+    std::fs::write(&document, discovery_document(identity.as_str())).unwrap();
+    let published = symbiote_host::runtime_inventory::Published::new(&directory, identity.clone());
+    assert!(published.read().is_err());
+
+    // A document naming another Host is refused, and nothing is installed.
+    let run = |arguments: &[&str]| {
+        run_with(arguments.iter().map(|value| value.to_string()).collect()).unwrap()
+    };
+    let foreign = state_and_document("host_somewhere_else");
+    assert_eq!(
+        run(&[
+            "publish-runtime-inventory",
+            foreign.1.to_str().unwrap(),
+            "--state-dir",
+            directory.to_str().unwrap()
+        ]),
+        EXIT_USAGE
+    );
+    assert!(published.read().is_err());
+
+    // The document this Host's own identity names is installed, and the file
+    // the read then answers from is the private file the read requires.
+    assert_eq!(
+        run(&[
+            "publish-runtime-inventory",
+            document.to_str().unwrap(),
+            "--state-dir",
+            directory.to_str().unwrap()
+        ]),
+        EXIT_OK
+    );
+    assert_eq!(published.read().unwrap().records().len(), 1);
+
+    // Usage refusals: no document, no state directory, a document that is not
+    // there, and a flag this command does not honor.
+    assert_eq!(run(&["publish-runtime-inventory"]), EXIT_USAGE);
+    assert_eq!(
+        run(&["publish-runtime-inventory", document.to_str().unwrap()]),
+        EXIT_USAGE
+    );
+    assert_eq!(
+        run(&[
+            "publish-runtime-inventory",
+            directory.join("absent.json").to_str().unwrap(),
+            "--state-dir",
+            directory.to_str().unwrap()
+        ]),
+        EXIT_USAGE
+    );
+    assert_eq!(
+        run(&[
+            "publish-runtime-inventory",
+            document.to_str().unwrap(),
+            "--state-dir",
+            directory.to_str().unwrap(),
+            "--json"
+        ]),
+        EXIT_USAGE
+    );
+    // A directory that is not a Host state directory at all.
+    let shared = std::env::temp_dir();
+    assert_eq!(
+        run(&[
+            "publish-runtime-inventory",
+            document.to_str().unwrap(),
+            "--state-dir",
+            shared.to_str().unwrap()
+        ]),
+        EXIT_USAGE
+    );
+    for path in [&directory, &foreign.0] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    remove(&foreign.1);
+}
+
+/// The document `docs/contracts/cli.md` publishes for the publish command
+/// states the bound and the file mode the module enforces, so a moved bound
+/// cannot leave a stale figure behind.
+#[test]
+fn the_publish_contract_states_the_bound_the_module_enforces() {
+    let document = include_str!("../../../../../docs/contracts/cli.md");
+    let section = region(
+        document,
+        "## Publishing a runtime inventory",
+        "\n## Exit codes",
+    );
+    let stated = numbers(region(section, "a bound of ", " KiB"));
+    assert_eq!(
+        stated,
+        vec![(symbiote_host::runtime_inventory::MAX_PUBLISHED_BYTES / 1024) as i64],
+        "the publish section's bound is the one the module enforces"
+    );
+    assert!(
+        section.contains("0600"),
+        "the section states the installed mode"
+    );
+    assert!(
+        section.contains("atomically"),
+        "the section states the install"
+    );
 }
 
 #[test]

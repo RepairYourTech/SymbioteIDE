@@ -1093,6 +1093,20 @@
           },
           {
             "additionalProperties": false,
+            "description": "The [runtime inventory](runtime-discovery.md) this Host holds for the\nmachines it is, served whole from the private file its own Host identity\npublished. It is a read of what this Host observed, so it is owner\nauthority rather than a Project record, and it is refused by name rather\nthan partially served: nothing published, a file that is not a private\nregular file of this user, a document this crate does not speak, one\npast the published bound, or a record that names another Host.\nRecords past their own `expires_at` stay visible: expiry is the reader's\ncall, not a filter this Host applies on the way out. Nothing here grants\nactivation, credential, installation or billing authority.",
+            "properties": {
+              "kind": {
+                "const": "get_runtime_inventory",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "expected_revision": {
                 "format": "uint64",
@@ -3159,6 +3173,48 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
+      "AuthMode": {
+        "enum": [
+          "none",
+          "api_key",
+          "chat_gpt",
+          "other"
+        ],
+        "type": "string"
+      },
+      "AuthState": {
+        "enum": [
+          "not_required",
+          "required",
+          "authenticated",
+          "expired",
+          "rate_limited"
+        ],
+        "type": "string"
+      },
+      "Authentication": {
+        "additionalProperties": false,
+        "properties": {
+          "account_ref": {
+            "description": "Host-generated opaque reference only. Never copy an email, token or account payload here.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/$defs/AuthMode"
+          },
+          "state": {
+            "$ref": "#/$defs/AuthState"
+          }
+        },
+        "required": [
+          "mode",
+          "state"
+        ],
+        "type": "object"
+      },
       "AuthenticationKind": {
         "enum": [
           "api_credential",
@@ -3513,6 +3569,7 @@
           "binding_configuration",
           "binding_read",
           "host_pulse_read",
+          "runtime_inventory_read",
           "team_configuration",
           "team_read",
           "work_creation",
@@ -4257,6 +4314,59 @@
         "minLength": 1,
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
+      },
+      "DiscoveryFacts": {
+        "additionalProperties": false,
+        "properties": {
+          "authentication": {
+            "$ref": "#/$defs/Fact9"
+          },
+          "health": {
+            "$ref": "#/$defs/Fact8"
+          },
+          "isolation": {
+            "$ref": "#/$defs/Fact11"
+          },
+          "methods": {
+            "additionalProperties": {
+              "$ref": "#/$defs/MethodAvailability"
+            },
+            "type": "object"
+          },
+          "models": {
+            "$ref": "#/$defs/Fact10"
+          }
+        },
+        "required": [
+          "health",
+          "authentication",
+          "models",
+          "methods",
+          "isolation"
+        ],
+        "type": "object"
+      },
+      "DiscoveryRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "$ref": "#/$defs/RuntimeInstanceIntent"
+          },
+          "observation": {
+            "$ref": "#/$defs/InstallationObservation"
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "intent",
+          "observation"
+        ],
+        "type": "object"
       },
       "Dispatch": {
         "additionalProperties": false,
@@ -5450,6 +5560,77 @@
           }
         ]
       },
+      "Fact10": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "known",
+                "type": "string"
+              },
+              "value": {
+                "items": {
+                  "$ref": "#/$defs/ModelListing"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "status",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Fact11": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "known",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/IsolationEvidence"
+              }
+            },
+            "required": [
+              "status",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Fact2": {
         "oneOf": [
           {
@@ -5624,6 +5805,108 @@
           }
         ]
       },
+      "Fact7": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "known",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/InterfaceIdentity"
+              }
+            },
+            "required": [
+              "status",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Fact8": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "known",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Health"
+              }
+            },
+            "required": [
+              "status",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Fact9": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "const": "known",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Authentication"
+              }
+            },
+            "required": [
+              "status",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "FallbackConsent": {
         "enum": [
           "explicit_required"
@@ -5655,6 +5938,14 @@
         "maxLength": 128,
         "minLength": 1,
         "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "Health": {
+        "enum": [
+          "reachable",
+          "unavailable",
+          "rate_limited"
+        ],
         "type": "string"
       },
       "HostId": {
@@ -5739,6 +6030,62 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
+      "InstallationObservation": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter_id": {
+            "$ref": "#/$defs/AgentRuntimeAdapterId"
+          },
+          "config_identity": {
+            "type": "string"
+          },
+          "expires_at": {
+            "$ref": "#/$defs/Timestamp"
+          },
+          "facts": {
+            "$ref": "#/$defs/DiscoveryFacts"
+          },
+          "host_id": {
+            "$ref": "#/$defs/HostId"
+          },
+          "installation_id": {
+            "$ref": "#/$defs/InstallationId"
+          },
+          "interface": {
+            "$ref": "#/$defs/Fact7"
+          },
+          "observed_at": {
+            "$ref": "#/$defs/Timestamp"
+          },
+          "profile_id": {
+            "$ref": "#/$defs/RuntimeProfileId"
+          },
+          "provenance": {
+            "$ref": "#/$defs/ProbeProvenance"
+          },
+          "runtime_kind": {
+            "$ref": "#/$defs/RuntimeKind"
+          },
+          "version": {
+            "$ref": "#/$defs/Fact"
+          }
+        },
+        "required": [
+          "config_identity",
+          "profile_id",
+          "installation_id",
+          "host_id",
+          "runtime_kind",
+          "adapter_id",
+          "version",
+          "interface",
+          "facts",
+          "observed_at",
+          "expires_at",
+          "provenance"
+        ],
+        "type": "object"
+      },
       "IntegrationTier": {
         "enum": [
           "terminal_compatible",
@@ -5749,6 +6096,59 @@
           "certified"
         ],
         "type": "string"
+      },
+      "InterfaceIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "Inventory": {
+        "additionalProperties": false,
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/$defs/DiscoveryRecord"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "records"
+        ],
+        "type": "object"
+      },
+      "IsolationEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_id": {
+            "$ref": "#/$defs/EvidenceId"
+          },
+          "verified_by": {
+            "$ref": "#/$defs/HostId"
+          }
+        },
+        "required": [
+          "verified_by",
+          "evidence_id"
+        ],
+        "type": "object"
       },
       "JournalEvent": {
         "additionalProperties": false,
@@ -5833,6 +6233,14 @@
           }
         ]
       },
+      "MethodAvailability": {
+        "enum": [
+          "unknown",
+          "available",
+          "unsupported"
+        ],
+        "type": "string"
+      },
       "MilestoneId": {
         "maxLength": 128,
         "minLength": 1,
@@ -5911,6 +6319,33 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
+      "ModelListing": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_model_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_tokens": {
+            "$ref": "#/$defs/Fact3"
+          },
+          "upstream_model": {
+            "description": "External model identifiers remain separate from canonical Model identity.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream_model",
+          "context_tokens"
+        ],
+        "type": "object"
+      },
       "ObjectiveClass": {
         "enum": [
           "outcome",
@@ -5923,6 +6358,13 @@
         "maxLength": 128,
         "minLength": 1,
         "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "ObservationSource": {
+        "enum": [
+          "sandboxed_probe",
+          "trusted_host_probe"
+        ],
         "type": "string"
       },
       "Permission": {
@@ -6153,6 +6595,26 @@
         "required": [
           "resource",
           "reason"
+        ],
+        "type": "object"
+      },
+      "ProbeProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter_revision": {
+            "type": "string"
+          },
+          "probe_id": {
+            "$ref": "#/$defs/CommandId"
+          },
+          "source": {
+            "$ref": "#/$defs/ObservationSource"
+          }
+        },
+        "required": [
+          "probe_id",
+          "source",
+          "adapter_revision"
         ],
         "type": "object"
       },
@@ -6872,6 +7334,24 @@
               },
               "kind": {
                 "const": "host_pulse",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "This Host's own [runtime inventory](runtime-discovery.md), served whole\nfrom the private file its own identity published. Every record in it\nnames this Host, and a record past its own `expires_at` is served rather\nthan dropped: the document is what this Host observed, and the reader\ndecides what a stale observation means. The Host applies the published\nbound before the response is built, so this body cannot exceed\n[`MAX_RESPONSE_BYTES`].",
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/Inventory"
+              },
+              "kind": {
+                "const": "runtime_inventory",
                 "type": "string"
               }
             },
@@ -7633,6 +8113,44 @@
         "minLength": 1,
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
+      },
+      "RuntimeInstanceIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter_id": {
+            "$ref": "#/$defs/AgentRuntimeAdapterId"
+          },
+          "config_identity": {
+            "description": "Symbolic identity, never an absolute HOME, credential or native configuration path.",
+            "type": "string"
+          },
+          "host_id": {
+            "$ref": "#/$defs/HostId"
+          },
+          "installation_id": {
+            "$ref": "#/$defs/InstallationId"
+          },
+          "instance_name": {
+            "description": "Display label only; never used for eligibility or adapter dispatch.",
+            "type": "string"
+          },
+          "profile_id": {
+            "$ref": "#/$defs/RuntimeProfileId"
+          },
+          "runtime_kind": {
+            "$ref": "#/$defs/RuntimeKind"
+          }
+        },
+        "required": [
+          "profile_id",
+          "installation_id",
+          "host_id",
+          "runtime_kind",
+          "adapter_id",
+          "instance_name",
+          "config_identity"
+        ],
+        "type": "object"
       },
       "RuntimeKind": {
         "enum": [

@@ -1,0 +1,1 @@
+{"version":{"major":1,"minor": 25},"correlation_id":"read-runtime-inventory","command_id":"read-runtime-inventory","operation":{"kind":"get_runtime_inventory"}}

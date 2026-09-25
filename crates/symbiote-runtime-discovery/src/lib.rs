@@ -447,11 +447,49 @@ impl EligibilityQuery {
         Ok(())
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "InventoryWire")]
 pub struct Inventory {
     schema_version: u32,
     records: Vec<DiscoveryRecord>,
+}
+/// The record count an inventory may hold. Named once here because the parser
+/// enforces it, the published schema states it, and `docs/contracts/runtime-discovery.md`
+/// says it; three spellings of the same figure would be three figures to move.
+pub const MAX_INVENTORY_RECORDS: usize = 256;
+/// The bound on an inventory document a Host will publish or serve, applied to
+/// the document itself rather than to something the document claims about
+/// itself. It is deliberately smaller than the parser's own 4 MiB ceiling
+/// because a served document has to fit the response envelope it is carried in:
+/// the Host refuses a larger document by name rather than discovering at the
+/// transport that it did not fit. One owner here, restated by no other crate —
+/// the Host applies this figure, and `docs/contracts/runtime-discovery.md`
+/// states it.
+pub const MAX_PUBLISHED_BYTES: usize = 512 * 1024;
+impl JsonSchema for Inventory {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Inventory".into()
+    }
+
+    /// Publish the version and the record bound the parser itself enforces, so
+    /// a schema-only consumer cannot admit an inventory this crate would refuse
+    /// to deserialize.
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let record = generator.subschema_for::<DiscoveryRecord>();
+        schemars::json_schema!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema_version", "records"],
+            "properties": {
+                "schema_version": {"type": "integer", "const": DISCOVERY_VERSION},
+                "records": {
+                    "type": "array",
+                    "items": record,
+                    "maxItems": MAX_INVENTORY_RECORDS
+                }
+            }
+        })
+    }
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -470,7 +508,7 @@ impl TryFrom<InventoryWire> for Inventory {
 }
 impl Inventory {
     pub fn new(records: Vec<DiscoveryRecord>) -> Result<Self, DiscoveryError> {
-        if records.len() > 256 {
+        if records.len() > MAX_INVENTORY_RECORDS {
             return Err(DiscoveryError::ResourceLimit);
         }
         let mut identities = BTreeSet::new();
