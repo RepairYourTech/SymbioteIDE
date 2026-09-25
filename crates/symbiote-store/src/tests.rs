@@ -1468,6 +1468,123 @@ fn lifecycle_updates_journal_once_and_denied_worker_does_not_mutate() {
 }
 
 #[test]
+fn pre_dispatch_states_are_durable_and_refusals_write_nothing() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(temporary.database()).unwrap();
+    let (_, _, roles) = register(&mut store, "one");
+    let (task, stream) = task_records("pre-dispatch");
+    store
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
+        .unwrap();
+    let command = |id: &str, expected_revision: Revision, action: TaskAction| TaskCommand {
+        id: id!(CommandId, id),
+        expected_revision,
+        actor: Actor::Host(id!(HostId, "host")),
+        at: Timestamp(20),
+        action,
+    };
+    let initial_events = store.events(task.project_id(), 0, 10).unwrap().events.len();
+    let mut worker = command("worker-queue", Revision(0), TaskAction::Queue);
+    worker.actor = Actor::Worker(id!(DispatchId, "worker"));
+    assert!(matches!(
+        store.apply_task(task.id(), worker),
+        Err(StoreError::Domain(DomainError::PermissionDenied))
+    ));
+    assert_eq!(
+        store.events(task.project_id(), 0, 10).unwrap().events.len(),
+        initial_events
+    );
+    store
+        .apply_task(task.id(), command("queue", Revision(0), TaskAction::Queue))
+        .unwrap();
+    assert_eq!(store.task(task.id()).unwrap().state(), &TaskState::Queued);
+    let before_refusal = store.events(task.project_id(), 0, 10).unwrap().events.len();
+    assert!(matches!(
+        store.apply_task(
+            task.id(),
+            command(
+                "wrong-role",
+                Revision(1),
+                TaskAction::Assign {
+                    role_id: id!(RoleId, "other-role"),
+                },
+            ),
+        ),
+        Err(StoreError::Domain(DomainError::LineageMismatch))
+    ));
+    assert_eq!(store.task(task.id()).unwrap().state(), &TaskState::Queued);
+    assert_eq!(
+        store.events(task.project_id(), 0, 10).unwrap().events.len(),
+        before_refusal
+    );
+    store
+        .apply_task(
+            task.id(),
+            command(
+                "assign",
+                Revision(1),
+                TaskAction::Assign {
+                    role_id: roles[0].id.clone(),
+                },
+            ),
+        )
+        .unwrap();
+    store
+        .apply_task(
+            task.id(),
+            command(
+                "block",
+                Revision(2),
+                TaskAction::Block {
+                    reason: "dependency is unresolved".into(),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(store.task(task.id()).unwrap().state(), &TaskState::Blocked);
+    store
+        .apply_task(
+            task.id(),
+            command(
+                "unblock",
+                Revision(3),
+                TaskAction::Unblock {
+                    reason: "dependency completed".into(),
+                },
+            ),
+        )
+        .unwrap();
+    store
+        .apply_task(
+            task.id(),
+            command(
+                "block-again",
+                Revision(4),
+                TaskAction::Block {
+                    reason: "stream is unsafe".into(),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(store.task(task.id()).unwrap().revision(), Revision(5));
+    drop(store);
+
+    let store = Store::open(temporary.database()).unwrap();
+    let replayed = store.task(task.id()).unwrap();
+    assert_eq!(replayed.state(), &TaskState::Blocked);
+    assert_eq!(replayed.history().len(), 5);
+    let events = store.events(task.project_id(), 0, 10).unwrap().events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::TaskChanged { .. }))
+            .count(),
+        5
+    );
+    store.integrity_check().unwrap();
+}
+
+#[test]
 fn two_connections_racing_terminal_transitions_have_one_winner() {
     let temporary = Temporary::new();
     let mut store = Store::open(temporary.database()).unwrap();

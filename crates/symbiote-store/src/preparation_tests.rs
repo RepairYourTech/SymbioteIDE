@@ -860,6 +860,116 @@ fn start_from_preparation_compiles_dispatch_and_transitions_to_running() {
     );
 }
 
+/// `Assigned` is startable end to end, or it is not a state at all: the same
+/// `Ready | Assigned` pair the domain's `Start` and `Dispatch::compile` accept
+/// is the pair this durable path composes and explains against, so an assigned
+/// Task is never refused `not_schedulable` by the preparation, the projection or
+/// the start, and a `Queued` Task is never offered as a candidate at all.
+#[test]
+fn an_assigned_task_is_explained_prepared_and_started_by_the_durable_path() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, task) = full_fixture(&mut store, "assigned");
+    let role = store.task(&task).unwrap().role_id().clone();
+    let command = |id: &str, expected_revision: Revision, action: TaskAction| TaskCommand {
+        id: id!(CommandId, id),
+        expected_revision,
+        actor: Actor::Host(id!(HostId, "host-assigned")),
+        at: Timestamp(25),
+        action,
+    };
+    store
+        .apply_task(&task, command("queue", Revision(0), TaskAction::Queue))
+        .unwrap();
+    // A queued task is admitted, not offered: the projection explains startable
+    // work, and a task the Host has not assigned is not startable work.
+    let queued = store.scheduling_projection(Timestamp(26)).unwrap();
+    assert!(queued.schedulable.is_empty());
+    assert!(queued.blocked.is_empty());
+    store
+        .apply_task(
+            &task,
+            command("assign", Revision(1), TaskAction::Assign { role_id: role }),
+        )
+        .unwrap();
+    assert_eq!(store.task(&task).unwrap().state(), &TaskState::Assigned);
+    // Once assigned, the very same projection explains it as schedulable.
+    let projection = store.scheduling_projection(Timestamp(27)).unwrap();
+    assert_eq!(projection.schedulable.len(), 1);
+    assert_eq!(projection.schedulable[0].task_id, task);
+    assert_eq!(
+        projection.schedulable[0].reason,
+        symbiote_domain::SchedulableReason::NoBlockingDependencies
+    );
+    // The preparation composes `ready` against the assigned task rather than
+    // recording `not_schedulable` for a state the domain would start.
+    let preparation = routed_preparation(&mut store, &project, &task, "assigned");
+    assert_eq!(preparation.outcome, PreparationOutcome::Ready);
+    assert_eq!(preparation.refusal(), None);
+    assert!(
+        preparation
+            .steps
+            .iter()
+            .any(|step| matches!(step, CompositionStep::Scheduling { schedulable: true }))
+    );
+    // And the start itself compiles the dispatch and moves the task to
+    // Running, on the Host the profile already declared eligible.
+    let host = Host {
+        id: id!(HostId, "host-assigned"),
+        revision: Revision(0),
+        device: id!(DeviceId, "device-assigned"),
+        fabric: None,
+        supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+        controls: [
+            symbiote_domain::Control::Filesystem,
+            symbiote_domain::Control::Cancellation,
+            symbiote_domain::Control::CompletionAuthority,
+            symbiote_domain::Control::Process,
+        ]
+        .into_iter()
+        .map(|control| {
+            (
+                control,
+                symbiote_domain::EnforcementClaim {
+                    strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                    evidence: id!(EvidenceId, "proof"),
+                    verified_at: Timestamp(1),
+                    expires_at: Timestamp(1_000_000),
+                },
+            )
+        })
+        .collect(),
+    };
+    let dispatch_id = id!(DispatchId, "dispatch-assigned");
+    store
+        .start_prepared_task(
+            id!(CommandId, "start-assigned"),
+            task.clone(),
+            dispatch_id.clone(),
+            id!(RuntimeContractId, "contract-assigned"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(40),
+        )
+        .unwrap();
+    let started = store.task(&task).unwrap();
+    assert_eq!(started.state(), &TaskState::Running);
+    assert_eq!(
+        started.current_dispatch().map(|d| d.id().clone()),
+        Some(dispatch_id)
+    );
+    store.integrity_check().unwrap();
+    // Restart at the boundary: the queue, the assignment and the start replay
+    // as one state, with no second dispatch and no lost history.
+    drop(store);
+    let store = Store::open(temp.database()).unwrap();
+    let replayed = store.task(&task).unwrap();
+    assert_eq!(replayed.state(), &TaskState::Running);
+    // Queue, Assign, Start: three recorded transitions, one final state.
+    assert_eq!(replayed.history().len(), 3);
+    store.integrity_check().unwrap();
+}
+
 #[test]
 fn start_recompiles_the_durable_binding_and_refuses_when_policy_floor_exceeds_host_claims() {
     let mut store = Store::memory().unwrap();

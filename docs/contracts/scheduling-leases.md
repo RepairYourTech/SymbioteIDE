@@ -15,7 +15,7 @@ Leases authorize nothing by themselves — dispatch contracts, permission checks
 
 ## Explainable scheduling projection
 
-`scheduling_projection(now)` walks every `Ready` task and classifies it with a recorded reason:
+`scheduling_projection(now)` walks every startable pre-dispatch task — `Ready`, or `Assigned` once the Host has bound its canonical Role, the same pair the [preparation](dispatch-preparation.md) accepts — and classifies it with a recorded reason. A `Queued` or `Blocked` task is not a candidate at all and appears in neither list: those states say the Host has not (or no longer) presented the task for scheduling, which is not the same fact as a dependency or stream blocker:
 
 - **Blocked: `stream_unsafe`** — the owning Change Stream is not `Active` (collided, integrated, cancelled). Stream state decides before the task graph, and stream-level blockers do not collapse into task state.
 - **Blocked: `stream_leased`** — another task holds a live lease on the same stream: same-stream work is serialized by policy.

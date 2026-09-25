@@ -18,12 +18,23 @@ Dispatch snapshots pin the Root, Change Stream and Task Contract as well as Task
 
 ## Task and Change Stream behavior
 
-Tasks belong to exactly one Project, Root, Role and Change Stream in this slice. `Task::apply` accepts versioned commands and retains successful event history. A worker's report moves Running → CompletionRequested only. The selected Host starts verification; only that Host can request canonical completion. Completion requires a validated stream at the exact current source **and target** object IDs and one passing evidence record per required gate: tests, security, impact, documentation, independent review, delivery and Capability Closure. Missing, duplicate, failed, inconclusive, foreign-dispatch, cross-Project, stale or future-dated evidence is rejected. Independent review names a different Role. No applicability exemption API exists yet; none of these gates can be weakened by a prompt, model or learned method.
+Tasks belong to exactly one Project, Root, Role and Change Stream in this slice. `Task::apply` accepts versioned commands and retains successful event history. The pre-dispatch path now records the canonical `Queued`, `Assigned` and `Blocked` states with Host-only guards; a worker cannot promote its own todo into any of them. A worker's report still moves Running → CompletionRequested only. The selected Host starts verification; only that Host can request canonical completion. Completion requires a validated stream at the exact current source **and target** object IDs and one passing evidence record per required gate: tests, security, impact, documentation, independent review, delivery and Capability Closure. Missing, duplicate, failed, inconclusive, foreign-dispatch, cross-Project, stale or future-dated evidence is rejected. Independent review names a different Role. No applicability exemption API exists yet; none of these gates can be weakened by a prompt, model or learned method.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Ready
+    Ready --> Queued: Host admits to canonical queue
+    Queued --> Assigned: Host binds canonical Role
+    Ready --> Blocked: Host records a blocker
+    Queued --> Blocked: Host records a blocker
+    Assigned --> Blocked: Host records a blocker
+    Blocked --> Ready: Host records the unblock
+    Ready --> Cancelled: Host cancels
+    Queued --> Cancelled: Host cancels
+    Assigned --> Cancelled: Host cancels
+    Blocked --> Cancelled: Host cancels
     Ready --> Running: Host starts compiled Dispatch
+    Assigned --> Running: Host starts compiled Dispatch
     Running --> CompletionRequested: worker reports
     CompletionRequested --> Verifying: Host begins verification
     Verifying --> Completed: exact-source/target evidence covers every gate
@@ -39,6 +50,18 @@ stateDiagram-v2
     Interrupted --> Ready: Host recovers; new Dispatch required
     Failed --> Ready: Host recovers; new Dispatch required
 ```
+
+`Queued`, `Assigned` and `Blocked` are canonical Task lifecycle states, not
+harness-local todo vocabulary. Only a Host actor may record these transitions;
+`Assign` must name the Task's already-canonical Role, and `Start` still requires
+an exact, freshly compiled Dispatch at the Task's current revision. The startable
+pre-dispatch pair is exactly `Ready` or `Assigned` — the same pair dispatch
+compilation, the preparation, the scheduling projection and `Start` accept — so a
+Host-assigned Task is startable end to end while a `Queued` or `Blocked` Task is
+no scheduling candidate anywhere. An explicit `Blocked` Task returns to `Ready`
+only through a recorded Host unblock; the scheduler's dependency/stream
+projection still applies its ordinary checks after that return, so an unblock
+cannot manufacture readiness.
 
 Cancellation is terminal; retry after a failure or interruption requires a new dispatch compiled against the new task revision. Recovery preserves the prior event/dispatch history. A new command with a stale expected revision conflicts; an identical command ID/payload returns the original resulting revision even after later transitions. Reusing its ID with changed payload conflicts. Failed operations do not mutate or enter the success history; the Host must durably audit rejected commands separately. Timestamps must be monotonically nondecreasing. This in-memory event vector is a contract fixture, not a bounded durable journal design.
 
