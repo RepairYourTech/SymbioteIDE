@@ -37,11 +37,26 @@ impl DiscoveryTransport for Probe {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let inputs: Vec<_> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    if !(3..=4).contains(&inputs.len()) {
+    // Positional inputs are the helper, an empty worktree, and the protected
+    // Host directories — the last of them variadic, so an option cannot be
+    // appended to them and be mistaken for one. `--inventory-document=PATH` is
+    // therefore spelled as an option: it names where this run writes the
+    // inventory document it produced.
+    let mut inputs: Vec<PathBuf> = Vec::new();
+    let mut document: Option<PathBuf> = None;
+    for argument in std::env::args_os().skip(1) {
+        match argument
+            .to_string_lossy()
+            .strip_prefix("--inventory-document=")
+        {
+            Some(path) => document = Some(PathBuf::from(path)),
+            None => inputs.push(PathBuf::from(argument)),
+        }
+    }
+    if inputs.len() != 3 {
         return Err(
             "expected absolute helper, private empty worktree, protected Host directory, \
-             optional inventory document path"
+             optional --inventory-document=PATH"
                 .into(),
         );
     }
@@ -187,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // run built rather than a hand-written stand-in. The file is the producer's
     // output, not Host state: the Host installs it under its own name, mode and
     // identity check when an operator publishes it.
-    if let Some(path) = inputs.get(3) {
+    if let Some(path) = &document {
         std::fs::write(path, serde_json::to_string(&inventory)?)?;
     }
     println!(
@@ -207,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "listed_models": report.models.len(),
             "inventory_records": inventory.records().len(),
             "inventory_schema_version": inventory.schema_version(),
-            "inventory_document": inputs.get(3).map(|path| path.display().to_string()),
+            "inventory_document": document.as_ref().map(|path| path.display().to_string()),
             "model_usability": "unknown",
             "model_turn_started": false,
             "profile": "fresh_disposable_home",

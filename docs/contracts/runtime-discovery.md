@@ -184,11 +184,14 @@ this pinned model schema and remain unknown.
 
 Build `symbiote-sandbox-launch`, then run the `codex_discover` example with its
 absolute path, an empty worktree under a private 0700 parent, and a separate
-protected Host directory. An optional fourth argument names a file to write the
-inventory document this run produced, so the document an operator publishes into
-a Host is the one a real discovery run built; the file is the producer's output
-and carries no Host identity of its own, so the Host still installs it only after
-checking every record against its own. The sandbox runs `/usr/bin/codex` with a disposable
+protected Host directory. The optional
+`--inventory-document=PATH` names a file to write the inventory document this
+run produced, so the document an operator publishes into a Host is the one a real
+discovery run built; the file is the producer's output and carries no Host
+identity of its own, so the Host still installs it only after checking every
+record against its own. It is spelled as an option rather than a fourth
+positional because the protected-directory list is variadic: a trailing path
+would be read as one more protected directory and refused. The sandbox runs `/usr/bin/codex` with a disposable
 `/home/agent` HOME, an empty environment, read-only project and isolated network.
 Initialization must report `/home/agent/.codex`. No real account directory is
 mounted. The runner checks cancellation errors; descendant cleanup remains
