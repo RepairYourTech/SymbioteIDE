@@ -439,7 +439,10 @@ fn a_cancelled_prerequisite_does_not_satisfy_a_completion_gate() {
     // Cancelled is closed, but it produced nothing the dependent required, so
     // the gate is not satisfied. The rule is the domain's `gate_satisfied`; the
     // write path asks it rather than restating `Completed`, so a change to what
-    // counts as delivered lands in one place and both readers follow.
+    // counts as delivered lands in one place and both readers follow. This case
+    // reads only the write path — the domain's own table of the rule lives in
+    // the domain crate, where changing the rule turns that one red and leaves
+    // this one green until the write path follows.
     store
         .apply_task(
             &other_task,
@@ -451,10 +454,6 @@ fn a_cancelled_prerequisite_does_not_satisfy_a_completion_gate() {
             ),
         )
         .unwrap();
-    assert!(
-        !symbiote_domain::gate_satisfied(&TaskState::Cancelled),
-        "the domain rule this write path reads"
-    );
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&project, &task),
         Err(StoreError::DependenciesUnresolved)
@@ -469,7 +468,10 @@ fn only_the_enforced_kinds_block_completion() {
     // The kinds whose relation is Start, recorded on the dependent, hold the
     // dependent back. The write path decides that by asking `orders_start`,
     // which asks `dependency_relation`, so this table is the domain's rather
-    // than a list written out again in the store where it could drift.
+    // than a list written out again in the store where it could drift. Only
+    // the write path is read here: a kind the domain stopped calling a start
+    // relation turns this red, and a write path that had written the list out
+    // again would leave it green.
     for (index, kind) in [
         TaskDependencyKind::Requires,
         TaskDependencyKind::ConsumesContractFrom,
@@ -487,10 +489,6 @@ fn only_the_enforced_kinds_block_completion() {
         )
         .unwrap();
         assert!(
-            symbiote_domain::orders_start(&kind),
-            "{kind:?} holds its owner back, per the domain"
-        );
-        assert!(
             matches!(
                 store.dependencies_satisfied_for_completion(&project, &task),
                 Err(StoreError::DependenciesUnresolved)
@@ -504,13 +502,6 @@ fn only_the_enforced_kinds_block_completion() {
     // both lists are the domain's rather than the store's. Recording it in both
     // directions at once would be a cycle, which the writer refuses — so the
     // dependent's own set is cleared first and only the incoming side is kept.
-    assert!(symbiote_domain::blocks_completion(
-        &TaskDependencyKind::Blocks
-    ));
-    assert!(
-        !symbiote_domain::orders_start(&TaskDependencyKind::Blocks),
-        "a blocks edge does not hold its own owner back; it holds the target"
-    );
     set_edges(&mut store, "dep-kind-clear", &project, &task, &[], 14).unwrap();
     set_edges(
         &mut store,
@@ -569,10 +560,6 @@ fn only_the_enforced_kinds_block_completion() {
             21 + index as u64,
         )
         .unwrap();
-        assert!(
-            !symbiote_domain::completion_blocking(&kind),
-            "{kind:?} is provenance the domain owns"
-        );
         assert!(
             store
                 .dependencies_satisfied_for_completion(&project, &task)

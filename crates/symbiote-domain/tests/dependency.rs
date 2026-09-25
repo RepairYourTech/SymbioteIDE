@@ -204,6 +204,79 @@ fn cycles_and_missing_targets_are_rejected() {
 }
 
 #[test]
+fn the_domain_owns_which_kinds_are_enforced_and_what_satisfies_one() {
+    // The one table: what each kind means, and what a state has to be before it
+    // satisfies a gate. The store's write path and the DAG answer both read
+    // these and neither writes them out, so a change here lands in both at
+    // once; the store's own cases watch them from the other end.
+    for kind in [
+        TaskDependencyKind::Requires,
+        TaskDependencyKind::ConsumesContractFrom,
+    ] {
+        assert_eq!(
+            dependency_relation(&kind),
+            DependencyRelation::Start,
+            "{kind:?} holds its owner back from starting"
+        );
+        assert!(orders_start(&kind), "{kind:?} is a start relation");
+        assert!(
+            !blocks_completion(&kind),
+            "{kind:?} says nothing about the target's completion"
+        );
+        assert!(
+            completion_blocking(&kind),
+            "{kind:?} gates from either side"
+        );
+    }
+    assert_eq!(
+        dependency_relation(&TaskDependencyKind::Blocks),
+        DependencyRelation::Completion,
+        "a blocks edge holds the target back from completing"
+    );
+    assert!(blocks_completion(&TaskDependencyKind::Blocks));
+    assert!(
+        !orders_start(&TaskDependencyKind::Blocks),
+        "a blocks edge does not hold its own owner back"
+    );
+    assert!(completion_blocking(&TaskDependencyKind::Blocks));
+    for kind in [
+        TaskDependencyKind::Reviews,
+        TaskDependencyKind::Verifies,
+        TaskDependencyKind::Supersedes,
+        TaskDependencyKind::ConflictsWith,
+        TaskDependencyKind::FollowUpTo,
+    ] {
+        assert_eq!(
+            dependency_relation(&kind),
+            DependencyRelation::Provenance,
+            "{kind:?} records why two tasks are related and gates nothing"
+        );
+        assert!(!orders_start(&kind) && !blocks_completion(&kind));
+        assert!(!completion_blocking(&kind), "{kind:?} must not gate");
+    }
+    // Completion alone satisfies a gate. Cancelled is closed but delivered
+    // nothing the dependent required, so the dependent still waits.
+    assert!(gate_satisfied(&TaskState::Completed));
+    for state in [
+        TaskState::Ready,
+        TaskState::Queued,
+        TaskState::Assigned,
+        TaskState::Blocked,
+        TaskState::Running,
+        TaskState::CompletionRequested,
+        TaskState::Verifying,
+        TaskState::Failed,
+        TaskState::Cancelled,
+        TaskState::Interrupted,
+    ] {
+        assert!(
+            !gate_satisfied(&state),
+            "{state:?} has not satisfied a gate"
+        );
+    }
+}
+
+#[test]
 fn blocks_edges_wait_in_the_inverse_direction() {
     // owner blocks a: a waits on owner. A blocks-cycle is still a cycle.
     let blocking = graph(&[
