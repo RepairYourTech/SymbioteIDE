@@ -112,6 +112,51 @@ fn the_codex_adapter_record_is_named_bounded_and_unverified() {
     assert!(!source.contains("account.email"));
 }
 
+/// The deterministic-diagnostic boundary is held to the document, its closed source
+/// vocabulary, and its data-only non-authorizing surface.
+#[test]
+fn the_diagnostic_boundary_is_named_deterministic_and_non_authorizing() {
+    let contract = include_str!("../../../docs/contracts/runtime-discovery.md");
+    for name in [
+        "diagnostics::diagnose",
+        "DiagnosticInput",
+        "RuntimeDiagnostic",
+        "DiagnosticCode",
+        "DiagnosticAction",
+        "MissingBinary",
+        "UnsupportedVersion",
+        "ExpiredAuthentication",
+        "RateLimited",
+        "IncompatibleConfiguration",
+        "InstallBinaryWithConsent",
+        "UpgradeWithConsent",
+        "Reauthenticate",
+        "RetryLater",
+        "CorrectConfiguration",
+    ] {
+        assert!(contract.contains(name), "the contract must name {name}");
+    }
+    let source = include_str!("../src/diagnostics.rs");
+    for source_error in [
+        "InstallationError::MissingExecutable",
+        "CodexDiscoveryError::UnsupportedVersion",
+        "DiscoveryError::VersionMismatch",
+        "DiscoveryError::AuthenticationExpired",
+        "DiscoveryError::RateLimited",
+        "ProfileError::InvalidSpec",
+    ] {
+        assert!(
+            source.contains(source_error),
+            "the mapping must name {source_error}"
+        );
+    }
+    assert!(source.contains("self.action != self.code.action()"));
+    assert!(!source.contains("Command::new"));
+    assert!(!source.contains("std::env"));
+    assert!(!source.contains("std::fs"));
+    assert!(!source.contains("account_ref"));
+}
+
 /// The user agent this crate accepts is built from the pinned release rather than restated beside
 /// it, so a moved constant moves both the accepted name and the document's figures together.
 #[test]

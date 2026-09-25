@@ -9,8 +9,10 @@ use std::{
 use symbiote_domain::*;
 pub mod codex;
 pub mod codex_adapter;
+pub mod diagnostics;
 pub mod installation;
 pub mod profiles;
+pub use diagnostics::*;
 pub use installation::*;
 pub use profiles::*;
 pub const DISCOVERY_VERSION: u32 = 1;
