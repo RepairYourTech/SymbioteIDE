@@ -126,6 +126,15 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     if name == "schema" {
         return run_schema(&options);
     }
+    // Publishing a runtime inventory is local too, and deliberately so: the
+    // wire surface for the runtime inventory is one owner-only *read*, so
+    // installing a document into the state directory is an operator action on
+    // this machine, not something a client can ask a daemon to do. It needs the
+    // private state directory and nothing else — no daemon, and no
+    // authorization, because it is not an operation this binary sends.
+    if name == "publish-runtime-inventory" {
+        return run_publish_runtime_inventory(&options);
+    }
     let Some(command) = commands().into_iter().find(|c| c.name == name) else {
         eprintln!("symbiote: unknown command {name}; try `symbiote help`");
         return Ok(EXIT_USAGE);
@@ -152,8 +161,7 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     }
 }
 
-/// The local `schema` command. An optional selector names one published
-/// document (`envelope`, `policy`) or, absent, both. `--write DIR` regenerates
+/// The local `schema` command. An optional selector names one published/// document (`envelope`, `policy`) or, absent, both. `--write DIR` regenerates
 /// the selected files; `--check DIR` reports how the selected files diverge
 /// from what this binary emits and writes nothing, so it is the local half of
 /// the CI drift step. Neither touches the daemon.
@@ -213,6 +221,78 @@ fn run_schema(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
         Some(_) => print!("{}", document_text(selected[0])?),
     }
     Ok(EXIT_OK)
+}
+
+/// The local `publish-runtime-inventory` command: install a discovery document
+/// as the runtime inventory the daemon's `get_runtime_inventory` read serves.
+///
+/// It is a publish, not an operation: the document is re-validated in full by
+/// the discovery contract, every record must name this state directory's own
+/// Host identity, and the file is installed atomically at mode 0600. A refusal
+/// is named and leaves whatever the Host already held in place, so a bad
+/// document cannot unpublish a good one. The exit code is 1 for a usage or
+/// refusal and 0 for an install — the same distinction `schema --check` makes,
+/// because neither this command nor a daemon is asked to do anything else.
+fn run_publish_runtime_inventory(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
+    let [document] = options.args.as_slice() else {
+        eprintln!(
+            "symbiote: `publish-runtime-inventory` takes exactly one discovery document; try \
+             `symbiote help`"
+        );
+        return Ok(EXIT_USAGE);
+    };
+    let Some(directory) = options.state_dir.clone() else {
+        eprintln!("symbiote: missing --state-dir PRIVATE_DIRECTORY");
+        return Ok(EXIT_USAGE);
+    };
+    let host_id = match symbiote_host::host_identity(&directory) {
+        Ok(host_id) => host_id,
+        Err(error) => {
+            eprintln!(
+                "symbiote: {} is not a usable Host state directory: {error}",
+                directory.display()
+            );
+            return Ok(EXIT_USAGE);
+        }
+    };
+    let published = symbiote_host::runtime_inventory::Published::new(&directory, host_id);
+    let bytes = match std::fs::read(document) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("symbiote: cannot read {document}: {error}");
+            return Ok(EXIT_USAGE);
+        }
+    };
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            eprintln!("symbiote: {document} is not UTF-8 text");
+            return Ok(EXIT_USAGE);
+        }
+    };
+    match published.publish(&text) {
+        Ok(()) => {
+            println!(
+                "published {} record(s) to {}",
+                // A publish that succeeded has been re-validated whole, so this
+                // read cannot fail: the file is exactly what was accepted.
+                published
+                    .read()
+                    .map(|inventory| inventory.records().len())
+                    .unwrap_or(0),
+                published.path().display()
+            );
+            Ok(EXIT_OK)
+        }
+        Err(error) => {
+            eprintln!(
+                "symbiote: {document} was not published ({}); the Host keeps the inventory it \
+                 already held",
+                error.name()
+            );
+            Ok(EXIT_USAGE)
+        }
+    }
 }
 
 #[cfg(test)]

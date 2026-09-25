@@ -37,7 +37,8 @@ Flags are declared per command, and a flag a command cannot honor is a usage
 error that names it, never a silent no-op. The daemon commands honor the
 daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
 `--yes`), because each of them is answered by a request over the socket; the
-local `schema` command honors `--write` and `--check`, and the local `help`
+local `schema` command honors `--write` and `--check`, the local
+`publish-runtime-inventory` command honors `--state-dir`, and the local `help`
 command honors none. `--help`/`-h` is the one universal flag — every command
 honors it — but a help request honors no other flag, whatever command (if any)
 accompanied it: it renders the table, not a request, so `--json`, `--state-dir`
@@ -48,6 +49,23 @@ is. So `symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote
 --json help`, `symbiote --state-dir DIR schema`, `symbiote schema --yes` and
 `symbiote --json --help health` each exit 1 printing nothing, while `symbiote
 --state-dir DIR shutdown --yes` and `symbiote --json health` are unaffected.
+
+## Publishing a runtime inventory
+
+`symbiote publish-runtime-inventory DOCUMENT --state-dir DIR` is local, like
+`schema`, and for the same reason the wire surface stays small: the
+[runtime inventory](runtime-discovery.md) has exactly one protocol operation, an
+owner-only read, so a client cannot ask a daemon to change what it holds. An
+operator installs a discovery document on the machine instead, and the command
+re-validates it whole before it writes — the discovery contract's own parser, the
+requirement that every record name that state
+directory's own Host identity, and a bound of 512 KiB. It then installs the
+document atomically at mode
+0600, so a reader sees the old document or the new one and never a partial
+write; a refused document is named on stderr and leaves the Host serving what it
+already held. It is not a command the authorization gate classifies, because it
+is not an operation this binary sends: it exits 0 on an install and 1 on a usage
+error or a refusal, and `--json` is not a flag it honors.
 
 The contract itself lives in `symbiote_host::cli_schema` (`crates/symbiote-host/src/cli_schema.rs`):
 the schema identities, the `OPERATION_RISKS` table that fixes the policy

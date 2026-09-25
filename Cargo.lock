@@ -3104,6 +3104,7 @@ dependencies = [
  "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-host-inventory",
+ "symbiote-runtime-discovery",
  "symbiote-runtime-sdk",
  "symbiote-trust",
  "symbiote-workforce",

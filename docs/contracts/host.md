@@ -24,6 +24,7 @@ What lives under each resolved directory, by name — the layout this document o
 | Control socket | state directory | `host.sock` |
 | Canonical store | state directory | `control.sqlite3` |
 | Operator lock | state directory | `host.lock` |
+| Runtime inventory | state directory | `runtime-inventory.json` |
 | Operator configuration | configuration directory | `operator.json` |
 
 An empty override means unset, exactly as an empty `$SYMBIOTE_CLI_POLICY` does. A relative `XDG_*` value is ignored — the specification's own rule — so the `$HOME` default applies; a relative value in either override variable is refused instead, because ignoring operator intent would run the Host somewhere the operator did not name. With no flag, no override and no absolute `HOME` the Host refuses and names what was missing rather than writing to the working directory. The parent directory must exist. A new final directory is created mode 0700, and a directory the Host cannot create is reported by name rather than as a bare os error; an existing shared, foreign-owned or symlink directory is refused without changing its permissions. A state directory whose socket path would not fit the Linux socket path bound is refused by name before anything binds. With no `--operator-config` the Host looks for the operator configuration named above under the configuration directory, and a file that is not there means no operator provisioning; the cache, log and runtime directories are not resolved, because nothing in this daemon writes to them (see the pending list). The local socket is mode 0600. Each connection uses Linux SO_PEERCRED to establish same-UID ownership; this is an explicit local-owner policy, not remote or Preview authentication. No TCP listener is opened. An exclusive lock prevents a second daemon replacing the live socket; restart replaces only a stale owned socket after acquiring that lock.
@@ -37,7 +38,8 @@ target/debug/symbiote --state-dir /absolute/private/state-directory health
 ## Administrative command surface
 
 `symbiote --state-dir DIR <command> [args...]` maps onto typed protocol
-operations — `hello`, `health`, `host-pulse`, `shutdown`, `get-project`,
+operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
+`get-project`,
 `list-projects`, `snapshot`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
@@ -58,10 +60,18 @@ committed fixtures with `--write DIR`, or checks a directory against them with
 `--check DIR`: with no selector that directory must hold exactly the published
 documents, so a missing, edited, extra or renamed entry is named and exits 1,
 reading and writing nothing. It needs no daemon, no state directory and no
-authorization. `--write` and `--check` are valid only on `schema`, and `--json`
+authorization. `publish-runtime-inventory` is the third local command, and it
+is local by design: the [runtime inventory](runtime-discovery.md) has exactly
+one wire operation, an owner-only read, so installing a discovery document is
+an operator action on this machine rather than something a client asks a daemon
+to do. It re-validates the document whole, requires every record to name that
+state directory's own Host identity, installs it atomically at mode 0600, and
+names its refusal without replacing what the Host already held. `--write` and
+`--check` are valid only on `schema`, and `--json`
 is not valid on `schema` or `help` (schema's output is machine-readable JSON,
 but not the envelope). Every flag is declared per command: the daemon commands
-honor the daemon-facing flags, `schema` honors `--write` and `--check`, and
+honor the daemon-facing flags, `schema` honors `--write` and `--check`,
+`publish-runtime-inventory` honors `--state-dir`, and
 `help` honors nothing; `--help`/`-h` is universal, and a help request honors no
 other flag, so `--json --help health` is refused exactly as `--json help` is. A
 flag a command cannot honor is a usage error that names it, never silently

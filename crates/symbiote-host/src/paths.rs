@@ -31,10 +31,13 @@ pub const APPLICATION: &str = "symbiote";
 /// The layout this module owns: `docs/contracts/host.md` publishes these names and
 /// `tests/paths.rs` holds the declarations to it, so a file renamed here or there reds by name.
 /// `control.sqlite3` holds canonical state; `host.sock` is the local control socket and
-/// `host.lock` the exclusive lock that keeps a second daemon off it.
+/// `host.lock` the exclusive lock that keeps a second daemon off it; and
+/// `runtime-inventory.json` is the [runtime inventory](../../../docs/contracts/runtime-discovery.md)
+/// this Host serves reads of.
 pub const DATABASE_FILE: &str = "control.sqlite3";
 pub const SOCKET_FILE: &str = "host.sock";
 pub const LOCK_FILE: &str = "host.lock";
+pub const RUNTIME_INVENTORY_FILE: &str = "runtime-inventory.json";
 /// The operator configuration discovered in the configuration directory when no flag names one.
 pub const OPERATOR_CONFIG_FILE: &str = "operator.json";
 /// Linux `sockaddr_un` carries 108 bytes including its terminating NUL. A state directory whose
@@ -158,6 +161,14 @@ impl HostPaths {
 
     pub fn database(&self) -> PathBuf {
         self.state.join(DATABASE_FILE)
+    }
+
+    /// The private file this Host's [runtime
+    /// inventory](../../../docs/contracts/runtime-discovery.md) is published into and served
+    /// from. It is named here beside the other state-directory files so one owner decides the
+    /// layout, not the module that happens to read it.
+    pub fn runtime_inventory(&self) -> PathBuf {
+        self.state.join(RUNTIME_INVENTORY_FILE)
     }
 
     /// The operator configuration this Host would load when no flag names one. The caller decides

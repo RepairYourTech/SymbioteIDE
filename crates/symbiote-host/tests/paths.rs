@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use symbiote_contract_read::region;
 use symbiote_host::paths::{
     CONFIG_OVERRIDE, DATABASE_FILE, HostPaths, LOCK_FILE, OPERATOR_CONFIG_FILE, PathError,
-    SOCKET_FILE, SOCKET_PATH_MAX, STATE_OVERRIDE,
+    RUNTIME_INVENTORY_FILE, SOCKET_FILE, SOCKET_PATH_MAX, STATE_OVERRIDE,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -238,6 +238,11 @@ fn the_socket_database_and_operator_config_are_named_from_the_resolved_directori
         ("Canonical store", "state directory", DATABASE_FILE),
         ("Operator lock", "state directory", LOCK_FILE),
         (
+            "Runtime inventory",
+            "state directory",
+            RUNTIME_INVENTORY_FILE,
+        ),
+        (
             "Operator configuration",
             "configuration directory",
             OPERATOR_CONFIG_FILE,
@@ -260,6 +265,10 @@ fn the_socket_database_and_operator_config_are_named_from_the_resolved_directori
     assert_eq!(paths.config, Path::new("/srv/config/symbiote"));
     assert_eq!(paths.socket(), paths.state.join(SOCKET_FILE));
     assert_eq!(paths.database(), paths.state.join(DATABASE_FILE));
+    assert_eq!(
+        paths.runtime_inventory(),
+        paths.state.join(RUNTIME_INVENTORY_FILE)
+    );
     assert_eq!(
         paths.operator_config(),
         paths.config.join(OPERATOR_CONFIG_FILE)

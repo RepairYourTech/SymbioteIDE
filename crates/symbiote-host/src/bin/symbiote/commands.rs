@@ -101,6 +101,16 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "runtime-inventory",
+            summary: "owner-only read of this Host's published runtime inventory",
+            usage: "runtime-inventory",
+            kind: Some("get_runtime_inventory"),
+            build: |_, map| {
+                plain("kind", serde_json::json!("get_runtime_inventory"), map);
+                Ok(())
+            },
+        },
+        Command {
             name: "shutdown",
             summary: "drain and stop the daemon",
             usage: "shutdown",
@@ -328,7 +338,7 @@ pub(crate) fn print_help() {
         "usage: symbiote [--state-dir DIR] [--command-id ID] [--policy FILE] [--json] [--yes] <command> [args...]"
     );
     println!(
-        "       symbiote schema [envelope|policy] [--write DIR | --check DIR]\n       symbiote help   (--command-id overrides the minted id; same id + same\n                        intent replays a lost response instead of re-executing)"
+        "       symbiote schema [envelope|policy] [--write DIR | --check DIR]\n       symbiote publish-runtime-inventory DOCUMENT --state-dir DIR\n       symbiote help   (--command-id overrides the minted id; same id + same\n                        intent replays a lost response instead of re-executing)"
     );
     println!();
     println!("options:");
@@ -342,8 +352,9 @@ pub(crate) fn print_help() {
     println!("  --yes             explicit authorization for this one dangerous command");
     println!();
     println!("flags are per command: daemon commands honor --state-dir, --command-id,");
-    println!("--policy, --json and --yes; `schema` honors --write and --check; `help` honors");
-    println!("nothing. `--help`/`-h` is universal, and a help request honors no other flag:");
+    println!("--policy, --json and --yes; `schema` honors --write and --check;");
+    println!("`publish-runtime-inventory` honors --state-dir; `help` honors nothing.");
+    println!("`--help`/`-h` is universal, and a help request honors no other flag:");
     println!("`--json --help health` is refused exactly as `--json help` is. A flag a command");
     println!("cannot honor is a usage error that names it, never silently dropped.");
     println!();
@@ -374,6 +385,9 @@ pub(crate) fn print_help() {
     let schema_name = "schema";
     let schema_summary = "print the published symbiote.cli and cli-policy JSON Schemas";
     println!("   {schema_name:<62} {schema_summary}");
+    let publish_name = "publish-runtime-inventory";
+    let publish_summary = "install a discovery document as this Host's runtime inventory";
+    println!("   {publish_name:<62} {publish_summary}");
     for command in commands() {
         let gated = match command.kind {
             Some(kind) => risk_of_kind(kind).requires_authorization(),

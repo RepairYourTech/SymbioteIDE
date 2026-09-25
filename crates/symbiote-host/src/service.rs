@@ -63,6 +63,17 @@ fn dossier_refusal(name: &str) -> ProtocolError {
     error
 }
 
+/// A runtime inventory this Host will not serve, named by the same closed
+/// vocabulary the reader applies. The name is [`crate::runtime_inventory::Refusal::name`]
+/// rather than a second spelling of it, so an operator reads the same answer
+/// from the wire that a case reads from the module, and the message carries no
+/// path, no record and no value the document said.
+fn inventory_refusal(refusal: crate::runtime_inventory::Refusal) -> ProtocolError {
+    let mut error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    error.message = format!("runtime inventory not served ({})", refusal.name());
+    error
+}
+
 fn receipt(receipt: symbiote_store::Receipt) -> ResponseBody {
     ResponseBody::Receipt(Receipt {
         sequence: receipt.sequence,
@@ -924,6 +935,15 @@ fn execute(
         Operation::GetHostPulse {} => inventory
             .pulse()
             .map(|pulse| ResponseBody::HostPulse(Box::new(pulse))),
+        // The inventory is re-read from this Host's own private file and
+        // re-validated whole on every read: the reader gets what this Host
+        // published, or a refusal that names which of the ways it declined. It
+        // is never partially served, and a stale record is served with its own
+        // `expires_at` rather than filtered out here.
+        Operation::GetRuntimeInventory {} => inventory
+            .runtime_inventory()
+            .map(|inventory| ResponseBody::RuntimeInventory(Box::new(inventory)))
+            .map_err(inventory_refusal),
         Operation::GetCompatibilityDossier {
             project_id,
             binding_id,

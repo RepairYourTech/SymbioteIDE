@@ -23,7 +23,7 @@ Runtime changes do not change Role identity. A single profile may be referenced
 by different Roles, but each binding retains its own effective-intent scopes.
 Sharing an identity is not proof of runtime isolation.
 
-Protocol v1.5 adds `replace_binding`, `get_binding` and `get_binding_readiness`; v1.24 adds `get_compatibility_dossier`, which answers from the pack record the operator installed for the runtime this binding's primary candidate declares; v1.6 adds [Role routing](role-resolution.md) operations that consume validated Teams.
+Protocol v1.5 adds `replace_binding`, `get_binding` and `get_binding_readiness`; v1.25 adds `get_compatibility_dossier`, which answers from the pack record the operator installed for the runtime this binding's primary candidate declares; v1.6 adds [Role routing](role-resolution.md) operations that consume validated Teams.
 Management requires a separate `ManageBindings` Project grant. Ordinary Team/work
 management and read access do not imply that grant. The Host supplies actor and
 timestamp; clients cannot inject authority. Readiness additionally requires the

@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 24},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 25},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -2899,4 +2899,180 @@ fn a_dossier_file_that_is_not_one_packs_record_refuses_the_daemon() {
         stderr.contains("operator compatibility dossier invalid"),
         "{stderr}"
     );
+}
+
+/// One discovery record naming `host`, in the wire shape the discovery contract
+/// parses. A discovery run produces these; here they stand in for one, because
+/// what this suite measures is what the Host does with a published document, not
+/// how the document was obtained.
+fn discovery_record(host: &str, profile: &str, expires_at: u64) -> Value {
+    json!({
+        "schema_version": 1,
+        "intent": {
+            "profile_id": profile,
+            "installation_id": format!("installation-{profile}"),
+            "host_id": host,
+            "runtime_kind": "EXTERNAL_HARNESS",
+            "adapter_id": "adapter-1",
+            "instance_name": "Codex",
+            "config_identity": "codex-default"
+        },
+        "observation": {
+            "config_identity": "codex-default",
+            "profile_id": profile,
+            "installation_id": format!("installation-{profile}"),
+            "host_id": host,
+            "runtime_kind": "EXTERNAL_HARNESS",
+            "adapter_id": "adapter-1",
+            "version": {"status": "known", "value": "0.118.0"},
+            "interface": {"status": "known", "value": {"name": "app_server", "version": "0.118.0"}},
+            "facts": {
+                "health": {"status": "known", "value": "reachable"},
+                "authentication": {"status": "known", "value": {"mode": "none", "state": "required", "account_ref": null}},
+                "models": {"status": "unknown"},
+                "methods": {"initialize": "available"},
+                "isolation": {"status": "unknown"}
+            },
+            "observed_at": 1_000,
+            "expires_at": expires_at,
+            "provenance": {"probe_id": format!("probe-{profile}"), "source": "sandboxed_probe", "adapter_revision": "0.118.0"}
+        }
+    })
+}
+
+fn discovery_document(host: &str, profiles: &[(&str, u64)]) -> String {
+    json!({
+        "schema_version": 1,
+        "records": profiles.iter().map(|(profile, expires_at)| discovery_record(host, profile, *expires_at)).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
+/// The published runtime inventory is served from the private file the Host's
+/// own identity names, survives a restart, is re-read rather than cached, and
+/// every way of not holding one is refused by name — with the refusal naming the
+/// reason and never a path.
+#[test]
+fn the_runtime_inventory_is_served_from_the_private_file_and_every_refusal_is_named() {
+    let mut host = Host::new();
+    let read = |host: &Host| {
+        host.call(request(
+            "runtime-inventory",
+            json!({"kind": "get_runtime_inventory"}),
+        ))
+    };
+    // The Host minted its own identity at startup; that is the identity every
+    // record in the document it serves has to name.
+    let host_id =
+        String::from_utf8(std::fs::read(host.directory.join("host-id")).unwrap()).unwrap();
+    let published = host.directory.join("runtime-inventory.json");
+    let refused = |response: &Value, name: &str| {
+        assert_eq!(
+            response["result"]["Err"]["code"], "failed_precondition",
+            "{response}"
+        );
+        assert_eq!(
+            response["result"]["Err"]["message"],
+            format!("runtime inventory not served ({name})"),
+            "{response}"
+        );
+    };
+
+    // Nothing published yet: the Host says so rather than serving an empty
+    // inventory that would read as "this machine has no runtimes".
+    refused(&read(&host), "no_published_inventory");
+
+    // Two records, one of them long past its own expiry.
+    let two = discovery_document(&host_id, &[("profile-1", 2_000), ("profile-2", 86_400_000)]);
+    std::fs::write(&published, &two).unwrap();
+    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let response = read(&host);
+    let served = ok(&response);
+    assert_eq!(served["kind"], "runtime_inventory");
+    assert_eq!(served["data"]["schema_version"], 1);
+    assert_eq!(served["data"]["records"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        served["data"]["records"][0]["observation"]["expires_at"], 2_000,
+        "a record past its own expiry is served with the expiry it carries, not dropped"
+    );
+    assert_eq!(
+        served["data"]["records"][0]["observation"]["host_id"], host_id,
+        "a served record names the Host that observed it"
+    );
+
+    // The inventory is a file, not a cache: a crash and restart serves the same
+    // document, and a republish is what the next read answers from.
+    host.crash();
+    host.start();
+    let after_restart = read(&host);
+    assert_eq!(
+        ok(&after_restart)["data"]["records"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let one = discovery_document(&host_id, &[("profile-3", 2_000)]);
+    std::fs::write(&published, &one).unwrap();
+    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let response = read(&host);
+    let republished = ok(&response);
+    assert_eq!(republished["data"]["records"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        republished["data"]["records"][0]["intent"]["profile_id"],
+        "profile-3"
+    );
+
+    // A record for another Host is not this Host's document.
+    std::fs::write(
+        &published,
+        discovery_document("host_elsewhere", &[("profile-1", 2_000)]),
+    )
+    .unwrap();
+    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600)).unwrap();
+    refused(&read(&host), "foreign_host_inventory");
+
+    // A document the discovery contract does not speak.
+    for document in [
+        "not json at all".to_string(),
+        json!({"schema_version": 2, "records": []}).to_string(),
+        json!({"schema_version": 1, "records": [], "extra": true}).to_string(),
+    ] {
+        std::fs::write(&published, &document).unwrap();
+        std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600)).unwrap();
+        refused(&read(&host), "unparseable_inventory");
+    }
+
+    // A file that is not a private regular file of this user: a group bit, and a
+    // symlink. Both are refusals, not reads of whatever they point at.
+    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o640)).unwrap();
+    refused(&read(&host), "unsafe_inventory_file");
+    // Restoring the mode is all it takes to serve again: the refusal is about
+    // the file, not a latch the Host set on itself.
+    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(&published, &one).unwrap();
+    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let restored = read(&host);
+    assert_eq!(
+        ok(&restored)["data"]["records"].as_array().unwrap().len(),
+        1
+    );
+    let elsewhere = host.directory.join("elsewhere.json");
+    std::fs::write(&elsewhere, &one).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::remove_file(&published).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &published).unwrap();
+    refused(&read(&host), "unsafe_inventory_file");
+    std::fs::remove_file(&published).unwrap();
+    std::fs::remove_file(&elsewhere).unwrap();
+
+    // A document past the published bound is refused by the Host that owns the
+    // bound, not by the transport that frames the response.
+    std::fs::write(&published, format!("\"{}\"", "y".repeat(512 * 1024 + 1))).unwrap();
+    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600)).unwrap();
+    refused(&read(&host), "oversized_inventory");
+
+    // And removing the file is the first refusal again, not a permanent state.
+    std::fs::remove_file(&published).unwrap();
+    refused(&read(&host), "no_published_inventory");
 }

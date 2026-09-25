@@ -93,6 +93,51 @@ distinct from canonical Model IDs. Discovery cannot authorize worker activation.
 Caller-created observations require trusted Host provenance; serialized provenance
 labels are not signatures. The inventory is bounded and currently in memory.
 
+## Durable Host inventory read surface
+
+An inventory was, until this slice, in memory: a discovery run produced records
+and the process that ran it dropped them. A Host now serves one, and the wire
+surface is a single owner-only read, `get_runtime_inventory` (protocol v1.25),
+answered from a private file in the Host's state directory named
+`runtime-inventory.json`. The file is this Host's own record of this machine; a
+record that names another Host is not this Host's document and is refused.
+
+The read applies the discipline the Host already applies to its own identity and
+policy files: it opens the published name with `O_NOFOLLOW` and classifies the
+*opened handle* — a regular file, owned by this user, mode 0600, with no second
+name for it — so a path swapped for a symlink between a check and a read cannot
+slip a different document past the gate. The document is then re-validated whole
+by this crate's own parser on every read. Nothing is cached: the file is the
+durable record, so a read after a republish answers from the new document and
+survives a restart. The published bound is 512 KiB, applied to the file before it
+is parsed and well inside the protocol's 1 MiB response bound, so a document
+this Host will serve always fits its own response envelope; an inventory larger
+than that is refused by name rather than discovered at the transport.
+
+Refusals are a closed vocabulary and the read is never partially served:
+`no_published_inventory`, `unsafe_inventory_file`, `unreadable_inventory`,
+`unparseable_inventory`, `oversized_inventory` and `foreign_host_inventory`. The
+names do not distinguish which private-file check failed, because a reader that
+could tell "wrong mode" from "foreign-owned" would be an oracle for probing this
+Host's state directory, and none of them carries a path or a value the document
+said.
+
+A record past its own `expires_at` is served, not filtered: expiry is the
+reader's call, and dropping records on the way out would make the document
+disagree with what this Host actually holds. Serving an inventory decides
+nothing — qualification, diagnostics and activation remain separate, and the
+read grants no activation, credential, installation or billing authority.
+
+There is no client write path. The document is installed by an operator on the
+machine with `symbiote publish-runtime-inventory DOCUMENT --state-dir DIR`
+(see [cli.md](cli.md)), which re-validates it whole, requires every record to
+name that state directory's own Host identity, and installs it atomically at
+mode 0600 so a reader sees the old document or the new one. A refused document is
+named and leaves the Host serving what it already held. What a discovery run
+produces and an operator publishes is still two steps with a person in the
+middle: this slice makes the inventory durable and readable, not discovered on a
+schedule.
+
 ## Deterministic diagnostics
 
 `diagnostics::diagnose` maps only the closed source errors that correspond to
@@ -139,7 +184,11 @@ this pinned model schema and remain unknown.
 
 Build `symbiote-sandbox-launch`, then run the `codex_discover` example with its
 absolute path, an empty worktree under a private 0700 parent, and a separate
-protected Host directory. The sandbox runs `/usr/bin/codex` with a disposable
+protected Host directory. An optional fourth argument names a file to write the
+inventory document this run produced, so the document an operator publishes into
+a Host is the one a real discovery run built; the file is the producer's output
+and carries no Host identity of its own, so the Host still installs it only after
+checking every record against its own. The sandbox runs `/usr/bin/codex` with a disposable
 `/home/agent` HOME, an empty environment, read-only project and isolated network.
 Initialization must report `/home/agent/.codex`. No real account directory is
 mounted. The runner checks cancellation errors; descendant cleanup remains
@@ -152,8 +201,9 @@ before installing the binary on the disposable runner only. CI does not update
 the user's Codex installation. Unit fixtures prove rejection contracts; the real
 binary proof establishes this narrow offline protocol compatibility only.
 
-Pending: durable inventory/Host endpoints, configured profile/account binding,
-native-provider discovery, executable provenance beyond the trusted `/usr`
+Pending: a Host-side probe that discovers on a schedule rather than an operator
+publishing a document, configured profile/account binding, native-provider
+discovery, executable provenance beyond the trusted `/usr`
 premise, user-visible install/update/logout/default-change consent flows,
 authentication/quota/entitlement health integration, account isolation acceptance,
 authenticated online model calls and coding tasks. Deterministic diagnostics do

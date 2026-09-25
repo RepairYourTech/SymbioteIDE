@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 24,
+    minor: 25,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -252,6 +252,17 @@ pub enum Operation {
         work_id: WorkId,
     },
     GetHostPulse {},
+    /// The [runtime inventory](runtime-discovery.md) this Host holds for the
+    /// machines it is, served whole from the private file its own Host identity
+    /// published. It is a read of what this Host observed, so it is owner
+    /// authority rather than a Project record, and it is refused by name rather
+    /// than partially served: nothing published, a file that is not a private
+    /// regular file of this user, a document this crate does not speak, one
+    /// past the published bound, or a record that names another Host.
+    /// Records past their own `expires_at` stay visible: expiry is the reader's
+    /// call, not a filter this Host applies on the way out. Nothing here grants
+    /// activation, credential, installation or billing authority.
+    GetRuntimeInventory {},
     ReplaceTeam {
         expected_revision: Option<Revision>,
         team: Box<TeamConfiguration>,
@@ -396,6 +407,7 @@ impl Operation {
             | Self::Health {}
             | Self::Shutdown {}
             | Self::GetHostPulse {}
+            | Self::GetRuntimeInventory {}
             | Self::ListProjects {} => None,
         }
     }
@@ -756,6 +768,11 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         }
         Operation::Hello { .. } | Operation::Health {} => true,
         Operation::GetHostPulse {} => principal.local_owner,
+        // The runtime inventory is this Host's own observation of the machines
+        // it is: a Project Read grant is not authority over what an operator
+        // installed on this machine, and a record for another Host is refused
+        // by the Host rather than served to whoever asked.
+        Operation::GetRuntimeInventory {} => principal.local_owner,
         Operation::Shutdown {} => principal.local_owner,
         Operation::RecordResourceConsent { .. } | Operation::RevokeResourceConsent { .. } => {
             principal.local_owner
@@ -1044,6 +1061,7 @@ pub enum Capability {
     BindingConfiguration,
     BindingRead,
     HostPulseRead,
+    RuntimeInventoryRead,
     TeamConfiguration,
     TeamRead,
     WorkCreation,
@@ -1096,6 +1114,7 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::BindingConfiguration,
             Capability::BindingRead,
             Capability::HostPulseRead,
+            Capability::RuntimeInventoryRead,
             Capability::TeamConfiguration,
             Capability::TeamRead,
             Capability::WorkCreation,
@@ -1549,6 +1568,14 @@ pub enum ResponseBody {
     },
     Binding(Box<symbiote_workforce::BindingConfiguration>),
     HostPulse(Box<symbiote_host_inventory::HostPulse>),
+    /// This Host's own [runtime inventory](runtime-discovery.md), served whole
+    /// from the private file its own identity published. Every record in it
+    /// names this Host, and a record past its own `expires_at` is served rather
+    /// than dropped: the document is what this Host observed, and the reader
+    /// decides what a stale observation means. The Host applies the published
+    /// bound before the response is built, so this body cannot exceed
+    /// [`MAX_RESPONSE_BYTES`].
+    RuntimeInventory(Box<symbiote_runtime_discovery::Inventory>),
     Team(Box<TeamConfiguration>),
     Work(Box<WorkItem>),
     TaskOrigin(Option<TaskOrigin>),

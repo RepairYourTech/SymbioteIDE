@@ -38,9 +38,11 @@ impl DiscoveryTransport for Probe {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let inputs: Vec<_> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    if inputs.len() != 3 {
+    if !(3..=4).contains(&inputs.len()) {
         return Err(
-            "expected absolute helper, private empty worktree, protected Host directory".into(),
+            "expected absolute helper, private empty worktree, protected Host directory, \
+             optional inventory document path"
+                .into(),
         );
     }
     if std::fs::read_dir(&inputs[1])?.next().is_some() {
@@ -180,6 +182,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         probe.process.child_id(),
         &report,
     )?])?;
+    // An optional fourth argument writes the document this run produced, so the
+    // inventory an operator publishes into a Host is the one a real discovery
+    // run built rather than a hand-written stand-in. The file is the producer's
+    // output, not Host state: the Host installs it under its own name, mode and
+    // identity check when an operator publishes it.
+    if let Some(path) = inputs.get(3) {
+        std::fs::write(path, serde_json::to_string(&inventory)?)?;
+    }
     println!(
         "{}",
         serde_json::json!({
@@ -197,6 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "listed_models": report.models.len(),
             "inventory_records": inventory.records().len(),
             "inventory_schema_version": inventory.schema_version(),
+            "inventory_document": inputs.get(3).map(|path| path.display().to_string()),
             "model_usability": "unknown",
             "model_turn_started": false,
             "profile": "fresh_disposable_home",
