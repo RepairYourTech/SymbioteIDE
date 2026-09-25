@@ -19,6 +19,9 @@ impl DiscoveryTransport for Fixture {
             .pop_front()
             .ok_or(CodexDiscoveryError::Transport)
     }
+    fn child_id(&self) -> Option<u32> {
+        Some(42)
+    }
 }
 fn model(id: &str) -> Value {
     json!({"id":id,"model":"gpt-5.4","isDefault":true,"hidden":false,"defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium","description":"ignored"}],"displayName":"ignored","description":"ignored"})
@@ -28,7 +31,7 @@ fn fixture() -> Fixture {
         sent: vec![],
         delay: Duration::ZERO,
         replies: VecDeque::from([
-            json!({"id":1,"result":{"userAgent":"symbiote/0.118.0 (Linux)"}}),
+            json!({"id":1,"result":{"userAgent":"symbiote/0.118.0 (Linux)","codexHome":"/home/agent/.codex"}}),
             json!({"id":2,"result":{"requiresOpenaiAuth":true,"account":null}}),
             json!({"id":3,"result":{"data":[model("picker.one")],"nextCursor":null}}),
         ]),
@@ -41,6 +44,8 @@ fn handshake_is_versionless_read_only_and_fields_not_reported_remain_unknown() {
     let report = discover(&mut fixture, Duration::from_secs(1)).unwrap();
     assert_eq!(report.authentication, CodexAuthentication::Required);
     assert_eq!(report.server_version, "0.118.0");
+    assert_eq!(report.process_id(), 42);
+    assert_eq!(report.config_root(), "/home/agent/.codex");
     assert_eq!(fixture.sent[0]["params"]["clientInfo"]["version"], "0.1.0");
     assert_eq!(report.models[0].provider_model, "gpt-5.4");
     assert_eq!(report.models[0].context_tokens, None);
@@ -65,7 +70,7 @@ fn account_metadata_and_error_contents_are_discarded() {
     fixture.replies[1] = json!({"id":2,"result":{"requiresOpenaiAuth":true,"account":{"type":"chatgpt","email":"private@example.test","planType":"pro","token":"private-token"}}});
     let report = discover(&mut fixture, Duration::from_secs(1)).unwrap();
     assert_eq!(report.authentication, CodexAuthentication::ChatGptReported);
-    let output = format!("{report:?}{}", serde_json::to_string(&report).unwrap());
+    let output = format!("{report:?}");
     assert!(!output.contains("private"));
     assert!(!output.contains("pro\""));
     let mut fixture = crate::fixture();

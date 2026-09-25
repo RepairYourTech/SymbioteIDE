@@ -85,6 +85,33 @@ fn the_named_profile_boundary_is_named_and_pure() {
     assert!(source.contains("environment.get"));
 }
 
+/// The real-adapter composition boundary is held to the document and to its
+/// data-only, privacy-preserving source. A reported account object cannot become
+/// verified authentication or smuggle an account payload into durable inventory.
+#[test]
+fn the_codex_adapter_record_is_named_bounded_and_unverified() {
+    let contract = include_str!("../../../docs/contracts/runtime-discovery.md");
+    for name in [
+        "codex_adapter::bind_report",
+        "CodexProbeReport",
+        "DiscoveryRecord",
+        "ProcessMismatch",
+        "ProfileMismatch",
+        "UnconfirmedProtocol",
+        "DuplicateModel",
+    ] {
+        assert!(contract.contains(name), "the contract must name {name}");
+    }
+    let source = include_str!("../src/codex_adapter.rs");
+    assert!(source.contains("let root_matches"));
+    assert!(source.contains("report.process_id() != process_id"));
+    assert!(source.contains("report.config_root() != profile.path"));
+    assert!(source.contains("Fact::Unknown"));
+    assert!(!source.contains("Command::new"));
+    assert!(!source.contains("std::env"));
+    assert!(!source.contains("account.email"));
+}
+
 /// The user agent this crate accepts is built from the pinned release rather than restated beside
 /// it, so a moved constant moves both the accepted name and the document's figures together.
 #[test]

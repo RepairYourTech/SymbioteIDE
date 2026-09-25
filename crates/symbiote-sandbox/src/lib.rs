@@ -298,6 +298,12 @@ pub struct SandboxProcess {
     transport: JsonlTransport,
 }
 impl SandboxProcess {
+    /// The directly owned sandbox launcher's process identity, for evidence that
+    /// must name the process rather than an adapter session.
+    pub fn child_id(&self) -> u32 {
+        self.transport.child_id()
+    }
+
     /// Explicit opt-in to bounded raw child stderr; Debug on this batch is redacted.
     pub fn diagnostics(&mut self) -> symbiote_runtime_transport::DiagnosticBatch {
         self.transport.diagnostics()

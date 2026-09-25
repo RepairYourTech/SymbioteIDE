@@ -8,6 +8,7 @@ use std::{
 };
 use symbiote_domain::*;
 pub mod codex;
+pub mod codex_adapter;
 pub mod installation;
 pub mod profiles;
 pub use installation::*;
@@ -490,6 +491,9 @@ impl Inventory {
             return Err(DiscoveryError::ResourceLimit);
         }
         serde_json::from_str(input).map_err(|_| DiscoveryError::InvalidRecord)
+    }
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
     }
     pub fn records(&self) -> &[DiscoveryRecord] {
         &self.records
