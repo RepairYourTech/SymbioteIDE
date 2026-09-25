@@ -108,6 +108,14 @@ pub struct VerificationEvidence {
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     Ready,
+    // The Host has admitted the Task to its durable queue. This is canonical
+    // scheduler state, not a harness-local todo state.
+    Queued,
+    // The Task's owning Role has been explicitly bound before dispatch.
+    Assigned,
+    // A recorded precondition prevents scheduling. The reason lives in the
+    // command history; a later scheduler projection may explain it again.
+    Blocked,
     Running,
     CompletionRequested,
     Verifying,
@@ -135,6 +143,26 @@ pub struct Task {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskAction {
+    /// Admit a Ready Task to the canonical queue. Only the Host may make
+    /// this transition; a worker cannot turn its own local todo into queued
+    /// canonical work.
+    Queue,
+    /// Bind the queued Task to its existing canonical Role. The Role is
+    /// explicit in the command so a caller cannot silently reassign ownership
+    /// while producing the same state.
+    Assign {
+        role_id: RoleId,
+    },
+    /// Record a scheduling block without rewriting dependency edges or
+    /// pretending that a foreign runtime observed it.
+    Block {
+        reason: String,
+    },
+    /// Return a blocked Task to Ready. The scheduler still applies its normal
+    /// dependency and stream checks before the Task can start.
+    Unblock {
+        reason: String,
+    },
     Start {
         dispatch: Box<Dispatch>,
     },
@@ -260,13 +288,62 @@ impl Task {
                 .checked_add(1)
                 .ok_or(DomainError::RevisionExhausted)?,
         );
+        let host_actor = matches!(&command.actor, Actor::Host(_));
         let host_authorized = match (&command.actor, &self.dispatch) {
             (Actor::Host(host), Some(dispatch)) => host == dispatch.contract().host_id(),
             _ => false,
         };
         let next_state = match &command.action {
-            TaskAction::Start { dispatch } => {
+            TaskAction::Queue => {
+                if !host_actor {
+                    return Err(DomainError::PermissionDenied);
+                }
                 if self.state != TaskState::Ready {
+                    return Err(DomainError::IllegalTransition);
+                }
+                TaskState::Queued
+            }
+            TaskAction::Assign { role_id } => {
+                if !host_actor {
+                    return Err(DomainError::PermissionDenied);
+                }
+                if self.state != TaskState::Queued {
+                    return Err(DomainError::IllegalTransition);
+                }
+                if role_id != &self.role_id {
+                    return Err(DomainError::LineageMismatch);
+                }
+                TaskState::Assigned
+            }
+            TaskAction::Block { reason } => {
+                if !host_actor {
+                    return Err(DomainError::PermissionDenied);
+                }
+                if !matches!(
+                    self.state,
+                    TaskState::Ready | TaskState::Queued | TaskState::Assigned
+                ) {
+                    return Err(DomainError::IllegalTransition);
+                }
+                if reason.trim().is_empty() {
+                    return Err(DomainError::EmptyReport);
+                }
+                TaskState::Blocked
+            }
+            TaskAction::Unblock { reason } => {
+                if !host_actor {
+                    return Err(DomainError::PermissionDenied);
+                }
+                if self.state != TaskState::Blocked {
+                    return Err(DomainError::IllegalTransition);
+                }
+                if reason.trim().is_empty() {
+                    return Err(DomainError::EmptyReport);
+                }
+                TaskState::Ready
+            }
+            TaskAction::Start { dispatch } => {
+                if !matches!(self.state, TaskState::Ready | TaskState::Assigned) {
                     return Err(DomainError::IllegalTransition);
                 }
                 let contract = dispatch.contract();
@@ -322,9 +399,32 @@ impl Task {
                 self.validate_evidence(stream, evidence, command.at)?;
                 TaskState::Completed
             }
-            TaskAction::Fail { reason }
-            | TaskAction::Cancel { reason }
-            | TaskAction::Interrupt { reason } => {
+            TaskAction::Cancel { reason } => {
+                let active_dispatch = matches!(
+                    self.state,
+                    TaskState::Running | TaskState::CompletionRequested | TaskState::Verifying
+                );
+                if (active_dispatch && !host_authorized) || (!active_dispatch && !host_actor) {
+                    return Err(DomainError::PermissionDenied);
+                }
+                if !matches!(
+                    self.state,
+                    TaskState::Ready
+                        | TaskState::Queued
+                        | TaskState::Assigned
+                        | TaskState::Blocked
+                        | TaskState::Running
+                        | TaskState::CompletionRequested
+                        | TaskState::Verifying
+                ) {
+                    return Err(DomainError::IllegalTransition);
+                }
+                if reason.trim().is_empty() {
+                    return Err(DomainError::EmptyReport);
+                }
+                TaskState::Cancelled
+            }
+            TaskAction::Fail { reason } | TaskAction::Interrupt { reason } => {
                 if !host_authorized {
                     return Err(DomainError::PermissionDenied);
                 }
@@ -339,7 +439,6 @@ impl Task {
                 }
                 match &command.action {
                     TaskAction::Fail { .. } => TaskState::Failed,
-                    TaskAction::Cancel { .. } => TaskState::Cancelled,
                     _ => TaskState::Interrupted,
                 }
             }

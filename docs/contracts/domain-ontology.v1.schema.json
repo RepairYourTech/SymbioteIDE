@@ -3547,6 +3547,70 @@
     "TaskAction": {
       "oneOf": [
         {
+          "description": "Admit a Ready Task to the canonical queue. Only the Host may make\nthis transition; a worker cannot turn its own local todo into queued\ncanonical work.",
+          "properties": {
+            "kind": {
+              "const": "queue",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Bind the queued Task to its existing canonical Role. The Role is\nexplicit in the command so a caller cannot silently reassign ownership\nwhile producing the same state.",
+          "properties": {
+            "kind": {
+              "const": "assign",
+              "type": "string"
+            },
+            "role_id": {
+              "$ref": "#/$defs/RoleId"
+            }
+          },
+          "required": [
+            "kind",
+            "role_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Record a scheduling block without rewriting dependency edges or\npretending that a foreign runtime observed it.",
+          "properties": {
+            "kind": {
+              "const": "block",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Return a blocked Task to Ready. The scheduler still applies its normal\ndependency and stream checks before the Task can start.",
+          "properties": {
+            "kind": {
+              "const": "unblock",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "dispatch": {
               "$ref": "#/$defs/Dispatch"
@@ -3827,6 +3891,9 @@
     "TaskState": {
       "enum": [
         "ready",
+        "queued",
+        "assigned",
+        "blocked",
         "running",
         "completion_requested",
         "verifying",

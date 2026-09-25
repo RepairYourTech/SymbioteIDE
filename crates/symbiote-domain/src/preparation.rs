@@ -97,7 +97,9 @@ impl ProviderRefusal {
 /// wherever they ask. Provider reasons keep the registry's own names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DispatchRefusal {
-    /// The task was not `Ready` when the composition ran.
+    /// The task was not in a startable pre-dispatch state when the composition
+    /// ran: `Queued` and `Blocked` are not startable, and neither is any state
+    /// the task has already left the startable pair for.
     NotSchedulable,
     /// No route resolved for the task's origin, so no Role — and therefore no
     /// runtime profile — was chosen.
@@ -173,10 +175,13 @@ impl DispatchPreparation {
         at: Timestamp,
     ) -> Self {
         let mut steps = Vec::new();
-        // Scheduling: the task must be Ready (this is the projection's
-        // schedulable core condition; dependency/stream/lease detail is
-        // recorded by the scheduler slice).
-        let schedulable = task.state() == &TaskState::Ready;
+        // Scheduling: the task must be in the startable pre-dispatch pair —
+        // `Ready`, or `Assigned` once the Host has bound its canonical Role.
+        // `Queued` and `Blocked` are deliberately not startable, and no state
+        // at or past the start is. This is the projection's schedulable core
+        // condition; dependency/stream/lease detail is recorded by the
+        // scheduler slice.
+        let schedulable = matches!(task.state(), TaskState::Ready | TaskState::Assigned);
         steps.push(CompositionStep::Scheduling { schedulable });
         steps.push(CompositionStep::Routing {
             resolved: routed_role.clone(),

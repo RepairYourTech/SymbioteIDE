@@ -59,10 +59,12 @@ impl std::fmt::Display for LeaseError {
 }
 impl std::error::Error for LeaseError {}
 
-/// A scheduler query result: one Ready task whose blocking dependency targets
-/// are all Completed and whose Change Stream is Active, with an explanation
-/// of every constraint considered. Scheduling decisions must be explainable
-/// from recorded state, so the reason is part of the record, not a log line.
+/// A scheduler query result: one startable pre-dispatch task (`Ready`, or
+/// `Assigned` once the Host bound its canonical Role) whose blocking dependency
+/// targets are all Completed and whose Change Stream is Active, with an
+/// explanation of every constraint considered. Scheduling decisions must be
+/// explainable from recorded state, so the reason is part of the record, not a
+/// log line.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulableTask {

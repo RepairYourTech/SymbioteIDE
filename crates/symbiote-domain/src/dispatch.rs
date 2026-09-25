@@ -274,7 +274,7 @@ impl Dispatch {
         {
             return Err(DomainError::LineageMismatch);
         }
-        if task.state() != &TaskState::Ready {
+        if !matches!(task.state(), TaskState::Ready | TaskState::Assigned) {
             return Err(DomainError::IllegalTransition);
         }
         if !profile.eligible_hosts.contains(&host.id)

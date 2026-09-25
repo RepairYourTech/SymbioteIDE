@@ -392,13 +392,16 @@ impl Store {
         Ok(read(&self.connection, task)?.map(|lease| lease.fencing_token))
     }
 
-    /// The scheduler's explainable projection over Ready tasks: dependency
-    /// edges (#94) and Change Stream state decide, and every task carries the
-    /// reason it is schedulable or blocked. Bounded to the dependency cap.
+    /// The scheduler's explainable projection over startable pre-dispatch
+    /// tasks (`Ready`, or `Assigned` once the Host bound the canonical Role):
+    /// dependency edges (#94) and Change Stream state decide, and every task
+    /// carries the reason it is schedulable or blocked. A `Queued` or
+    /// `Blocked` task is not a candidate at all and is absent from both lists.
+    /// Bounded to the dependency cap.
     pub fn scheduling_projection(&self, now: Timestamp) -> Result<SchedulingProjection> {
         let mut statement = self
             .connection
-            .prepare("SELECT id, project_id, stream_id, role_id, body FROM tasks WHERE id IN (SELECT id FROM tasks WHERE json_extract(body,'$.state')='ready') ORDER BY id")?;
+            .prepare("SELECT id, project_id, stream_id, role_id, body FROM tasks WHERE id IN (SELECT id FROM tasks WHERE json_extract(body,'$.state') IN ('ready','assigned')) ORDER BY id")?;
         let rows = statement.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -413,7 +416,7 @@ impl Store {
         for row in rows {
             let (task, project, stream, role, body) = row?;
             let record: Task = serde_json::from_str(&body)?;
-            if record.state() != &TaskState::Ready {
+            if !matches!(record.state(), TaskState::Ready | TaskState::Assigned) {
                 continue;
             }
             let project_id = ProjectId::new(&project)

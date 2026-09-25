@@ -73,9 +73,12 @@ bounded to 64. Protocol v1.7 adds `set_task_dependencies` (`ManageWork` on the
 owning Project plus `Read` on every target Project), `get_task_dependencies`
 (read) and the `task_dependencies_set` journal payload. SQLite schema v7 adds
 the `task_dependencies` table whose indexed columns are tamper-evident
-projections of the edge bodies. DAG readiness/critical-path queries, and the
-remaining #94 state machine (blocked/queued/assigned states, leases) remain
-pending.
+projections of the edge bodies.The pre-dispatch `Queued`, `Assigned` and `Blocked` Task states now have Host-only commands, exact Role binding and recorded block/unblock guards. The startable pre-dispatch pair is exactly `Ready` or `Assigned`: dispatch compilation, the domain `Start` transition, the [dispatch preparation](dispatch-preparation.md) and the [scheduling projection](scheduling-leases.md) all accept that one pair, and both refuse a `Queued` or `Blocked` Task by the same `not_schedulable` name, so an assigned Task is startable end to end and a Task the Host has not presented for scheduling is no candidate anywhere. DAG readiness/critical-path
+queries and the rest of the #94 state machine (review/merge, waiting, pause,
+remediation and supersession states) remain pending. Durable lease and
+heartbeat/stale-worker integration remains owned by the scheduler work. The
+scheduler's dependency/stream projection still decides readiness after an
+explicit unblock.
 
 ## Foreign runtime session and task references
 

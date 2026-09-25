@@ -541,6 +541,185 @@ fn optimistic_updates_preserve_success_history_and_retries_are_idempotent() {
 }
 
 #[test]
+fn pre_dispatch_states_are_explicit_host_guarded_and_replayable() {
+    let mut f = Fixture::new(RuntimeKind::NativeSymbiote);
+    let mut worker = f.host_command("worker-queue", TaskAction::Queue);
+    worker.actor = Actor::Worker(id!(DispatchId, "worker"));
+    assert_eq!(f.task.apply(worker), Err(DomainError::PermissionDenied));
+    assert_eq!(
+        f.task.apply(f.host_command(
+            "assign-before-queue",
+            TaskAction::Assign {
+                role_id: f.role.id.clone(),
+            },
+        )),
+        Err(DomainError::IllegalTransition)
+    );
+
+    let queue = f.host_command("queue", TaskAction::Queue);
+    assert_eq!(f.task.apply(queue.clone()), Ok(Revision(1)));
+    assert_eq!(f.task.state(), &TaskState::Queued);
+    assert_eq!(f.task.apply(queue), Ok(Revision(1)));
+
+    let mut wrong_role = f.host_command(
+        "assign-wrong-role",
+        TaskAction::Assign {
+            role_id: id!(RoleId, "other-role"),
+        },
+    );
+    wrong_role.expected_revision = Revision(1);
+    assert_eq!(f.task.apply(wrong_role), Err(DomainError::LineageMismatch));
+    let assign = f.host_command(
+        "assign",
+        TaskAction::Assign {
+            role_id: f.role.id.clone(),
+        },
+    );
+    assert_eq!(f.task.apply(assign), Ok(Revision(2)));
+    assert_eq!(f.task.state(), &TaskState::Assigned);
+
+    let encoded = serde_json::to_string(&f.task).unwrap();
+    f.task = serde_json::from_str(&encoded).unwrap();
+    f.start();
+    assert_eq!(f.task.state(), &TaskState::Running);
+    assert_eq!(
+        f.task
+            .apply(f.host_command("queue-running", TaskAction::Queue)),
+        Err(DomainError::IllegalTransition)
+    );
+    assert_eq!(
+        f.task.apply(f.host_command(
+            "block-running",
+            TaskAction::Block {
+                reason: "not while running".into(),
+            },
+        )),
+        Err(DomainError::IllegalTransition)
+    );
+
+    let mut blocked = Fixture::new(RuntimeKind::ExternalHarness);
+    let mut worker_block = blocked.host_command(
+        "worker-block",
+        TaskAction::Block {
+            reason: "worker cannot block".into(),
+        },
+    );
+    worker_block.actor = Actor::Worker(id!(DispatchId, "worker"));
+    assert_eq!(
+        blocked.task.apply(worker_block),
+        Err(DomainError::PermissionDenied)
+    );
+    let block = blocked.host_command(
+        "block",
+        TaskAction::Block {
+            reason: "dependency is unresolved".into(),
+        },
+    );
+    assert_eq!(blocked.task.apply(block), Ok(Revision(1)));
+    assert_eq!(blocked.task.state(), &TaskState::Blocked);
+    let mut worker_unblock = blocked.host_command(
+        "worker-unblock",
+        TaskAction::Unblock {
+            reason: "worker cannot unblock".into(),
+        },
+    );
+    worker_unblock.actor = Actor::Worker(id!(DispatchId, "worker"));
+    assert_eq!(
+        blocked.task.apply(worker_unblock),
+        Err(DomainError::PermissionDenied)
+    );
+    let mut empty_unblock =
+        blocked.host_command("empty-unblock", TaskAction::Unblock { reason: " ".into() });
+    empty_unblock.expected_revision = Revision(1);
+    assert_eq!(
+        blocked.task.apply(empty_unblock),
+        Err(DomainError::EmptyReport)
+    );
+    let unblock = blocked.host_command(
+        "unblock",
+        TaskAction::Unblock {
+            reason: "dependency completed".into(),
+        },
+    );
+    assert_eq!(blocked.task.apply(unblock), Ok(Revision(2)));
+    assert_eq!(blocked.task.state(), &TaskState::Ready);
+    assert_eq!(
+        blocked.task.apply(blocked.host_command(
+            "unblock-ready",
+            TaskAction::Unblock {
+                reason: "already ready".into(),
+            },
+        )),
+        Err(DomainError::IllegalTransition)
+    );
+    let empty_reason =
+        blocked.host_command("empty-reason", TaskAction::Block { reason: " ".into() });
+    assert_eq!(
+        blocked.task.apply(empty_reason),
+        Err(DomainError::EmptyReport)
+    );
+
+    let mut cancelled = Fixture::new(RuntimeKind::NativeSymbiote);
+    let mut worker_cancel = cancelled.host_command(
+        "worker-cancel",
+        TaskAction::Cancel {
+            reason: "worker cannot cancel".into(),
+        },
+    );
+    worker_cancel.actor = Actor::Worker(id!(DispatchId, "worker"));
+    assert_eq!(
+        cancelled.task.apply(worker_cancel),
+        Err(DomainError::PermissionDenied)
+    );
+    cancelled
+        .task
+        .apply(cancelled.host_command(
+            "cancel-queued",
+            TaskAction::Cancel {
+                reason: "operator withdrew the task".into(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(cancelled.task.state(), &TaskState::Cancelled);
+    assert_eq!(
+        cancelled.task.apply(cancelled.host_command(
+            "cancel-terminal",
+            TaskAction::Cancel {
+                reason: "already terminal".into(),
+            },
+        )),
+        Err(DomainError::IllegalTransition)
+    );
+}
+
+#[test]
+fn the_task_lifecycle_contract_names_the_states_and_guards() {
+    let hierarchy = include_str!("../../../docs/contracts/work-hierarchy.md");
+    let domain = include_str!("../../../docs/contracts/domain.md");
+    for state in ["Queued", "Assigned", "Blocked"] {
+        assert!(hierarchy.contains(&format!("`{state}`")));
+        assert!(domain.contains(state));
+    }
+    for guard in [
+        "Host-only commands",
+        "exact Role binding",
+        "recorded block/unblock guards",
+        "dependency/stream projection",
+    ] {
+        assert!(
+            hierarchy.contains(guard),
+            "the work-hierarchy contract does not state {guard}"
+        );
+    }
+    assert_eq!(serde_json::to_value(TaskState::Queued).unwrap(), "queued");
+    assert_eq!(
+        serde_json::to_value(TaskState::Assigned).unwrap(),
+        "assigned"
+    );
+    assert_eq!(serde_json::to_value(TaskState::Blocked).unwrap(), "blocked");
+}
+
+#[test]
 fn interrupted_and_failed_tasks_recover_with_new_dispatch_cancelled_tasks_are_terminal() {
     for action in [
         TaskAction::Interrupt {
