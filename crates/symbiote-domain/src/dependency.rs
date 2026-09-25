@@ -69,6 +69,18 @@ pub fn completion_blocking(kind: &TaskDependencyKind) -> bool {
     )
 }
 
+/// Kinds that order *starting*: the owning task waits on the target, and the
+/// target must be `Completed` before the owner may start. `blocks` is excluded
+/// because it gates the blocked target's completion rather than this task's
+/// start, and the remaining kinds are recorded with provenance but not yet
+/// enforced, so no scheduling decision may be built on them yet.
+pub fn orders_start(kind: &TaskDependencyKind) -> bool {
+    matches!(
+        kind,
+        TaskDependencyKind::Requires | TaskDependencyKind::ConsumesContractFrom
+    )
+}
+
 impl TaskDependencies {
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.edges.len() > MAX_TASK_EDGES {

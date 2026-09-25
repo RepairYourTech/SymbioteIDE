@@ -416,7 +416,7 @@ impl Store {
         for row in rows {
             let (task, project, stream, role, body) = row?;
             let record: Task = serde_json::from_str(&body)?;
-            if !matches!(record.state(), TaskState::Ready | TaskState::Assigned) {
+            if !record.state().is_startable() {
                 continue;
             }
             let project_id = ProjectId::new(&project)
@@ -485,10 +485,7 @@ impl Store {
                 // Scheduler-relevant waits: requires/consumes_contract_from
                 // order work; blocks is inverted (the target waits on this
                 // task) and does not gate starting here.
-                if !matches!(
-                    kind,
-                    TaskDependencyKind::Requires | TaskDependencyKind::ConsumesContractFrom
-                ) {
+                if !orders_start(&kind) {
                     continue;
                 }
                 has_edges = true;
@@ -502,7 +499,7 @@ impl Store {
                     .optional()?
                     .ok_or(StoreError::RelationshipMismatch)?;
                 let target: Task = serde_json::from_str(&target_body)?;
-                if target.state() != &TaskState::Completed {
+                if !target.state().is_completed() {
                     unresolved = true;
                     break;
                 }

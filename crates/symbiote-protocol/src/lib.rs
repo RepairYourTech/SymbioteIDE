@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 27,
+    minor: 28,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -218,6 +218,12 @@ pub enum Operation {
     },
     ExpireStaleLeases {},
     GetSchedulingProjection {},
+    /// The canonical DAG answer for one Project: progress counted from task
+    /// states, the remaining closure, the tasks each open task waits on, the
+    /// critical path, and same-stream contention.
+    GetTaskGraph {
+        project_id: ProjectId,
+    },
     ReplaceProviderConnection {
         attribution: ProjectId,
         connection: symbiote_domain::ProviderConnection,
@@ -392,6 +398,7 @@ impl Operation {
             | Self::ReleaseTaskLease { .. }
             | Self::ExpireStaleLeases {}
             | Self::GetSchedulingProjection {} => None,
+            Self::GetTaskGraph { project_id } => Some(project_id),
             Self::ReplaceProviderConnection { attribution, .. }
             | Self::ReplaceBillingEntitlement { attribution, .. }
             | Self::ReplaceModelDescriptor { attribution, .. } => Some(attribution),
@@ -751,6 +758,13 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::ExpireStaleLeases {} | Operation::GetSchedulingProjection {} => {
             principal.local_owner
         }
+        Operation::GetTaskGraph { project_id } => {
+            // A Project read, like the other Project-scoped reads. The Host
+            // additionally refuses the answer when it would name a task in a
+            // Project the caller cannot read, so a graph never becomes a way to
+            // enumerate another Project's work.
+            principal.permits(project_id, ProjectPermission::Read)
+        }
         Operation::ReplaceProviderConnection { .. }
         | Operation::ReplaceBillingEntitlement { .. }
         | Operation::ReplaceModelDescriptor { .. } => {
@@ -1105,6 +1119,7 @@ pub enum Capability {
     SchedulingProjection,
     TaskDependencyWrite,
     TaskDependencyRead,
+    TaskGraphRead,
     ForeignLinkWrite,
     ForeignLinkRead,
     RouteResolution,
@@ -1160,6 +1175,7 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::SchedulingProjection,
             Capability::TaskDependencyWrite,
             Capability::TaskDependencyRead,
+            Capability::TaskGraphRead,
             Capability::ForeignLinkWrite,
             Capability::ForeignLinkRead,
             Capability::RouteResolution,
@@ -1653,6 +1669,11 @@ pub enum ResponseBody {
         schedulable: Vec<symbiote_domain::SchedulableTask>,
         blocked: Vec<symbiote_domain::BlockedTask>,
     },
+    /// The canonical DAG answer for one Project, counted from recorded task
+    /// rows and dependency edges. It contains no reported percentage and no
+    /// cached projection, and it is bounded: a Project larger than the bound is
+    /// answered over the tasks it did read and says so in `progress`.
+    TaskGraph(Box<symbiote_domain::TaskGraphReport>),
     Binding(Box<symbiote_workforce::BindingConfiguration>),
     HostPulse(Box<symbiote_host_inventory::HostPulse>),
     /// This Host's own [runtime inventory](runtime-discovery.md), served whole

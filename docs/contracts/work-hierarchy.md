@@ -73,12 +73,58 @@ bounded to 64. Protocol v1.7 adds `set_task_dependencies` (`ManageWork` on the
 owning Project plus `Read` on every target Project), `get_task_dependencies`
 (read) and the `task_dependencies_set` journal payload. SQLite schema v7 adds
 the `task_dependencies` table whose indexed columns are tamper-evident
-projections of the edge bodies.The pre-dispatch `Queued`, `Assigned` and `Blocked` Task states now have Host-only commands, exact Role binding and recorded block/unblock guards. The startable pre-dispatch pair is exactly `Ready` or `Assigned`: dispatch compilation, the domain `Start` transition, the [dispatch preparation](dispatch-preparation.md) and the [scheduling projection](scheduling-leases.md) all accept that one pair, and both refuse a `Queued` or `Blocked` Task by the same `not_schedulable` name, so an assigned Task is startable end to end and a Task the Host has not presented for scheduling is no candidate anywhere. DAG readiness/critical-path
-queries and the rest of the #94 state machine (review/merge, waiting, pause,
-remediation and supersession states) remain pending. Durable lease and
+projections of the edge bodies.The pre-dispatch `Queued`, `Assigned` and `Blocked` Task states now have Host-only commands, exact Role binding and recorded block/unblock guards. The startable pre-dispatch pair is exactly `Ready` or `Assigned`: dispatch compilation, the domain `Start` transition, the [dispatch preparation](dispatch-preparation.md) and the [scheduling projection](scheduling-leases.md) all accept that one pair, and both refuse a `Queued` or `Blocked` Task by the same `not_schedulable` name, so an assigned Task is startable end to end and a Task the Host has not presented for scheduling is no candidate anywhere. The rest of the #94 state machine (review/merge, waiting, pause, remediation and supersession states) remains pending. Durable lease and
 heartbeat/stale-worker integration remains owned by the scheduler work. The
 scheduler's dependency/stream projection still decides readiness after an
 explicit unblock.
+
+## DAG answers: progress, closure, blockers, critical path, overlap
+
+`get_task_graph(project_id)` is the rest of the DAG surface. Readiness — which
+Task may start now, and the `stream_unsafe` / `stream_leased` /
+`dependency_unresolved` refusals — stays with the [scheduling
+projection](scheduling-leases.md); this read does not restate it. It answers,
+for one Project, from recorded task rows and dependency edges only:
+
+* **Progress** — a count per canonical Task state, in lifecycle order, plus the
+  whole `total`, the `considered` count, the `gates` read, and how many Tasks
+  are `closed` (`Completed` or `Cancelled`) against `open`. There is no
+  percentage field and no way to express one: a caller that wants a fraction
+  divides these counts itself, from canonical state, rather than reporting a
+  number an agent or a client handed it. `Failed` and `Interrupted` are not
+  closed, because the Host recovers them to `Ready`.
+* **Remaining closure** — every considered Task that is not closed, in canonical
+  id order.
+* **Blockers** — per open Task, the gates that still hold it: the edge kind, the
+  canonical task on the other side (in any Project, named with that Project), and
+  the state that task is in now. A gate is satisfied by completion alone, so a
+  cancelled prerequisite keeps its dependent on this list rather than reading as
+  delivered work. The five kinds the store does not enforce yet (`reviews`,
+  `verifies`, `supersedes`, `conflicts_with`, `follow_up_to`) are deliberately
+  absent: reporting them as blockers would enforce a policy that has not been
+  written. `blocks` appears as an incoming gate, which is where it is stored.
+* **Critical path** — the longest recorded chain of gating edges into the
+  Project's open work, with `length` in Tasks (no effort or duration is recorded,
+  so this is not a duration), how many of its members are open, and the  chain itself capped at 64 members with `truncated` saying whether it is the
+  whole chain. Ties are resolved by canonical id order, so the same state always
+  names the same chain. A Task with no recorded gate is a chain of one.
+* **Overlap** — startable Tasks (`Ready` or `Assigned`) that share one Change
+  Stream, because same-stream work is serialized by policy. A held lease is the
+  dynamic half of that fact and stays the projection's `stream_leased` refusal.
+  Every Change Stream currently holds exactly one Task, so this list is empty
+  against today's canonical state: it is computed, not unimplemented, and the
+  multi-task stream slice is what gives it content.
+
+Cycles are rejected at every write, and a read that finds one in the rows
+refuses by name (`cycle`) rather than walking it.
+DAG answers are bounded to 256 tasks and 2,048 gates: the store takes the
+Project's Tasks in canonical id order until either bound would be exceeded, so
+the answer is exact over what it read and `progress.total` keeps the whole count
+beside `progress.considered` — a partial answer says so instead of presenting a
+whole one it did not read. A Project the store does not hold is `not_found`
+rather than an empty graph. The read is a Project read (Project `Read` on the
+subject, and on every Project the answer names) and it writes nothing: no
+journal event, no derived table, no cache to drift from the state it describes.
 
 ## Foreign runtime session and task references
 

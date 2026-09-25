@@ -920,6 +920,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "The canonical DAG answer for one Project: progress counted from task\nstates, the remaining closure, the tasks each open task waits on, the\ncritical path, and same-stream contention.",
+            "properties": {
+              "kind": {
+                "const": "get_task_graph",
+                "type": "string"
+              },
+              "project_id": {
+                "$ref": "#/$defs/ProjectId"
+              }
+            },
+            "required": [
+              "kind",
+              "project_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "attribution": {
                 "$ref": "#/$defs/ProjectId"
@@ -3666,6 +3684,7 @@
           "scheduling_projection",
           "task_dependency_write",
           "task_dependency_read",
+          "task_graph_read",
           "foreign_link_write",
           "foreign_link_read",
           "route_resolution",
@@ -4421,6 +4440,42 @@
         "minLength": 1,
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
+      },
+      "CriticalPath": {
+        "additionalProperties": false,
+        "description": "The longest recorded chain of gating edges into the Project's open work.\nWith no effort or duration data recorded, length is measured in tasks, not\ntime: this names the dependency chain that decides when the work behind it\ncan start, and says how much of it is already closed.",
+        "properties": {
+          "chain": {
+            "description": "At most [`MAX_CRITICAL_PATH_TASKS`] members, upstream first.",
+            "items": {
+              "$ref": "#/$defs/GraphTaskRef"
+            },
+            "type": "array"
+          },
+          "length": {
+            "description": "The true chain length in tasks, always.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "description": "How many of the chain's members are not closed.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "True when `chain` is a prefix of a longer chain.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "length",
+          "open",
+          "chain",
+          "truncated"
+        ],
+        "type": "object"
       },
       "DiscoveryFacts": {
         "additionalProperties": false,
@@ -6147,6 +6202,23 @@
         ],
         "type": "string"
       },
+      "GraphTaskRef": {
+        "additionalProperties": false,
+        "description": "One task an answer names, wherever it lives. Blockers and chain members may\nname a task in another Project, which is why this is a project/task pair\nrather than a bare task id.",
+        "properties": {
+          "project_id": {
+            "$ref": "#/$defs/ProjectId"
+          },
+          "task_id": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "project_id",
+          "task_id"
+        ],
+        "type": "object"
+      },
       "HarnessDriverId": {
         "maxLength": 128,
         "minLength": 1,
@@ -7545,6 +7617,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "The canonical DAG answer for one Project, counted from recorded task\nrows and dependency edges. It contains no reported percentage and no\ncached projection, and it is bounded: a Project larger than the bound is\nanswered over the tasks it did read and says so in `progress`.",
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/TaskGraphReport"
+              },
+              "kind": {
+                "const": "task_graph",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "data": {
                 "$ref": "#/$defs/BindingConfiguration"
@@ -8826,6 +8916,26 @@
           }
         ]
       },
+      "StreamOverlap": {
+        "additionalProperties": false,
+        "description": "Startable tasks that share one Change Stream. Same-stream work is serialized\nby policy, so two startable tasks in one stream cannot both run; a held\nlease on the stream is the dynamic half of that fact and is refused by the\nscheduler projection as `stream_leased`, not repeated here.",
+        "properties": {
+          "stream_id": {
+            "$ref": "#/$defs/ChangeStreamId"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "stream_id",
+          "tasks"
+        ],
+        "type": "object"
+      },
       "StreamState": {
         "enum": [
           "active",
@@ -9236,6 +9346,26 @@
           }
         ]
       },
+      "TaskBlockers": {
+        "additionalProperties": false,
+        "description": "The gates currently holding one open task, and nothing else: a gate is\nsatisfied by completion alone, so a cancelled prerequisite keeps the\ndependent on this list rather than reading as delivered work. Edge kinds the\nstore does not enforce (`reviews`, `verifies`, `supersedes`,\n`conflicts_with`, `follow_up_to`) are deliberately absent, because reporting\nthem as blockers would enforce a policy their owning slice has not written\nyet.",
+        "properties": {
+          "gates": {
+            "items": {
+              "$ref": "#/$defs/TaskGate"
+            },
+            "type": "array"
+          },
+          "task": {
+            "$ref": "#/$defs/GraphTaskRef"
+          }
+        },
+        "required": [
+          "task",
+          "gates"
+        ],
+        "type": "object"
+      },
       "TaskCommand": {
         "additionalProperties": false,
         "properties": {
@@ -9374,6 +9504,70 @@
         ],
         "type": "object"
       },
+      "TaskGate": {
+        "additionalProperties": false,
+        "description": "One gate a task waits on: the edge kind that orders the work, the canonical\ntask on the other side, and the state that task is in now.",
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/TaskDependencyKind"
+          },
+          "target": {
+            "$ref": "#/$defs/GraphTaskRef"
+          },
+          "target_state": {
+            "$ref": "#/$defs/TaskState"
+          }
+        },
+        "required": [
+          "kind",
+          "target",
+          "target_state"
+        ],
+        "type": "object"
+      },
+      "TaskGraphReport": {
+        "additionalProperties": false,
+        "description": "The #94 DAG answer for one Project: what is left, what each open task waits\non, the chain that decides the rest, and where startable work contends for\nthe same stream.",
+        "properties": {
+          "blockers": {
+            "items": {
+              "$ref": "#/$defs/TaskBlockers"
+            },
+            "type": "array"
+          },
+          "critical_path": {
+            "$ref": "#/$defs/CriticalPath"
+          },
+          "overlaps": {
+            "items": {
+              "$ref": "#/$defs/StreamOverlap"
+            },
+            "type": "array"
+          },
+          "progress": {
+            "$ref": "#/$defs/TaskProgress"
+          },
+          "project_id": {
+            "$ref": "#/$defs/ProjectId"
+          },
+          "remaining": {
+            "description": "The remaining closure: every considered task that is not closed, in\ncanonical id order.",
+            "items": {
+              "$ref": "#/$defs/GraphTaskRef"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "progress",
+          "remaining",
+          "blockers",
+          "critical_path",
+          "overlaps"
+        ],
+        "type": "object"
+      },
       "TaskId": {
         "maxLength": 128,
         "minLength": 1,
@@ -9471,6 +9665,58 @@
           }
         ]
       },
+      "TaskProgress": {
+        "additionalProperties": false,
+        "description": "Progress, counted from canonical states. There is no percentage here and no\nway to express one: a caller that wants a fraction divides these counts\nitself, from states, rather than being handed a number it reported.",
+        "properties": {
+          "closed": {
+            "description": "Considered tasks that will never need scheduling again: `Completed` or\n`Cancelled`. `Failed` and `Interrupted` are not closed.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "considered": {
+            "description": "Task rows the answer read. Below `total` the answer is exact only over\nthe considered tasks, which are the first in canonical id order.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "considered_gates": {
+            "description": "Gates read for the considered tasks.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "description": "Considered tasks that are not closed — the size of the remaining\nclosure.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "states": {
+            "description": "The states present, in canonical lifecycle order. A state no task is in\nis absent rather than reported as a guessed zero.",
+            "items": {
+              "$ref": "#/$defs/TaskStateCount"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "Every task the Project holds, whether or not the answer considered it.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "considered",
+          "considered_gates",
+          "states",
+          "closed",
+          "open"
+        ],
+        "type": "object"
+      },
       "TaskState": {
         "enum": [
           "ready",
@@ -9486,6 +9732,25 @@
           "interrupted"
         ],
         "type": "string"
+      },
+      "TaskStateCount": {
+        "additionalProperties": false,
+        "description": "How many tasks sit in one canonical state.",
+        "properties": {
+          "state": {
+            "$ref": "#/$defs/TaskState"
+          },
+          "tasks": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "tasks"
+        ],
+        "type": "object"
       },
       "TeamConfiguration": {
         "additionalProperties": false,

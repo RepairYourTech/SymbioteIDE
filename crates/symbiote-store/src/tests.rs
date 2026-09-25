@@ -19,6 +19,8 @@ mod binding_tests;
 mod dependency_tests;
 #[path = "foreign_tests.rs"]
 mod foreign_tests;
+#[path = "graph_tests.rs"]
+mod graph_tests;
 #[path = "lease_tests.rs"]
 mod lease_tests;
 #[path = "preparation_tests.rs"]

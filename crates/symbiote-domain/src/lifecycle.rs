@@ -104,7 +104,7 @@ pub struct VerificationEvidence {
     pub recorded_at: Timestamp,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     Ready,
@@ -123,6 +123,51 @@ pub enum TaskState {
     Failed,
     Cancelled,
     Interrupted,
+}
+
+impl TaskState {
+    /// This state's position in the canonical lifecycle order. Any answer that
+    /// indexes or sorts states reads this one function, so a new variant cannot
+    /// appear in the enum and go missing from a canonical answer: the match is
+    /// exhaustive by construction rather than by a list someone must remember.
+    pub fn lifecycle_order(&self) -> u8 {
+        match self {
+            TaskState::Ready => 0,
+            TaskState::Queued => 1,
+            TaskState::Assigned => 2,
+            TaskState::Blocked => 3,
+            TaskState::Running => 4,
+            TaskState::CompletionRequested => 5,
+            TaskState::Verifying => 6,
+            TaskState::Completed => 7,
+            TaskState::Failed => 8,
+            TaskState::Cancelled => 9,
+            TaskState::Interrupted => 10,
+        }
+    }
+
+    /// The startable pre-dispatch pair: `Ready`, or `Assigned` once the Host
+    /// has bound the Task's canonical Role. Dispatch compilation, the `Start`
+    /// transition, the dispatch preparation and the scheduler's projections all
+    /// accept this pair and no other pre-dispatch state.
+    pub fn is_startable(&self) -> bool {
+        matches!(self, TaskState::Ready | TaskState::Assigned)
+    }
+
+    /// True when the state will never need scheduling again. `Failed` and
+    /// `Interrupted` are not closed: the Host recovers them to `Ready`.
+    pub fn is_closed(&self) -> bool {
+        matches!(self, TaskState::Completed | TaskState::Cancelled)
+    }
+
+    /// True only for `Completed`, which is the single state that satisfies a
+    /// dependency gate. A cancelled task is closed but does not satisfy an
+    /// edge: the dependent still waits, because nothing produced what it
+    /// required. Keeping this distinct from `is_closed` is what stops a
+    /// withdrawn prerequisite from reading as delivered work.
+    pub fn is_completed(&self) -> bool {
+        matches!(self, TaskState::Completed)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
@@ -343,7 +388,7 @@ impl Task {
                 TaskState::Ready
             }
             TaskAction::Start { dispatch } => {
-                if !matches!(self.state, TaskState::Ready | TaskState::Assigned) {
+                if !self.state.is_startable() {
                     return Err(DomainError::IllegalTransition);
                 }
                 let contract = dispatch.contract();

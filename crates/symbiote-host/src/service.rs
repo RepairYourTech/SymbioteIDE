@@ -464,6 +464,20 @@ fn execute(
                 })
                 .map_err(storage_error)
         }
+        Operation::GetTaskGraph { project_id } => {
+            let report = store.task_graph(project_id).map_err(storage_error)?;
+            // The cross-Project rule from #94, applied to a whole answer: a gate
+            // that names a task in a Project the caller cannot read is refused
+            // rather than served with that side dropped, because an unnamed
+            // blocker is a reason the reader cannot act on. Redaction would also
+            // let the answer's shape report what it withheld.
+            for referenced in report.referenced_projects() {
+                if !principal.permits(&referenced, ProjectPermission::Read) {
+                    return Err(ProtocolError::new(ErrorCode::PermissionDenied));
+                }
+            }
+            Ok(ResponseBody::TaskGraph(Box::new(report)))
+        }
         Operation::ExpireStaleLeases {} => {
             let now = Timestamp(
                 SystemTime::now()
