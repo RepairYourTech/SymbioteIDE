@@ -1,1 +1,1 @@
-{"version":{"major":1,"minor": 25},"correlation_id":"binding-dossier","command_id":"binding-dossier","operation":{"kind":"get_compatibility_dossier","project_id":"staffing-demo","binding_id":"engineer-binding"}}
+{"version":{"major":1,"minor": 26},"correlation_id":"binding-dossier","command_id":"binding-dossier","operation":{"kind":"get_compatibility_dossier","project_id":"staffing-demo","binding_id":"engineer-binding"}}

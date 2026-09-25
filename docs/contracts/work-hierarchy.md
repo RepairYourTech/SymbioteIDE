@@ -73,9 +73,46 @@ bounded to 64. Protocol v1.7 adds `set_task_dependencies` (`ManageWork` on the
 owning Project plus `Read` on every target Project), `get_task_dependencies`
 (read) and the `task_dependencies_set` journal payload. SQLite schema v7 adds
 the `task_dependencies` table whose indexed columns are tamper-evident
-projections of the edge bodies. Foreign runtime links, DAG readiness/critical-
-path queries, and the remaining #94 state machine (blocked/queued/assigned
-states, leases) remain pending.
+projections of the edge bodies. DAG readiness/critical-path queries, and the
+remaining #94 state machine (blocked/queued/assigned states, leases) remain
+pending.
+
+## Foreign runtime session and task references
+
+A runtime keeps its own todo lists: its own session identifiers, its own task or
+subtask identifiers inside them, and its own status words. Those are recorded
+against a canonical Task so a reader can follow the work a dispatch actually
+did — as a bounded set of observations, never as Project truth. Each link names
+the harness whose identifier it is, whether it names that harness's session or
+its task, the identifier verbatim, the foreign session it sits in when the
+harness reports one, the status that harness reported, and when the Host
+recorded the observation.
+
+The references grant nothing. A link never creates a Task, never advances or
+completes one, never satisfies a completion gate and never becomes a dependency
+edge: `complete` is that harness's word, and the only canonical completion is
+the `TaskState::Completed` that verified Host evidence produces. A link cannot
+be smuggled into canonical state through the aggregate either, because the Task
+record carries no link field at all — the link set is a separate first-class
+record, exactly as a dependency edge is. Writing one is a Project edit
+(`ManageWork` on the owning Project) and reading one is a Project read, through
+`set_task_foreign_links` and `get_task_foreign_links` (protocol v1.26). A
+foreign system is not a principal: a harness's report reaches this record only
+through an authenticated caller, and journal history re-checks the owning
+Project on read. Recording links does not classify a Task either — the origin
+requirement below still applies to every new Task.
+
+Refusals are named and whole. A reference to a system that is not a harness, a
+blank or control-character identifier, and a session link that names another
+session are `InvalidForeignReference`; an identifier over 256 bytes is
+`ResourceLimit`, as is a set over 64 links; one item named twice with two
+observations is `ForeignObservationConflict`; a Task the Project does not hold
+is `NotFound`; a row or journal event that disagrees with the recorded set is
+an integrity failure. Nothing is trimmed, truncated or repaired, and a refused
+set writes no rows and no journal event. Store schema v13 adds the
+`task_foreign_links` table, whose indexed columns are a tamper-evident
+projection of each link's body; older databases migrate by that statement
+alone, preserving every existing record and journal event.
 
 ## Task traceability and migration
 
@@ -97,15 +134,13 @@ committing the schema change.
 
 ## Verification and remaining scope
 
-For a working CLI demonstration, start the Host as described in [Host setup](host.md)
-with a fresh private state directory, then submit `fixtures/work-hierarchy/project.json`,
-`request.json`, `capability.json` and `plan.json` in that order:
-
-```sh
-target/debug/symbiote --state-dir /absolute/private/state-directory raw fixtures/work-hierarchy/project.json
-```
-
-Use the same command with each fixture filename. `read.json` returns the
+For a working demonstration, start the Host as described in [Host setup](host.md)
+with a fresh private state directory, then send `fixtures/work-hierarchy/project.json`,
+`request.json`, `capability.json` and `plan.json` in that order. These files are
+full request envelopes, and the daemon integration suite sends them exactly as
+they are (`crates/symbiote-host/tests/daemon.rs`); the CLI's `raw` command takes
+an *operation object* rather than an envelope, which is why the foreign-link
+fixtures below are shaped that way instead. `read.json` returns the
 Capability, its Request parent reference, acceptance contract and server-derived creator.
 `shutdown.json` stops this demo Host. Restart with the same state directory;
 `read.json` still returns the object and repeating `capability.json` returns the
@@ -113,10 +148,30 @@ original receipt with `replayed: true`. The initial local demonstration created
 journal sequences 1–4 and returned the Capability in Draft; this is durable
 intake/planning evidence, not completed coding work.
 
+The foreign runtime link operations are `raw` operations, like the dependency
+ones, because the typed CLI surface is the work hierarchy's own intake. For a
+Task already created,
+
+```sh
+target/debug/symbiote --state-dir /absolute/private/state-directory raw fixtures/foreign-task-links/set.json
+```
+
+records one session link and one task link under that Task's Project, and the
+same command with `fixtures/foreign-task-links/read.json` returns them exactly
+as recorded — including the foreign `complete` status, which the Task's own
+state does not inherit: `get-task` for the same Task still answers `ready` at
+revision 0. The CLI mints a fresh command id per invocation, so a second
+`set` is a supersession the journal keeps rather than a replay; the idempotent
+retry belongs to a caller that reuses one command id, and the daemon suite
+drives that over a real socket.
+
 Tests cover evolving requests, stale revisions, approval invalidation,
 cancel/reopen, completion evidence, cycles and cross-Project reads; SQLite tests
 cover legacy migration, rollback, replay/tampering, immutable origins and
-concurrency. Actual daemon tests exercise restart/retry and reject wire authority
+concurrency. The foreign reference cases cover every named refusal, the bounds,
+persistence across a reopen, the journal audit in both directions, and the
+property the whole slice exists for: a foreign `complete` leaves canonical Task
+state, the completion gate and the dependency graph exactly as they were. Actual daemon tests exercise restart/retry and reject wire authority
 and completion claims. Run:
 
 ```sh

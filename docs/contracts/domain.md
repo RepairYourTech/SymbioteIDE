@@ -86,6 +86,7 @@ The table accounts for the required nouns without disguising unimplemented entit
 | Workforce Protocol, Role Operating Contract, Task Contract, Context Bundle | Separate revision-bearing references; context policy/budget | Full contract content schemas and canonical compilation owners' integrations |
 | Native config projection, ephemeral secret lease | `ConfigProjection` (runtime profile, locator, state) and `SecretLease` (credential reference, expiry, state; never a secret value) | Reconciliation of drifted runtime config and lease issuance/rotation |
 | External GitHub/harness/CI/deployment/source/publication/remote Host identifiers | `ExternalReference` with explicit system | Per-system locator validation; mutable external references never replace internal identity |
+| Foreign runtime session/task references | `ForeignTaskLink` as a bounded, journaled set held against one Task ([work hierarchy](work-hierarchy.md)) | Promotion of a runtime-local todo into canonical Task work, and reading links from the runtimes that report them |
 
 ## The vocabulary and its published artifact
 

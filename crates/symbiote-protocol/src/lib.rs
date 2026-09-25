@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 25,
+    minor: 26,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -185,6 +185,22 @@ pub enum Operation {
         dependencies: Vec<symbiote_domain::TaskDependencyEdge>,
     },
     GetTaskDependencies {
+        project_id: ProjectId,
+        task_id: TaskId,
+    },
+    /// The foreign runtime references held for one canonical Task: the session
+    /// and task identifiers a foreign harness uses for its own work, with the
+    /// status that harness reported. Recording them is a Project edit and
+    /// needs `ManageWork`; reading them is a Project read. Neither operation
+    /// carries a canonical status, an actor or a timestamp: the links are
+    /// observations, and only the store's own `observed_at` is authority-
+    /// assigned, so a client cannot record a link that completes a Task.
+    SetTaskForeignLinks {
+        project_id: ProjectId,
+        task_id: TaskId,
+        links: Vec<ForeignTaskLink>,
+    },
+    GetTaskForeignLinks {
         project_id: ProjectId,
         task_id: TaskId,
     },
@@ -368,7 +384,9 @@ impl Operation {
                 Some(&request.project_id)
             }
             Self::SetTaskDependencies { project_id, .. }
-            | Self::GetTaskDependencies { project_id, .. } => Some(project_id),
+            | Self::GetTaskDependencies { project_id, .. }
+            | Self::SetTaskForeignLinks { project_id, .. }
+            | Self::GetTaskForeignLinks { project_id, .. } => Some(project_id),
             Self::AcquireTaskLease { .. }
             | Self::ReleaseTaskLease { .. }
             | Self::ExpireStaleLeases {}
@@ -421,6 +439,7 @@ impl Operation {
                 | Self::AssignTaskOrigin { .. }
                 | Self::RecordRoute { .. }
                 | Self::SetTaskDependencies { .. }
+                | Self::SetTaskForeignLinks { .. }
                 | Self::AcquireTaskLease { .. }
                 | Self::ReleaseTaskLease { .. }
                 | Self::ExpireStaleLeases {}
@@ -515,6 +534,23 @@ impl Request {
             Operation::AssignTaskOrigin {
                 project_id, origin, ..
             } if &origin.reference().project_id != project_id => Err(invalid()),
+            Operation::SetTaskForeignLinks {
+                project_id,
+                task_id,
+                links,
+            } => {
+                // The wire holds the same rules the store holds, by asking the
+                // same declaration rather than restating them: a link set that
+                // could not be recorded is refused at the boundary, not after a
+                // round trip.
+                symbiote_domain::ForeignTaskLinks {
+                    project_id: project_id.clone(),
+                    task_id: task_id.clone(),
+                    links: links.iter().cloned().collect(),
+                }
+                .validate()
+                .map_err(|_| invalid())
+            }
             Operation::CreateWork { work } => work.validate().map_err(|_| invalid()),
             Operation::ChangeWork {
                 project_id,
@@ -688,6 +724,17 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // Target-project Read is re-checked by the Host against the stored
             // edges before the response is built; the owning-Project check
             // here bounds the lookup itself.
+            principal.permits(project_id, ProjectPermission::Read)
+        }
+        Operation::SetTaskForeignLinks { project_id, .. } => {
+            // Recording what a foreign runtime said about its own work is a
+            // Project edit like any other: it needs ManageWork on the owning
+            // Project. A foreign system is not a principal here — a foreign
+            // harness's report reaches this record through an authenticated
+            // caller, never by authenticating as the foreign system.
+            principal.permits(project_id, ProjectPermission::ManageWork)
+        }
+        Operation::GetTaskForeignLinks { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::AcquireTaskLease { .. } | Operation::ReleaseTaskLease { .. } => {
@@ -1053,6 +1100,8 @@ pub enum Capability {
     SchedulingProjection,
     TaskDependencyWrite,
     TaskDependencyRead,
+    ForeignLinkWrite,
+    ForeignLinkRead,
     RouteResolution,
     RouteRecording,
     RouteRead,
@@ -1106,6 +1155,8 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::SchedulingProjection,
             Capability::TaskDependencyWrite,
             Capability::TaskDependencyRead,
+            Capability::ForeignLinkWrite,
+            Capability::ForeignLinkRead,
             Capability::RouteResolution,
             Capability::RouteRecording,
             Capability::RouteRead,
@@ -1192,6 +1243,17 @@ pub enum EventPayload {
         task_id: TaskId,
         project_id: ProjectId,
         edges: Vec<symbiote_domain::TaskDependencyEdge>,
+        actor: UserId,
+        at: Timestamp,
+    },
+    /// A foreign runtime link set as the journal recorded it. The event is the
+    /// audit trail of an observation: the links are what foreign systems
+    /// claimed, and the Task they were held against is in the payload for
+    /// history, not because any status here can move it.
+    TaskForeignLinksSet {
+        task_id: TaskId,
+        project_id: ProjectId,
+        links: Vec<symbiote_domain::ForeignTaskLink>,
         actor: UserId,
         at: Timestamp,
     },
@@ -1285,6 +1347,7 @@ impl EventPayload {
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
             Self::WorkRouted { decision, .. } => &decision.project_id,
             Self::TaskDependenciesSet { project_id, .. } => project_id,
+            Self::TaskForeignLinksSet { project_id, .. } => project_id,
             Self::TaskLeased { lease, .. } => &lease.project_id,
             Self::ProviderRegistered { attribution, .. }
             | Self::EntitlementRegistered { attribution, .. }
@@ -1404,6 +1467,19 @@ impl EventPayload {
                         (edge.target.project_id.clone(), edge.target.task_id.clone())
                             != (declared.clone(), task_id.clone())
                     })
+            }
+            Self::TaskForeignLinksSet {
+                project_id: declared,
+                links,
+                ..
+            } => {
+                // The journal event stands only when every link in it is one
+                // the domain would hold, so a tampered journal cannot show a
+                // set this layer refuses to record.
+                declared == project_id
+                    && links.iter().cloned().collect::<BTreeSet<_>>().len() == links.len()
+                    && links.iter().all(|link| link.validate().is_ok())
+                    && links.len() <= symbiote_domain::MAX_FOREIGN_LINKS
             }
             Self::TaskLeased { lease, .. } => {
                 &lease.project_id == project_id
@@ -1561,6 +1637,12 @@ pub enum ResponseBody {
     CompatibilityDossier(Box<DossierHolding>),
     RouteDecision(Box<symbiote_workforce::RouteDecision>),
     TaskDependencies(Vec<symbiote_domain::TaskDependencyEdge>),
+    /// The foreign runtime references of one Task, served as recorded. Every
+    /// entry is one foreign system's own claim about its own work, including
+    /// a `complete` status: the reader learns what the foreign system said and
+    /// decides what it means, because a body that looked like canonical state
+    /// would let a foreign system's own vocabulary drive this one.
+    TaskForeignLinks(Vec<symbiote_domain::ForeignTaskLink>),
     SchedulerSweep {
         expired: Vec<ExpiredLease>,
         schedulable: Vec<symbiote_domain::SchedulableTask>,

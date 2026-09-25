@@ -529,7 +529,7 @@ fn work_references_require_read_access_even_after_reference_is_removed() {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":25},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":26},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -538,7 +538,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor": 25},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor": 26},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 
@@ -1633,5 +1633,131 @@ fn every_document_that_states_the_schema_command_names_a_declared_example_target
         ],
         "the documents stating the schema command moved; each is a reader's entry point, so this \
          figure moves with them"
+    );
+}
+
+/// #189 foreign runtime references: a Project edit to record and a Project
+/// read to serve, with nothing on the wire that could move canonical state.
+#[test]
+fn foreign_runtime_links_are_a_project_edit_and_a_project_read() {
+    let link = ForeignTaskLink {
+        system: ExternalSystem::Harness,
+        kind: ForeignItemKind::Task,
+        foreign_id: "codex-todo-7".into(),
+        foreign_session_id: Some("codex-session-01".into()),
+        foreign_status: ForeignStatus::Complete,
+        observed_at: Timestamp(10),
+    };
+    let set = request(Operation::SetTaskForeignLinks {
+        project_id: project_id(),
+        task_id: TaskId::new("task-a").unwrap(),
+        links: vec![link.clone()],
+    });
+    let get = request(Operation::GetTaskForeignLinks {
+        project_id: project_id(),
+        task_id: TaskId::new("task-a").unwrap(),
+    });
+    let grants = |permissions| {
+        Principal::restricted(
+            UserId::new("user-a").unwrap(),
+            BTreeMap::from([(project_id(), permissions)]),
+        )
+    };
+    let manager = grants(BTreeSet::from([
+        ProjectPermission::Read,
+        ProjectPermission::ManageWork,
+    ]));
+    let reader = grants(BTreeSet::from([ProjectPermission::Read]));
+    assert!(authorize(&manager, &set).is_ok());
+    assert!(authorize(&manager, &get).is_ok());
+    // Read is not ManageWork: a reader can follow a reference but cannot record
+    // what a foreign system claims.
+    assert_eq!(
+        authorize(&reader, &set).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    assert!(authorize(&reader, &get).is_ok());
+    // ManageWork on another Project is not a grant on this one.
+    let elsewhere = Principal::restricted(
+        UserId::new("user-a").unwrap(),
+        BTreeMap::from([(
+            ProjectId::new("project-b").unwrap(),
+            BTreeSet::from([ProjectPermission::Read, ProjectPermission::ManageWork]),
+        )]),
+    );
+    assert_eq!(
+        authorize(&elsewhere, &set).unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    // The write is classified as a mutation and attributed to its Project; the
+    // read is neither.
+    assert!(set.operation.is_mutation());
+    assert!(!get.operation.is_mutation());
+    assert_eq!(set.operation.project_id(), Some(&project_id()));
+    assert_eq!(get.operation.project_id(), Some(&project_id()));
+    // Both capabilities are advertised, so a client can tell before it sends.
+    let hello = negotiate(&[CURRENT_VERSION]).unwrap();
+    assert!(
+        hello
+            .capabilities
+            .contains(&symbiote_protocol::Capability::ForeignLinkWrite)
+    );
+    assert!(
+        hello
+            .capabilities
+            .contains(&symbiote_protocol::Capability::ForeignLinkRead)
+    );
+    // The wire form of a link has no canonical status, actor or timestamp to
+    // forge: `observed_at` is the only time on the wire and it is the
+    // authority's own to set, and a `task_state` field is refused rather than
+    // ignored.
+    let wire = serde_json::to_value(&link).unwrap();
+    let fields: BTreeSet<&str> = wire
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        fields,
+        BTreeSet::from([
+            "foreign_id",
+            "foreign_session_id",
+            "foreign_status",
+            "kind",
+            "observed_at",
+            "system",
+        ])
+    );
+    let forged = json!({
+        "system": "harness", "kind": "task", "foreign_id": "codex-todo-7",
+        "foreign_status": "complete", "observed_at": 10, "task_state": "completed"
+    });
+    assert!(serde_json::from_value::<ForeignTaskLink>(forged).is_err());
+    // The response serves the foreign claim as itself: the body is a list of
+    // links, not a Task and not a status.
+    let body = ResponseBody::TaskForeignLinks(vec![link.clone()]);
+    let served = serde_json::to_value(&body).unwrap();
+    assert_eq!(served["kind"], json!("task_foreign_links"));
+    assert_eq!(served["data"][0]["foreign_status"], json!("complete"));
+    assert!(
+        !served.to_string().contains("task_state"),
+        "a served link set never looks like canonical state: {served}"
+    );
+    // An operation whose links the domain refuses is refused before it is
+    // authorized: the wire validator holds the same bounds the store does.
+    let over = request(Operation::SetTaskForeignLinks {
+        project_id: project_id(),
+        task_id: TaskId::new("task-a").unwrap(),
+        links: vec![ForeignTaskLink {
+            foreign_id: "s".repeat(MAX_FOREIGN_ID_BYTES + 1),
+            ..link
+        }],
+    });
+    assert_eq!(
+        parse_request(serde_json::to_string(&over).unwrap().as_bytes())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
     );
 }

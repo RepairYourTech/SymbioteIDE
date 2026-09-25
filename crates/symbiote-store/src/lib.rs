@@ -14,6 +14,7 @@ use symbiote_workforce::{BindingConfiguration, RouteDecision};
 mod binding;
 mod dependency;
 mod elevation;
+mod foreign;
 mod lease;
 mod preparation;
 mod provider;
@@ -23,7 +24,7 @@ mod transfer;
 mod work;
 
 const APPLICATION_ID: i64 = 0x53594d42;
-const DATABASE_VERSION: i64 = 12;
+const DATABASE_VERSION: i64 = 13;
 const MIGRATION_V2: &str = "CREATE TABLE resource_consents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -57,6 +58,11 @@ pub enum StoreError {
     BindingRevisionConflict,
     InvalidRoute,
     InvalidDependency,
+    /// A foreign runtime link set that cannot be held: a reference to
+    /// something that is not a harness's own session or task, a locator over
+    /// the stated bound, or one item named twice with two observations. The
+    /// set is refused whole; no link is repaired, trimmed or stored.
+    InvalidForeignLink,
     DependenciesUnresolved,
     InvalidLease,
     LeaseConflict(symbiote_domain::LeaseError),
@@ -166,6 +172,16 @@ pub enum EventPayload {
         task_id: TaskId,
         project_id: ProjectId,
         edges: Vec<TaskDependencyEdge>,
+        actor: UserId,
+        at: Timestamp,
+    },
+    /// The foreign runtime links of one Task, as the whole set at one instant.
+    /// The journal keeps every supersession, so a link set that is replaced is
+    /// still readable as history; the current set is the last one.
+    TaskForeignLinksSet {
+        task_id: TaskId,
+        project_id: ProjectId,
+        links: Vec<ForeignTaskLink>,
         actor: UserId,
         at: Timestamp,
     },
@@ -341,6 +357,9 @@ impl Store {
         }
         if version < 12 {
             transaction.execute_batch(elevation::MIGRATION_V12)?;
+        }
+        if version < 13 {
+            transaction.execute_batch(foreign::MIGRATION_V13)?;
         }
         // Refuse corrupt input before committing any schema migration. A failed
         // audit must roll back the version and schema as well as record changes.
@@ -1253,6 +1272,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     let mut binding_audit = binding::Audit::default();
     let mut route_audit = route::Audit::default();
     let mut dependency_audit = dependency::Audit::default();
+    let mut foreign_audit = foreign::Audit::default();
     let mut leases: BTreeMap<TaskId, symbiote_domain::TaskLease> = BTreeMap::new();
     let mut providers: BTreeMap<ProviderConnectionId, symbiote_domain::ProviderConnection> =
         BTreeMap::new();
@@ -1787,6 +1807,22 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     (&project_key, revision, &request),
                 )?;
             }
+            EventPayload::TaskForeignLinksSet {
+                task_id,
+                project_id,
+                links,
+                actor,
+                at,
+            } => {
+                foreign_audit.set(
+                    task_id,
+                    &Some(project_id.clone()),
+                    links,
+                    actor,
+                    *at,
+                    (&project_key, revision, &request),
+                )?;
+            }
             EventPayload::TaskChanged {
                 task_id,
                 command,
@@ -1838,6 +1874,7 @@ fn audit_journal(connection: &Connection) -> Result<()> {
     binding_audit.finish(connection)?;
     route_audit.finish(connection)?;
     dependency_audit.finish(connection)?;
+    foreign_audit.finish(connection)?;
     for (query, expected) in [
         ("SELECT count(*) FROM projects", projects.len()),
         ("SELECT count(*) FROM tasks", tasks.len()),
