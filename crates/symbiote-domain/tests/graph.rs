@@ -227,8 +227,14 @@ fn readiness_and_the_blocker_list_come_from_one_computation_and_cannot_disagree(
         from_readiness,
         vec![(task("b"), task("a"), TaskDependencyKind::Requires)]
     );
-    // And the graph block carries no second copy of it.
+    // And the graph block carries no second copy of it: no gate at all, and no
+    // field that would publish one.
     assert!(!format!("{:?}", answer.graph).contains("TaskGate"));
+    let wire = serde_json::to_string(&answer.graph).unwrap();
+    assert!(
+        !wire.contains("\"blockers\""),
+        "the gate list is published once, off the readiness list: {wire}"
+    );
 }
 
 #[test]
