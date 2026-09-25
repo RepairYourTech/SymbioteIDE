@@ -56,6 +56,30 @@ the App Server probe. This demonstrates alternate config-root selection without
 changing `HOME`; it does not prove that an account is authenticated, that two
 accounts have separate quotas, or that a profile may activate a worker.
 
+## Real Codex adapter record
+
+`codex_adapter::bind_report` is the composition boundary between the real
+read-only App Server adapter and the versioned `Inventory`. It accepts the
+`RuntimeInstanceIntent`, resolved `ProfileObservation`, confirmed
+`ExecutableInstallation`, and completed `CodexProbeReport` together, then
+cross-checks their profile, config identity, exact config root, Host, runtime
+kind, adapter, installation, interface, version, and freshness before publishing
+one `DiscoveryRecord`. A report cannot be paired with another named instance,
+executable, root, Host, or adapter and still validate.
+
+Reachable health and the methods the handshake actually called are recorded.
+Required and not-required authentication remain explicit. An account object
+reported by Codex does not establish credential validity, entitlement, account
+identity, or subscription authorization, so the authentication fact remains
+unknown and no account payload is copied. Model listings retain upstream
+identity, leave canonical mapping and absent context limits unknown, and do not
+make a model usable. Duplicate upstream model identities, stale profile windows,
+unconfirmed or mismatched interfaces, and cross-instance pairings receive named
+refusals: `IdentityMismatch`, `InterfaceMismatch`, `DuplicateModel`,
+`UnconfirmedProtocol`, `InvalidObservation`, and `Stale`. The real Codex proof
+now emits this validated inventory record after its sandboxed probe; the
+inventory is an observation, not a durable Host endpoint or activation permit.
+
 Desired instance identity is separate from observations: Host, runtime kind,
 adapter, installation, profile and symbolic configuration identity must match.
 Qualification checks freshness, pinned interface/version and explicit required

@@ -8,9 +8,10 @@ use std::{
 use symbiote_domain::*;
 use symbiote_runtime_discovery::{
     ConfigRoot, ExecutableInspection, ExecutableInstallation, InstallationChannel,
-    InterfaceIdentity, ProbeProvenance, ProfileSpec, ProtocolEvidence,
+    InterfaceIdentity, Inventory, ProbeProvenance, ProfileSpec, ProtocolEvidence,
+    RuntimeInstanceIntent,
     codex::{self, CodexDiscoveryError, DiscoveryTransport},
-    resolve_profiles,
+    codex_adapter, resolve_profiles,
 };
 use symbiote_runtime_transport::TransportLimits;
 use symbiote_sandbox::{LaunchRequest, Profile, SandboxProcess, fingerprint_command, launch};
@@ -133,8 +134,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             worktree: &inputs[1],
             protected_paths: &inputs[2..],
             profile: Profile::ReadOnly,
-            // The declared memory bound of the dispatch this probe stands in for.
-            address_space_bytes: 1 << 30,
+            // An explicit ceiling for this read-only probe, not a claim about a
+            // dispatch limit. Codex's Node launcher reserves address space before
+            // the native App Server starts, so the proof needs more virtual room
+            // than the smallest synthetic dispatch fixture.
+            address_space_bytes: 2 << 30,
             program: "/usr/bin/codex",
             args: &args,
             limits: TransportLimits::default(),
@@ -172,6 +176,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if report.authentication != codex::CodexAuthentication::Required {
         return Err("fresh isolated profile did not report authentication required".into());
     }
+    let intent = RuntimeInstanceIntent {
+        profile_id: profile.profile_id.clone(),
+        installation_id: installation.installation_id.clone(),
+        host_id: installation.host_id.clone(),
+        runtime_kind: installation.runtime_kind,
+        adapter_id: installation.adapter_id.clone(),
+        instance_name: profile.instance_name.clone(),
+        config_identity: profile.config_identity.clone(),
+    };
+    let inventory = Inventory::new(vec![codex_adapter::bind_report(
+        intent,
+        &profile,
+        &installation,
+        &report,
+    )?])?;
     println!(
         "{}",
         serde_json::json!({
@@ -187,6 +206,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "update_availability": installation.update_availability,
             "authentication": report.authentication,
             "listed_models": report.models.len(),
+            "inventory_records": inventory.records().len(),
+            "inventory_schema_version": inventory.schema_version(),
             "model_usability": "unknown",
             "model_turn_started": false,
             "profile": "fresh_disposable_home",
