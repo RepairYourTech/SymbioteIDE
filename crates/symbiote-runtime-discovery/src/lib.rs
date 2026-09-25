@@ -9,7 +9,9 @@ use std::{
 use symbiote_domain::*;
 pub mod codex;
 pub mod installation;
+pub mod profiles;
 pub use installation::*;
+pub use profiles::*;
 pub const DISCOVERY_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

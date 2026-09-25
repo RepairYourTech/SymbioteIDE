@@ -62,6 +62,29 @@ fn the_installation_boundary_is_named_and_does_not_claim_update_authority() {
     assert!(!source.contains("Command::new"));
 }
 
+/// The named-profile boundary is held to the document and to the absence of
+/// process-environment mutation, so alternate config roots cannot quietly become
+/// global HOME or credential authority.
+#[test]
+fn the_named_profile_boundary_is_named_and_pure() {
+    let contract = include_str!("../../../docs/contracts/runtime-discovery.md");
+    for name in [
+        "profiles::resolve_profiles",
+        "ProfileSpec",
+        "ProfileObservation",
+        "EnvironmentOverride",
+        "ProfileDefault",
+        "account_ref",
+        "DuplicatePath",
+    ] {
+        assert!(contract.contains(name), "the contract must name {name}");
+    }
+    let source = include_str!("../src/profiles.rs");
+    assert!(!source.contains("set_var"));
+    assert!(!source.contains("remove_dir_all"));
+    assert!(source.contains("environment.get"));
+}
+
 /// The user agent this crate accepts is built from the pinned release rather than restated beside
 /// it, so a moved constant moves both the accepted name and the document's figures together.
 #[test]
