@@ -28,9 +28,33 @@ The named refusals `OutsideTrustedRoot`, `MutableExecutable`,
 `ResourceLimit` are part of the boundary. Deserialization repeats the same
 validation; a serialized caller cannot turn an unknown update fact into a claim,
 and SDK remains unknown unless protocol evidence explicitly supplies it. Multiple
-config roots are bounded and deduplicated by opaque identity and
-path, while account names, tokens, and email addresses remain outside the
-contract.
+config roots are bounded and deduplicated by opaque identity and path, while
+account names, tokens, and email addresses remain outside the contract.
+
+## Named profile resolution
+
+`profiles::resolve_profiles` turns adapter-declared `ProfileSpec` values into
+bounded `ProfileObservation` values using an explicitly supplied environment
+map and Home path. An adapter chooses the variable name (`CODEX_HOME` is one
+example); the core does not branch on a harness name. An absolute environment
+override wins, otherwise the declared relative default is resolved beneath
+Home. The resolver never reads or mutates the process environment, creates a
+directory, authenticates, or selects an account for execution.
+
+Each observation keeps the display label, opaque config identity, optional
+Host-generated `account_ref`, exact Host-local path, and whether the path came
+from `EnvironmentOverride` or `ProfileDefault`. Duplicate profile IDs, config
+identities, environment variables, default declarations, or resolved paths are
+refused; the resolver names these `DuplicateProfile`, `DuplicateConfig`,
+`DuplicateEnvironment`, and `DuplicatePath` refusals. Invalid relative/absolute paths, malformed account references, stale
+observations, and the bounded profile count have named refusals. Exact paths are
+redacted from `Debug`; profile resolution is not an account or credential
+export.
+
+The Codex proof now resolves its disposable profile through this contract before
+the App Server probe. This demonstrates alternate config-root selection without
+changing `HOME`; it does not prove that an account is authenticated, that two
+accounts have separate quotas, or that a profile may activate a worker.
 
 Desired instance identity is separate from observations: Host, runtime kind,
 adapter, installation, profile and symbolic configuration identity must match.
@@ -75,7 +99,7 @@ before installing the binary on the disposable runner only. CI does not update
 the user's Codex installation. Unit fixtures prove rejection contracts; the real
 binary proof establishes this narrow offline protocol compatibility only.
 
-Pending: durable inventory/Host endpoints, discovery of configured profiles,
+Pending: durable inventory/Host endpoints, configured profile/account binding,
 native-provider discovery, executable provenance beyond the trusted `/usr`
 premise, explicit install/update consent, authentication/quota/entitlement health,
 account isolation acceptance, authenticated online model calls and coding tasks.

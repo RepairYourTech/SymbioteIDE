@@ -1,11 +1,16 @@
 //! Offline compatibility proof with fixture consent, not Host activation authority.
 use serde_json::Value;
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use symbiote_domain::*;
 use symbiote_runtime_discovery::{
-    ConfigRoot, ConfigRootSource, ExecutableInspection, ExecutableInstallation,
-    InstallationChannel, InterfaceIdentity, ProbeProvenance, ProtocolEvidence,
+    ConfigRoot, ExecutableInspection, ExecutableInstallation, InstallationChannel,
+    InterfaceIdentity, ProbeProvenance, ProfileSpec, ProtocolEvidence,
     codex::{self, CodexDiscoveryError, DiscoveryTransport},
+    resolve_profiles,
 };
 use symbiote_runtime_transport::TransportLimits;
 use symbiote_sandbox::{LaunchRequest, Profile, SandboxProcess, fingerprint_command, launch};
@@ -78,6 +83,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         expires_at: Timestamp(3),
         revoked_at: None,
     };
+    let profile = resolve_profiles(
+        &[ProfileSpec {
+            profile_id: RuntimeProfileId::new("discovery-profile")?,
+            instance_name: "Disposable Codex profile".into(),
+            config_identity: "config_codex_disposable".into(),
+            environment_variable: "CODEX_HOME".into(),
+            default_relative_path: ".codex".into(),
+            account_ref: None,
+        }],
+        &BTreeMap::new(),
+        Path::new("/home/agent"),
+        Timestamp(1),
+        Timestamp(3),
+        ProbeProvenance {
+            probe_id: CommandId::new("codex-profile-resolution")?,
+            source: symbiote_runtime_discovery::ObservationSource::TrustedHostProbe,
+            adapter_revision: "v1".into(),
+        },
+    )?
+    .into_iter()
+    .next()
+    .ok_or("profile resolution returned no profile")?;
     let installation = ExecutableInstallation::inspect(ExecutableInspection {
         installation_id: InstallationId::new("codex-system-installation")?,
         host_id: HostId::new("discovery-host")?,
@@ -129,9 +156,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             sdk_version: None,
             config_roots: vec![ConfigRoot {
-                identity: "config_codex_disposable".into(),
-                path: "/home/agent/.codex".into(),
-                source: ConfigRootSource::IsolatedHome,
+                identity: profile.config_identity.clone(),
+                path: profile.path.clone(),
+                source: profile.source,
             }],
         },
         ProbeProvenance {
