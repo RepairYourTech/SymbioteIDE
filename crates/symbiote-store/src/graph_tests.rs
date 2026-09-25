@@ -495,6 +495,9 @@ fn the_projection_is_the_one_surface_and_readiness_agrees_with_the_schedulable_v
     assert_eq!(waiting(&b).waiting_on.len(), 1);
     assert_eq!(waiting(&b).waiting_on[0].target.task_id, a);
     assert_eq!(waiting(&b).waiting_on[0].target_state, TaskState::Cancelled);
+    // The recorded total is what separates "no gates at all" from "every gate
+    // satisfied": b recorded one, so it is waiting rather than merely clear.
+    assert_eq!(waiting(&b).recorded_gates, 1);
     // a is cancelled and c is clear, so neither is waiting on anything.
     assert!(waiting(&a).waiting_on.is_empty());
     assert!(waiting(&c).waiting_on.is_empty());
