@@ -93,6 +93,31 @@ distinct from canonical Model IDs. Discovery cannot authorize worker activation.
 Caller-created observations require trusted Host provenance; serialized provenance
 labels are not signatures. The inventory is bounded and currently in memory.
 
+## Deterministic diagnostics
+
+`diagnostics::diagnose` maps only the closed source errors that correspond to
+#186's required operator outcomes. `DiagnosticInput` accepts the existing typed
+installation, profile, qualification and Codex errors; it cannot carry an
+arbitrary message, path, account or credential. The versioned
+`RuntimeDiagnostic` contains only `DiagnosticCode`, its non-authorizing
+`DiagnosticAction`, and schema version. Deserialization rejects unknown fields,
+unsupported versions and a code/action pair that is not the one prescribed by
+the contract. The published schema independently fixes the accepted version and
+enumerates the same five code/action pairs, so schema-only consumers cannot
+accept a broader diagnostic than the runtime parser.
+
+The five deterministic mappings are: `MissingExecutable` to
+`MissingBinary` / `InstallBinaryWithConsent`; `CodexDiscoveryError::UnsupportedVersion`
+or qualification `VersionMismatch` to `UnsupportedVersion` /
+`UpgradeWithConsent`; `AuthenticationExpired` to
+`ExpiredAuthentication` / `Reauthenticate`; `RateLimited` to `RateLimited` /
+`RetryLater`; and invalid, duplicate or non-absolute profile declarations to
+`IncompatibleConfiguration` / `CorrectConfiguration`. Install, upgrade and login
+words are recommendations for explicit user-visible flows. This module performs
+none of them and holds no consent, credential or activation authority. Other
+refusals remain their original typed error rather than being broadened into a
+possibly unsafe guess. The schema example publishes the diagnostic contract.
+
 ## Pinned Codex interface
 
 The tested release is `codex-cli 0.118.0`. The probe uses versionless JSONL RPC:
@@ -129,7 +154,8 @@ binary proof establishes this narrow offline protocol compatibility only.
 
 Pending: durable inventory/Host endpoints, configured profile/account binding,
 native-provider discovery, executable provenance beyond the trusted `/usr`
-premise, explicit install/update consent, authentication/quota/entitlement health,
-account isolation acceptance, authenticated online model calls and coding tasks.
-No credentials, spending, runtime activation or first-release completion are
-implied by this foundation.
+premise, user-visible install/update/logout/default-change consent flows,
+authentication/quota/entitlement health integration, account isolation acceptance,
+authenticated online model calls and coding tasks. Deterministic diagnostics do
+not perform their recommended actions. No credentials, spending, runtime
+activation or first-release completion are implied by this foundation.
