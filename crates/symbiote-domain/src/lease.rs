@@ -154,6 +154,12 @@ pub enum BlockedReason {
     StreamUnsafe,
     /// Another task holds a lease on this task's stream — serialized by policy.
     StreamLeased,
+    /// The bounded answer did not read this task, so nothing can be said about
+    /// its gates. It is reported rather than dropped because a start candidate
+    /// that vanishes from a scheduling answer reads as work that is not
+    /// waiting, and this answer does not know. `progress.partial` is true
+    /// whenever this reason appears.
+    NotConsidered,
 }
 
 /// Pure lease arithmetic shared by the store and any future scheduler loop.

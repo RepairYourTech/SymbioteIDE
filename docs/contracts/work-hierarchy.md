@@ -106,6 +106,12 @@ blocked lists beside its expiries for the same reason.
   all or had every gate satisfied. This is the scheduling *verdict*; readiness is
   the *evidence*, and the store reads the verdict out of the readiness list rather
   than re-deriving it from the rows, so the two cannot answer differently.
+  A start candidate the bounded answer did not read has no readiness evidence, so
+  its verdict is `not_considered` and it is never offered: defaulting its gates to
+  zero would offer a task for scheduling while saying nothing about the
+  prerequisite it waits on. It is reported rather than dropped, because a
+  candidate that vanishes reads as work that is not waiting. `progress.partial` is
+  true whenever `not_considered` appears.
 * **Progress** — a count per canonical Task state, in lifecycle order, plus the
   whole `total`, the `considered` count, the `considered_gates` read, how many
   Tasks are `closed` (`Completed` or `Cancelled`) against `open`, and `partial`.

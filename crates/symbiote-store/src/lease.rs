@@ -489,8 +489,20 @@ impl Store {
                 continue;
             }
             // The dependency verdict, as the domain answered it over the same
-            // rows the DAG answer above was built from.
-            let (unresolved, recorded) = waiting.get(&task_id).copied().unwrap_or((0, 0));
+            // rows the DAG answer above was built from. A candidate the bounded
+            // answer did not read has no readiness evidence at all, and the
+            // honest verdict for "no evidence" is not "no gates": defaulting it
+            // to zero would offer a task for scheduling while saying nothing
+            // about the prerequisites it is waiting on.
+            let Some(&(unresolved, recorded)) = waiting.get(&task_id) else {
+                blocked.push(BlockedTask {
+                    project_id: project.clone(),
+                    task_id,
+                    stream_id,
+                    reason: BlockedReason::NotConsidered,
+                });
+                continue;
+            };
             if unresolved > 0 {
                 blocked.push(BlockedTask {
                     project_id: project.clone(),

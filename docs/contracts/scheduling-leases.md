@@ -30,7 +30,9 @@ pre-dispatch tasks — `Ready`, or `Assigned` once the Host has bound its canoni
 
 Protocol v1.8 adds `acquire_task_lease` and `release_task_lease` (Host-local authority — the bootstrap local-owner policy, since only the Host process holds dispatch identity today; restricted worker identities arrive with #269), `expire_stale_leases` (owner sweep returning only the expired tokens; what can
 start is the projection's answer for a Project, not a second copy of it on the
-sweep), `get_scheduling_projection` (owner), the `scheduler_sweep` response, the `task_leased` journal payload, and `TaskLeaseManagement`/`SchedulingProjection` capabilities.
+sweep), `get_scheduling_projection` (a Project read since v1.29 — it was owner
+authority in v1.8, before the read carried the Project), the `scheduler_sweep`
+response, the `task_leased` journal payload, and `TaskLeaseManagement`/`SchedulingProjection` capabilities.
 
 ## Evidence and remaining acceptance
 

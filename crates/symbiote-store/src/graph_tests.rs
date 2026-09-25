@@ -572,6 +572,70 @@ fn the_projection_is_the_one_surface_and_readiness_agrees_with_the_schedulable_v
 }
 
 #[test]
+fn a_candidate_the_bounded_answer_did_not_read_is_never_offered_for_scheduling() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    // More tasks than the answer is bounded to read, so the tail falls outside
+    // the considered set and has no readiness entry at all.
+    let count = symbiote_domain::MAX_GRAPH_REPORT_TASKS + 4;
+    let mut ids = Vec::new();
+    for index in 0..count {
+        ids.push(graph_task(&mut store, &format!("unread-{index:04}")));
+    }
+    // The last task, beyond the bound, requires a task that is not Completed —
+    // a real unresolved gate the answer never got to read.
+    let beyond = ids[count - 1].clone();
+    set_edges(
+        &mut store,
+        "unread-dep",
+        &project.id,
+        &beyond,
+        [requires(&project.id, &ids[0])],
+    )
+    .unwrap();
+
+    let projection = store
+        .scheduling_projection(&project.id, Timestamp(30))
+        .unwrap();
+    assert!(
+        projection.progress.partial,
+        "a Project over the bound must say it is partial"
+    );
+    assert_eq!(projection.progress.total, count);
+    assert_eq!(
+        projection.progress.considered,
+        symbiote_domain::MAX_GRAPH_REPORT_TASKS
+    );
+    // Every considered task is Ready with no gates, so all of them are offered.
+    assert_eq!(projection.schedulable.len(), symbiote_domain::MAX_GRAPH_REPORT_TASKS);
+    // The task past the bound is not offered, and it is not dropped either: the
+    // answer says it could not read it. Defaulting its gates to zero would offer
+    // a task for scheduling while saying nothing about the prerequisite it waits
+    // on, which is the one thing this answer must never do.
+    assert!(
+        !projection
+            .schedulable
+            .iter()
+            .any(|entry| entry.task_id == beyond),
+        "a task with no readiness evidence must never be offered"
+    );
+    assert_eq!(
+        projection
+            .blocked
+            .iter()
+            .filter(|entry| entry.reason == BlockedReason::NotConsidered)
+            .count(),
+        count - symbiote_domain::MAX_GRAPH_REPORT_TASKS,
+        "each unconsidered candidate is reported as unread, not as free"
+    );
+    assert!(projection
+        .blocked
+        .iter()
+        .any(|entry| entry.task_id == beyond && entry.reason == BlockedReason::NotConsidered));
+}
+
+#[test]
 fn a_project_the_store_does_not_hold_is_refused_rather_than_answered_empty() {
     let temp = Temporary::new();
     let mut store = Store::open(temp.database()).unwrap();
