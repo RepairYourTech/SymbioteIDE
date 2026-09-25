@@ -883,7 +883,9 @@ fn an_assigned_task_is_explained_prepared_and_started_by_the_durable_path() {
         .unwrap();
     // A queued task is admitted, not offered: the projection explains startable
     // work, and a task the Host has not assigned is not startable work.
-    let queued = store.scheduling_projection(Timestamp(26)).unwrap();
+    let queued = store
+        .scheduling_projection(&project, Timestamp(26))
+        .unwrap();
     assert!(queued.schedulable.is_empty());
     assert!(queued.blocked.is_empty());
     store
@@ -894,7 +896,9 @@ fn an_assigned_task_is_explained_prepared_and_started_by_the_durable_path() {
         .unwrap();
     assert_eq!(store.task(&task).unwrap().state(), &TaskState::Assigned);
     // Once assigned, the very same projection explains it as schedulable.
-    let projection = store.scheduling_projection(Timestamp(27)).unwrap();
+    let projection = store
+        .scheduling_projection(&project, Timestamp(27))
+        .unwrap();
     assert_eq!(projection.schedulable.len(), 1);
     assert_eq!(projection.schedulable[0].task_id, task);
     assert_eq!(

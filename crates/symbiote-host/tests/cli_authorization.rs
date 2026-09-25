@@ -296,7 +296,12 @@ fn a_policy_that_cannot_be_honored_is_a_usage_failure_and_sends_nothing() {
     // for an operation that is actually dangerous.
     for arguments in [
         vec!["--policy", bogus.as_str(), "health"],
-        vec!["--policy", bogus.as_str(), "scheduling-projection"],
+        vec![
+            "--policy",
+            bogus.as_str(),
+            "scheduling-projection",
+            "project-a",
+        ],
     ] {
         let (output, frame) = run_cli(&arguments);
         assert_eq!(

@@ -432,7 +432,9 @@ fn scheduling_projection_explains_ready_blocked_and_leased_tasks() {
         100,
     )
     .unwrap();
-    let projection = store.scheduling_projection(Timestamp(101)).unwrap();
+    let projection = store
+        .scheduling_projection(&_project, Timestamp(101))
+        .unwrap();
     assert!(projection.schedulable.is_empty());
     // The lease is held on the stream; after expiry the task would still be
     // Running (not Ready), so it never appears as schedulable.
@@ -440,7 +442,7 @@ fn scheduling_projection_explains_ready_blocked_and_leased_tasks() {
         .expire_stale_leases(id!(UserId, "owner"), Timestamp(100 + MIN_LEASE_MS + 1))
         .unwrap();
     let projection = store
-        .scheduling_projection(Timestamp(101 + MIN_LEASE_MS))
+        .scheduling_projection(&_project, Timestamp(101 + MIN_LEASE_MS))
         .unwrap();
     assert!(projection.schedulable.is_empty());
     assert!(projection.blocked.is_empty());

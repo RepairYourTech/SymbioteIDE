@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 28,
+    minor: 29,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -217,11 +217,10 @@ pub enum Operation {
         fencing_token: u64,
     },
     ExpireStaleLeases {},
-    GetSchedulingProjection {},
-    /// The canonical DAG answer for one Project: progress counted from task
-    /// states, the remaining closure, the tasks each open task waits on, the
-    /// critical path, and same-stream contention.
-    GetTaskGraph {
+    /// The one scheduling and DAG surface for a Project: what can start now
+    /// and why, what every task is waiting on, progress counted from canonical
+    /// states, the remaining closure, per-task blockers and the critical path.
+    GetSchedulingProjection {
         project_id: ProjectId,
     },
     ReplaceProviderConnection {
@@ -394,11 +393,10 @@ impl Operation {
             | Self::GetTaskDependencies { project_id, .. }
             | Self::SetTaskForeignLinks { project_id, .. }
             | Self::GetTaskForeignLinks { project_id, .. } => Some(project_id),
+            Self::GetSchedulingProjection { project_id } => Some(project_id),
             Self::AcquireTaskLease { .. }
             | Self::ReleaseTaskLease { .. }
-            | Self::ExpireStaleLeases {}
-            | Self::GetSchedulingProjection {} => None,
-            Self::GetTaskGraph { project_id } => Some(project_id),
+            | Self::ExpireStaleLeases {} => None,
             Self::ReplaceProviderConnection { attribution, .. }
             | Self::ReplaceBillingEntitlement { attribution, .. }
             | Self::ReplaceModelDescriptor { attribution, .. } => Some(attribution),
@@ -755,14 +753,12 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // Host process holds dispatch identity today.
             principal.local_owner
         }
-        Operation::ExpireStaleLeases {} | Operation::GetSchedulingProjection {} => {
-            principal.local_owner
-        }
-        Operation::GetTaskGraph { project_id } => {
+        Operation::ExpireStaleLeases {} => principal.local_owner,
+        Operation::GetSchedulingProjection { project_id } => {
             // A Project read, like the other Project-scoped reads. The Host
             // additionally refuses the answer when it would name a task in a
-            // Project the caller cannot read, so a graph never becomes a way to
-            // enumerate another Project's work.
+            // Project the caller cannot read, so a projection never becomes a
+            // way to enumerate another Project's work.
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::ReplaceProviderConnection { .. }
@@ -1119,7 +1115,6 @@ pub enum Capability {
     SchedulingProjection,
     TaskDependencyWrite,
     TaskDependencyRead,
-    TaskGraphRead,
     ForeignLinkWrite,
     ForeignLinkRead,
     RouteResolution,
@@ -1175,7 +1170,6 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::SchedulingProjection,
             Capability::TaskDependencyWrite,
             Capability::TaskDependencyRead,
-            Capability::TaskGraphRead,
             Capability::ForeignLinkWrite,
             Capability::ForeignLinkRead,
             Capability::RouteResolution,
@@ -1664,16 +1658,18 @@ pub enum ResponseBody {
     /// decides what it means, because a body that looked like canonical state
     /// would let a foreign system's own vocabulary drive this one.
     TaskForeignLinks(Vec<symbiote_domain::ForeignTaskLink>),
+    /// The leases this sweep expired, and nothing else. What can start is the
+    /// projection's answer for a Project, not a second copy of it here.
     SchedulerSweep {
         expired: Vec<ExpiredLease>,
-        schedulable: Vec<symbiote_domain::SchedulableTask>,
-        blocked: Vec<symbiote_domain::BlockedTask>,
     },
-    /// The canonical DAG answer for one Project, counted from recorded task
-    /// rows and dependency edges. It contains no reported percentage and no
-    /// cached projection, and it is bounded: a Project larger than the bound is
-    /// answered over the tasks it did read and says so in `progress`.
-    TaskGraph(Box<symbiote_domain::TaskGraphReport>),
+    /// The one scheduling and DAG answer for one Project, counted from recorded
+    /// task rows and dependency edges: what can start now and why, what every
+    /// task is waiting on, progress, the remaining closure, per-task blockers
+    /// and the critical path. It contains no reported percentage and no cached
+    /// projection, and it is bounded: a Project larger than the bound is
+    /// answered over the tasks it did read and says so in `progress.partial`.
+    SchedulingProjection(Box<symbiote_domain::SchedulingProjection>),
     Binding(Box<symbiote_workforce::BindingConfiguration>),
     HostPulse(Box<symbiote_host_inventory::HostPulse>),
     /// This Host's own [runtime inventory](runtime-discovery.md), served whole

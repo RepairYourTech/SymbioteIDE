@@ -907,23 +907,10 @@
           },
           {
             "additionalProperties": false,
+            "description": "The one scheduling and DAG surface for a Project: what can start now\nand why, what every task is waiting on, progress counted from canonical\nstates, the remaining closure, per-task blockers and the critical path.",
             "properties": {
               "kind": {
                 "const": "get_scheduling_projection",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "description": "The canonical DAG answer for one Project: progress counted from task\nstates, the remaining closure, the tasks each open task waits on, the\ncritical path, and same-stream contention.",
-            "properties": {
-              "kind": {
-                "const": "get_task_graph",
                 "type": "string"
               },
               "project_id": {
@@ -3525,6 +3512,11 @@
             "const": "stream_leased",
             "description": "Another task holds a lease on this task's stream — serialized by policy.",
             "type": "string"
+          },
+          {
+            "const": "not_considered",
+            "description": "The bounded answer did not read this task, so nothing can be said about\nits gates. It is reported rather than dropped because a start candidate\nthat vanishes from a scheduling answer reads as work that is not\nwaiting, and this answer does not know. `progress.partial` is true\nwhenever this reason appears.",
+            "type": "string"
           }
         ]
       },
@@ -3684,7 +3676,6 @@
           "scheduling_projection",
           "task_dependency_write",
           "task_dependency_read",
-          "task_graph_read",
           "foreign_link_write",
           "foreign_link_read",
           "route_resolution",
@@ -4443,7 +4434,7 @@
       },
       "CriticalPath": {
         "additionalProperties": false,
-        "description": "The longest recorded chain of gating edges into the Project's open work.\nWith no effort or duration data recorded, length is measured in tasks, not\ntime: this names the dependency chain that decides when the work behind it\ncan start, and says how much of it is already closed.",
+        "description": "The longest recorded chain of gating edges into the Project's open work.\nWith no effort or duration data recorded, length is measured in tasks, not\ntime. `length` counts every member of the chain and `open` those that are\nnot closed; a member that is closed is still named, because a closed link\nin the recorded chain is history rather than a gap. The chain mixes the two\nenforced relations on purpose: a `blocks` link holds the target's\n*completion* rather than its start, so it lengthens the chain to delivery\nwithout stopping the target from being started.",
         "properties": {
           "chain": {
             "description": "At most [`MAX_CRITICAL_PATH_TASKS`] members, upstream first.",
@@ -4465,7 +4456,7 @@
             "type": "integer"
           },
           "truncated": {
-            "description": "True when `chain` is a prefix of a longer chain.",
+            "description": "True when `chain` is a prefix of a longer chain. This is about the\nchain alone; whether the answer read the whole Project is\n`progress.partial`.",
             "type": "boolean"
           }
         },
@@ -7574,33 +7565,20 @@
           },
           {
             "additionalProperties": false,
+            "description": "The leases this sweep expired, and nothing else. What can start is the\nprojection's answer for a Project, not a second copy of it here.",
             "properties": {
               "data": {
                 "additionalProperties": false,
                 "properties": {
-                  "blocked": {
-                    "items": {
-                      "$ref": "#/$defs/BlockedTask"
-                    },
-                    "type": "array"
-                  },
                   "expired": {
                     "items": {
                       "$ref": "#/$defs/ExpiredLease"
                     },
                     "type": "array"
-                  },
-                  "schedulable": {
-                    "items": {
-                      "$ref": "#/$defs/SchedulableTask"
-                    },
-                    "type": "array"
                   }
                 },
                 "required": [
-                  "expired",
-                  "schedulable",
-                  "blocked"
+                  "expired"
                 ],
                 "type": "object"
               },
@@ -7617,13 +7595,13 @@
           },
           {
             "additionalProperties": false,
-            "description": "The canonical DAG answer for one Project, counted from recorded task\nrows and dependency edges. It contains no reported percentage and no\ncached projection, and it is bounded: a Project larger than the bound is\nanswered over the tasks it did read and says so in `progress`.",
+            "description": "The one scheduling and DAG answer for one Project, counted from recorded\ntask rows and dependency edges: what can start now and why, what every\ntask is waiting on, progress, the remaining closure, per-task blockers\nand the critical path. It contains no reported percentage and no cached\nprojection, and it is bounded: a Project larger than the bound is\nanswered over the tasks it did read and says so in `progress.partial`.",
             "properties": {
               "data": {
-                "$ref": "#/$defs/TaskGraphReport"
+                "$ref": "#/$defs/SchedulingProjection"
               },
               "kind": {
-                "const": "task_graph",
+                "const": "scheduling_projection",
                 "type": "string"
               }
             },
@@ -8592,6 +8570,58 @@
         ],
         "type": "object"
       },
+      "SchedulingProjection": {
+        "additionalProperties": false,
+        "description": "The one scheduling surface for a Project: what can start now and why, what\nevery task is waiting on, and the DAG answers — progress, the remaining\nclosure, the tasks each open task waits on, and the critical path — beside\nthe readiness list rather than behind a second read.\n\nThe two gate lists answer different questions and are not duplicates.\n`readiness` is the evidence: every considered task and what holds it.\n`blocked` is the scheduling verdict for start candidates, naming the one\nconstraint that decides (stream state, a held lease, an unresolved\ndependency) so a scheduler needs one field to branch on.",
+        "properties": {
+          "blocked": {
+            "description": "Start candidates that cannot run, each with the stated blocker.",
+            "items": {
+              "$ref": "#/$defs/BlockedTask"
+            },
+            "type": "array"
+          },
+          "considered_at": {
+            "$ref": "#/$defs/Timestamp",
+            "description": "The instant the lease half of this answer was judged at, so a caller\ncan tell a stale `stream_leased` from a current one."
+          },
+          "dag": {
+            "$ref": "#/$defs/TaskGraphReport",
+            "description": "The tasks each open task waits on, and the remaining closure. Carried\nhere so the DAG answers are reachable from the scheduling surface."
+          },
+          "progress": {
+            "$ref": "#/$defs/TaskProgress",
+            "description": "Progress counted from canonical states, with no percentage field."
+          },
+          "project_id": {
+            "$ref": "#/$defs/ProjectId",
+            "description": "The Project this answer is for."
+          },
+          "readiness": {
+            "description": "Every considered task and the gates holding it.",
+            "items": {
+              "$ref": "#/$defs/TaskReadiness"
+            },
+            "type": "array"
+          },
+          "schedulable": {
+            "items": {
+              "$ref": "#/$defs/SchedulableTask"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "considered_at",
+          "progress",
+          "schedulable",
+          "blocked",
+          "readiness",
+          "dag"
+        ],
+        "type": "object"
+      },
       "ServerHello": {
         "additionalProperties": false,
         "properties": {
@@ -8915,26 +8945,6 @@
             "type": "object"
           }
         ]
-      },
-      "StreamOverlap": {
-        "additionalProperties": false,
-        "description": "Startable tasks that share one Change Stream. Same-stream work is serialized\nby policy, so two startable tasks in one stream cannot both run; a held\nlease on the stream is the dynamic half of that fact and is refused by the\nscheduler projection as `stream_leased`, not repeated here.",
-        "properties": {
-          "stream_id": {
-            "$ref": "#/$defs/ChangeStreamId"
-          },
-          "tasks": {
-            "items": {
-              "$ref": "#/$defs/TaskId"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "stream_id",
-          "tasks"
-        ],
-        "type": "object"
       },
       "StreamState": {
         "enum": [
@@ -9506,7 +9516,7 @@
       },
       "TaskGate": {
         "additionalProperties": false,
-        "description": "One gate a task waits on: the edge kind that orders the work, the canonical\ntask on the other side, and the state that task is in now.",
+        "description": "One gate a task waits on: the edge kind that orders the work, the canonical\ntask on the other side, and the state that task is in now. A gate is\nsatisfied by [`gate_satisfied`] alone.",
         "properties": {
           "kind": {
             "$ref": "#/$defs/TaskDependencyKind"
@@ -9527,7 +9537,7 @@
       },
       "TaskGraphReport": {
         "additionalProperties": false,
-        "description": "The #94 DAG answer for one Project: what is left, what each open task waits\non, the chain that decides the rest, and where startable work contends for\nthe same stream.",
+        "description": "The #94 DAG answer for one Project: what is left, what each open task waits\non, and the chain that decides the rest. The scheduling projection serves\nthis alongside the readiness answer, so there is one surface to read.",
         "properties": {
           "blockers": {
             "items": {
@@ -9537,12 +9547,6 @@
           },
           "critical_path": {
             "$ref": "#/$defs/CriticalPath"
-          },
-          "overlaps": {
-            "items": {
-              "$ref": "#/$defs/StreamOverlap"
-            },
-            "type": "array"
           },
           "progress": {
             "$ref": "#/$defs/TaskProgress"
@@ -9563,8 +9567,7 @@
           "progress",
           "remaining",
           "blockers",
-          "critical_path",
-          "overlaps"
+          "critical_path"
         ],
         "type": "object"
       },
@@ -9693,6 +9696,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "partial": {
+            "description": "True when the answer did not read every task the Project holds. The\nflag rather than an arithmetic comparison a caller has to remember to\nmake: an answer that dropped work must say so in the answer, and\n`critical_path.truncated` is about the chain, not about this.",
+            "type": "boolean"
+          },
           "states": {
             "description": "The states present, in canonical lifecycle order. A state no task is in\nis absent rather than reported as a guessed zero.",
             "items": {
@@ -9713,7 +9720,41 @@
           "considered_gates",
           "states",
           "closed",
-          "open"
+          "open",
+          "partial"
+        ],
+        "type": "object"
+      },
+      "TaskReadiness": {
+        "additionalProperties": false,
+        "description": "What one considered Task is waiting on before it can run, from canonical\nrows. This is the readiness answer: the gates that are not satisfied yet,\neach naming the other side and the state it is in. A start candidate with an\nempty list has nothing holding it, which is why the entry is published even\nwhen the list is empty — \"nothing is in the way\" is an answer, not an\nabsence.",
+        "properties": {
+          "recorded_gates": {
+            "description": "Gates recorded for this task in total, satisfied or not. Published\nbecause \"no gates at all\" and \"every gate satisfied\" are different\nreasons to be schedulable, and only the count tells them apart.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/$defs/TaskState",
+            "description": "The canonical state the task is in now, so a reader can tell a start\ncandidate from one still queued or held."
+          },
+          "task": {
+            "$ref": "#/$defs/GraphTaskRef"
+          },
+          "waiting_on": {
+            "description": "Unsatisfied gates holding this task, in canonical order. Empty when\nnothing holds it.",
+            "items": {
+              "$ref": "#/$defs/TaskGate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "task",
+          "state",
+          "waiting_on",
+          "recorded_gates"
         ],
         "type": "object"
       },

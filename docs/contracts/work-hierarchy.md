@@ -78,21 +78,47 @@ heartbeat/stale-worker integration remains owned by the scheduler work. The
 scheduler's dependency/stream projection still decides readiness after an
 explicit unblock.
 
-## DAG answers: progress, closure, blockers, critical path, overlap
+## The scheduling projection: readiness, blockers, progress, critical path
 
-`get_task_graph(project_id)` is the rest of the DAG surface. Readiness — which
-Task may start now, and the `stream_unsafe` / `stream_leased` /
-`dependency_unresolved` refusals — stays with the [scheduling
-projection](scheduling-leases.md); this read does not restate it. It answers,
-for one Project, from recorded task rows and dependency edges only:
+`get_scheduling_projection(project_id)` is the one scheduling and DAG surface.
+It answers, for one Project, from recorded task rows and dependency edges only.
 
+**Why one read and not two.** An earlier draft of this slice shipped the
+progress, closure, blocker and critical-path answers on their own
+`get_task_graph` read and left readiness on the projection. That split the same
+question across two operations — both answered "what is holding this task", with
+different scopes and different shapes — and left a caller to know which read to
+reach for. The projection already owned the scheduling verdict, so it now owns
+the evidence too, and `get_task_graph` is gone rather than kept as a second
+door. The `expire_stale_leases` sweep no longer repeats the schedulable and
+blocked lists beside its expiries for the same reason.
+
+* **Readiness** — per considered Task, the state it is in now, the gates recorded
+  for it in total, and the gates that are not satisfied yet. Every considered
+  Task is answered, not only the held ones: "nothing is in the way" is an answer
+  for a Task, and publishing only the held Tasks would make a caller infer that
+  from a missing entry. A queued or blocked Task is not a start candidate and is
+  absent from `schedulable` and `blocked`, but it is still answered here and in
+  the DAG answers, so asking what is waiting never loses a Task.
+* **Schedulable and blocked** — start candidates only (`Ready` or `Assigned`),
+  each with the one constraint that decides: `stream_unsafe`, `stream_leased` or
+  `dependency_unresolved`, and for a schedulable Task whether it had no gates at
+  all or had every gate satisfied. This is the scheduling *verdict*; readiness is
+  the *evidence*, and the store reads the verdict out of the readiness list rather
+  than re-deriving it from the rows, so the two cannot answer differently.
+  A start candidate the bounded answer did not read has no readiness evidence, so
+  its verdict is `not_considered` and it is never offered: defaulting its gates to
+  zero would offer a task for scheduling while saying nothing about the
+  prerequisite it waits on. It is reported rather than dropped, because a
+  candidate that vanishes reads as work that is not waiting. `progress.partial` is
+  true whenever `not_considered` appears.
 * **Progress** — a count per canonical Task state, in lifecycle order, plus the
-  whole `total`, the `considered` count, the `considered_gates` read, and how many Tasks
-  are `closed` (`Completed` or `Cancelled`) against `open`. There is no
-  percentage field and no way to express one: a caller that wants a fraction
-  divides these counts itself, from canonical state, rather than reporting a
-  number an agent or a client handed it. `Failed` and `Interrupted` are not
-  closed, because the Host recovers them to `Ready`.
+  whole `total`, the `considered` count, the `considered_gates` read, how many
+  Tasks are `closed` (`Completed` or `Cancelled`) against `open`, and `partial`.
+  There is no percentage field and no way to express one: a caller that wants a
+  fraction divides these counts itself, from canonical state, rather than
+  reporting a number an agent or a client handed it. `Failed` and `Interrupted`
+  are not closed, because the Host recovers them to `Ready`.
 * **Remaining closure** — every considered Task that is not closed, in canonical
   id order.
 * **Blockers** — per open Task, the gates that still hold it: the edge kind, the
@@ -103,28 +129,42 @@ for one Project, from recorded task rows and dependency edges only:
   `verifies`, `supersedes`, `conflicts_with`, `follow_up_to`) are deliberately
   absent: reporting them as blockers would enforce a policy that has not been
   written. `blocks` appears as an incoming gate, which is where it is stored.
+  Readiness and this list come from one walk over the same gates, so they cannot
+  name different work.
 * **Critical path** — the longest recorded chain of gating edges into the
   Project's open work, with `length` in Tasks (no effort or duration is recorded,
-  so this is not a duration), how many of its members are open, and the  chain itself capped at 64 members with `truncated` saying whether it is the
-  whole chain. Ties are resolved by canonical id order, so the same state always
-  names the same chain. A Task with no recorded gate is a chain of one.
-* **Overlap** — startable Tasks (`Ready` or `Assigned`) that share one Change
-  Stream, because same-stream work is serialized by policy. A held lease is the
-  dynamic half of that fact and stays the projection's `stream_leased` refusal.
-  Every Change Stream currently holds exactly one Task, so this list is empty
-  against today's canonical state: it is computed, not unimplemented, and the
-  multi-task stream slice is what gives it content.
+  so this is not a duration), how many of its members are open, and the chain
+  itself capped at 64 members with `truncated` saying whether it is the whole
+  chain. Ties are resolved by canonical id order, so the same state always names
+  the same chain. A Task with no recorded gate is a chain of one. The chain mixes
+  the two enforced relations on purpose: a `blocks` link holds the target's
+  *completion* rather than its start, so it lengthens the chain to delivery
+  without stopping the target from being started — which is why such a Task can
+  be `schedulable` and still sit on a chain. A closed member is still named: it
+  is history in the chain, not a gap in it.
+
+**Same-stream overlap was removed, not deferred.** An earlier draft published an
+`overlaps` list of startable Tasks sharing one Change Stream. It could never be
+non-empty: the store refuses a second Task on a stream, so the only state that
+would populate it is not reachable, and the list was a published schema field
+carrying an answer that could not exist. Every piece of it is gone — the domain
+type, the computation, the case, the wire field and the schema. The underlying
+question is real and belongs to the multi-task Change Stream slice on #94; it
+will be answered there, against a state that can produce it.
 
 Cycles are rejected at every write, and a read that finds one in the rows
 refuses by name (`cycle`) rather than walking it.
-DAG answers are bounded to 256 tasks and 2,048 gates: the store takes the
+The answer is bounded to 256 Tasks and 2,048 gates: the store takes the
 Project's Tasks in canonical id order until either bound would be exceeded, so
-the answer is exact over what it read and `progress.total` keeps the whole count
-beside `progress.considered` — a partial answer says so instead of presenting a
-whole one it did not read. A Project the store does not hold is `not_found`
-rather than an empty graph. The read is a Project read (Project `Read` on the
-subject, and on every Project the answer names) and it writes nothing: no
-journal event, no derived table, no cache to drift from the state it describes.
+the answer is exact over what it read. `progress.partial` says when it did not
+read the whole Project, so a partial answer announces itself instead of
+presenting a whole one it did not read — and `progress.total` keeps the whole
+count beside the considered one. The chain bound is a different fact and says so
+in `critical_path.truncated`; the two are never the same flag. A Project the
+store does not hold is `not_found` rather than an empty answer. The read is a
+Project read (Project `Read` on the subject, and on every Project the answer
+names) and it writes nothing: no journal event, no derived table, no cache to
+drift from the state it describes.
 
 ## Foreign runtime session and task references
 
