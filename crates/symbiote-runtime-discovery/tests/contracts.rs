@@ -151,6 +151,8 @@ fn the_diagnostic_boundary_is_named_deterministic_and_non_authorizing() {
         );
     }
     assert!(source.contains("self.action != self.code.action()"));
+    assert!(source.contains("\"const\": DIAGNOSTIC_VERSION"));
+    assert!(source.contains("\"oneOf\": one_of"));
     assert!(!source.contains("Command::new"));
     assert!(!source.contains("std::env"));
     assert!(!source.contains("std::fs"));

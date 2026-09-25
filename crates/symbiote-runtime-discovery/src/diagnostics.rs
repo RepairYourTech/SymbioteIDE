@@ -32,7 +32,18 @@ pub enum DiagnosticAction {
 }
 
 impl DiagnosticCode {
-    pub fn action(self) -> DiagnosticAction {
+    const fn all() -> [Self; 5] {
+        [
+            Self::MissingBinary,
+            Self::UnsupportedVersion,
+            Self::ExpiredAuthentication,
+            Self::RateLimited,
+            Self::IncompatibleConfiguration,
+        ]
+    }
+
+    /// The one action the closed diagnostic contract permits for this code.
+    pub const fn action(self) -> DiagnosticAction {
         match self {
             Self::MissingBinary => DiagnosticAction::InstallBinaryWithConsent,
             Self::UnsupportedVersion => DiagnosticAction::UpgradeWithConsent,
@@ -54,7 +65,7 @@ pub enum DiagnosticInput {
     Codex(CodexDiscoveryError),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "DiagnosticWire")]
 pub struct RuntimeDiagnostic {
     schema_version: u32,
@@ -62,12 +73,45 @@ pub struct RuntimeDiagnostic {
     action: DiagnosticAction,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DiagnosticWire {
     schema_version: u32,
     code: DiagnosticCode,
     action: DiagnosticAction,
+}
+
+impl JsonSchema for RuntimeDiagnostic {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RuntimeDiagnostic".into()
+    }
+
+    /// Publish the same closed version and code/action pairs enforced by the
+    /// runtime parser, so a schema-only consumer cannot admit a broader value.
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let one_of = DiagnosticCode::all()
+            .into_iter()
+            .map(|code| {
+                serde_json::json!({
+                    "properties": {
+                        "code": {"const": serde_json::to_value(code).expect("diagnostic code serializes")},
+                        "action": {"const": serde_json::to_value(code.action()).expect("diagnostic action serializes")}
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        schemars::json_schema!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema_version", "code", "action"],
+            "properties": {
+                "schema_version": {"type": "integer", "const": DIAGNOSTIC_VERSION},
+                "code": {"type": "string"},
+                "action": {"type": "string"}
+            },
+            "oneOf": one_of
+        })
+    }
 }
 
 impl TryFrom<DiagnosticWire> for RuntimeDiagnostic {
@@ -85,15 +129,18 @@ impl TryFrom<DiagnosticWire> for RuntimeDiagnostic {
 }
 
 impl RuntimeDiagnostic {
-    pub fn schema_version(&self) -> u32 {
+    /// The diagnostic schema version accepted by this build.
+    pub const fn schema_version(&self) -> u32 {
         self.schema_version
     }
 
-    pub fn code(&self) -> DiagnosticCode {
+    /// The closed failure classification, without observation payloads.
+    pub const fn code(&self) -> DiagnosticCode {
         self.code
     }
 
-    pub fn action(&self) -> DiagnosticAction {
+    /// The operator action recommended for this classification.
+    pub const fn action(&self) -> DiagnosticAction {
         self.action
     }
 

@@ -116,3 +116,37 @@ fn diagnostic_wire_rejects_version_drift_unknown_fields_and_inconsistent_actions
         assert!(serde_json::from_value::<RuntimeDiagnostic>(invalid).is_err());
     }
 }
+
+#[test]
+fn published_schema_enforces_the_same_version_and_code_action_pairs_as_deserialization() {
+    let schema = serde_json::to_value(schemars::schema_for!(RuntimeDiagnostic)).unwrap();
+    assert_eq!(schema["properties"]["schema_version"]["const"], json!(1));
+    let variants = schema["oneOf"].as_array().unwrap();
+    assert_eq!(variants.len(), 5);
+    for diagnostic in [
+        json!({"schema_version": 1, "code": "missing_binary", "action": "install_binary_with_consent"}),
+        json!({"schema_version": 1, "code": "unsupported_version", "action": "upgrade_with_consent"}),
+        json!({"schema_version": 1, "code": "expired_authentication", "action": "reauthenticate"}),
+        json!({"schema_version": 1, "code": "rate_limited", "action": "retry_later"}),
+        json!({"schema_version": 1, "code": "incompatible_configuration", "action": "correct_configuration"}),
+    ] {
+        assert!(variants.iter().any(|variant| {
+            diagnostic["code"] == variant["properties"]["code"]["const"]
+                && diagnostic["action"] == variant["properties"]["action"]["const"]
+        }));
+        assert!(serde_json::from_value::<RuntimeDiagnostic>(diagnostic).is_ok());
+    }
+    for invalid in [
+        json!({"schema_version": 2, "code": "missing_binary", "action": "install_binary_with_consent"}),
+        json!({"schema_version": 1, "code": "missing_binary", "action": "reauthenticate"}),
+    ] {
+        assert!(serde_json::from_value::<RuntimeDiagnostic>(invalid.clone()).is_err());
+        let schema_accepts = invalid["schema_version"]
+            == schema["properties"]["schema_version"]["const"]
+            && variants.iter().any(|variant| {
+                invalid["code"] == variant["properties"]["code"]["const"]
+                    && invalid["action"] == variant["properties"]["action"]["const"]
+            });
+        assert!(!schema_accepts);
+    }
+}

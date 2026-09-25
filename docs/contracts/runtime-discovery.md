@@ -102,7 +102,9 @@ arbitrary message, path, account or credential. The versioned
 `RuntimeDiagnostic` contains only `DiagnosticCode`, its non-authorizing
 `DiagnosticAction`, and schema version. Deserialization rejects unknown fields,
 unsupported versions and a code/action pair that is not the one prescribed by
-the contract.
+the contract. The published schema independently fixes the accepted version and
+enumerates the same five code/action pairs, so schema-only consumers cannot
+accept a broader diagnostic than the runtime parser.
 
 The five deterministic mappings are: `MissingExecutable` to
 `MissingBinary` / `InstallBinaryWithConsent`; `CodexDiscoveryError::UnsupportedVersion`
