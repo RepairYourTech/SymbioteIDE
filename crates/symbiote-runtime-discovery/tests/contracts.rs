@@ -95,6 +95,8 @@ fn the_codex_adapter_record_is_named_bounded_and_unverified() {
         "codex_adapter::bind_report",
         "CodexProbeReport",
         "DiscoveryRecord",
+        "ProcessMismatch",
+        "ProfileMismatch",
         "UnconfirmedProtocol",
         "DuplicateModel",
     ] {
@@ -102,6 +104,8 @@ fn the_codex_adapter_record_is_named_bounded_and_unverified() {
     }
     let source = include_str!("../src/codex_adapter.rs");
     assert!(source.contains("let root_matches"));
+    assert!(source.contains("report.process_id() != process_id"));
+    assert!(source.contains("report.config_root() != profile.path"));
     assert!(source.contains("Fact::Unknown"));
     assert!(!source.contains("Command::new"));
     assert!(!source.contains("std::env"));

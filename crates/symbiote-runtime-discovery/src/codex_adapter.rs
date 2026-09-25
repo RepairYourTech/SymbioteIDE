@@ -40,6 +40,7 @@ pub fn bind_report(
     intent: RuntimeInstanceIntent,
     profile: &ProfileObservation,
     installation: &ExecutableInstallation,
+    process_id: u32,
     report: &CodexProbeReport,
 ) -> Result<DiscoveryRecord, CodexBindingError> {
     profile
@@ -63,6 +64,12 @@ pub fn bind_report(
         || !root_matches
     {
         return Err(CodexBindingError::IdentityMismatch);
+    }
+    if report.process_id() != process_id {
+        return Err(CodexBindingError::ProcessMismatch);
+    }
+    if report.config_root() != profile.path {
+        return Err(CodexBindingError::ProfileMismatch);
     }
     if profile.observed_at > installation.observed_at
         || profile.expires_at != installation.expires_at
@@ -130,6 +137,8 @@ pub fn bind_report(
 /// Why a real adapter report could not be composed into a validated record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodexBindingError {
+    ProcessMismatch,
+    ProfileMismatch,
     IdentityMismatch,
     InterfaceMismatch,
     DuplicateModel,

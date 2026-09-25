@@ -1,11 +1,15 @@
-use std::collections::BTreeSet;
+use serde_json::{Value, json};
+use std::{collections::VecDeque, time::Duration};
 use symbiote_domain::*;
 use symbiote_runtime_discovery::{
     AuthState, Authentication, ConfigRoot, ConfigRootSource, DiscoveryError, ExecutableIdentity,
     ExecutableInstallation, Fact, INSTALLATION_VERSION, InstallationChannel, InterfaceIdentity,
     Inventory, MethodAvailability, ObservationSource, ProbeProvenance, ProfileObservation,
     RuntimeInstanceIntent, UpdateAvailability,
-    codex::{CodexAuthentication, CodexModel, CodexProbeReport, CodexReasoningEffort},
+    codex::{
+        CodexAuthentication, CodexDiscoveryError, CodexModel, CodexProbeReport, DiscoveryTransport,
+        discover,
+    },
     codex_adapter::{CodexBindingError, bind_report},
 };
 
@@ -15,6 +19,44 @@ fn provenance() -> ProbeProvenance {
         source: ObservationSource::SandboxedProbe,
         adapter_revision: "v1".into(),
     }
+}
+
+const PROCESS_ID: u32 = 42;
+
+struct Scripted(VecDeque<Value>);
+
+impl DiscoveryTransport for Scripted {
+    fn send(&mut self, _: &Value, _: Duration) -> Result<(), CodexDiscoveryError> {
+        Ok(())
+    }
+    fn recv(&mut self, _: Duration) -> Result<Value, CodexDiscoveryError> {
+        self.0.pop_front().ok_or(CodexDiscoveryError::Transport)
+    }
+    fn child_id(&self) -> Option<u32> {
+        Some(PROCESS_ID)
+    }
+}
+
+fn verified_report(authentication: CodexAuthentication) -> CodexProbeReport {
+    let account = match authentication {
+        CodexAuthentication::Required => json!({"requiresOpenaiAuth":true,"account":null}),
+        CodexAuthentication::NotRequired => json!({"requiresOpenaiAuth":false,"account":null}),
+        CodexAuthentication::ApiKeyReported => {
+            json!({"requiresOpenaiAuth":false,"account":{"type":"apiKey"}})
+        }
+        CodexAuthentication::ChatGptReported => {
+            json!({"requiresOpenaiAuth":false,"account":{"type":"chatgpt"}})
+        }
+        CodexAuthentication::Unknown => {
+            json!({"requiresOpenaiAuth":false,"account":{"type":"other"}})
+        }
+    };
+    let mut transport = Scripted(VecDeque::from([
+        json!({"id":1,"result":{"userAgent":"symbiote/0.118.0 (Linux)","codexHome":"/home/agent/.codex"}}),
+        json!({"id":2,"result":account}),
+        json!({"id":3,"result":{"data":[{"id":"picker-one","model":"gpt-5.4","isDefault":true,"hidden":false,"defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}}),
+    ]));
+    discover(&mut transport, Duration::from_secs(1)).unwrap()
 }
 
 fn fixture() -> (
@@ -78,28 +120,14 @@ fn fixture() -> (
         instance_name,
         config_identity,
     };
-    let model = CodexModel {
-        listing_id: "picker-one".into(),
-        provider_model: "gpt-5.4".into(),
-        is_default: true,
-        hidden: false,
-        supported_reasoning: BTreeSet::from([CodexReasoningEffort::Medium]),
-        default_reasoning: CodexReasoningEffort::Medium,
-        input_modalities: None,
-        context_tokens: None,
-    };
-    let report = CodexProbeReport {
-        server_version: "0.118.0".into(),
-        authentication: CodexAuthentication::Required,
-        models: vec![model],
-    };
+    let report = verified_report(CodexAuthentication::Required);
     (intent, profile, installation, report)
 }
 
 #[test]
 fn a_real_report_becomes_a_validated_inventory_without_becoming_usable() {
     let (intent, profile, installation, report) = fixture();
-    let record = bind_report(intent.clone(), &profile, &installation, &report).unwrap();
+    let record = bind_report(intent.clone(), &profile, &installation, PROCESS_ID, &report).unwrap();
     assert_eq!(record.intent, intent);
     assert_eq!(
         record.observation.facts.health,
@@ -138,7 +166,7 @@ fn reported_account_types_remain_unknown_authentication() {
     ] {
         let (intent, profile, installation, mut report) = fixture();
         report.authentication = authentication;
-        let record = bind_report(intent, &profile, &installation, &report).unwrap();
+        let record = bind_report(intent, &profile, &installation, PROCESS_ID, &report).unwrap();
         assert_eq!(record.observation.facts.authentication, Fact::Unknown);
     }
 }
@@ -148,19 +176,25 @@ fn another_profile_root_or_installation_cannot_be_paired_with_the_report() {
     let (mut intent, profile, installation, report) = fixture();
     intent.instance_name = "Codex Work".into();
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::IdentityMismatch)
     );
-    let (intent, mut profile, installation, report) = fixture();
+    let (intent, mut profile, mut installation, report) = fixture();
     profile.path = "/home/agent/.other".into();
+    installation.config_roots[0].path = profile.path.clone();
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
-        Err(CodexBindingError::IdentityMismatch)
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
+        Err(CodexBindingError::ProfileMismatch)
+    );
+    let (intent, profile, installation, report) = fixture();
+    assert_eq!(
+        bind_report(intent, &profile, &installation, PROCESS_ID + 1, &report),
+        Err(CodexBindingError::ProcessMismatch)
     );
     let (intent, profile, mut installation, report) = fixture();
     installation.host_id = HostId::new("host-b").unwrap();
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::IdentityMismatch)
     );
 }
@@ -170,19 +204,19 @@ fn stale_unconfirmed_and_duplicate_report_facts_are_named_refusals() {
     let (intent, mut profile, installation, report) = fixture();
     profile.observed_at = Timestamp(11);
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::Stale)
     );
     let (intent, profile, mut installation, report) = fixture();
     installation.expires_at = Timestamp(31);
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::Stale)
     );
     let (intent, profile, mut installation, report) = fixture();
     installation.interface = Fact::Unknown;
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::UnconfirmedProtocol)
     );
     let (intent, profile, mut installation, report) = fixture();
@@ -191,7 +225,7 @@ fn stale_unconfirmed_and_duplicate_report_facts_are_named_refusals() {
         version: "0.118.0".into(),
     });
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::InterfaceMismatch)
     );
     let (intent, profile, mut installation, report) = fixture();
@@ -200,13 +234,13 @@ fn stale_unconfirmed_and_duplicate_report_facts_are_named_refusals() {
         version: "0.118.1".into(),
     });
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::InterfaceMismatch)
     );
     let (intent, profile, mut installation, report) = fixture();
     installation.version = Fact::Known("0.118.1".into());
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::InterfaceMismatch)
     );
     let (intent, profile, installation, mut report) = fixture();
@@ -215,7 +249,7 @@ fn stale_unconfirmed_and_duplicate_report_facts_are_named_refusals() {
         ..report.models[0].clone()
     });
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::DuplicateModel)
     );
 }
@@ -225,19 +259,19 @@ fn invalid_source_observations_and_report_facts_stay_distinct_refusals() {
     let (intent, mut profile, installation, report) = fixture();
     profile.expires_at = profile.observed_at;
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::InvalidObservation)
     );
     let (intent, profile, mut installation, report) = fixture();
     installation.expires_at = installation.observed_at;
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::InvalidObservation)
     );
     let (intent, profile, installation, mut report) = fixture();
     report.models[0].context_tokens = Some(0);
     assert_eq!(
-        bind_report(intent, &profile, &installation, &report),
+        bind_report(intent, &profile, &installation, PROCESS_ID, &report),
         Err(CodexBindingError::Discovery(DiscoveryError::InvalidRecord))
     );
 }

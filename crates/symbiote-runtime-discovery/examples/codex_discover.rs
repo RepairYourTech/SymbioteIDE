@@ -19,7 +19,6 @@ use symbiote_trust::*;
 
 struct Probe {
     process: SandboxProcess,
-    config_root_seen: bool,
 }
 impl DiscoveryTransport for Probe {
     fn send(&mut self, value: &Value, timeout: Duration) -> Result<(), CodexDiscoveryError> {
@@ -28,19 +27,12 @@ impl DiscoveryTransport for Probe {
             .map_err(|_| CodexDiscoveryError::Transport)
     }
     fn recv(&mut self, timeout: Duration) -> Result<Value, CodexDiscoveryError> {
-        let value = self
-            .process
+        self.process
             .recv(timeout)
-            .map_err(|_| CodexDiscoveryError::Transport)?;
-        if value.pointer("/result/userAgent").is_some() {
-            if value.pointer("/result/codexHome").and_then(Value::as_str)
-                != Some("/home/agent/.codex")
-            {
-                return Err(CodexDiscoveryError::MalformedFrame);
-            }
-            self.config_root_seen = true;
-        }
-        Ok(value)
+            .map_err(|_| CodexDiscoveryError::Transport)
+    }
+    fn child_id(&self) -> Option<u32> {
+        Some(self.process.child_id())
     }
 }
 
@@ -143,14 +135,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args: &args,
             limits: TransportLimits::default(),
         })?,
-        config_root_seen: false,
     };
     let report = codex::discover(&mut probe, Duration::from_secs(20));
     let _cleanup = probe.process.cancel(Duration::from_secs(2))?;
     let report = report?;
-    if !probe.config_root_seen {
-        return Err("Codex did not report the isolated config root".into());
-    }
     let installation = installation.confirm_protocol(
         ProtocolEvidence {
             version: report.server_version.clone(),
@@ -189,6 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         intent,
         &profile,
         &installation,
+        probe.process.child_id(),
         &report,
     )?])?;
     println!(

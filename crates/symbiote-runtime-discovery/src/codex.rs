@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
+    fmt,
+    path::{Component, Path},
     time::{Duration, Instant},
 };
 
@@ -38,6 +40,9 @@ impl std::error::Error for CodexDiscoveryError {}
 pub trait DiscoveryTransport {
     fn send(&mut self, message: &Value, timeout: Duration) -> Result<(), CodexDiscoveryError>;
     fn recv(&mut self, timeout: Duration) -> Result<Value, CodexDiscoveryError>;
+    /// The directly owned process identity. Discovery records it as evidence;
+    /// adapters must compare it with the process they launched.
+    fn child_id(&self) -> Option<u32>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,11 +83,39 @@ pub struct CodexModel {
     pub input_modalities: Option<BTreeSet<CodexInputModality>>,
     pub context_tokens: Option<u64>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct CodexProbeEvidence {
+    process_id: u32,
+    config_root: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct CodexProbeReport {
     pub server_version: String,
     pub authentication: CodexAuthentication,
     pub models: Vec<CodexModel>,
+    evidence: CodexProbeEvidence,
+}
+
+impl fmt::Debug for CodexProbeReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CodexProbeReport")
+            .field("server_version", &self.server_version)
+            .field("authentication", &self.authentication)
+            .field("models", &self.models)
+            .field("process_id", &self.evidence.process_id)
+            .field("config_root", &"<redacted>")
+            .finish()
+    }
+}
+
+impl CodexProbeReport {
+    pub fn process_id(&self) -> u32 {
+        self.evidence.process_id
+    }
+    pub fn config_root(&self) -> &str {
+        &self.evidence.config_root
+    }
 }
 
 fn remaining(deadline: Instant) -> Result<Duration, CodexDiscoveryError> {
@@ -125,6 +158,23 @@ fn bounded_frame(value: &Value) -> Result<(), CodexDiscoveryError> {
     }
     Ok(())
 }
+fn config_root(value: Option<&Value>) -> Result<String, CodexDiscoveryError> {
+    let value = value
+        .and_then(Value::as_str)
+        .ok_or(CodexDiscoveryError::MalformedFrame)?;
+    let path = Path::new(value);
+    if !path.is_absolute()
+        || value.len() > 4096
+        || value.chars().any(char::is_control)
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(CodexDiscoveryError::MalformedFrame);
+    }
+    Ok(value.into())
+}
+
 fn response(
     transport: &mut impl DiscoveryTransport,
     id: u64,
@@ -275,6 +325,10 @@ pub fn discover(
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or(CodexDiscoveryError::Deadline)?;
+    let process_id = transport
+        .child_id()
+        .filter(|process_id| *process_id != 0)
+        .ok_or(CodexDiscoveryError::Transport)?;
     let mut notifications = 0;
     let initialized = call(
         transport,
@@ -294,6 +348,7 @@ pub fn discover(
     if user_agent.len() > 1024 || user_agent.split_whitespace().next() != Some(expected.as_str()) {
         return Err(CodexDiscoveryError::UnsupportedVersion);
     }
+    let config_root = config_root(initialized.get("codexHome"))?;
     transport.send(
         &json!({"method":"initialized","params":{}}),
         remaining(deadline)?,
@@ -360,6 +415,10 @@ pub fn discover(
                     server_version: CODEX_VERSION.into(),
                     authentication,
                     models,
+                    evidence: CodexProbeEvidence {
+                        process_id,
+                        config_root,
+                    },
                 });
             }
             Some(Value::String(next))
@@ -394,6 +453,9 @@ mod tests {
         fn recv(&mut self, _: Duration) -> Result<Value, CodexDiscoveryError> {
             self.0.pop_front().ok_or(CodexDiscoveryError::Transport)
         }
+        fn child_id(&self) -> Option<u32> {
+            Some(1)
+        }
     }
     fn item(id: &str) -> Value {
         json!({"id":id,"model":"gpt-5.4","isDefault":true,"hidden":false,
@@ -416,7 +478,7 @@ mod tests {
             replies.push_back(json!({"method":"account/updated","params":{"ignored":"private"}}));
         }
         replies.push_back(
-            json!({"id":1,"result":{"userAgent":format!("symbiote/{CODEX_VERSION} (Linux)")}}),
+            json!({"id":1,"result":{"userAgent":format!("symbiote/{CODEX_VERSION} (Linux)"),"codexHome":"/home/agent/.codex"}}),
         );
         replies.push_back(json!({"id":2,"result":{"requiresOpenaiAuth":true,"account":null}}));
         for page in pages {

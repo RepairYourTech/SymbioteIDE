@@ -64,8 +64,11 @@ read-only App Server adapter and the versioned `Inventory`. It accepts the
 `ExecutableInstallation`, and completed `CodexProbeReport` together, then
 cross-checks their profile, config identity, exact config root, Host, runtime
 kind, adapter, installation, interface, version, and freshness before publishing
-one `DiscoveryRecord`. A report cannot be paired with another named instance,
-executable, root, Host, or adapter and still validate.
+one `DiscoveryRecord`. The probe producer also captures the directly owned
+process identity and validates the App Server's absolute `codexHome`; both are
+carried as non-forgeable report evidence and checked against the process and
+profile the adapter publishes. A report cannot be paired with another process,
+named instance, executable, root, Host, or adapter and still validate.
 
 Reachable health and the methods the handshake actually called are recorded.
 Required and not-required authentication remain explicit. An account object
@@ -75,8 +78,9 @@ unknown and no account payload is copied. Model listings retain upstream
 identity, leave canonical mapping and absent context limits unknown, and do not
 make a model usable. Duplicate upstream model identities, stale profile windows,
 unconfirmed or mismatched interfaces, and cross-instance pairings receive named
-refusals: `IdentityMismatch`, `InterfaceMismatch`, `DuplicateModel`,
-`UnconfirmedProtocol`, `InvalidObservation`, and `Stale`. The real Codex proof
+refusals: `ProcessMismatch`, `ProfileMismatch`, `IdentityMismatch`,
+`InterfaceMismatch`, `DuplicateModel`, `UnconfirmedProtocol`,
+`InvalidObservation`, and `Stale`. The real Codex proof
 now emits this validated inventory record after its sandboxed probe; the
 inventory is an observation, not a durable Host endpoint or activation permit.
 
