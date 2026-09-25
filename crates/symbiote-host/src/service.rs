@@ -1377,15 +1377,6 @@ fn execute(
                                 }
                             }
                         }
-                        // A link set names one Project and no other, so the
-                        // only historical check is that the event being read
-                        // is the owning Project's own.
-                        symbiote_store::EventPayload::TaskForeignLinksSet {
-                            project_id: owner,
-                            ..
-                        } if owner != project_id => {
-                            return Err(ProtocolError::new(ErrorCode::PermissionDenied));
-                        }
                         _ => {}
                     }
                     Ok(JournalEvent {

@@ -329,10 +329,18 @@ fn a_foreign_complete_completes_nothing_canonically() {
 }
 #[test]
 fn tampered_and_forged_foreign_link_rows_are_refused_on_reopen() {
-    // A row whose indexed column no longer matches its body, a row with no
-    // journal event behind it, and a journal event whose links differ from the
-    // rows it produced are all corruption rather than a set to serve.
-    for tamper in ["indexed-column", "forged-row", "journal"] {
+    // Four ways the stored record and its journal can disagree, each caught by
+    // one check: a row whose indexed column no longer matches its body, a row
+    // with no journal event behind it, a journal event whose recorded request
+    // is not the one its payload implies, and a journal event whose links
+    // differ from the rows it produced. All four are corruption rather than a
+    // set to serve.
+    for tamper in [
+        "indexed-column",
+        "forged-row",
+        "journal-request",
+        "journal-payload",
+    ] {
         let temp = Temporary::new();
         let mut store = Store::open(temp.database()).unwrap();
         let (project, task) = register_task(&mut store, &format!("tamper-{tamper}"));
@@ -345,23 +353,51 @@ fn tampered_and_forged_foreign_link_rows_are_refused_on_reopen() {
             11,
         )
         .unwrap();
-        let connection = store.connection.execute_batch("");
-        assert!(connection.is_ok());
         match tamper {
-            "forged-row" => {
-                store.connection.execute(
-                    "INSERT INTO task_foreign_links(project_id,task_id,system,item_kind,foreign_id,foreign_session_id,body) SELECT project_id,task_id,system,item_kind,'codex-session-99',foreign_session_id,body FROM task_foreign_links",
-                    [],
-                ).unwrap();
-            }
+            // The indexed columns are the row key; a body that no longer
+            // projects onto them is a row nobody wrote.
             "indexed-column" => {
-                store.connection.execute(
-                    "UPDATE task_foreign_links SET foreign_id='codex-session-99' WHERE project_id=?1",
-                    params![project.as_str()],
-                ).unwrap();
+                store
+                    .connection
+                    .execute(
+                        "UPDATE task_foreign_links SET foreign_id='codex-session-99' WHERE project_id=?1",
+                        params![project.as_str()],
+                    )
+                    .unwrap();
             }
+            // A whole well-formed link with no journal event behind it: its
+            // columns and body agree with each other, so only the provenance
+            // direction can refuse it.
+            "forged-row" => {
+                let forged = link(ForeignItemKind::Session, "codex-session-99", None);
+                store
+                    .connection
+                    .execute(
+                        "INSERT INTO task_foreign_links(project_id,task_id,system,item_kind,foreign_id,foreign_session_id,body) VALUES (?1,?2,?3,?4,?5,'',?6)",
+                        params![
+                            project.as_str(),
+                            task.as_str(),
+                            serde_json::to_string(&forged.system).unwrap(),
+                            serde_json::to_string(&forged.kind).unwrap(),
+                            forged.foreign_id,
+                            serde_json::to_string(&forged).unwrap()
+                        ],
+                    )
+                    .unwrap();
+            }
+            // The recorded request is not the request the payload implies.
+            "journal-request" => {
+                store
+                    .connection
+                    .execute_batch("DROP TRIGGER journal_no_update; UPDATE journal SET request=json_set(request,'$.data.links[0].foreign_status','active') WHERE command_id='foreign-tamper'; CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal BEGIN SELECT RAISE(ABORT, 'append-only journal'); END;")
+                    .unwrap();
+            }
+            // The payload's links differ from the rows that event produced.
             _ => {
-                store.connection.execute_batch("DROP TRIGGER journal_no_update; UPDATE journal SET payload=json_set(payload,'$.data.links[0].foreign_status','active') WHERE command_id='foreign-tamper'; CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal BEGIN SELECT RAISE(ABORT, 'append-only journal'); END;").unwrap();
+                store
+                    .connection
+                    .execute_batch("DROP TRIGGER journal_no_update; UPDATE journal SET payload=json_set(payload,'$.data.links[0].foreign_status','active') WHERE command_id='foreign-tamper'; CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal BEGIN SELECT RAISE(ABORT, 'append-only journal'); END;")
+                    .unwrap();
             }
         }
         drop(store);
@@ -370,4 +406,43 @@ fn tampered_and_forged_foreign_link_rows_are_refused_on_reopen() {
             "{tamper} must be refused on reopen"
         );
     }
+}
+
+#[test]
+fn a_row_edited_while_the_store_is_open_is_refused_by_the_next_read() {
+    // The reopen audit catches a record that disagrees with its journal, but a
+    // running store is holding its own connection: a row edited underneath it
+    // is re-checked on the read that would serve it, not at the next restart.
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, task) = register_task(&mut store, "live");
+    set_links(
+        &mut store,
+        "foreign-live",
+        &project,
+        &task,
+        &[session_link("codex-session-01")],
+        11,
+    )
+    .unwrap();
+    let mut blank = session_link("codex-session-01");
+    blank.foreign_id = "   ".into();
+    store
+        .connection
+        .execute(
+            "UPDATE task_foreign_links SET foreign_id=?1, body=?2 WHERE project_id=?3",
+            params![
+                blank.foreign_id,
+                serde_json::to_string(&blank).unwrap(),
+                project.as_str()
+            ],
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            store.task_foreign_links(&project, &task),
+            Err(StoreError::Domain(DomainError::InvalidForeignReference))
+        ),
+        "an edited row is refused by the read that would serve it"
+    );
 }
