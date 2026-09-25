@@ -84,6 +84,7 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),
     ("set_task_dependencies", Risk::Mutation),
+    ("get_task_graph", Risk::ReadOnly),
     ("set_task_foreign_links", Risk::Mutation),
     ("acquire_task_lease", Risk::Mutation),
     ("release_task_lease", Risk::Mutation),

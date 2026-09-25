@@ -15,6 +15,7 @@ mod binding;
 mod dependency;
 mod elevation;
 mod foreign;
+mod graph;
 mod lease;
 mod preparation;
 mod provider;

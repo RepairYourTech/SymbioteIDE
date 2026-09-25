@@ -286,6 +286,17 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "task-graph",
+            summary: "count progress, closure, blockers, critical path and stream overlap for a project",
+            usage: "task-graph <project_id>",
+            kind: Some("get_task_graph"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("get_task_graph"), map);
+                id_field(args, 0, "project_id", "project_id", map)?;
+                Ok(())
+            },
+        },
+        Command {
             name: "get-team",
             summary: "read a Project's Team configuration",
             usage: "get-team <project_id>",

@@ -181,7 +181,7 @@ impl DispatchPreparation {
         // at or past the start is. This is the projection's schedulable core
         // condition; dependency/stream/lease detail is recorded by the
         // scheduler slice.
-        let schedulable = matches!(task.state(), TaskState::Ready | TaskState::Assigned);
+        let schedulable = task.state().is_startable();
         steps.push(CompositionStep::Scheduling { schedulable });
         steps.push(CompositionStep::Routing {
             resolved: routed_role.clone(),

@@ -78,6 +78,76 @@ fn team_management_requires_its_own_project_grant_and_rejects_authority_injectio
 }
 
 #[test]
+fn the_task_graph_read_is_a_project_read_and_not_owner_authority() {
+    let reader = Principal::restricted(
+        UserId::new("graph-reader").unwrap(),
+        BTreeMap::from([(project_id(), BTreeSet::from([ProjectPermission::Read]))]),
+    );
+    assert!(
+        authorize(
+            &reader,
+            &request(Operation::GetTaskGraph {
+                project_id: project_id(),
+            }),
+        )
+        .is_ok(),
+        "a Project read is authority to read that Project's DAG"
+    );
+    // Another Project's graph is not this grant's business, and no other
+    // permission reaches the read either.
+    assert_eq!(
+        authorize(
+            &reader,
+            &request(Operation::GetTaskGraph {
+                project_id: ProjectId::new("project-b").unwrap(),
+            }),
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::PermissionDenied
+    );
+    for permission in [
+        ProjectPermission::CreateTask,
+        ProjectPermission::ManageWork,
+        ProjectPermission::Register,
+    ] {
+        let other = Principal::restricted(
+            UserId::new("graph-reader").unwrap(),
+            BTreeMap::from([(project_id(), BTreeSet::from([permission]))]),
+        );
+        assert_eq!(
+            authorize(
+                &other,
+                &request(Operation::GetTaskGraph {
+                    project_id: project_id(),
+                }),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::PermissionDenied,
+            "{permission:?} is not authority to read the DAG"
+        );
+    }
+    // The wire carries the Project and nothing else: no actor, no percentage and
+    // no field that could move a Task.
+    let encoded = serde_json::to_value(Operation::GetTaskGraph {
+        project_id: project_id(),
+    })
+    .unwrap();
+    assert_eq!(
+        encoded,
+        json!({"kind": "get_task_graph", "project_id": "project-a"})
+    );
+    // The capability that advertises it is published, so a client can find it.
+    assert!(
+        negotiate(&[CURRENT_VERSION])
+            .unwrap()
+            .capabilities
+            .contains(&symbiote_protocol::Capability::TaskGraphRead)
+    );
+}
+
+#[test]
 fn project_grants_do_not_authorize_resource_consent_or_revocation() {
     let snapshot = serde_json::from_value(json!({"project_id":"project-a","role_id":"lead","profile_id":"profile",
         "host_id":"host","resource_ref":"tool","fingerprint":"a".repeat(64),
@@ -529,7 +599,7 @@ fn work_references_require_read_access_even_after_reference_is_removed() {
 
 #[test]
 fn golden_request_and_response_remain_stable() {
-    let fixture = r#"{"version":{"major":1,"minor":27},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
+    let fixture = r#"{"version":{"major":1,"minor":28},"correlation_id":"request-a","command_id":"command-a","operation":{"kind":"get_project","project_id":"project-a"}}"#;
     let parsed = parse_request(fixture.as_bytes()).unwrap();
     assert_eq!(serde_json::to_string(&parsed).unwrap(), fixture);
     let error = Response::failure(
@@ -538,7 +608,7 @@ fn golden_request_and_response_remain_stable() {
     );
     assert_eq!(
         serde_json::to_value(error).unwrap(),
-        json!({"version":{"major":1,"minor": 27},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
+        json!({"version":{"major":1,"minor": 28},"correlation_id":"request-a","result":{"Err":{"code":"not_found","message":"resource not found"}}})
     );
 }
 
