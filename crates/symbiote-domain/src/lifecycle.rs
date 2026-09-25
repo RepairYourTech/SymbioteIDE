@@ -29,6 +29,14 @@ pub enum DomainError {
     MissingReference,
     ResourceLimit,
     InvalidPreparation,
+    /// A foreign runtime reference that cannot be held: not a harness's own
+    /// identifier, blank, or shaped as a session nested in a session. The
+    /// refusal is the shape, never a repaired record.
+    InvalidForeignReference,
+    /// One foreign item named twice in a single set with two different
+    /// observations. The set is refused rather than resolved, because which
+    /// observation the caller meant is a fact this layer does not hold.
+    ForeignObservationConflict,
 }
 impl fmt::Display for DomainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -26,7 +26,9 @@ pub struct ExternalReference {
     pub system: ExternalSystem,
     pub locator: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalSystem {
     Github,

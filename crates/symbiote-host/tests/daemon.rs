@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 25},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 26},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -3075,4 +3075,167 @@ fn the_runtime_inventory_is_served_from_the_private_file_and_every_refusal_is_na
     // And removing the file is the first refusal again, not a permanent state.
     std::fs::remove_file(&published).unwrap();
     refused(&read(&host), "no_published_inventory");
+}
+
+#[test]
+fn foreign_runtime_links_persist_survive_restart_and_complete_nothing() {
+    let mut host = Host::new();
+    ok(&host.call(request("register-foreign", project("foreign"))));
+    ok(&host.call(request("foreign-maintenance", maintenance("foreign"))));
+    ok(&host.call(request("foreign-task", task("foreign-task", "foreign"))));
+    // A foreign harness's own session and its own todo inside that session,
+    // the todo reported as complete by the harness that owns it.
+    let links = json!([
+        {"system":"harness","kind":"session","foreign_id":"codex-session-01","foreign_status":"active"},
+        {"system":"harness","kind":"task","foreign_id":"codex-todo-7","foreign_session_id":"codex-session-01","foreign_status":"complete"}
+    ]);
+    let set = |command: &str, task_id: &str, links: Value| {
+        request(
+            command,
+            json!({"kind":"set_task_foreign_links","project_id":"foreign","task_id":task_id,"links":links}),
+        )
+    };
+    let record = set("foreign-record", "foreign-task", links.clone());
+    ok(&host.call(record.clone()));
+    host.crash();
+    host.start();
+    // The record is durable and an identical retry is the same command.
+    assert_eq!(ok(&host.call(record))["data"]["replayed"], true);
+    let read = request(
+        "foreign-read",
+        json!({"kind":"get_task_foreign_links","project_id":"foreign","task_id":"foreign-task"}),
+    );
+    let served_response = host.call(read.clone());
+    let served = ok(&served_response);
+    assert_eq!(served["kind"], "task_foreign_links");
+    let served_links = served["data"].as_array().unwrap().clone();
+    assert_eq!(served_links.len(), 2);
+    let done = served_links
+        .iter()
+        .find(|link| link["foreign_status"] == "complete")
+        .expect("the harness's own complete is served as itself");
+    assert_eq!(done["kind"], "task");
+    assert_eq!(done["foreign_id"], "codex-todo-7");
+    // The observation time is the Host's own: a request cannot name one, and
+    // what comes back is the instant this daemon recorded the set.
+    for link in &served_links {
+        let observed = link["observed_at"].as_u64().expect("a stamped link");
+        assert!(
+            observed > 1_700_000_000_000,
+            "a link carries the Host's own instant, not a caller's: {observed}"
+        );
+    }
+    // The property the whole surface exists for: the canonical Task is exactly
+    // what it was. A foreign `complete` is not canonical completion, and the
+    // Task's revision did not move by a single event.
+    let task_read = host.call(request(
+        "foreign-task-read",
+        json!({"kind":"get_task","project_id":"foreign","task_id":"foreign-task"}),
+    ));
+    let canonical = ok(&task_read);
+    assert_eq!(canonical["data"]["state"], "ready");
+    assert_eq!(canonical["data"]["revision"], 0);
+    // A worker cannot turn the foreign claim into completion: the canonical
+    // completion path still demands the Host's own verification.
+    let request_completion = request(
+        "foreign-complete",
+        json!({"kind":"request_task_completion","task_id":"foreign-task","dispatch_id":"dispatch-a","report":"the foreign todo says done"}),
+    );
+    assert!(host.call(request_completion)["result"]["Err"].is_object());
+    assert_eq!(
+        ok(&host.call(request(
+            "foreign-task-read-again",
+            json!({"kind":"get_task","project_id":"foreign","task_id":"foreign-task"}),
+        )))["data"]["state"],
+        "ready"
+    );
+    // Every named refusal is refused over the wire, and the recorded set is
+    // unchanged afterwards.
+    let refusals = [
+        (
+            "foreign-wrong-system",
+            json!([{"system":"ci","kind":"session","foreign_id":"codex-session-02","foreign_status":"active"}]),
+            "invalid_request",
+        ),
+        (
+            "foreign-nested-session",
+            json!([{"system":"harness","kind":"session","foreign_id":"codex-session-03","foreign_session_id":"other","foreign_status":"active"}]),
+            "invalid_request",
+        ),
+        (
+            "foreign-blank-id",
+            json!([{"system":"harness","kind":"session","foreign_id":"   ","foreign_status":"active"}]),
+            "invalid_request",
+        ),
+        (
+            "foreign-long-id",
+            json!([{"system":"harness","kind":"session","foreign_id":"s".repeat(257),"foreign_status":"active"}]),
+            "invalid_request",
+        ),
+        (
+            "foreign-two-observations",
+            json!([
+                {"system":"harness","kind":"session","foreign_id":"codex-session-04","foreign_status":"active"},
+                {"system":"harness","kind":"session","foreign_id":"codex-session-04","foreign_status":"complete"}
+            ]),
+            "invalid_request",
+        ),
+        (
+            "foreign-ghost-task",
+            json!([{"system":"harness","kind":"session","foreign_id":"codex-session-05","foreign_status":"active"}]),
+            "not_found",
+        ),
+    ];
+    for (command, links, code) in refusals {
+        let refused = host.call(set(
+            command,
+            if code == "not_found" {
+                "ghost"
+            } else {
+                "foreign-task"
+            },
+            links,
+        ));
+        assert_eq!(
+            refused["result"]["Err"]["code"], code,
+            "{command} must be refused as {code}"
+        );
+    }
+    let after_refusals = host.call(read);
+    assert_eq!(
+        ok(&after_refusals)["data"].as_array().unwrap().clone(),
+        served_links,
+        "a refused set changes nothing that was recorded"
+    );
+    // The journal shows the accepted set and no task transition, and the Host
+    // is still serving after every refusal.
+    let journal_read = host.call(request(
+        "foreign-journal",
+        json!({"kind":"read_journal","project_id":"foreign","after":0,"limit":100}),
+    ));
+    let journal = ok(&journal_read);
+    let kinds: Vec<String> = journal["data"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            event["payload"]["kind"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| *kind == "task_foreign_links_set")
+            .count(),
+        1,
+        "one accepted set, no refusals journaled: {kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|kind| kind == "task_changed"),
+        "no canonical task transition was written: {kinds:?}"
+    );
+    ok(&host.call(request("foreign-alive", json!({"kind":"health"}))));
 }

@@ -16,6 +16,7 @@ fn storage_error(error: StoreError) -> ProtocolError {
         StoreError::InvalidBinding
         | StoreError::InvalidRoute
         | StoreError::InvalidDependency
+        | StoreError::InvalidForeignLink
         | StoreError::InvalidLease => ErrorCode::InvalidRequest,
         StoreError::DependenciesUnresolved => ErrorCode::Conflict,
         StoreError::InvalidProvider | StoreError::InvalidPreparation => ErrorCode::InvalidRequest,
@@ -250,6 +251,24 @@ fn dependency_timestamp(store: &Store, request: &Request) -> Result<Timestamp, P
     ))
 }
 
+fn foreign_link_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .foreign_link_command_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+        .as_millis();
+    Ok(Timestamp(
+        millis
+            .try_into()
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
+    ))
+}
+
 fn work_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .work_command_timestamp(&request.command_id)
@@ -366,6 +385,38 @@ fn execute(
                 }
             }
             Ok(ResponseBody::TaskDependencies(edges.into_iter().collect()))
+        }
+        Operation::SetTaskForeignLinks {
+            project_id,
+            task_id,
+            links,
+        } => {
+            // The Host owns the observation time and the journal entry; the
+            // wire carries no actor, no time and no canonical status, so a
+            // foreign harness's own `complete` is stored as that harness's
+            // claim, stamped when this Host recorded it, and the Task it is
+            // held against does not move.
+            let at = foreign_link_timestamp(store, request)?;
+            store
+                .set_task_foreign_links(
+                    request.command_id.clone(),
+                    project_id.clone(),
+                    task_id.clone(),
+                    links.iter().map(|claim| claim.observed_at(at)).collect(),
+                    principal.user_id().clone(),
+                    at,
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::GetTaskForeignLinks {
+            project_id,
+            task_id,
+        } => {
+            let links = store
+                .task_foreign_links(project_id, task_id)
+                .map_err(storage_error)?;
+            Ok(ResponseBody::TaskForeignLinks(links.into_iter().collect()))
         }
         Operation::AcquireTaskLease {
             task_id,
@@ -1441,6 +1492,19 @@ fn execute(
                                 actor,
                                 at,
                             },
+                            symbiote_store::EventPayload::TaskForeignLinksSet {
+                                task_id,
+                                project_id,
+                                links,
+                                actor,
+                                at,
+                            } => EventPayload::TaskForeignLinksSet {
+                                task_id,
+                                project_id,
+                                links,
+                                actor,
+                                at,
+                            },
                             symbiote_store::EventPayload::WorkItemCreated { item } => {
                                 EventPayload::WorkItemCreated { item }
                             }
@@ -1692,4 +1756,54 @@ fn resolve_route(
     let team = store.get_team(&request.project_id).map_err(storage_error)?;
     symbiote_workforce::resolve_route(&team, request)
         .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
+}
+
+#[cfg(test)]
+mod storage_error_tests {
+    use super::*;
+
+    /// The refusal vocabulary the Host's storage mapping publishes. A store
+    /// refusal that exists is a refusal a client can be told about: each entry
+    /// here is a case that would otherwise be the generic `internal`, so a
+    /// caller sees what was refused rather than that something was.
+    #[test]
+    fn every_named_store_refusal_maps_to_a_typed_client_error() {
+        for (error, code) in [
+            (StoreError::NotFound, ErrorCode::NotFound),
+            (StoreError::InvalidForeignLink, ErrorCode::InvalidRequest),
+            (StoreError::InvalidDependency, ErrorCode::InvalidRequest),
+            (StoreError::InvalidLease, ErrorCode::InvalidRequest),
+            (StoreError::InvalidPreparation, ErrorCode::InvalidRequest),
+            (StoreError::InvalidProvider, ErrorCode::InvalidRequest),
+            (StoreError::InvalidElevation, ErrorCode::InvalidRequest),
+            (StoreError::InvalidBinding, ErrorCode::InvalidRequest),
+            (StoreError::InvalidRoute, ErrorCode::InvalidRequest),
+            (StoreError::InvalidTeam, ErrorCode::InvalidRequest),
+            (StoreError::InvalidInitialState, ErrorCode::InvalidRequest),
+            (StoreError::InvalidConsent, ErrorCode::InvalidRequest),
+            (StoreError::RelationshipMismatch, ErrorCode::InvalidRequest),
+            (StoreError::DependenciesUnresolved, ErrorCode::Conflict),
+            (StoreError::ResourceExhausted, ErrorCode::ResourceExhausted),
+            (
+                StoreError::IdempotencyConflict,
+                ErrorCode::IdempotencyConflict,
+            ),
+            (StoreError::TeamRevisionConflict, ErrorCode::StaleRevision),
+            (
+                StoreError::BindingRevisionConflict,
+                ErrorCode::StaleRevision,
+            ),
+            (StoreError::AlreadyExists, ErrorCode::Conflict),
+            (
+                StoreError::LeaseConflict(symbiote_domain::LeaseError::NotHeld),
+                ErrorCode::Conflict,
+            ),
+        ] {
+            assert_eq!(
+                storage_error(error).code,
+                code,
+                "the mapping must name this refusal rather than collapse it into internal"
+            );
+        }
+    }
 }

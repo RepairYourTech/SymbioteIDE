@@ -1,0 +1,1 @@
+{"kind":"set_task_foreign_links","project_id":"demo","task_id":"task-foreign-links","links":[{"system":"harness","kind":"session","foreign_id":"codex-session-01","foreign_status":"active"},{"system":"harness","kind":"task","foreign_id":"codex-todo-7","foreign_session_id":"codex-session-01","foreign_status":"complete"}]}

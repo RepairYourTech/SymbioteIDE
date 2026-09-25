@@ -133,6 +133,7 @@ canonical!(
     crate::VersionedRoleContract,
     crate::VersionedTaskContract,
     crate::TaskDependencyEdge,
+    crate::ForeignTaskLink,
 );
 
 /// The committed ontology artifact, relative to the workspace root. `--write`
@@ -686,6 +687,7 @@ pub const VOCABULARY: &[Noun] = &[
     // Nouns with no identity of their own
     value("dependency", "TaskDependencyEdge"),
     value("external reference", "ExternalReference"),
+    value("foreign runtime reference", "ForeignTaskLink"),
 ];
 
 /// Whether a list of excused names holds this one.
