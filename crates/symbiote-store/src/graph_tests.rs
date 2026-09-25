@@ -712,12 +712,15 @@ fn a_graph_wider_in_gates_than_the_bound_stops_before_it() {
     let mut store = Store::open(temp.database()).unwrap();
     let (project, _, _) = register(&mut store, "one");
     // 64 gates per task (the per-task edge bound) over enough tasks that the
-    // gate bound is reached before the task bound is.
+    // gate bound is reached before the task bound is. The named side sorts
+    // first, so the read meets every edge's other end inside the same window
+    // as the end that holds the dependency: an edge charged on both sides can
+    // only hide from this graph if its named side is never read, and here it is.
     let targets: Vec<TaskId> = (0..64)
-        .map(|index| graph_task(&mut store, &format!("gates-target-{index:02}")))
+        .map(|index| graph_task(&mut store, &format!("gates-a-target-{index:02}")))
         .collect();
     for owner in 0..40 {
-        let task = graph_task(&mut store, &format!("gates-owner-{owner:02}"));
+        let task = graph_task(&mut store, &format!("gates-b-owner-{owner:02}"));
         let result = set_edges(
             &mut store,
             &format!("gates-{owner:02}"),
@@ -730,17 +733,21 @@ fn a_graph_wider_in_gates_than_the_bound_stops_before_it() {
     let report = graph(&store, &project.id).unwrap();
     // The bound is reached, not approached: 2,048 gates over 32 owners of 64
     // each. Before the gate budget counted only gating edges and read each one
-    // once, the same graph stopped at half this, which is what made the
-    // published number a lie the code did not keep.
+    // once, this same graph stopped at half the published number, which is what
+    // made it a lie the code did not keep.
     assert_eq!(
         report.progress.considered_gates,
         symbiote_domain::MAX_GRAPH_REPORT_GATES,
         "the published gate bound is the number the answer actually carries"
     );
+    // All 64 named tasks are read for nothing — the dependency is already
+    // charged to the task that holds it — and then the gate bound stops the
+    // read after 32 owners. Charge either side twice and the window holds
+    // fewer tasks for the same 2,048, which is what this number says.
     assert_eq!(
         report.progress.considered,
-        symbiote_domain::MAX_GRAPH_REPORT_GATES / 64,
-        "the task bound is not what stopped this read; the gate bound is"
+        64 + symbiote_domain::MAX_GRAPH_REPORT_GATES / 64,
+        "the task bound is not what stopped this read; the gate bound is, and an edge was charged once"
     );
     assert!(report.progress.partial);
     assert_eq!(report.progress.total, 104);
