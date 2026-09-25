@@ -344,6 +344,10 @@ fn tampered_and_forged_foreign_link_rows_are_refused_on_reopen() {
         let temp = Temporary::new();
         let mut store = Store::open(temp.database()).unwrap();
         let (project, task) = register_task(&mut store, &format!("tamper-{tamper}"));
+        // A second Project with a Task whose link set was never set, for the
+        // one corruption a per-key comparison cannot see: a whole owner that
+        // the journal never mentions.
+        let (other_project, other_task) = register_task(&mut store, &format!("untouched-{tamper}"));
         set_links(
             &mut store,
             "foreign-tamper",
@@ -365,9 +369,9 @@ fn tampered_and_forged_foreign_link_rows_are_refused_on_reopen() {
                     )
                     .unwrap();
             }
-            // A whole well-formed link with no journal event behind it: its
-            // columns and body agree with each other, so only the provenance
-            // direction can refuse it.
+            // A whole well-formed link under an owner the journal never wrote:
+            // its columns and body agree with each other, so only the
+            // provenance direction can refuse it.
             "forged-row" => {
                 let forged = link(ForeignItemKind::Session, "codex-session-99", None);
                 store
@@ -375,8 +379,8 @@ fn tampered_and_forged_foreign_link_rows_are_refused_on_reopen() {
                     .execute(
                         "INSERT INTO task_foreign_links(project_id,task_id,system,item_kind,foreign_id,foreign_session_id,body) VALUES (?1,?2,?3,?4,?5,'',?6)",
                         params![
-                            project.as_str(),
-                            task.as_str(),
+                            other_project.as_str(),
+                            other_task.as_str(),
                             serde_json::to_string(&forged.system).unwrap(),
                             serde_json::to_string(&forged.kind).unwrap(),
                             forged.foreign_id,
