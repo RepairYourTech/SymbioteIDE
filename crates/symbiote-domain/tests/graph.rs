@@ -68,9 +68,27 @@ fn graph(inputs: GraphInputs) -> Result<TaskGraphReport, DomainError> {
     project_answer(&inputs).map(|answer| answer.graph)
 }
 
+/// The whole answer, for a case that reads the gates off the readiness list and
+/// the rest off the DAG block.
+fn answer(inputs: GraphInputs) -> ProjectAnswer {
+    project_answer(&inputs).expect("the answer is computable")
+}
+
 /// The readiness half: what each considered task is waiting on.
 fn readiness(inputs: GraphInputs) -> Vec<TaskReadiness> {
     project_answer(&inputs).unwrap().readiness
+}
+
+/// The gates one task is waiting on, read off an answer the way a caller reads
+/// them. The readiness list is the one place the answer publishes them, so this
+/// is not a private door — it is the only door.
+fn waiting_on(answer: &ProjectAnswer, task_id: &str) -> Vec<TaskGate> {
+    answer
+        .readiness
+        .iter()
+        .find(|entry| entry.task.task_id.as_str() == task_id)
+        .map(|entry| entry.waiting_on.clone())
+        .unwrap_or_default()
 }
 
 #[test]
@@ -85,29 +103,28 @@ fn an_unenforced_edge_kind_cannot_become_a_gate() {
         TaskDependencyKind::ConflictsWith,
         TaskDependencyKind::FollowUpTo,
     ] {
-        let report = graph(inputs(
+        let report = answer(inputs(
             vec![row(ALPHA, "a", "s1", TaskState::Ready)],
             vec![owned("a", [edge(kind, ALPHA, "b")])],
             Vec::new(),
             vec![(reference(ALPHA, "b"), TaskState::Ready)],
-        ))
-        .unwrap();
+        ));
         assert!(
-            report.blockers.is_empty(),
+            waiting_on(&report, "a").is_empty(),
             "{kind:?} must not gate anything"
         );
         assert!(
-            report.remaining.len() == 1,
+            report.graph.remaining.len() == 1,
             "{kind:?} must not gate anything"
         );
         assert_eq!(
-            report.critical_path.length, 1,
+            report.graph.critical_path.length, 1,
             "{kind:?} must not gate anything"
         );
     }
     // `blocks` is the one kind that reaches a task from the other side, and it
     // does gate: the rule is a relation per kind, not a blanket rule.
-    let blocked = graph(inputs(
+    let blocked = answer(inputs(
         vec![row(ALPHA, "b", "s1", TaskState::Ready)],
         Vec::new(),
         vec![(
@@ -122,11 +139,10 @@ fn an_unenforced_edge_kind_cannot_become_a_gate() {
             .collect(),
         )],
         vec![(reference(ALPHA, "a"), TaskState::Ready)],
-    ))
-    .unwrap();
-    assert_eq!(blocked.blockers.len(), 1);
+    ));
+    assert_eq!(waiting_on(&blocked, "b").len(), 1);
     assert_eq!(
-        blocked.blockers[0].gates[0].kind,
+        waiting_on(&blocked, "b")[0].kind,
         TaskDependencyKind::Blocks
     );
 }
@@ -191,8 +207,9 @@ fn readiness_and_the_blocker_list_come_from_one_computation_and_cannot_disagree(
         vec![(reference(ALPHA, "a"), TaskState::Ready)],
     );
     let answer = project_answer(&inputs).unwrap();
-    // The same gate, read two ways off one answer: the readiness list and the
-    // blocker list cannot name different work, because there is only one walk.
+    // The gate list is published once. What an open task is blocked on is its
+    // `waiting_on` off the readiness list, so there is no second copy of the
+    // same gate that could be built from a different walk.
     let from_readiness: Vec<(TaskId, TaskId, TaskDependencyKind)> = answer
         .readiness
         .iter()
@@ -206,25 +223,12 @@ fn readiness_and_the_blocker_list_come_from_one_computation_and_cannot_disagree(
             })
         })
         .collect();
-    let from_blockers: Vec<(TaskId, TaskId, TaskDependencyKind)> = answer
-        .graph
-        .blockers
-        .iter()
-        .flat_map(|entry| {
-            entry.gates.iter().map(move |gate| {
-                (
-                    entry.task.task_id.clone(),
-                    gate.target.task_id.clone(),
-                    gate.kind,
-                )
-            })
-        })
-        .collect();
-    assert_eq!(from_readiness, from_blockers);
     assert_eq!(
         from_readiness,
         vec![(task("b"), task("a"), TaskDependencyKind::Requires)]
     );
+    // And the graph block carries no second copy of it.
+    assert!(!format!("{:?}", answer.graph).contains("TaskGate"));
 }
 
 #[test]
@@ -283,7 +287,7 @@ fn progress_is_counted_from_canonical_states_and_carries_no_percentage() {
 fn blockers_name_the_canonical_tasks_an_open_task_waits_on() {
     // d requires c; c consumes from b (in another Project); a blocks d; and d
     // records a review of e, a kind the store does not enforce yet.
-    let report = graph(inputs(
+    let report = answer(inputs(
         vec![
             row(ALPHA, "a", "s1", TaskState::Completed),
             row(ALPHA, "c", "s1", TaskState::Running),
@@ -310,17 +314,13 @@ fn blockers_name_the_canonical_tasks_an_open_task_waits_on() {
             (reference(ALPHA, "e"), TaskState::Ready),
             (reference(BETA, "b"), TaskState::Ready),
         ],
-    ))
-    .unwrap();
+    ));
     // Two open tasks wait on something: d on c, and c on another Project's b.
-    assert_eq!(report.blockers.len(), 2);
-    let blocked = &report.blockers[1];
-    assert_eq!(blocked.task, reference(ALPHA, "d"));
+    assert_eq!(waiting_on(&report, "d").len(), 1);
     // The satisfied `blocks` gate is history, not a blocker; the unenforced
     // `reviews` kind is not a gate at all.
     assert_eq!(
-        blocked
-            .gates
+        waiting_on(&report, "d")
             .iter()
             .map(|gate| (gate.kind, gate.target.clone(), gate.target_state.clone()))
             .collect::<Vec<_>>(),
@@ -331,9 +331,8 @@ fn blockers_name_the_canonical_tasks_an_open_task_waits_on() {
         )]
     );
     // c waits on a task in another Project, named with the state it is in.
-    let c_blockers = &report.blockers[0];
     assert_eq!(
-        c_blockers.gates[0].target,
+        waiting_on(&report, "c")[0].target,
         reference(BETA, "b"),
         "a cross-Project gate is named, not hidden"
     );
@@ -341,7 +340,7 @@ fn blockers_name_the_canonical_tasks_an_open_task_waits_on() {
 
 #[test]
 fn a_cancelled_prerequisite_still_gates_its_dependent() {
-    let report = graph(inputs(
+    let report = answer(inputs(
         vec![
             row(ALPHA, "a", "s1", TaskState::Cancelled),
             row(ALPHA, "b", "s1", TaskState::Ready),
@@ -349,17 +348,16 @@ fn a_cancelled_prerequisite_still_gates_its_dependent() {
         vec![owned("b", [edge(TaskDependencyKind::Requires, ALPHA, "a")])],
         Vec::new(),
         vec![(reference(ALPHA, "a"), TaskState::Cancelled)],
-    ))
-    .unwrap();
+    ));
     assert!(a_state_is_closed_but_not_completed());
-    assert_eq!(report.blockers.len(), 1);
+    assert_eq!(waiting_on(&report, "b").len(), 1);
     assert_eq!(
-        report.blockers[0].gates[0].target_state,
+        waiting_on(&report, "b")[0].target_state,
         TaskState::Cancelled
     );
     // The closed prerequisite is out of the closure; the dependent is not out of
     // it, and it is still on the blocker list.
-    assert_eq!(report.remaining, vec![reference(ALPHA, "b")]);
+    assert_eq!(report.graph.remaining, vec![reference(ALPHA, "b")]);
 }
 
 fn a_state_is_closed_but_not_completed() -> bool {
@@ -427,6 +425,10 @@ fn the_critical_path_is_the_longest_recorded_chain_into_open_work() {
     assert_eq!(report.critical_path.length, 4);
     assert_eq!(report.critical_path.open, 2);
     assert!(!report.critical_path.truncated);
+    assert!(
+        !report.critical_path.no_open_work,
+        "a chain was measured, so this is not the no-open-work case"
+    );
     assert_eq!(
         report
             .critical_path
@@ -477,11 +479,52 @@ fn the_critical_path_is_the_longest_recorded_chain_into_open_work() {
 }
 
 #[test]
+fn a_project_with_nothing_open_reports_no_chain_rather_than_a_chain_of_zero() {
+    // A finished Project. A chain cannot be measured here — there is no open
+    // work for one to run through — so the answer has to say that rather than
+    // report a length of zero, which reads as a measurement.
+    let report = graph(inputs(
+        vec![
+            row(ALPHA, "a", "s1", TaskState::Completed),
+            row(ALPHA, "b", "s1", TaskState::Cancelled),
+        ],
+        vec![owned("b", [edge(TaskDependencyKind::Requires, ALPHA, "a")])],
+        Vec::new(),
+        vec![(reference(ALPHA, "a"), TaskState::Completed)],
+    ))
+    .unwrap();
+    assert_eq!(report.progress.open, 0);
+    assert_eq!(report.progress.closed, 2);
+    assert!(
+        report.critical_path.no_open_work,
+        "nothing open must be said, not measured as a zero-length chain"
+    );
+    assert_eq!(report.critical_path.length, 0);
+    assert_eq!(report.critical_path.open, 0);
+    assert!(report.critical_path.chain.is_empty());
+    assert!(!report.critical_path.truncated);
+    // A Project with open work says the opposite, so the flag is the fact and
+    // not a constant.
+    let open = graph(inputs(
+        vec![row(ALPHA, "a", "s1", TaskState::Ready)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ))
+    .unwrap();
+    assert!(
+        !open.critical_path.no_open_work,
+        "a lone open task is a chain of one, which is a measurement"
+    );
+    assert_eq!(open.critical_path.length, 1);
+}
+
+#[test]
 fn an_incoming_block_is_read_as_a_dependency_of_the_task_it_blocks() {
     // `blocks` is stored on the blocking task, so the blocked task sees it as an
     // incoming edge: this is the inverted direction, read the one way the
     // store's completion gate reads it.
-    let report = graph(inputs(
+    let report = answer(inputs(
         vec![row(ALPHA, "blocked", "s1", TaskState::Ready)],
         Vec::new(),
         vec![owned(
@@ -489,17 +532,19 @@ fn an_incoming_block_is_read_as_a_dependency_of_the_task_it_blocks() {
             [edge(TaskDependencyKind::Blocks, ALPHA, "blocker")],
         )],
         vec![(reference(ALPHA, "blocker"), TaskState::Ready)],
-    ))
-    .unwrap();
-    assert_eq!(report.blockers.len(), 1);
-    assert_eq!(report.blockers[0].gates[0].kind, TaskDependencyKind::Blocks);
+    ));
+    assert_eq!(waiting_on(&report, "blocked").len(), 1);
     assert_eq!(
-        report.blockers[0].gates[0].target,
+        waiting_on(&report, "blocked")[0].kind,
+        TaskDependencyKind::Blocks
+    );
+    assert_eq!(
+        waiting_on(&report, "blocked")[0].target,
         reference(ALPHA, "blocker")
     );
-    assert_eq!(report.critical_path.length, 2);
+    assert_eq!(report.graph.critical_path.length, 2);
     assert_eq!(
-        report.critical_path.chain,
+        report.graph.critical_path.chain,
         vec![reference(ALPHA, "blocker"), reference(ALPHA, "blocked")]
     );
 }
@@ -723,11 +768,20 @@ fn the_dag_contract_states_what_it_counts_and_what_it_never_invents() {
         "refuses by name (`cycle`) rather than walking it",
         "`not_found`",
         "`progress.partial` says when it did not",
-        "cancelled prerequisite keeps its dependent on this list",
+        "cancelled prerequisite keeps its dependent waiting",
         "are deliberately",
         "writes nothing: no",
-        // One surface, and the reason the second read is gone.
+        // One surface, one copy of each fact, and the reason the second read
+        // and the second copy are gone.
         "is the one scheduling and DAG surface",
+        "**Why one copy of each fact and not two.**",
+        // The bound says which quantity it counts, and carries the measured
+        // cost that shows the whole chain can honour it.
+        "the gate bound counts",
+        "**gating edges**",
+        "42.7% of the",
+        // No open work says so rather than reporting a measured zero.
+        "`no_open_work` is true",
         // The removal is recorded rather than forgotten, and the removed field
         // is named as removed so a reader does not hunt for it.
         "**Same-stream overlap was removed, not deferred.**",
@@ -748,6 +802,16 @@ fn the_dag_contract_states_what_it_counts_and_what_it_never_invents() {
     assert!(
         !hierarchy.contains("get_task_graph(project_id)` is"),
         "the contract still presents the removed read as the one that serves this"
+    );
+    // The duplicate gate list is named only as removed, so a reader who hunts
+    // for `dag.blockers` finds the record of its deletion, not a promise.
+    assert!(
+        hierarchy.contains("v1.29 published a second `dag.blockers` list"),
+        "the contract does not record the duplicate gate list as removed"
+    );
+    assert!(
+        hierarchy.contains("the duplicate is gone"),
+        "the contract does not say the duplicate was deleted rather than reconciled"
     );
 }
 

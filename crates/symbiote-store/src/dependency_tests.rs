@@ -407,3 +407,177 @@ fn tampered_dependency_rows_are_refused_on_reopen() {
         Err(StoreError::Integrity(_))
     ));
 }
+
+fn command(id: &str, action: TaskAction) -> TaskCommand {
+    TaskCommand {
+        id: id!(CommandId, id),
+        expected_revision: Revision(0),
+        actor: Actor::Host(id!(HostId, "host")),
+        at: Timestamp(12),
+        action,
+    }
+}
+
+#[test]
+fn a_cancelled_prerequisite_does_not_satisfy_a_completion_gate() {
+    let mut store = Store::memory().unwrap();
+    let (project, task) = register_task(&mut store, "cancelled-gate");
+    let (other_project, other_task) = register_task(&mut store, "cancelled-gate2");
+    set_edges(
+        &mut store,
+        "dep-cancelled",
+        &project,
+        &task,
+        &[edge(
+            TaskDependencyKind::Requires,
+            other_project.as_str(),
+            other_task.as_str(),
+        )],
+        11,
+    )
+    .unwrap();
+    // Cancelled is closed, but it produced nothing the dependent required, so
+    // the gate is not satisfied. The rule is the domain's `gate_satisfied`; the
+    // write path asks it rather than restating `Completed`, so a change to what
+    // counts as delivered lands in one place and both readers follow.
+    store
+        .apply_task(
+            &other_task,
+            command(
+                "cancel-prerequisite",
+                TaskAction::Cancel {
+                    reason: "not needed".into(),
+                },
+            ),
+        )
+        .unwrap();
+    assert!(
+        !symbiote_domain::gate_satisfied(&TaskState::Cancelled),
+        "the domain rule this write path reads"
+    );
+    assert!(matches!(
+        store.dependencies_satisfied_for_completion(&project, &task),
+        Err(StoreError::DependenciesUnresolved)
+    ));
+}
+
+#[test]
+fn only_the_enforced_kinds_block_completion() {
+    let mut store = Store::memory().unwrap();
+    let (project, task) = register_task(&mut store, "kinds");
+    let (other_project, other_task) = register_task(&mut store, "kinds2");
+    // The kinds whose relation is Start, recorded on the dependent, hold the
+    // dependent back. The write path decides that by asking `orders_start`,
+    // which asks `dependency_relation`, so this table is the domain's rather
+    // than a list written out again in the store where it could drift.
+    for (index, kind) in [
+        TaskDependencyKind::Requires,
+        TaskDependencyKind::ConsumesContractFrom,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        set_edges(
+            &mut store,
+            &format!("dep-kind-{index}"),
+            &project,
+            &task,
+            &[edge(kind, other_project.as_str(), other_task.as_str())],
+            11 + index as u64,
+        )
+        .unwrap();
+        assert!(
+            symbiote_domain::orders_start(&kind),
+            "{kind:?} holds its owner back, per the domain"
+        );
+        assert!(
+            matches!(
+                store.dependencies_satisfied_for_completion(&project, &task),
+                Err(StoreError::DependenciesUnresolved)
+            ),
+            "{kind:?} must gate completion"
+        );
+    }
+    // `blocks` is the other enforced relation and it is read from the other
+    // side: stored on the task that does the blocking, it holds the *target*
+    // back. The direction is what decides which list an edge is read from, and
+    // both lists are the domain's rather than the store's. Recording it in both
+    // directions at once would be a cycle, which the writer refuses — so the
+    // dependent's own set is cleared first and only the incoming side is kept.
+    assert!(symbiote_domain::blocks_completion(
+        &TaskDependencyKind::Blocks
+    ));
+    assert!(
+        !symbiote_domain::orders_start(&TaskDependencyKind::Blocks),
+        "a blocks edge does not hold its own owner back; it holds the target"
+    );
+    set_edges(&mut store, "dep-kind-clear", &project, &task, &[], 14).unwrap();
+    set_edges(
+        &mut store,
+        "dep-kind-incoming",
+        &other_project,
+        &other_task,
+        &[edge(
+            TaskDependencyKind::Blocks,
+            project.as_str(),
+            task.as_str(),
+        )],
+        15,
+    )
+    .unwrap();
+    assert!(matches!(
+        store.dependencies_satisfied_for_completion(&project, &task),
+        Err(StoreError::DependenciesUnresolved)
+    ));
+    // The incoming `blocks` edge still gates, so it is cleared before the
+    // provenance kinds are tried; otherwise the case would be asserting that
+    // nothing gates while a gate is recorded.
+    set_edges(
+        &mut store,
+        "dep-kind-clear-blocks",
+        &other_project,
+        &other_task,
+        &[],
+        16,
+    )
+    .unwrap();
+    assert!(
+        store
+            .dependencies_satisfied_for_completion(&project, &task)
+            .is_ok(),
+        "with every enforced edge cleared, nothing gates"
+    );
+    // The five recorded-but-unenforced kinds must not gate. A write path that
+    // restated the kinds by hand could enforce a policy the owning slice has
+    // not written.
+    for (index, kind) in [
+        TaskDependencyKind::Reviews,
+        TaskDependencyKind::Verifies,
+        TaskDependencyKind::Supersedes,
+        TaskDependencyKind::ConflictsWith,
+        TaskDependencyKind::FollowUpTo,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        set_edges(
+            &mut store,
+            &format!("dep-kind-p-{index}"),
+            &project,
+            &task,
+            &[edge(kind, other_project.as_str(), other_task.as_str())],
+            21 + index as u64,
+        )
+        .unwrap();
+        assert!(
+            !symbiote_domain::completion_blocking(&kind),
+            "{kind:?} is provenance the domain owns"
+        );
+        assert!(
+            store
+                .dependencies_satisfied_for_completion(&project, &task)
+                .is_ok(),
+            "{kind:?} must not gate completion"
+        );
+    }
+}

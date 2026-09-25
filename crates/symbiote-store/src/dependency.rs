@@ -269,14 +269,13 @@ pub(super) fn completion_gate(
         for row in outgoing {
             let (kind, target_project, target_task) = row?;
             let kind: TaskDependencyKind = serde_json::from_str(&kind)?;
-            // Outgoing direction: only these kinds mean "owner waits on
-            // target". A `blocks` edge means the TARGET waits on the owner,
-            // so it gates through the incoming scan below only — gating both
-            // directions would deadlock every blocks pair.
-            if matches!(
-                kind,
-                TaskDependencyKind::Requires | TaskDependencyKind::ConsumesContractFrom
-            ) {
+            // Outgoing direction: the owner waits on the target. A `blocks`
+            // edge means the TARGET waits on the owner, so it gates through
+            // the incoming scan below only — gating both directions would
+            // deadlock every blocks pair. `orders_start` is the one owner of
+            // which kinds mean this, so this scan cannot drift from the DAG
+            // answer's.
+            if orders_start(&kind) {
                 blocking.push((target_project, target_task));
             }
         }
@@ -293,7 +292,10 @@ pub(super) fn completion_gate(
         for row in incoming {
             let (kind, owner_project, owner_task) = row?;
             let kind: TaskDependencyKind = serde_json::from_str(&kind)?;
-            if matches!(kind, TaskDependencyKind::Blocks) {
+            // Incoming direction: the edge is stored on the task that blocks,
+            // so the owner is the work that has to finish. `blocks_completion`
+            // is the one owner of which kinds mean this.
+            if blocks_completion(&kind) {
                 blocking.push((owner_project, owner_task));
             }
         }
@@ -307,7 +309,11 @@ pub(super) fn completion_gate(
                 .optional()?
                 .ok_or(StoreError::RelationshipMismatch)?;
             let target: Task = serde_json::from_str(&body)?;
-            if target.state() != &TaskState::Completed {
+            // What satisfies a gate is the domain's one rule, the same one the
+            // DAG answer and the scheduling projection read. A change to what
+            // counts as delivered therefore lands here without this write path
+            // being restated.
+            if !gate_satisfied(target.state()) {
                 return Err(StoreError::DependenciesUnresolved);
             }
         }

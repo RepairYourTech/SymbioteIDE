@@ -30,8 +30,12 @@ fn set_edges(
 }
 
 fn requires(project: &ProjectId, task: &TaskId) -> TaskDependencyEdge {
+    edge(TaskDependencyKind::Requires, project, task)
+}
+
+fn edge(kind: TaskDependencyKind, project: &ProjectId, task: &TaskId) -> TaskDependencyEdge {
     TaskDependencyEdge {
-        kind: TaskDependencyKind::Requires,
+        kind,
         target: TaskDependencyTarget {
             project_id: project.clone(),
             task_id: task.clone(),
@@ -45,6 +49,19 @@ fn graph(store: &Store, project: &ProjectId) -> Result<TaskGraphReport> {
     store
         .scheduling_projection(project, Timestamp(30))
         .map(|p| p.dag)
+}
+
+/// The gates one task is waiting on, read the way a caller reads them: off the
+/// readiness list, which is the one place the projection publishes them.
+fn waiting_on(store: &Store, project: &ProjectId, task: &TaskId) -> Vec<TaskGate> {
+    store
+        .scheduling_projection(project, Timestamp(30))
+        .unwrap()
+        .readiness
+        .into_iter()
+        .find(|entry| entry.task.task_id == *task)
+        .map(|entry| entry.waiting_on)
+        .unwrap_or_default()
 }
 
 fn blocks(project: &ProjectId, task: &TaskId) -> TaskDependencyEdge {
@@ -135,12 +152,11 @@ fn the_dag_report_counts_canonical_rows_and_names_nothing_else() {
         vec![b.as_str(), c.as_str()]
     );
     // b waits on c, and c's canonical state travels with the gate.
-    assert_eq!(report.blockers.len(), 1);
-    let blocked = &report.blockers[0];
-    assert_eq!(blocked.task.task_id, b);
-    assert_eq!(blocked.gates[0].kind, TaskDependencyKind::Requires);
-    assert_eq!(blocked.gates[0].target.task_id, c);
-    assert_eq!(blocked.gates[0].target_state, TaskState::Queued);
+    let blocked = waiting_on(&store, &project.id, &b);
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].kind, TaskDependencyKind::Requires);
+    assert_eq!(blocked[0].target.task_id, c);
+    assert_eq!(blocked[0].target_state, TaskState::Queued);
     assert_eq!(report.critical_path.length, 2);
     assert_eq!(report.critical_path.open, 2);
 
@@ -158,7 +174,10 @@ fn the_dag_report_counts_canonical_rows_and_names_nothing_else() {
         )
         .unwrap();
     let after = graph(&store, &project.id).unwrap();
-    assert_eq!(after.blockers[0].gates[0].target_state, TaskState::Blocked);
+    assert_eq!(
+        waiting_on(&store, &project.id, &b)[0].target_state,
+        TaskState::Blocked
+    );
     assert_eq!(after.progress.open, 2);
     // A read writes nothing: the journal is exactly what was recorded before
     // the reads, and the reads are not in it.
@@ -186,12 +205,11 @@ fn an_incoming_block_is_read_as_a_dependency_of_the_task_it_blocks() {
     .unwrap();
 
     let report = graph(&store, &project.id).unwrap();
-    assert_eq!(report.blockers.len(), 1);
-    let blocked = &report.blockers[0];
-    assert_eq!(blocked.task.task_id, b);
-    assert_eq!(blocked.gates[0].kind, TaskDependencyKind::Blocks);
-    assert_eq!(blocked.gates[0].target.task_id, a);
-    assert_eq!(blocked.gates[0].target_state, TaskState::Ready);
+    let blocked = waiting_on(&store, &project.id, &b);
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].kind, TaskDependencyKind::Blocks);
+    assert_eq!(blocked[0].target.task_id, a);
+    assert_eq!(blocked[0].target_state, TaskState::Ready);
     // The chain runs upstream first, from the blocking task to the blocked one.
     assert_eq!(report.critical_path.length, 2);
     assert_eq!(
@@ -267,9 +285,9 @@ fn an_incoming_edge_whose_index_disagrees_with_its_body_is_refused() {
         [blocks(&project.id, &b)],
     )
     .unwrap();
-    let honest = graph(&store, &project.id).unwrap();
-    assert_eq!(honest.blockers.len(), 1);
-    assert_eq!(honest.blockers[0].gates[0].kind, TaskDependencyKind::Blocks);
+    let honest_waiting = waiting_on(&store, &project.id, &b);
+    assert_eq!(honest_waiting.len(), 1);
+    assert_eq!(honest_waiting[0].kind, TaskDependencyKind::Blocks);
 
     // The row's index says `blocks`; the record it projects says `requires`.
     // The kind is the part the answer is built from, so a read that skipped
@@ -364,18 +382,18 @@ fn a_cross_project_gate_is_named_with_the_state_it_is_in() {
     )
     .unwrap();
 
-    let report = graph(&store, &project.id).unwrap();
     // The other side of the gate is named with its own project, never folded
     // into this Project's rows or hidden from the reader that must know why the
     // work waits.
-    assert_eq!(report.blockers.len(), 1);
-    let gate = &report.blockers[0].gates[0];
+    let waiting = waiting_on(&store, &project.id, &mine);
+    assert_eq!(waiting.len(), 1);
+    let gate = &waiting[0];
     assert_eq!(gate.target.project_id, other.id);
     assert_eq!(gate.target.task_id, *their_task.id());
     assert_eq!(gate.target_state, TaskState::Ready);
     // The other Project's own answer does not mention this Project.
     let theirs = graph(&store, &other.id).unwrap();
-    assert!(theirs.blockers.is_empty());
+    assert!(waiting_on(&store, &other.id, their_task.id()).is_empty());
     assert_eq!(theirs.progress.total, 1);
 }
 
@@ -406,10 +424,10 @@ fn a_cycle_is_refused_by_the_writer_and_diagnosed_by_the_reader() {
         Err(StoreError::Domain(DomainError::Cycle))
     ));
     assert!(store.task_dependencies(&project.id, &b).unwrap().is_empty());
-    assert!(matches!(
-        graph(&store, &project.id),
-        Ok(TaskGraphReport { blockers, .. }) if blockers.len() == 1
-    ));
+    // Only the task that waits carries the gate: `a requires b` holds `a` back,
+    // and `b` waits on nothing.
+    assert_eq!(waiting_on(&store, &project.id, &a).len(), 1);
+    assert_eq!(waiting_on(&store, &project.id, &b).len(), 0);
     // Corrupt the rows directly — the shape a tampered database has — and the
     // read diagnoses the cycle by name instead of walking it.
     store
@@ -478,9 +496,11 @@ fn the_projection_is_the_one_surface_and_readiness_agrees_with_the_schedulable_v
     // One read, and the Project is named on it.
     assert_eq!(projection.project_id, project.id);
     assert_eq!(projection.considered_at, Timestamp(30));
-    assert_eq!(projection.progress.total, 3);
-    // The four answers are all here, not split across two reads.
+    // The four answers are all here, not split across two reads, and each fact
+    // is carried once: progress lives in the DAG block and the gates live in
+    // the readiness list, so there is no second copy of either to disagree.
     assert_eq!(projection.dag.project_id, project.id);
+    assert_eq!(projection.dag.progress.total, 3);
     assert_eq!(projection.dag.critical_path.length, 2);
     assert_eq!(projection.readiness.len(), 3);
 
@@ -599,12 +619,12 @@ fn a_candidate_the_bounded_answer_did_not_read_is_never_offered_for_scheduling()
         .scheduling_projection(&project.id, Timestamp(30))
         .unwrap();
     assert!(
-        projection.progress.partial,
+        projection.dag.progress.partial,
         "a Project over the bound must say it is partial"
     );
-    assert_eq!(projection.progress.total, count);
+    assert_eq!(projection.dag.progress.total, count);
     assert_eq!(
-        projection.progress.considered,
+        projection.dag.progress.considered,
         symbiote_domain::MAX_GRAPH_REPORT_TASKS
     );
     // Every considered task is Ready with no gates, so all of them are offered.
@@ -708,11 +728,108 @@ fn a_graph_wider_in_gates_than_the_bound_stops_before_it() {
         assert!(result.is_ok(), "owner {owner} failed: {result:?}");
     }
     let report = graph(&store, &project.id).unwrap();
-    assert!(
-        report.progress.considered_gates <= symbiote_domain::MAX_GRAPH_REPORT_GATES,
-        "the gate bound is what it says it is, got {}",
-        report.progress.considered_gates
+    // The bound is reached, not approached: 2,048 gates over 32 owners of 64
+    // each. Before the gate budget counted only gating edges and read each one
+    // once, the same graph stopped at half this, which is what made the
+    // published number a lie the code did not keep.
+    assert_eq!(
+        report.progress.considered_gates,
+        symbiote_domain::MAX_GRAPH_REPORT_GATES,
+        "the published gate bound is the number the answer actually carries"
     );
-    assert!(report.progress.considered < 40);
+    assert_eq!(
+        report.progress.considered,
+        symbiote_domain::MAX_GRAPH_REPORT_GATES / 64,
+        "the task bound is not what stopped this read; the gate bound is"
+    );
+    assert!(report.progress.partial);
     assert_eq!(report.progress.total, 104);
+}
+
+#[test]
+fn an_edge_of_an_unenforced_kind_does_not_spend_the_gate_budget() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    // Far more recorded edges than the gate bound, and every one of them a kind
+    // the store does not enforce. A gate is a scheduling decision, so none of
+    // these may be reported as one — and none of them may be charged to the
+    // budget either, or a Project whose recorded provenance was wide would come
+    // back as a handful of tasks with a partial answer nobody could explain.
+    let targets: Vec<TaskId> = (0..64)
+        .map(|index| graph_task(&mut store, &format!("prov-target-{index:02}")))
+        .collect();
+    for owner in 0..40 {
+        let task = graph_task(&mut store, &format!("prov-owner-{owner:02}"));
+        let result = set_edges(
+            &mut store,
+            &format!("prov-{owner:02}"),
+            &project.id,
+            &task,
+            targets
+                .iter()
+                .map(|target| edge(TaskDependencyKind::Reviews, &project.id, target)),
+        );
+        assert!(result.is_ok(), "owner {owner} failed: {result:?}");
+    }
+    let report = graph(&store, &project.id).unwrap();
+    assert_eq!(
+        report.progress.considered_gates, 0,
+        "an unenforced kind is provenance, not a gate, and costs the budget nothing"
+    );
+    assert_eq!(
+        report.progress.considered, report.progress.total,
+        "wide recorded provenance must not truncate the answer"
+    );
+    assert!(!report.progress.partial);
+}
+
+#[test]
+fn a_project_with_no_open_work_says_there_is_no_chain() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    let a = graph_task(&mut store, "closed-a");
+    let b = graph_task(&mut store, "closed-b");
+    set_edges(
+        &mut store,
+        "closed-dep",
+        &project.id,
+        &b,
+        [requires(&project.id, &a)],
+    )
+    .unwrap();
+    // Before this, the answer would be length 0 and an empty chain, which reads
+    // as a measurement of a chain that was found and found empty.
+    let report = graph(&store, &project.id).unwrap();
+    assert!(
+        !report.critical_path.no_open_work,
+        "two open tasks are not the no-open-work case"
+    );
+    for (command, task) in [("closed-cancel-a", &a), ("closed-cancel-b", &b)] {
+        store
+            .apply_task(
+                task,
+                task_command(
+                    command,
+                    Revision(0),
+                    TaskAction::Cancel {
+                        reason: "not needed".into(),
+                    },
+                ),
+            )
+            .unwrap();
+    }
+    let report = graph(&store, &project.id).unwrap();
+    assert_eq!(report.progress.open, 0);
+    assert!(
+        report.critical_path.no_open_work,
+        "nothing open is not a chain of length zero, and the answer must say so"
+    );
+    assert_eq!(report.critical_path.length, 0);
+    assert!(report.critical_path.chain.is_empty());
+    // The recorded chain is history, not an open dependency: `remaining` is
+    // empty because every task is closed, not because the graph was unread.
+    assert!(report.remaining.is_empty());
+    assert!(!report.progress.partial);
 }

@@ -124,15 +124,17 @@ pub struct SchedulingProjection {
     /// The instant the lease half of this answer was judged at, so a caller
     /// can tell a stale `stream_leased` from a current one.
     pub considered_at: Timestamp,
-    /// Progress counted from canonical states, with no percentage field.
-    pub progress: TaskProgress,
     pub schedulable: Vec<SchedulableTask>,
     /// Start candidates that cannot run, each with the stated blocker.
     pub blocked: Vec<BlockedTask>,
-    /// Every considered task and the gates holding it.
+    /// Every considered task and the gates holding it. This is the one place
+    /// the per-task gates are published: what an open task is blocked on is its
+    /// `waiting_on` here, so the same gate is never carried twice.
     pub readiness: Vec<TaskReadiness>,
-    /// The tasks each open task waits on, and the remaining closure. Carried
-    /// here so the DAG answers are reachable from the scheduling surface.
+    /// Progress counted from canonical states, the remaining closure and the
+    /// critical path. Carried here so the DAG answers are reachable from the
+    /// scheduling surface, and `dag.progress` is the only progress the answer
+    /// publishes.
     pub dag: TaskGraphReport,
 }
 

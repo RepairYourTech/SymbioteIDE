@@ -527,7 +527,6 @@ impl Store {
         Ok(SchedulingProjection {
             project_id: project.clone(),
             considered_at: now,
-            progress: answer.graph.progress.clone(),
             schedulable,
             blocked,
             readiness: answer.readiness,

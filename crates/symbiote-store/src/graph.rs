@@ -10,6 +10,11 @@ use std::collections::btree_map::Entry;
 /// The bound is applied by taking the Project's tasks in canonical id order
 /// until either the task or the gate bound would be exceeded, so the answer is
 /// exact over what it considered and `progress.partial` says when it is not.
+/// The gate bound counts **gating edges**: an edge read once, from the side
+/// that holds the dependent, and only when its kind is one the store enforces.
+/// An unenforced kind is recorded provenance no answer names, and the same
+/// edge is never charged twice, so the bound the contract publishes is the
+/// number of gate entries the answer can actually contain.
 /// Cross-Project targets are read from their own rows: the graph is global, and
 /// a report that hid the other side of a gate would be a guess.
 impl Store {
@@ -56,8 +61,21 @@ impl Store {
                 TaskId::new(&task).map_err(|_| StoreError::Integrity("bad task id".into()))?;
             let stream_id = ChangeStreamId::new(&stream)
                 .map_err(|_| StoreError::Integrity("bad task stream".into()))?;
-            let owned = self.owned_edges(project, &task_id)?;
-            let blocked = self.incoming_edges(project, &task_id)?;
+            // Only the edges that actually gate are read, and only they are
+            // counted. An edge of an unenforced kind is recorded provenance, so
+            // counting it would spend the budget on something no answer names;
+            // and an edge is read once, from the side that holds the dependent,
+            // so a single edge is never charged to the budget twice.
+            let owned: BTreeSet<TaskDependencyEdge> = self
+                .owned_edges(project, &task_id)?
+                .into_iter()
+                .filter(|edge| orders_start(&edge.kind))
+                .collect();
+            let blocked: BTreeSet<TaskDependencyEdge> = self
+                .incoming_edges(project, &task_id)?
+                .into_iter()
+                .filter(|edge| blocks_completion(&edge.kind))
+                .collect();
             // Both bounds are checked before the row is taken, so the answer the
             // domain computes is always inside the bounds this module states,
             // and the whole count travels beside the considered one.
@@ -99,7 +117,8 @@ impl Store {
 
     /// The edges one task owns, with the indexed columns checked against each
     /// body exactly as the per-task read does: an index that disagrees with the
-    /// record it projects is refused, never trusted.
+    /// record it projects is refused, never trusted. Every kind is returned;
+    /// the caller keeps the ones that gate and drops the rest.
     fn owned_edges(
         &self,
         project: &ProjectId,
@@ -129,10 +148,11 @@ impl Store {
         Ok(edges)
     }
 
-    /// The edges other tasks own that name this one. Only `blocks` is read as
-    /// an incoming dependency (the store enforces exactly that one this way);
-    /// the other kinds are recorded provenance and are fetched so the domain
-    /// can leave them out of the answer explicitly.
+    /// The edges other tasks own that name this one. Every kind naming this
+    /// task is fetched and returned; the caller keeps the ones that hold this
+    /// task back from completing and drops the rest, so a recorded `blocks`
+    /// edge is found from the blocked task's side and a `requires` edge naming
+    /// it is not mistaken for one.
     ///
     /// Read from the blocked task's side, each edge names the *owner* of the
     /// row — the task whose record the `blocks` edge was written on — because

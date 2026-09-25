@@ -93,6 +93,14 @@ the evidence too, and `get_task_graph` is gone rather than kept as a second
 door. The `expire_stale_leases` sweep no longer repeats the schedulable and
 blocked lists beside its expiries for the same reason.
 
+**Why one copy of each fact and not two.** Having reached one read, the answer
+still carried `progress` twice — once beside the lists and once inside the DAG
+block — and each gate twice, in `readiness` and in `dag.blockers`, with a test
+asserting the two copies were equal. One read is not licence to publish a fact
+twice: a duplicate is a second copy that can disagree, and keeping it equal is a
+test rather than a guarantee. v1.30 publishes each fact once, so there is
+nothing left to reconcile.
+
 * **Readiness** — per considered Task, the state it is in now, the gates recorded
   for it in total, and the gates that are not satisfied yet. Every considered
   Task is answered, not only the held ones: "nothing is in the way" is an answer
@@ -121,16 +129,20 @@ blocked lists beside its expiries for the same reason.
   are not closed, because the Host recovers them to `Ready`.
 * **Remaining closure** — every considered Task that is not closed, in canonical
   id order.
-* **Blockers** — per open Task, the gates that still hold it: the edge kind, the
-  canonical task on the other side (in any Project, named with that Project), and
-  the state that task is in now. A gate is satisfied by completion alone, so a
-  cancelled prerequisite keeps its dependent on this list rather than reading as
-  delivered work. The five kinds the store does not enforce yet (`reviews`,
-  `verifies`, `supersedes`, `conflicts_with`, `follow_up_to`) are deliberately
-  absent: reporting them as blockers would enforce a policy that has not been
-  written. `blocks` appears as an incoming gate, which is where it is stored.
-  Readiness and this list come from one walk over the same gates, so they cannot
-  name different work.
+* **Blockers** — the gates that still hold a Task are published once, as that
+  Task's `waiting_on` in the readiness list: the edge kind, the canonical task on
+  the other side (in any Project, named with that Project), and the state that
+  task is in now. What blocks an open Task is read there, intersected with the
+  remaining closure. v1.29 published a second `dag.blockers` list carrying the
+  same gates and a test asserting the two were equal; the duplicate is gone
+  rather than reconciled, because two copies of one gate are two answers to keep
+  honest. A gate is satisfied by completion alone, so a
+  cancelled prerequisite keeps its dependent waiting rather than reading as
+  delivered work. The five
+  kinds the store does not enforce yet (`reviews`, `verifies`, `supersedes`,
+  `conflicts_with`, `follow_up_to`) are deliberately absent: reporting them as
+  gates would enforce a policy that has not been written. `blocks` appears as an
+  incoming gate, which is where it is stored.
 * **Critical path** — the longest recorded chain of gating edges into the
   Project's open work, with `length` in Tasks (no effort or duration is recorded,
   so this is not a duration), how many of its members are open, and the chain
@@ -141,7 +153,10 @@ blocked lists beside its expiries for the same reason.
   *completion* rather than its start, so it lengthens the chain to delivery
   without stopping the target from being started — which is why such a Task can
   be `schedulable` and still sit on a chain. A closed member is still named: it
-  is history in the chain, not a gap in it.
+  is history in the chain, not a gap in it. A Project whose considered Tasks are
+  all closed has no open work for a chain to run through: `no_open_work` is true,
+  `length` and `open` are zero and the chain is empty, and the flag is what says
+  the zero is the absence of a chain rather than a measured chain of nothing.
 
 **Same-stream overlap was removed, not deferred.** An earlier draft published an
 `overlaps` list of startable Tasks sharing one Change Stream. It could never be
@@ -154,7 +169,15 @@ will be answered there, against a state that can produce it.
 
 Cycles are rejected at every write, and a read that finds one in the rows
 refuses by name (`cycle`) rather than walking it.
-The answer is bounded to 256 Tasks and 2,048 gates: the store takes the
+The answer is bounded to 256 Tasks and 2,048 gates, and the gate bound counts
+**gating edges**: an edge read once, from the side that holds the dependent, and
+only when its kind is one the store enforces. An edge of an unenforced kind is
+recorded provenance that no answer names, and an edge is never charged to the
+budget from both sides, so the published number is the number of gate entries the
+answer can contain. Measured at the bound — 256 Tasks carrying 2,012 gates, the
+widest shape that fits — the compact response is 447,935 bytes, 42.7% of the
+protocol's 1 MiB response bound, so the whole chain can honour this number: the
+gate bound is the binding constraint and the transport is not. The store takes the
 Project's Tasks in canonical id order until either bound would be exceeded, so
 the answer is exact over what it read. `progress.partial` says when it did not
 read the whole Project, so a partial answer announces itself instead of

@@ -4434,7 +4434,7 @@
       },
       "CriticalPath": {
         "additionalProperties": false,
-        "description": "The longest recorded chain of gating edges into the Project's open work.\nWith no effort or duration data recorded, length is measured in tasks, not\ntime. `length` counts every member of the chain and `open` those that are\nnot closed; a member that is closed is still named, because a closed link\nin the recorded chain is history rather than a gap. The chain mixes the two\nenforced relations on purpose: a `blocks` link holds the target's\n*completion* rather than its start, so it lengthens the chain to delivery\nwithout stopping the target from being started.",
+        "description": "The longest recorded chain of gating edges into the Project's open work.\nWith no effort or duration data recorded, length is measured in tasks, not\ntime. `length` counts every member of the chain and `open` those that are\nnot closed; a member that is closed is still named, because a closed link\nin the recorded chain is history rather than a gap. The chain mixes the two\nenforced relations on purpose: a `blocks` link holds the target's\n*completion* rather than its start, so it lengthens the chain to delivery\nwithout stopping the target from being started.\n\nA Project holding no work that still needs scheduling has no critical path\nto report, and `no_open_work` says so rather than leaving `length` at zero\nto be read as a measurement of a chain that was found and found empty.",
         "properties": {
           "chain": {
             "description": "At most [`MAX_CRITICAL_PATH_TASKS`] members, upstream first.",
@@ -4448,6 +4448,10 @@
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "no_open_work": {
+            "description": "True when every task the answer read is closed, so there is no open work\nfor a chain to run through and `length` is zero because there is none,\nnot because one was measured. Every other field is zero or empty when\nthis is true, and a chain is named exactly when it is false.",
+            "type": "boolean"
           },
           "open": {
             "description": "How many of the chain's members are not closed.",
@@ -4464,7 +4468,8 @@
           "length",
           "open",
           "chain",
-          "truncated"
+          "truncated",
+          "no_open_work"
         ],
         "type": "object"
       },
@@ -8587,18 +8592,14 @@
           },
           "dag": {
             "$ref": "#/$defs/TaskGraphReport",
-            "description": "The tasks each open task waits on, and the remaining closure. Carried\nhere so the DAG answers are reachable from the scheduling surface."
-          },
-          "progress": {
-            "$ref": "#/$defs/TaskProgress",
-            "description": "Progress counted from canonical states, with no percentage field."
+            "description": "Progress counted from canonical states, the remaining closure and the\ncritical path. Carried here so the DAG answers are reachable from the\nscheduling surface, and `dag.progress` is the only progress the answer\npublishes."
           },
           "project_id": {
             "$ref": "#/$defs/ProjectId",
             "description": "The Project this answer is for."
           },
           "readiness": {
-            "description": "Every considered task and the gates holding it.",
+            "description": "Every considered task and the gates holding it. This is the one place\nthe per-task gates are published: what an open task is blocked on is its\n`waiting_on` here, so the same gate is never carried twice.",
             "items": {
               "$ref": "#/$defs/TaskReadiness"
             },
@@ -8614,7 +8615,6 @@
         "required": [
           "project_id",
           "considered_at",
-          "progress",
           "schedulable",
           "blocked",
           "readiness",
@@ -9356,26 +9356,6 @@
           }
         ]
       },
-      "TaskBlockers": {
-        "additionalProperties": false,
-        "description": "The gates currently holding one open task, and nothing else: a gate is\nsatisfied by completion alone, so a cancelled prerequisite keeps the\ndependent on this list rather than reading as delivered work. Edge kinds the\nstore does not enforce (`reviews`, `verifies`, `supersedes`,\n`conflicts_with`, `follow_up_to`) are deliberately absent, because reporting\nthem as blockers would enforce a policy their owning slice has not written\nyet.",
-        "properties": {
-          "gates": {
-            "items": {
-              "$ref": "#/$defs/TaskGate"
-            },
-            "type": "array"
-          },
-          "task": {
-            "$ref": "#/$defs/GraphTaskRef"
-          }
-        },
-        "required": [
-          "task",
-          "gates"
-        ],
-        "type": "object"
-      },
       "TaskCommand": {
         "additionalProperties": false,
         "properties": {
@@ -9537,14 +9517,8 @@
       },
       "TaskGraphReport": {
         "additionalProperties": false,
-        "description": "The #94 DAG answer for one Project: what is left, what each open task waits\non, and the chain that decides the rest. The scheduling projection serves\nthis alongside the readiness answer, so there is one surface to read.",
+        "description": "The #94 DAG answer for one Project: what is left and the chain that decides\nthe rest. The scheduling projection serves this beside the readiness answer,\nwhich is the one place the per-task gates are published, so there is one\nsurface to read and each fact is carried once. A caller asking what blocks an\nopen task reads it off that task's `waiting_on` in the readiness list; the\ngate is the same record either way, so publishing it twice would be two\ncopies to keep honest.",
         "properties": {
-          "blockers": {
-            "items": {
-              "$ref": "#/$defs/TaskBlockers"
-            },
-            "type": "array"
-          },
           "critical_path": {
             "$ref": "#/$defs/CriticalPath"
           },
@@ -9566,7 +9540,6 @@
           "project_id",
           "progress",
           "remaining",
-          "blockers",
           "critical_path"
         ],
         "type": "object"
