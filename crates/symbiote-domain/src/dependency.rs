@@ -57,28 +57,59 @@ pub struct TaskDependencies {
     pub edges: BTreeSet<TaskDependencyEdge>,
 }
 
-/// Kinds whose target must complete before the owning task may complete.
-/// `blocks` is inverted: the edge is stored on the blocking task, so the
-/// blocking check reads it as an incoming dependency of the target.
-pub fn completion_blocking(kind: &TaskDependencyKind) -> bool {
-    matches!(
-        kind,
-        TaskDependencyKind::Requires
-            | TaskDependencyKind::ConsumesContractFrom
-            | TaskDependencyKind::Blocks
-    )
+/// What one dependency kind means to a reader. This is the single owner of the
+/// rule: `requires` and `consumes_contract_from` hold the *owner* until the
+/// target completes, `blocks` holds the *target* until the owner completes and
+/// is therefore stored on the blocking task, and the remaining kinds are
+/// recorded with provenance but are not ordering facts yet, so no scheduling
+/// decision may be built on them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyRelation {
+    /// The owning task waits on the target before it may start.
+    Start,
+    /// The target waits on the owner before it may complete. Read from the
+    /// target's side this edge is *incoming*, because it lives on the owner.
+    Completion,
+    /// Recorded with provenance; not an ordering fact yet.
+    Provenance,
 }
 
-/// Kinds that order *starting*: the owning task waits on the target, and the
-/// target must be `Completed` before the owner may start. `blocks` is excluded
-/// because it gates the blocked target's completion rather than this task's
-/// start, and the remaining kinds are recorded with provenance but not yet
-/// enforced, so no scheduling decision may be built on them yet.
+/// The one place a kind's relation is decided. Every reader — the write-time
+/// blocking check, the DAG answer and the scheduling projection — asks this,
+/// so a new kind is gated or not in exactly one place.
+pub fn dependency_relation(kind: &TaskDependencyKind) -> DependencyRelation {
+    match kind {
+        TaskDependencyKind::Requires | TaskDependencyKind::ConsumesContractFrom => {
+            DependencyRelation::Start
+        }
+        TaskDependencyKind::Blocks => DependencyRelation::Completion,
+        TaskDependencyKind::Reviews
+        | TaskDependencyKind::Verifies
+        | TaskDependencyKind::Supersedes
+        | TaskDependencyKind::ConflictsWith
+        | TaskDependencyKind::FollowUpTo => DependencyRelation::Provenance,
+    }
+}
+
+/// True when this edge, read from the task that owns it, holds the owner back
+/// from starting.
 pub fn orders_start(kind: &TaskDependencyKind) -> bool {
-    matches!(
-        kind,
-        TaskDependencyKind::Requires | TaskDependencyKind::ConsumesContractFrom
-    )
+    dependency_relation(kind) == DependencyRelation::Start
+}
+
+/// True when this edge, read from the task that owns it, holds the *target*
+/// back from completing. `blocks` is the only such kind, and it is stored on
+/// the blocking task, so a reader looking at the blocked target finds it as an
+/// incoming edge.
+pub fn blocks_completion(kind: &TaskDependencyKind) -> bool {
+    dependency_relation(kind) == DependencyRelation::Completion
+}
+
+/// Kinds whose target must complete before the owning task may complete, from
+/// either side: the write-time blocking check takes the union of the two
+/// enforced relations rather than restating the kinds.
+pub fn completion_blocking(kind: &TaskDependencyKind) -> bool {
+    !matches!(dependency_relation(kind), DependencyRelation::Provenance)
 }
 
 impl TaskDependencies {

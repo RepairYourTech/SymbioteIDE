@@ -43,8 +43,8 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `list-projects`, `snapshot`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
-`request-task-completion`, `request-elevation`, `scheduling-projection`,
-`task-graph`,
+`request-task-completion`, `request-elevation`,
+`scheduling-projection <project_id>`,
 `get-team`,
 `get-task-origin`, and `raw <operation.json>` for anything the typed
 commands do not cover (the daemon still validates and authorizes every

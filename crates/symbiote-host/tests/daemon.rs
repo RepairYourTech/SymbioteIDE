@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 28},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 29},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1065,7 +1065,12 @@ fn leases_fence_stale_owners_and_the_projection_is_explainable() {
     ok(&host.call(request("lease-maintenance", maintenance("lease"))));
     ok(&host.call(request("lease-task", task("lease-task", "lease"))));
     // The projection over a fresh Ready task explains it as schedulable.
-    let sweep = |command: &str| request(command, json!({"kind":"get_scheduling_projection"}));
+    let sweep = |command: &str| {
+        request(
+            command,
+            json!({"kind":"get_scheduling_projection","project_id":"lease"}),
+        )
+    };
     let first_projection = host.call(sweep("project-1"));
     let schedulable = ok(&first_projection)["data"]["schedulable"]
         .as_array()
@@ -1085,11 +1090,24 @@ fn leases_fence_stale_owners_and_the_projection_is_explainable() {
         host.call(lease_attempt)["result"]["Err"]["code"],
         "invalid_request"
     );
-    // The sweep endpoint expires nothing and still reports the projection.
+    // The sweep expires nothing and carries only its expiries: what can start
+    // is the projection's answer for a Project, not a second copy of it here.
     let sweep_response = host.call(request("sweep-1", json!({"kind":"expire_stale_leases"})));
     let swept = ok(&sweep_response);
     assert_eq!(swept["data"]["expired"].as_array().unwrap().len(), 0);
-    assert_eq!(swept["data"]["schedulable"].as_array().unwrap().len(), 1);
+    assert!(
+        swept["data"].get("schedulable").is_none(),
+        "the sweep must not repeat the projection: {}",
+        swept["data"]
+    );
+    // Which is answered by the projection itself.
+    assert_eq!(
+        ok(&host.call(sweep("project-1b")))["data"]["schedulable"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     host.crash();
     host.start();
     let second_projection = host.call(sweep("project-2"));
@@ -1112,7 +1130,7 @@ fn dispatch_preparation_records_composition_and_refusals() {
     // records the composition steps against durable state.
     let projection_response = host.call(request(
         "disp-projection",
-        json!({"kind":"get_scheduling_projection"}),
+        json!({"kind":"get_scheduling_projection","project_id":"disp"}),
     ));
     let sweep = ok(&projection_response);
     assert_eq!(sweep["data"]["schedulable"].as_array().unwrap().len(), 1);
@@ -1358,11 +1376,22 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
     let error: Value = serde_json::from_slice(&team.stderr).unwrap();
     assert_eq!(error["code"], "not_found");
 
-    // Scheduling projection explains an empty queue.
-    let projection = run(&["scheduling-projection"]);
+    // The one scheduling and DAG surface, scoped to the Project it names: an
+    // empty queue is a real answer for a real Project, and it is the projection
+    // response, not a lease sweep.
+    let projection = run(&["scheduling-projection", "cli"]);
     assert!(projection.status.success());
     let body: Value = serde_json::from_slice(&projection.stdout).unwrap();
-    assert_eq!(body["kind"], "scheduler_sweep");
+    assert_eq!(body["kind"], "scheduling_projection");
+    assert_eq!(body["data"]["project_id"], "cli");
+    assert_eq!(body["data"]["progress"]["total"], 0);
+    assert_eq!(body["data"]["progress"]["partial"], false);
+    assert!(body["data"]["readiness"].as_array().unwrap().is_empty());
+    // A Project this Host does not hold is a refusal, not an empty answer.
+    let ghost = run(&["scheduling-projection", "not-a-project"]);
+    assert_eq!(ghost.status.code(), Some(2));
+    let ghost_body: Value = serde_json::from_slice(&ghost.stderr).unwrap();
+    assert_eq!(ghost_body["code"], "not_found");
 
     // Dispatch preparation against a real task: create one via raw, then
     // exercise prepare/get-preparation/get-task/get-task-origin through the

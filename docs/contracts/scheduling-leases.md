@@ -15,14 +15,22 @@ Leases authorize nothing by themselves — dispatch contracts, permission checks
 
 ## Explainable scheduling projection
 
-`scheduling_projection(now)` walks every startable pre-dispatch task — `Ready`, or `Assigned` once the Host has bound its canonical Role, the same pair the [preparation](dispatch-preparation.md) accepts — and classifies it with a recorded reason. A `Queued` or `Blocked` task is not a candidate at all and appears in neither list: those states say the Host has not (or no longer) presented the task for scheduling, which is not the same fact as a dependency or stream blocker:
+`get_scheduling_projection(project_id)` is the one scheduling and DAG surface;
+[work hierarchy](work-hierarchy.md) states everything it answers, including the
+readiness list and the progress, closure, blocker and critical-path answers that
+travel with it. What follows is the half that is about leases and streams.
+
+`scheduling_projection(project_id, now)` walks the Project's startable
+pre-dispatch tasks — `Ready`, or `Assigned` once the Host has bound its canonical Role, the same pair the [preparation](dispatch-preparation.md) accepts — and classifies it with a recorded reason. A `Queued` or `Blocked` task is not a candidate at all and appears in neither list: those states say the Host has not (or no longer) presented the task for scheduling, which is not the same fact as a dependency or stream blocker:
 
 - **Blocked: `stream_unsafe`** — the owning Change Stream is not `Active` (collided, integrated, cancelled). Stream state decides before the task graph, and stream-level blockers do not collapse into task state.
 - **Blocked: `stream_leased`** — another task holds a live lease on the same stream: same-stream work is serialized by policy.
 - **Blocked: `dependency_unresolved`** — an outgoing `requires`/`consumes_contract_from` target is not `Completed`. (Outgoing `blocks` deliberately does not gate starting: it gates the *target's* completion, matching the #94 direction semantics.)
 - **Schedulable** — with `no_blocking_dependencies` or `dependencies_satisfied`.
 
-Protocol v1.8 adds `acquire_task_lease` and `release_task_lease` (Host-local authority — the bootstrap local-owner policy, since only the Host process holds dispatch identity today; restricted worker identities arrive with #269), `expire_stale_leases` (owner sweep returning expired tokens plus the projection), `get_scheduling_projection` (owner), the `scheduler_sweep` response, the `task_leased` journal payload, and `TaskLeaseManagement`/`SchedulingProjection` capabilities.
+Protocol v1.8 adds `acquire_task_lease` and `release_task_lease` (Host-local authority — the bootstrap local-owner policy, since only the Host process holds dispatch identity today; restricted worker identities arrive with #269), `expire_stale_leases` (owner sweep returning only the expired tokens; what can
+start is the projection's answer for a Project, not a second copy of it on the
+sweep), `get_scheduling_projection` (owner), the `scheduler_sweep` response, the `task_leased` journal payload, and `TaskLeaseManagement`/`SchedulingProjection` capabilities.
 
 ## Evidence and remaining acceptance
 

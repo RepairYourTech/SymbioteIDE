@@ -1,20 +1,21 @@
 //! Canonical DAG answers: progress, the remaining closure, the tasks each
-//! open Task waits on, the critical path, and same-stream overlap. Every field
-//! is counted from recorded task rows and dependency edges — there is no
-//! caller-supplied or agent-reported percentage anywhere in this module, and
-//! nothing here is cached, so an answer cannot drift from the state it names.
+//! open Task waits on, and the critical path. Every field is counted from
+//! recorded task rows and dependency edges — there is no caller-supplied or
+//! agent-reported percentage anywhere in this module, and nothing here is
+//! cached, so an answer cannot drift from the state it names.
 //!
-//! Readiness (which task may start now, and what the scheduler's projection
-//! refuses) is answered by that projection; this module answers the rest of
-//! the #94 DAG surface and does not restate it.
+//! Readiness — which task may start now and what it waits on first — is
+//! answered by the scheduling projection, which carries this module's answers
+//! rather than a second copy of them. See [`TaskGate`] for the one rule about
+//! what satisfies a gate.
 use crate::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Tasks one DAG answer considers, in canonical id order. A Project holding
-/// more is answered partially and says so: `progress.total` keeps the whole
-/// count beside the considered one.
+/// more is answered partially and says so: `progress.partial` is the flag, and
+/// `progress.total` keeps the whole count beside the considered one.
 pub const MAX_GRAPH_REPORT_TASKS: usize = 256;
 /// Gates (dependency edges that order work) one DAG answer reads. The bound
 /// keeps the answer inside the protocol's own response limit rather than
@@ -100,10 +101,26 @@ pub struct TaskProgress {
     /// Considered tasks that are not closed — the size of the remaining
     /// closure.
     pub open: usize,
+    /// True when the answer did not read every task the Project holds. The
+    /// flag rather than an arithmetic comparison a caller has to remember to
+    /// make: an answer that dropped work must say so in the answer, and
+    /// `critical_path.truncated` is about the chain, not about this.
+    pub partial: bool,
+}
+
+/// The one rule about what satisfies a gate: completion alone. A cancelled
+/// prerequisite is closed but produced nothing the dependent required, so the
+/// dependent still waits; a `Failed` or `Interrupted` prerequisite is recovered
+/// to `Ready` and still waits. Every reader of a gate — this module, the
+/// scheduling projection, the write-time blocking check — asks this rather than
+/// re-deriving it, so a change to what counts as delivered lands once.
+pub fn gate_satisfied(target_state: &TaskState) -> bool {
+    target_state.is_completed()
 }
 
 /// One gate a task waits on: the edge kind that orders the work, the canonical
-/// task on the other side, and the state that task is in now.
+/// task on the other side, and the state that task is in now. A gate is
+/// satisfied by [`gate_satisfied`] alone.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskGate {
@@ -128,8 +145,12 @@ pub struct TaskBlockers {
 
 /// The longest recorded chain of gating edges into the Project's open work.
 /// With no effort or duration data recorded, length is measured in tasks, not
-/// time: this names the dependency chain that decides when the work behind it
-/// can start, and says how much of it is already closed.
+/// time. `length` counts every member of the chain and `open` those that are
+/// not closed; a member that is closed is still named, because a closed link
+/// in the recorded chain is history rather than a gap. The chain mixes the two
+/// enforced relations on purpose: a `blocks` link holds the target's
+/// *completion* rather than its start, so it lengthens the chain to delivery
+/// without stopping the target from being started.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CriticalPath {
@@ -139,24 +160,15 @@ pub struct CriticalPath {
     pub open: usize,
     /// At most [`MAX_CRITICAL_PATH_TASKS`] members, upstream first.
     pub chain: Vec<GraphTaskRef>,
-    /// True when `chain` is a prefix of a longer chain.
+    /// True when `chain` is a prefix of a longer chain. This is about the
+    /// chain alone; whether the answer read the whole Project is
+    /// `progress.partial`.
     pub truncated: bool,
 }
 
-/// Startable tasks that share one Change Stream. Same-stream work is serialized
-/// by policy, so two startable tasks in one stream cannot both run; a held
-/// lease on the stream is the dynamic half of that fact and is refused by the
-/// scheduler projection as `stream_leased`, not repeated here.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct StreamOverlap {
-    pub stream_id: ChangeStreamId,
-    pub tasks: Vec<TaskId>,
-}
-
 /// The #94 DAG answer for one Project: what is left, what each open task waits
-/// on, the chain that decides the rest, and where startable work contends for
-/// the same stream.
+/// on, and the chain that decides the rest. The scheduling projection serves
+/// this alongside the readiness answer, so there is one surface to read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskGraphReport {
@@ -167,7 +179,6 @@ pub struct TaskGraphReport {
     pub remaining: Vec<GraphTaskRef>,
     pub blockers: Vec<TaskBlockers>,
     pub critical_path: CriticalPath,
-    pub overlaps: Vec<StreamOverlap>,
 }
 
 impl TaskGraphReport {
@@ -198,6 +209,15 @@ impl TaskGraphReport {
     }
 }
 
+/// The DAG and readiness answers for one Project, computed together because
+/// they read the same gates: splitting them would mean walking the rows twice
+/// and risking two answers to one question.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectAnswer {
+    pub graph: TaskGraphReport,
+    pub readiness: Vec<TaskReadiness>,
+}
+
 /// Answers the #94 DAG questions for one Project from canonical rows alone.
 ///
 /// The waiting-on relation is the one the store already enforces: `requires`
@@ -210,7 +230,7 @@ impl TaskGraphReport {
 /// A graph that contains a cycle is refused by name (`Cycle`) rather than
 /// walked: writes reject cycles, so a cycle read here means the stored rows and
 /// the journal disagree, and any answer built on that would be a guess.
-pub fn task_graph_report(inputs: &GraphInputs) -> Result<TaskGraphReport, DomainError> {
+pub fn project_answer(inputs: &GraphInputs) -> Result<ProjectAnswer, DomainError> {
     let GraphInputs {
         project_id,
         total,
@@ -273,8 +293,8 @@ pub fn task_graph_report(inputs: &GraphInputs) -> Result<TaskGraphReport, Domain
         };
         if let Some(edges) = outgoing.get(&task.task_id) {
             for edge in edges {
-                // `blocks` is stored on the blocking task: it gates the target's
-                // completion, not this task's start.
+                // Read from the owner: `blocks` is stored on the blocking task
+                // and holds the target's completion, not this task's start.
                 if !orders_start(&edge.kind) {
                     continue;
                 }
@@ -283,9 +303,10 @@ pub fn task_graph_report(inputs: &GraphInputs) -> Result<TaskGraphReport, Domain
         }
         if let Some(edges) = incoming.get(&task.task_id) {
             for edge in edges {
-                // Only an incoming `blocks` gates this task; the other kinds
-                // name it as something other than work it waits on.
-                if !matches!(edge.kind, TaskDependencyKind::Blocks) {
+                // Read from the target: the only edge that reaches a task this
+                // way is the one holding its completion, and it is stored on
+                // the blocking task.
+                if !blocks_completion(&edge.kind) {
                     continue;
                 }
                 found.push(gate(edge.kind, edge.target.clone())?);
@@ -346,7 +367,7 @@ pub fn task_graph_report(inputs: &GraphInputs) -> Result<TaskGraphReport, Domain
         };
         let mut open: Vec<TaskGate> = task_gates
             .iter()
-            .filter(|gate| !gate.target_state.is_completed())
+            .filter(|gate| !gate_satisfied(&gate.target_state))
             .cloned()
             .collect();
         if open.is_empty() {
@@ -360,37 +381,56 @@ pub fn task_graph_report(inputs: &GraphInputs) -> Result<TaskGraphReport, Domain
     }
 
     let critical_path = critical_path_of(&ordered, &upstream_of, &depth, &state_of);
-    let mut streams: BTreeMap<ChangeStreamId, Vec<TaskId>> = BTreeMap::new();
-    for task in &ordered {
-        if task.state.is_startable() {
-            streams
-                .entry(task.stream_id.clone())
-                .or_default()
-                .push(task.task_id.clone());
-        }
-    }
 
-    Ok(TaskGraphReport {
-        project_id: project_id.clone(),
-        progress: TaskProgress {
-            total: *total,
-            considered: ordered.len(),
-            considered_gates,
-            states: states
-                .into_values()
-                .map(|(state, tasks)| TaskStateCount { state, tasks })
-                .collect(),
-            closed,
-            open: ordered.len() - closed,
+    // Readiness: every considered task, with the gates that are not satisfied
+    // yet. Published for closed tasks too, with an empty list, because "this
+    // one is finished and nothing holds it" is the answer for a task that has
+    // left the work — and publishing only the held ones would make a caller
+    // infer the difference from a missing entry.
+    let readiness: Vec<TaskReadiness> = ordered
+        .iter()
+        .map(|task| {
+            let mut waiting_on: Vec<TaskGate> = gates
+                .get(&task.task_id)
+                .map(|task_gates| {
+                    task_gates
+                        .iter()
+                        .filter(|gate| !gate_satisfied(&gate.target_state))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            waiting_on.sort();
+            TaskReadiness {
+                task: GraphTaskRef::of(task),
+                state: task.state.clone(),
+                recorded_gates: gates.get(&task.task_id).map_or(0, Vec::len),
+                waiting_on,
+            }
+        })
+        .collect();
+
+    Ok(ProjectAnswer {
+        graph: TaskGraphReport {
+            project_id: project_id.clone(),
+            progress: TaskProgress {
+                total: *total,
+                considered: ordered.len(),
+                considered_gates,
+                states: states
+                    .into_values()
+                    .map(|(state, tasks)| TaskStateCount { state, tasks })
+                    .collect(),
+                closed,
+                open: ordered.len() - closed,
+                // The flag, not a comparison the caller has to remember to make.
+                partial: ordered.len() < *total,
+            },
+            remaining,
+            blockers,
+            critical_path,
         },
-        remaining,
-        blockers,
-        critical_path,
-        overlaps: streams
-            .into_iter()
-            .filter(|(_, tasks)| tasks.len() > 1)
-            .map(|(stream_id, tasks)| StreamOverlap { stream_id, tasks })
-            .collect(),
+        readiness,
     })
 }
 

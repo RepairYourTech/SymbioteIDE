@@ -464,19 +464,22 @@ fn execute(
                 })
                 .map_err(storage_error)
         }
-        Operation::GetTaskGraph { project_id } => {
-            let report = store.task_graph(project_id).map_err(storage_error)?;
+        Operation::GetSchedulingProjection { project_id } => {
+            let now = lease_timestamp(store, request)?;
+            let projection = store
+                .scheduling_projection(project_id, now)
+                .map_err(storage_error)?;
             // The cross-Project rule from #94, applied to a whole answer: a gate
             // that names a task in a Project the caller cannot read is refused
             // rather than served with that side dropped, because an unnamed
             // blocker is a reason the reader cannot act on. Redaction would also
             // let the answer's shape report what it withheld.
-            for referenced in report.referenced_projects() {
+            for referenced in projection.dag.referenced_projects() {
                 if !principal.permits(&referenced, ProjectPermission::Read) {
                     return Err(ProtocolError::new(ErrorCode::PermissionDenied));
                 }
             }
-            Ok(ResponseBody::TaskGraph(Box::new(report)))
+            Ok(ResponseBody::SchedulingProjection(Box::new(projection)))
         }
         Operation::ExpireStaleLeases {} => {
             let now = Timestamp(
@@ -490,7 +493,11 @@ fn execute(
             let expired = store
                 .expire_stale_leases(principal.user_id().clone(), now)
                 .map_err(storage_error)?;
-            let projection = store.scheduling_projection(now).map_err(storage_error)?;
+            // Only the expiry travels here. The sweep used to repeat the
+            // projection's schedulable/blocked lists beside it, which put a
+            // second copy of the scheduling answer on a different surface from
+            // a caller's point of view; a caller that wants to know what can
+            // start asks the projection for the Project it cares about.
             Ok(ResponseBody::SchedulerSweep {
                 expired: expired
                     .into_iter()
@@ -499,8 +506,6 @@ fn execute(
                         fencing_token,
                     })
                     .collect(),
-                schedulable: projection.schedulable,
-                blocked: projection.blocked,
             })
         }
         Operation::ReplaceProviderConnection {
@@ -924,22 +929,6 @@ fn execute(
             .dispatch_preparation(task_id)
             .map(|preparation| ResponseBody::DispatchPreparation(Box::new(preparation)))
             .map_err(storage_error),
-        Operation::GetSchedulingProjection {} => {
-            let now = Timestamp(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
-                    .as_millis()
-                    .try_into()
-                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
-            );
-            let projection = store.scheduling_projection(now).map_err(storage_error)?;
-            Ok(ResponseBody::SchedulerSweep {
-                expired: Vec::new(),
-                schedulable: projection.schedulable,
-                blocked: projection.blocked,
-            })
-        }
         Operation::GetBindingReadiness {
             project_id,
             binding_id,

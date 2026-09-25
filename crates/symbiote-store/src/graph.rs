@@ -1,19 +1,19 @@
 use super::*;
 use std::collections::btree_map::Entry;
 
-/// The #94 DAG read: progress, the remaining closure, per-task blockers, the
-/// critical path and same-stream overlap, all resolved from the store's own
-/// rows. Nothing is derived from a cached column, a report an agent produced or
-/// a caller-supplied number, so the answer cannot disagree with the state it
-/// names.
+/// The #94 DAG and readiness rows, resolved from the store's own rows:
+/// progress, the remaining closure, per-task blockers, the critical path and
+/// what each task is waiting on. Nothing is derived from a cached column, a
+/// report an agent produced or a caller-supplied number, so the answer cannot
+/// disagree with the state it names.
 ///
 /// The bound is applied by taking the Project's tasks in canonical id order
 /// until either the task or the gate bound would be exceeded, so the answer is
-/// exact over what it considered and `progress.total` keeps the whole count
-/// beside it. Cross-Project targets are read from their own rows: the graph is
-/// global, and a report that hid the other side of a gate would be a guess.
+/// exact over what it considered and `progress.partial` says when it is not.
+/// Cross-Project targets are read from their own rows: the graph is global, and
+/// a report that hid the other side of a gate would be a guess.
 impl Store {
-    pub fn task_graph(&self, project: &ProjectId) -> Result<TaskGraphReport> {
+    pub fn project_answer(&self, project: &ProjectId) -> Result<ProjectAnswer> {
         let total: usize = self.connection.query_row(
             "SELECT count(*) FROM tasks WHERE project_id=?1",
             params![project.as_str()],
@@ -87,7 +87,7 @@ impl Store {
                 state: record.state().clone(),
             });
         }
-        Ok(symbiote_domain::task_graph_report(&GraphInputs {
+        Ok(symbiote_domain::project_answer(&GraphInputs {
             project_id: project.clone(),
             total,
             tasks,

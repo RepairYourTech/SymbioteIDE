@@ -392,41 +392,63 @@ impl Store {
         Ok(read(&self.connection, task)?.map(|lease| lease.fencing_token))
     }
 
-    /// The scheduler's explainable projection over startable pre-dispatch
-    /// tasks (`Ready`, or `Assigned` once the Host bound the canonical Role):
-    /// dependency edges (#94) and Change Stream state decide, and every task
-    /// carries the reason it is schedulable or blocked. A `Queued` or
-    /// `Blocked` task is not a candidate at all and is absent from both lists.
-    /// Bounded to the dependency cap.
-    pub fn scheduling_projection(&self, now: Timestamp) -> Result<SchedulingProjection> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT id, project_id, stream_id, role_id, body FROM tasks WHERE id IN (SELECT id FROM tasks WHERE json_extract(body,'$.state') IN ('ready','assigned')) ORDER BY id")?;
-        let rows = statement.query_map([], |r| {
+    /// The scheduler's explainable projection for one Project, and the one
+    /// surface the DAG answers are reachable from: what can start now and why,
+    /// what every task is waiting on, progress counted from canonical states,
+    /// the remaining closure, per-task blockers and the critical path.
+    ///
+    /// The dependency verdict is not re-derived here. It is read from the
+    /// readiness list the domain built over the same rows, so the store cannot
+    /// answer a different question than the DAG answer beside it — which is
+    /// what made the two disagree before they shared one owner.
+    ///
+    /// A `Queued` or `Blocked` task is not a start candidate at all and is
+    /// absent from `schedulable` and `blocked`, though it is present in
+    /// `readiness` and in the DAG answers: a caller asking what is waiting
+    /// still gets an entry for it.
+    pub fn scheduling_projection(
+        &self,
+        project: &ProjectId,
+        now: Timestamp,
+    ) -> Result<SchedulingProjection> {
+        let answer = self.project_answer(project)?;
+        // What each task is waiting on, and how many gates were recorded for it
+        // in total — read from the same gates the DAG answer used, so the store
+        // cannot answer a different question than the answer beside it. The
+        // total is what separates "no gates at all" from "every recorded gate
+        // is satisfied": two different reasons to be schedulable.
+        let waiting: BTreeMap<TaskId, (usize, usize)> = answer
+            .readiness
+            .iter()
+            .map(|entry| {
+                (
+                    entry.task.task_id.clone(),
+                    (entry.waiting_on.len(), entry.recorded_gates),
+                )
+            })
+            .collect();
+
+        let mut statement = self.connection.prepare(
+            "SELECT id, stream_id, role_id FROM tasks WHERE project_id=?1 AND json_extract(body,'$.state') IN ('ready','assigned') ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![project.as_str()], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
             ))
         })?;
         let mut schedulable = Vec::new();
         let mut blocked = Vec::new();
         for row in rows {
-            let (task, project, stream, role, body) = row?;
-            let record: Task = serde_json::from_str(&body)?;
-            if !record.state().is_startable() {
-                continue;
-            }
-            let project_id = ProjectId::new(&project)
-                .map_err(|_| StoreError::Integrity("bad task project".into()))?;
+            let (task, stream, role) = row?;
             let task_id =
                 TaskId::new(&task).map_err(|_| StoreError::Integrity("bad task id".into()))?;
             let stream_id = ChangeStreamId::new(&stream)
                 .map_err(|_| StoreError::Integrity("bad task stream".into()))?;
             let role_id =
                 RoleId::new(&role).map_err(|_| StoreError::Integrity("bad task role".into()))?;
+
             // Stream state decides before dependencies: an unsafe stream
             // blocks regardless of the task graph.
             let stream_body: String = self
@@ -441,9 +463,9 @@ impl Store {
             let stream_record: ChangeStream = serde_json::from_str(&stream_body)?;
             if stream_record.state() != &StreamState::Active {
                 blocked.push(BlockedTask {
-                    project_id: project_id.clone(),
-                    task_id: task_id.clone(),
-                    stream_id: stream_id.clone(),
+                    project_id: project.clone(),
+                    task_id,
+                    stream_id,
                     reason: BlockedReason::StreamUnsafe,
                 });
                 continue;
@@ -459,65 +481,30 @@ impl Store {
                 .optional()?;
             if leased.is_some() {
                 blocked.push(BlockedTask {
-                    project_id: project_id.clone(),
-                    task_id: task_id.clone(),
-                    stream_id: stream_id.clone(),
+                    project_id: project.clone(),
+                    task_id,
+                    stream_id,
                     reason: BlockedReason::StreamLeased,
                 });
                 continue;
             }
-            // Dependency edges from #94 decide last.
-            let mut statement = self.connection.prepare(
-                "SELECT kind,target_project,target_task FROM task_dependencies WHERE project_id=?1 AND task_id=?2",
-            )?;
-            let outgoing = statement.query_map(params![project.as_str(), task.as_str()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })?;
-            let mut unresolved = false;
-            let mut has_edges = false;
-            for row in outgoing {
-                let (kind, target_project, target_task) = row?;
-                let kind: TaskDependencyKind = serde_json::from_str(&kind)?;
-                // Scheduler-relevant waits: requires/consumes_contract_from
-                // order work; blocks is inverted (the target waits on this
-                // task) and does not gate starting here.
-                if !orders_start(&kind) {
-                    continue;
-                }
-                has_edges = true;
-                let target_body: String = self
-                    .connection
-                    .query_row(
-                        "SELECT body FROM tasks WHERE id=?1 AND project_id=?2",
-                        params![target_task, target_project],
-                        |r| r.get(0),
-                    )
-                    .optional()?
-                    .ok_or(StoreError::RelationshipMismatch)?;
-                let target: Task = serde_json::from_str(&target_body)?;
-                if !target.state().is_completed() {
-                    unresolved = true;
-                    break;
-                }
-            }
-            if unresolved {
+            // The dependency verdict, as the domain answered it over the same
+            // rows the DAG answer above was built from.
+            let (unresolved, recorded) = waiting.get(&task_id).copied().unwrap_or((0, 0));
+            if unresolved > 0 {
                 blocked.push(BlockedTask {
-                    project_id,
+                    project_id: project.clone(),
                     task_id,
                     stream_id,
                     reason: BlockedReason::DependencyUnresolved,
                 });
             } else {
                 schedulable.push(SchedulableTask {
-                    project_id,
+                    project_id: project.clone(),
                     task_id,
                     stream_id,
                     role_id,
-                    reason: if has_edges {
+                    reason: if recorded > 0 {
                         SchedulableReason::DependenciesSatisfied
                     } else {
                         SchedulableReason::NoBlockingDependencies
@@ -526,8 +513,13 @@ impl Store {
             }
         }
         Ok(SchedulingProjection {
+            project_id: project.clone(),
+            considered_at: now,
+            progress: answer.graph.progress.clone(),
             schedulable,
             blocked,
+            readiness: answer.readiness,
+            dag: answer.graph,
         })
     }
 }

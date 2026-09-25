@@ -84,12 +84,56 @@ pub enum SchedulableReason {
     DependenciesSatisfied,
 }
 
+/// What one considered Task is waiting on before it can run, from canonical
+/// rows. This is the readiness answer: the gates that are not satisfied yet,
+/// each naming the other side and the state it is in. A start candidate with an
+/// empty list has nothing holding it, which is why the entry is published even
+/// when the list is empty — "nothing is in the way" is an answer, not an
+/// absence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReadiness {
+    pub task: GraphTaskRef,
+    /// The canonical state the task is in now, so a reader can tell a start
+    /// candidate from one still queued or held.
+    pub state: TaskState,
+    /// Unsatisfied gates holding this task, in canonical order. Empty when
+    /// nothing holds it.
+    pub waiting_on: Vec<TaskGate>,
+    /// Gates recorded for this task in total, satisfied or not. Published
+    /// because "no gates at all" and "every gate satisfied" are different
+    /// reasons to be schedulable, and only the count tells them apart.
+    pub recorded_gates: usize,
+}
+
+/// The one scheduling surface for a Project: what can start now and why, what
+/// every task is waiting on, and the DAG answers — progress, the remaining
+/// closure, the tasks each open task waits on, and the critical path — beside
+/// the readiness list rather than behind a second read.
+///
+/// The two gate lists answer different questions and are not duplicates.
+/// `readiness` is the evidence: every considered task and what holds it.
+/// `blocked` is the scheduling verdict for start candidates, naming the one
+/// constraint that decides (stream state, a held lease, an unresolved
+/// dependency) so a scheduler needs one field to branch on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulingProjection {
+    /// The Project this answer is for.
+    pub project_id: ProjectId,
+    /// The instant the lease half of this answer was judged at, so a caller
+    /// can tell a stale `stream_leased` from a current one.
+    pub considered_at: Timestamp,
+    /// Progress counted from canonical states, with no percentage field.
+    pub progress: TaskProgress,
     pub schedulable: Vec<SchedulableTask>,
-    /// Ready tasks that cannot run, each with the stated blocker.
+    /// Start candidates that cannot run, each with the stated blocker.
     pub blocked: Vec<BlockedTask>,
+    /// Every considered task and the gates holding it.
+    pub readiness: Vec<TaskReadiness>,
+    /// The tasks each open task waits on, and the remaining closure. Carried
+    /// here so the DAG answers are reachable from the scheduling surface.
+    pub dag: TaskGraphReport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

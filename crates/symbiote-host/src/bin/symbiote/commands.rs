@@ -277,21 +277,11 @@ pub(crate) fn commands() -> Vec<Command> {
         },
         Command {
             name: "scheduling-projection",
-            summary: "explain which tasks are schedulable/blocked and why",
-            usage: "scheduling-projection",
+            summary: "readiness, blockers, progress and the critical path for a project",
+            usage: "scheduling-projection <project_id>",
             kind: Some("get_scheduling_projection"),
-            build: |_, map| {
-                plain("kind", serde_json::json!("get_scheduling_projection"), map);
-                Ok(())
-            },
-        },
-        Command {
-            name: "task-graph",
-            summary: "count progress, closure, blockers, critical path and stream overlap for a project",
-            usage: "task-graph <project_id>",
-            kind: Some("get_task_graph"),
             build: |args, map| {
-                plain("kind", serde_json::json!("get_task_graph"), map);
+                plain("kind", serde_json::json!("get_scheduling_projection"), map);
                 id_field(args, 0, "project_id", "project_id", map)?;
                 Ok(())
             },
