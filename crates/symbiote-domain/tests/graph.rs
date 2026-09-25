@@ -195,6 +195,52 @@ fn readiness_names_what_every_task_waits_on_including_the_ones_waiting_on_nothin
     assert!(by_task("a").waiting_on.is_empty());
 }
 
+/// The whole answer, the way the Host serves it: the DAG block beside the
+/// readiness list, with the lease half empty because this case asks about what
+/// the answer names rather than what it schedules.
+fn served(answer: ProjectAnswer) -> SchedulingProjection {
+    SchedulingProjection {
+        project_id: project(ALPHA),
+        considered_at: Timestamp(30),
+        schedulable: Vec::new(),
+        blocked: Vec::new(),
+        readiness: answer.readiness,
+        dag: answer.graph,
+    }
+}
+
+#[test]
+fn a_gate_on_a_finished_task_still_names_the_project_it_waits_on() {
+    // The Host refuses a scheduling answer that names a Project the caller
+    // cannot read, so the set it refuses over has to cover every Project the
+    // answer names. A task that has left the work is the case that slips: it is
+    // in neither the remaining closure nor the critical path, and the gate it is
+    // still waiting on is the only place its other Project is written down.
+    let answer = answer(inputs(
+        vec![row(ALPHA, "a", "s1", TaskState::Completed)],
+        vec![owned(
+            "a",
+            [edge(TaskDependencyKind::Requires, BETA, "beta")],
+        )],
+        Vec::new(),
+        vec![(reference(BETA, "beta"), TaskState::Running)],
+    ));
+    assert_eq!(waiting_on(&answer, "a").len(), 1, "the gate is published");
+    // The graph half names nothing: the closure is empty and there is no chain.
+    assert!(answer.graph.remaining.is_empty());
+    assert!(answer.graph.critical_path.chain.is_empty());
+    assert!(
+        answer.graph.referenced_projects().is_empty(),
+        "the graph half alone names no other Project, which is why it is not the set to authorize over"
+    );
+    // The whole answer does, and it is the whole answer the Host asks about.
+    assert_eq!(
+        served(answer).referenced_projects(),
+        BTreeSet::from([project(BETA)]),
+        "a gate on a finished task still names the Project it waits on"
+    );
+}
+
 #[test]
 fn readiness_and_the_blocker_list_come_from_one_computation_and_cannot_disagree() {
     let inputs = inputs(

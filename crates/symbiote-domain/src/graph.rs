@@ -180,11 +180,18 @@ pub struct TaskGraphReport {
 }
 
 impl TaskGraphReport {
-    /// Every Project this answer names besides its own: the other side of the
-    /// remaining closure or of the critical path. A caller must hold a read on
-    /// each of them before the answer is served, because a record with an
-    /// unnamed other side is a reason the reader cannot act on. The readiness
-    /// list names the same other sides and the Host authorizes over both.
+    /// Every Project the *graph half* of this answer names besides its own: the
+    /// other side of the remaining closure or of the critical path. A caller
+    /// must hold a read on each of them before the answer is served, because a
+    /// record with an unnamed other side is a reason the reader cannot act on.
+    ///
+    /// This is not the set to authorize over, and the reason is the point: the
+    /// readiness half of the answer names Projects this one does not, because a
+    /// closed task can be waiting on work in another Project and the chain does
+    /// not walk closed tasks. [`SchedulingProjection::referenced_projects`] is
+    /// the one that covers the whole answer, and it is the only one the Host
+    /// asks — a second, narrower set beside it is how a cross-Project gate once
+    /// came to be served without a read check.
     pub fn referenced_projects(&self) -> BTreeSet<ProjectId> {
         let mut projects: BTreeSet<ProjectId> = BTreeSet::new();
         let mut note = |task: &GraphTaskRef| {

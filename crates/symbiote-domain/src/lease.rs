@@ -8,6 +8,7 @@
 use crate::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub const LEASE_VERSION: u32 = 1;
 /// Lease durations are bounded so a partition cannot hold a task forever.
@@ -136,6 +137,34 @@ pub struct SchedulingProjection {
     /// scheduling surface, and `dag.progress` is the only progress the answer
     /// publishes.
     pub dag: TaskGraphReport,
+}
+
+impl SchedulingProjection {
+    /// Every Project this answer names besides its own — the set a caller must
+    /// be able to read before the answer is served, so a record with an unnamed
+    /// other side is a reason the reader cannot act on.
+    ///
+    /// It covers the whole answer, not the graph half: the remaining closure
+    /// and the critical path name some Projects, and the readiness list names
+    /// others, because a task that has left the work can still be waiting on
+    /// work in another Project and the chain does not walk closed tasks. A set
+    /// built from the graph alone would drop exactly those gates, and the Host
+    /// authorizes over this one so there is nowhere to look by accident.
+    pub fn referenced_projects(&self) -> BTreeSet<ProjectId> {
+        let mut projects = self.dag.referenced_projects();
+        let mut note = |task: &GraphTaskRef| {
+            if task.project_id != self.project_id {
+                projects.insert(task.project_id.clone());
+            }
+        };
+        for entry in &self.readiness {
+            note(&entry.task);
+            for gate in &entry.waiting_on {
+                note(&gate.target);
+            }
+        }
+        projects
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
