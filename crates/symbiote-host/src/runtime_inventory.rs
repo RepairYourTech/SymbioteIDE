@@ -592,6 +592,20 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    /// The read is bounded *while it reads*, not only judged after: a file far
+    /// larger than the bound must never be read into memory whole to discover
+    /// that it is too large. The refusal below is observable; the allocation
+    /// bound is not distinguishable by an assertion over a fixture this size, so
+    /// it is held here as a source pin rather than left to rot.
+    #[test]
+    fn the_read_is_bounded_while_it_reads_and_the_refusal_is_the_length_check() {
+        let source = include_str!("runtime_inventory.rs");
+        assert!(
+            source.contains("file.take(MAX_PUBLISHED_BYTES as u64 + 1)"),
+            "the read is taken with the published bound plus one byte"
+        );
+    }
+
     #[test]
     fn every_refusal_name_is_distinct_and_publish_reports_the_read_refusal() {
         let names: Vec<&str> = Refusal::all().iter().map(|r| r.name()).collect();
