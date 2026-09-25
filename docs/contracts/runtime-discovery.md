@@ -4,6 +4,34 @@
 read-only Codex App Server probe. It grants no execution, installation, login,
 credential or billing authority. #186 remains open for its full acceptance.
 
+## Installation observation slice
+
+`installation::ExecutableInstallation::inspect` is the side-effect-free
+metadata pass. The Host supplies an absolute candidate and a trusted root; the
+pass canonicalizes the candidate, checks that neither the candidate nor its
+parents escape that root, requires a regular non-writable executable, and keeps
+the requested and resolved paths. It never starts the candidate. Its channel is
+the Host-declared `InstallationChannel`, not a name-based guess.
+
+A real adapter may then pass separately obtained `ProtocolEvidence` to
+`confirm_protocol`. That is the only path by which version, interface, SDK, or
+`ConfigRoot` observations become known. The Codex proof binds the inspected
+`/usr/bin/codex` to its sandboxed App Server response and isolated config root;
+a model listing still does not prove model usability. This slice has no
+authenticated update check, install/update consent, logout, entitlement, or
+credential flow, so `UpdateAvailability::Unknown` is deliberate rather than a
+successful update result. The observation is Host-local and its exact paths are
+not a public account or secret export.
+
+The named refusals `OutsideTrustedRoot`, `MutableExecutable`,
+`NotExecutable`, `MissingExecutable`, `InvalidProtocolEvidence`, `Stale`, and
+`ResourceLimit` are part of the boundary. Deserialization repeats the same
+validation; a serialized caller cannot turn an unknown update fact into a claim,
+and SDK remains unknown unless protocol evidence explicitly supplies it. Multiple
+config roots are bounded and deduplicated by opaque identity and
+path, while account names, tokens, and email addresses remain outside the
+contract.
+
 Desired instance identity is separate from observations: Host, runtime kind,
 adapter, installation, profile and symbolic configuration identity must match.
 Qualification checks freshness, pinned interface/version and explicit required

@@ -2,28 +2,37 @@
 use serde_json::Value;
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use symbiote_domain::*;
-use symbiote_runtime_discovery::codex::{self, CodexDiscoveryError, DiscoveryTransport};
+use symbiote_runtime_discovery::{
+    ConfigRoot, ConfigRootSource, ExecutableInspection, ExecutableInstallation,
+    InstallationChannel, InterfaceIdentity, ProbeProvenance, ProtocolEvidence,
+    codex::{self, CodexDiscoveryError, DiscoveryTransport},
+};
 use symbiote_runtime_transport::TransportLimits;
 use symbiote_sandbox::{LaunchRequest, Profile, SandboxProcess, fingerprint_command, launch};
 use symbiote_trust::*;
 
-struct Probe(SandboxProcess);
+struct Probe {
+    process: SandboxProcess,
+    config_root_seen: bool,
+}
 impl DiscoveryTransport for Probe {
     fn send(&mut self, value: &Value, timeout: Duration) -> Result<(), CodexDiscoveryError> {
-        self.0
+        self.process
             .send(value, timeout)
             .map_err(|_| CodexDiscoveryError::Transport)
     }
     fn recv(&mut self, timeout: Duration) -> Result<Value, CodexDiscoveryError> {
         let value = self
-            .0
+            .process
             .recv(timeout)
             .map_err(|_| CodexDiscoveryError::Transport)?;
-        if value.pointer("/result/userAgent").is_some()
-            && value.pointer("/result/codexHome").and_then(Value::as_str)
+        if value.pointer("/result/userAgent").is_some() {
+            if value.pointer("/result/codexHome").and_then(Value::as_str)
                 != Some("/home/agent/.codex")
-        {
-            return Err(CodexDiscoveryError::MalformedFrame);
+            {
+                return Err(CodexDiscoveryError::MalformedFrame);
+            }
+            self.config_root_seen = true;
         }
         Ok(value)
     }
@@ -69,26 +78,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         expires_at: Timestamp(3),
         revoked_at: None,
     };
-    let mut probe = Probe(launch(LaunchRequest {
-        helper_path: &inputs[0],
-        consent: &consent,
-        snapshot: &snapshot,
-        policy: &snapshot.access,
-        host: &snapshot.host_id,
-        at: Timestamp(2),
-        root_id: &root,
-        worktree: &inputs[1],
-        protected_paths: &inputs[2..],
-        profile: Profile::ReadOnly,
-        // The declared memory bound of the dispatch this probe stands in for.
-        address_space_bytes: 1 << 30,
-        program: "/usr/bin/codex",
-        args: &args,
-        limits: TransportLimits::default(),
-    })?);
+    let installation = ExecutableInstallation::inspect(ExecutableInspection {
+        installation_id: InstallationId::new("codex-system-installation")?,
+        host_id: HostId::new("discovery-host")?,
+        runtime_kind: RuntimeKind::ExternalHarness,
+        adapter_id: AgentRuntimeAdapterId::new("codex-harness")?,
+        requested_path: std::path::Path::new("/usr/bin/codex"),
+        trusted_root: std::path::Path::new("/usr"),
+        channel: InstallationChannel::System,
+        observed_at: Timestamp(1),
+        expires_at: Timestamp(3),
+        provenance: ProbeProvenance {
+            probe_id: CommandId::new("codex-file-inspection")?,
+            source: symbiote_runtime_discovery::ObservationSource::TrustedHostProbe,
+            adapter_revision: "v1".into(),
+        },
+    })?;
+    let mut probe = Probe {
+        process: launch(LaunchRequest {
+            helper_path: &inputs[0],
+            consent: &consent,
+            snapshot: &snapshot,
+            policy: &snapshot.access,
+            host: &snapshot.host_id,
+            at: Timestamp(2),
+            root_id: &root,
+            worktree: &inputs[1],
+            protected_paths: &inputs[2..],
+            profile: Profile::ReadOnly,
+            // The declared memory bound of the dispatch this probe stands in for.
+            address_space_bytes: 1 << 30,
+            program: "/usr/bin/codex",
+            args: &args,
+            limits: TransportLimits::default(),
+        })?,
+        config_root_seen: false,
+    };
     let report = codex::discover(&mut probe, Duration::from_secs(20));
-    let _cleanup = probe.0.cancel(Duration::from_secs(2))?;
+    let _cleanup = probe.process.cancel(Duration::from_secs(2))?;
     let report = report?;
+    if !probe.config_root_seen {
+        return Err("Codex did not report the isolated config root".into());
+    }
+    let installation = installation.confirm_protocol(
+        ProtocolEvidence {
+            version: report.server_version.clone(),
+            interface: InterfaceIdentity {
+                name: "app-server".into(),
+                version: report.server_version.clone(),
+            },
+            sdk_version: None,
+            config_roots: vec![ConfigRoot {
+                identity: "config_codex_disposable".into(),
+                path: "/home/agent/.codex".into(),
+                source: ConfigRootSource::IsolatedHome,
+            }],
+        },
+        ProbeProvenance {
+            probe_id: CommandId::new("codex-app-server")?,
+            source: symbiote_runtime_discovery::ObservationSource::SandboxedProbe,
+            adapter_revision: "v1".into(),
+        },
+        Timestamp(2),
+        Timestamp(3),
+    )?;
     if report.authentication != codex::CodexAuthentication::Required {
         return Err("fresh isolated profile did not report authentication required".into());
     }
@@ -96,6 +149,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "{}",
         serde_json::json!({
             "server_version": report.server_version,
+            "executable_path": installation.executable.requested_path,
+            "resolved_executable_path": installation.executable.resolved_path,
+            "executable_version": installation.version,
+            "sdk_version": installation.sdk_version,
+            "interface": installation.interface,
+            "config_root_identity": installation.config_roots[0].identity,
+            "config_root_path": installation.config_roots[0].path,
+            "install_channel": installation.channel,
+            "update_availability": installation.update_availability,
             "authentication": report.authentication,
             "listed_models": report.models.len(),
             "model_usability": "unknown",

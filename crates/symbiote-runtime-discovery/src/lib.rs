@@ -8,6 +8,8 @@ use std::{
 };
 use symbiote_domain::*;
 pub mod codex;
+pub mod installation;
+pub use installation::*;
 pub const DISCOVERY_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -40,6 +40,28 @@ fn the_contract_states_the_release_this_crate_pins() {
     }
 }
 
+/// The installation slice is held to the names and the deliberately unknown update boundary in
+/// the document, so prose cannot make the metadata pass sound like an installer or updater.
+#[test]
+fn the_installation_boundary_is_named_and_does_not_claim_update_authority() {
+    let contract = include_str!("../../../docs/contracts/runtime-discovery.md");
+    for name in [
+        "ExecutableInstallation::inspect",
+        "InstallationChannel",
+        "ProtocolEvidence",
+        "UpdateAvailability::Unknown",
+        "OutsideTrustedRoot",
+        "MutableExecutable",
+        "confirm_protocol",
+    ] {
+        assert!(contract.contains(name), "the contract must name {name}");
+    }
+    let source = include_str!("../src/installation.rs");
+    assert!(source.contains("std::fs::symlink_metadata"));
+    assert!(source.contains("std::fs::canonicalize"));
+    assert!(!source.contains("Command::new"));
+}
+
 /// The user agent this crate accepts is built from the pinned release rather than restated beside
 /// it, so a moved constant moves both the accepted name and the document's figures together.
 #[test]
