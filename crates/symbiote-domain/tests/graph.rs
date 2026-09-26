@@ -58,6 +58,7 @@ fn inputs(
         outgoing: outgoing.into_iter().collect(),
         incoming: incoming.into_iter().collect(),
         referenced: referenced.into_iter().collect(),
+        dropped_gates: 0,
     }
 }
 
@@ -666,6 +667,7 @@ fn an_answer_is_bounded_and_says_when_it_is_partial() {
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
             referenced: BTreeMap::new(),
+            dropped_gates: 0,
         })
         .err(),
         Some(DomainError::ResourceLimit)
@@ -681,6 +683,7 @@ fn an_answer_is_bounded_and_says_when_it_is_partial() {
         outgoing: BTreeMap::new(),
         incoming: BTreeMap::new(),
         referenced: BTreeMap::new(),
+        dropped_gates: 0,
     })
     .unwrap();
     assert_eq!(partial.progress.total, 300);
@@ -716,10 +719,50 @@ fn an_answer_is_bounded_and_says_when_it_is_partial() {
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
             referenced: BTreeMap::new(),
+            dropped_gates: 0,
         })
         .err(),
         Some(DomainError::InvalidStream)
     );
+}
+
+#[test]
+fn a_gate_the_bound_cut_is_reported_by_the_answer_that_lost_it() {
+    // Every row the Project holds was read, so the counts agree and the old
+    // comparison — considered below total — says the answer is whole. It is
+    // not: the caller could not fit every gate those rows hold, and the gates
+    // it did not read are work the answer does not carry. The row itself
+    // cannot be the tell either, because the one task whose gates were cut is
+    // the first task, and taking it is what keeps the answer from being an
+    // empty one.
+    let report = graph(GraphInputs {
+        project_id: project(ALPHA),
+        total: 1,
+        tasks: vec![row(ALPHA, "a", "s1", TaskState::Ready)],
+        outgoing: BTreeMap::new(),
+        incoming: BTreeMap::new(),
+        referenced: BTreeMap::new(),
+        dropped_gates: 5,
+    })
+    .unwrap();
+    assert_eq!(report.progress.total, report.progress.considered);
+    assert!(
+        report.progress.partial,
+        "an answer that could not read every gate it was given must say it is partial"
+    );
+    // The same answer with nothing cut says it is not partial, so the flag is
+    // this answer's statement rather than a constant.
+    let whole = graph(GraphInputs {
+        project_id: project(ALPHA),
+        total: 1,
+        tasks: vec![row(ALPHA, "a", "s1", TaskState::Ready)],
+        outgoing: BTreeMap::new(),
+        incoming: BTreeMap::new(),
+        referenced: BTreeMap::new(),
+        dropped_gates: 0,
+    })
+    .unwrap();
+    assert!(!whole.progress.partial);
 }
 
 #[test]
@@ -819,7 +862,7 @@ fn the_dag_contract_states_what_it_counts_and_what_it_never_invents() {
         // The refusals and the honesty rules a reader needs to trust it.
         "refuses by name (`cycle`) rather than walking it",
         "`not_found`",
-        "`progress.partial` says when it did not",
+        "`progress.partial` says when the answer did not",
         "cancelled prerequisite keeps its dependent waiting",
         "are deliberately",
         "writes nothing: no",
@@ -832,6 +875,11 @@ fn the_dag_contract_states_what_it_counts_and_what_it_never_invents() {
         "the gate bound counts",
         "**gating edges**",
         "42.7% of the",
+        // The one row the gate bound cuts rather than obeys, and why cutting it
+        // still says the answer is partial rather than whole.
+        "The first Task is the one row the gate",
+        "its gates are cut to the budget",
+        "not read every gate of the Tasks it did read",
         // No open work says so rather than reporting a measured zero.
         "`no_open_work` is true",
         // The removal is recorded rather than forgotten, and the removed field

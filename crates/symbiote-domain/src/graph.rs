@@ -61,6 +61,9 @@ impl GraphTaskRef {
 /// `tasks` the rows the answer considers, `outgoing` the edges those tasks own,
 /// `incoming` the edges other tasks own that name them, and `referenced` the
 /// canonical state of every task those edges name, in any Project.
+/// `dropped_gates` is how many of the edges those rows hold the caller could
+/// not fit inside the gate bound, so a shortened answer is the answer's own
+/// statement rather than a fact the caller has to reconstruct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphInputs {
     pub project_id: ProjectId,
@@ -69,6 +72,7 @@ pub struct GraphInputs {
     pub outgoing: BTreeMap<TaskId, BTreeSet<TaskDependencyEdge>>,
     pub incoming: BTreeMap<TaskId, BTreeSet<TaskDependencyEdge>>,
     pub referenced: BTreeMap<GraphTaskRef, TaskState>,
+    pub dropped_gates: usize,
 }
 
 /// How many tasks sit in one canonical state.
@@ -90,7 +94,8 @@ pub struct TaskProgress {
     /// Task rows the answer read. Below `total` the answer is exact only over
     /// the considered tasks, which are the first in canonical id order.
     pub considered: usize,
-    /// Gates read for the considered tasks.
+    /// Gates read for the considered tasks, which is every gate they hold
+    /// unless the gate bound cut the answer, as `partial` then says.
     pub considered_gates: usize,
     /// The states present, in canonical lifecycle order. A state no task is in
     /// is absent rather than reported as a guessed zero.
@@ -101,9 +106,10 @@ pub struct TaskProgress {
     /// Considered tasks that are not closed — the size of the remaining
     /// closure.
     pub open: usize,
-    /// True when the answer did not read every task the Project holds. The
-    /// flag rather than an arithmetic comparison a caller has to remember to
-    /// make: an answer that dropped work must say so in the answer, and
+    /// True when the answer did not read every task the Project holds, or when
+    /// the gate bound cut a gate out of a task it did read. The flag rather
+    /// than an arithmetic comparison a caller has to remember to make: an
+    /// answer that dropped work must say so in the answer, and
     /// `critical_path.truncated` is about the chain, not about this.
     pub partial: bool,
 }
@@ -238,6 +244,7 @@ pub fn project_answer(inputs: &GraphInputs) -> Result<ProjectAnswer, DomainError
         outgoing,
         incoming,
         referenced,
+        dropped_gates,
     } = inputs;
     if tasks.len() > MAX_GRAPH_REPORT_TASKS
         || gate_count(outgoing, incoming) > MAX_GRAPH_REPORT_GATES
@@ -405,8 +412,10 @@ pub fn project_answer(inputs: &GraphInputs) -> Result<ProjectAnswer, DomainError
                     .collect(),
                 closed,
                 open: ordered.len() - closed,
-                // The flag, not a comparison the caller has to remember to make.
-                partial: ordered.len() < *total,
+                // The flag, not a comparison the caller has to remember to
+                // make, and not only about rows: a gate the bound cut is work
+                // the answer does not carry, and `total` cannot show it.
+                partial: ordered.len() < *total || *dropped_gates > 0,
             },
             remaining,
             critical_path,

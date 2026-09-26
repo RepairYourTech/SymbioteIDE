@@ -74,6 +74,58 @@ fn blocks(project: &ProjectId, task: &TaskId) -> TaskDependencyEdge {
     }
 }
 
+/// One Task's stored rows, written inside a transaction the caller already
+/// holds. The write path writes the same rows — the stream the Task names and
+/// the Task body itself — one command at a time, and every one of those walks
+/// the edges recorded before it, so a graph wide enough to reach the gate
+/// bound would spend minutes building a fixture a transaction holds in a
+/// second. The reader sees the same rows either way.
+fn insert_graph_row(tx: &rusqlite::Transaction<'_>, task: &Task, stream: &ChangeStream) {
+    tx.execute(
+        "INSERT INTO streams(id,project_id,root_id,worktree_id,branch,body) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![
+            stream.id().as_str(),
+            task.project_id().as_str(),
+            task.root_id().as_str(),
+            stream.worktree.as_str(),
+            stream.branch,
+            serde_json::to_string(stream).unwrap()
+        ],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO tasks(id,project_id,root_id,role_id,stream_id,revision,body) VALUES (?1,?2,?3,?4,?5,0,?6)",
+        params![
+            task.id().as_str(),
+            task.project_id().as_str(),
+            task.root_id().as_str(),
+            task.role_id().as_str(),
+            task.stream_id().as_str(),
+            serde_json::to_string(task).unwrap()
+        ],
+    )
+    .unwrap();
+}
+
+/// One stored edge, in the columns the writer indexes it by: the owner on
+/// `task_id`, the named Task on the target columns, and the body beside the
+/// columns that project it so the reader's own check has something to check.
+fn insert_block(tx: &rusqlite::Transaction<'_>, owner: &TaskId, target: &TaskId) {
+    let edge = blocks(&id!(ProjectId, "project-one"), target);
+    tx.execute(
+        "INSERT INTO task_dependencies(task_id,project_id,target_project,target_task,kind,body) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![
+            owner.as_str(),
+            edge.target.project_id.as_str(),
+            edge.target.project_id.as_str(),
+            edge.target.task_id.as_str(),
+            serde_json::to_string(&edge.kind).unwrap(),
+            serde_json::to_string(&edge).unwrap()
+        ],
+    )
+    .unwrap();
+}
+
 fn task_command(command: &str, expected_revision: Revision, action: TaskAction) -> TaskCommand {
     TaskCommand {
         id: id!(CommandId, command),
@@ -751,6 +803,66 @@ fn a_graph_wider_in_gates_than_the_bound_stops_before_it() {
     );
     assert!(report.progress.partial);
     assert_eq!(report.progress.total, 104);
+}
+
+#[test]
+fn a_first_task_wider_in_gates_than_the_bound_is_answered_at_the_budget() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    // One task with more gates pointed at it than the whole answer may carry,
+    // and it is the first task in canonical id order — the row the bound
+    // exempts, because an answer that considered no task at all reads as a
+    // Project with no work. Before the first row was cut to the budget it was
+    // taken whole, the domain refused the inputs as past its own bound, and the
+    // caller got a resource_limit error instead of the bounded answer the
+    // contract promises for a Project that is too wide to read whole.
+    let hub = graph_task(&mut store, "fanin-a-hub");
+    let owners = symbiote_domain::MAX_GRAPH_REPORT_GATES + 1;
+    let transaction = store.connection.transaction().unwrap();
+    for index in 0..owners {
+        let (task, stream) = task_records(&format!("fanin-b-owner-{index:04}"));
+        insert_graph_row(&transaction, &task, &stream);
+        insert_block(&transaction, task.id(), &hub);
+    }
+    transaction.commit().unwrap();
+    let projection = store
+        .scheduling_projection(&project.id, Timestamp(30))
+        .unwrap();
+    // The answer is an answer, and it is the bounded one: the published gate
+    // bound is the number of gates it carries, on the exempt row as on every
+    // other, because the row is cut to the budget rather than past it.
+    assert_eq!(
+        projection.dag.progress.considered_gates,
+        symbiote_domain::MAX_GRAPH_REPORT_GATES,
+        "the published gate bound is the number the answer carries, the exempt row included"
+    );
+    // What stopped the read is the gate bound and not the task bound: the hub
+    // spends the whole budget, and the rows after it hold no gates at all, so
+    // they are still read and the read ends where the task bound is. Read the
+    // two the other way round and this number is 1, which would say the gate
+    // bound kept the answer to a single row.
+    assert_eq!(
+        projection.dag.progress.considered,
+        symbiote_domain::MAX_GRAPH_REPORT_TASKS
+    );
+    assert_eq!(projection.dag.progress.total, owners + 1);
+    // It says it is partial. The one task it read is the whole Project as far as
+    // the task count goes, so before the drop travelled into the flag this
+    // answer claimed to be whole while holding a gate list it had cut.
+    assert!(
+        projection.dag.progress.partial,
+        "an answer that could not carry every gate it was given must say so"
+    );
+    // The gates it does carry are published, and it waits on exactly the budget:
+    // the 2,048 owners the answer names, not the 2,049 rows that named it.
+    let waiting = &projection
+        .readiness
+        .iter()
+        .find(|entry| entry.task.task_id == hub)
+        .expect("the task the answer considered is on the readiness list")
+        .waiting_on;
+    assert_eq!(waiting.len(), symbiote_domain::MAX_GRAPH_REPORT_GATES);
 }
 
 #[test]

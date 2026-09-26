@@ -9658,7 +9658,7 @@
             "type": "integer"
           },
           "considered_gates": {
-            "description": "Gates read for the considered tasks.",
+            "description": "Gates read for the considered tasks, which is every gate they hold\nunless the gate bound cut the answer, as `partial` then says.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -9670,7 +9670,7 @@
             "type": "integer"
           },
           "partial": {
-            "description": "True when the answer did not read every task the Project holds. The\nflag rather than an arithmetic comparison a caller has to remember to\nmake: an answer that dropped work must say so in the answer, and\n`critical_path.truncated` is about the chain, not about this.",
+            "description": "True when the answer did not read every task the Project holds, or when\nthe gate bound cut a gate out of a task it did read. The flag rather\nthan an arithmetic comparison a caller has to remember to make: an\nanswer that dropped work must say so in the answer, and\n`critical_path.truncated` is about the chain, not about this.",
             "type": "boolean"
           },
           "states": {

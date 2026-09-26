@@ -179,15 +179,20 @@ widest shape that fits — the compact response is 447,935 bytes, 42.7% of the
 protocol's 1 MiB response bound, so the whole chain can honour this number: the
 gate bound is the binding constraint and the transport is not. The store takes the
 Project's Tasks in canonical id order until either bound would be exceeded, so
-the answer is exact over what it read. `progress.partial` says when it did not
-read the whole Project, so a partial answer announces itself instead of
-presenting a whole one it did not read — and `progress.total` keeps the whole
-count beside the considered one. The chain bound is a different fact and says so
-in `critical_path.truncated`; the two are never the same flag. A Project the
-store does not hold is `not_found` rather than an empty answer. The read is a
-Project read (Project `Read` on the subject, and on every Project the answer
-names) and it writes nothing: no journal event, no derived table, no cache to
-drift from the state it describes.
+the answer is exact over what it read. The first Task is the one row the gate
+bound cuts rather than obeys: an answer that considered no Task at all reads as
+a Project with no work, and no work is a measurement rather than a bound, so that
+Task is read and its gates are cut to the budget — the answer still carries at
+most the published number, and it is partial, because it does not carry them all.
+`progress.partial` says when the answer did not read the whole Project, or could
+not read every gate of the Tasks it did read, so a partial answer announces
+itself instead of presenting a whole one it did not read — and `progress.total`
+keeps the whole count beside the considered one. The chain bound is a different
+fact and says so in `critical_path.truncated`; the two are never the same flag.
+A Project the store does not hold is `not_found` rather than an empty answer.
+The read is a Project read (Project `Read` on the subject, and on every Project
+the answer names) and it writes nothing: no journal event, no derived table, no
+cache to drift from the state it describes.
 
 ## Foreign runtime session and task references
 

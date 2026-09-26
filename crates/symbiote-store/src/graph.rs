@@ -10,6 +10,10 @@ use std::collections::btree_map::Entry;
 /// The bound is applied by taking the Project's tasks in canonical id order
 /// until either the task or the gate bound would be exceeded, so the answer is
 /// exact over what it considered and `progress.partial` says when it is not.
+/// The first task is the one exception and is the one that cannot be refused:
+/// an answer that considered nothing reads as a Project with no work, which is
+/// a measurement rather than a bound, so its gates are cut to the budget
+/// instead and the gates that did not fit travel into `progress.partial`.
 /// The gate bound counts **gating edges**: an edge read once, from the side
 /// that holds the dependent, and only when its kind is one the store enforces.
 /// An unenforced kind is recorded provenance no answer names, and the same
@@ -55,6 +59,7 @@ impl Store {
         let mut incoming: BTreeMap<TaskId, BTreeSet<TaskDependencyEdge>> = BTreeMap::new();
         let mut referenced: BTreeMap<GraphTaskRef, TaskState> = BTreeMap::new();
         let mut gates = 0usize;
+        let mut dropped = 0usize;
         for (task, stream, body) in rows {
             let record: Task = serde_json::from_str(&body)?;
             let task_id =
@@ -77,15 +82,34 @@ impl Store {
                 .filter(|edge| blocks_completion(&edge.kind))
                 .collect();
             // Both bounds are checked before the row is taken, so the answer the
-            // domain computes is always inside the bounds this module states,
-            // and the whole count travels beside the considered one.
+            // domain computes is inside the bounds this module states and the
+            // whole count travels beside the considered one.
             let with_this_row = gates + owned.len() + blocked.len();
             if !tasks.is_empty()
                 && (tasks.len() >= MAX_GRAPH_REPORT_TASKS || with_this_row > MAX_GRAPH_REPORT_GATES)
             {
                 break;
             }
-            gates = with_this_row;
+            // The first row is the one row the gate bound cuts rather than
+            // obeys, and it is cut to the budget and no further: an answer that
+            // considered no task at all reads as a Project with no work, and no
+            // work is a measurement rather than a bound. The gates that did not
+            // fit are counted beside the ones that did, so the answer reports
+            // the shortening instead of handing back a chain it has quietly cut
+            // and calling it whole. No later row is cut: a row the budget
+            // cannot hold ends the read, which the next iteration does.
+            let (owned, blocked) = if with_this_row > MAX_GRAPH_REPORT_GATES {
+                let room = MAX_GRAPH_REPORT_GATES;
+                let from_owned = room.min(owned.len());
+                (
+                    owned.iter().take(from_owned).cloned().collect(),
+                    blocked.iter().take(room - from_owned).cloned().collect(),
+                )
+            } else {
+                (owned, blocked)
+            };
+            dropped += with_this_row - owned.len() - blocked.len();
+            gates = gates + owned.len() + blocked.len();
             for edge in owned.iter().chain(blocked.iter()) {
                 let target = GraphTaskRef {
                     project_id: edge.target.project_id.clone(),
@@ -112,6 +136,7 @@ impl Store {
             outgoing,
             incoming,
             referenced,
+            dropped_gates: dropped,
         })?)
     }
 
