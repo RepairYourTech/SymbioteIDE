@@ -870,11 +870,14 @@ fn the_dag_contract_states_what_it_counts_and_what_it_never_invents() {
         // and the second copy are gone.
         "is the one scheduling and DAG surface",
         "**Why one copy of each fact and not two.**",
-        // The bound says which quantity it counts, and carries the measured
-        // cost that shows the whole chain can honour it.
+        // The bound says which quantity it counts. Its measured cost is not
+        // pinned here, and deliberately so: this crate cannot frame a response
+        // body, and a case that only asserted the document said a number would
+        // hold the sentence and not the fact. `symbiote-host`'s case builds that
+        // shape through the real daemon and compares the figure stated there
+        // against the bytes the transport actually framed.
         "the gate bound counts",
         "**gating edges**",
-        "42.7% of the",
         // The one row the gate bound cuts rather than obeys, and why cutting it
         // still says the answer is partial rather than whole.
         "The first Task is the one row the gate",

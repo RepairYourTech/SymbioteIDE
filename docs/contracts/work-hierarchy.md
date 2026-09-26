@@ -174,12 +174,17 @@ The answer is bounded to 256 Tasks and 2,048 gates, and the gate bound counts
 only when its kind is one the store enforces. An edge of an unenforced kind is
 recorded provenance that no answer names, and an edge is never charged to the
 budget from both sides, so the published number is the number of gate entries the
-answer can contain. Measured at the bound — 256 Tasks carrying 2,012 gates, the
-widest shape that fits — the compact response is 447,935 bytes, 42.7% of the
-protocol's 1 MiB response bound, so the whole chain can honour this number: the
-gate bound is the binding constraint and the transport is not. The store takes the
-Project's Tasks in canonical id order until either bound would be exceeded, so
-the answer is exact over what it read. The first Task is the one row the gate
+answer can contain. Measured on the wire at the bound — 256 Tasks carrying
+2,048 gates, the widest answer those two bounds allow — the compact response is
+280,402 bytes, 26.7% of the protocol's 1 MiB response bound, so the whole chain
+can honour this number: the gate bound is the binding constraint and the
+transport is not. That figure is measured, not asserted. A case in
+`symbiote-host` builds this exact shape through the real daemon, counts the bytes
+the transport framed — the count `MAX_RESPONSE_BYTES` bounds, and not the CLI's
+pretty print, which is a larger rendering of the same answer — and compares that
+count against the number this document states. The store takes the Project's Tasks
+in canonical id order until either bound would be exceeded, so the answer is exact
+over what it read. The first Task is the one row the gate
 bound cuts rather than obeys: an answer that considered no Task at all reads as
 a Project with no work, and no work is a measurement rather than a bound, so that
 Task is read and its gates are cut to the budget — the answer still carries at
