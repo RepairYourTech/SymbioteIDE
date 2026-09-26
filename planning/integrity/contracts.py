@@ -21,6 +21,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+import prose
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "docs" / "contracts"
 CRATES = ROOT / "crates"
@@ -136,7 +138,7 @@ def entries(root: pathlib.Path = CONTRACTS) -> list[str]:
 
 def figures(name: str, root: pathlib.Path = CONTRACTS) -> int:
     """How many lines of `name` state a figure: one per line, whatever it states on it."""
-    return sum(1 for line in (root / name).read_text().splitlines() if BOUND.search(line))
+    return sum(1 for line in prose.statements(root / name) if BOUND.search(line))
 
 
 def readers(name: str, crates: pathlib.Path = CRATES) -> list[str]:
