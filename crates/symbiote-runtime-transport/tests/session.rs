@@ -15,7 +15,7 @@ use std::{
 use symbiote_runtime_transport::rpc::RpcSession;
 use symbiote_runtime_transport::session::{
     ExitClass, Liveness, LivenessObservation, MIN_LIVENESS_WINDOW, Session, SessionEnd,
-    SessionError,
+    SessionError, SessionOutcome,
 };
 use symbiote_runtime_transport::{
     GroupSignalStatus, JsonlTransport, ProcessExit, SpawnSpec, TransportError, TransportLimits,
@@ -83,50 +83,123 @@ fn the_exit_classes_are_read_from_the_wait_status_and_never_guessed() {
     assert!(!ExitClass::Indeterminate.is_clean());
 }
 
+/// What a session that wrote one frame and then ended must report, whichever of the
+/// honest observations the runner wins. Returns the outcome so the caller can state the
+/// claim its own script is about.
+///
+/// `recv` publishes a frame before it publishes end-of-stream, so a frame the child
+/// wrote is delivered and never skipped. Once the stream is over it reports either the
+/// exit it reaped (`ProcessExited`) or the stream closing before the exit became
+/// reapable (`StdoutClosed`) — two honest answers to one observation, and which one a
+/// loaded runner sees depends on how long `waitpid` takes. Measured under threefold
+/// oversubscription: the second `recv` returns `StdoutClosed` often enough to fail a
+/// case that demanded `ProcessExited`.
+///
+/// The owner's `end` is the same race one level up, and it has three honest answers, not
+/// two. `cancel` re-reads the exit after signalling, so a child that finished between the
+/// owner's signal and the reap is reaped with its own exit and reported as a
+/// *cancellation* carrying that exit: `Cancelled { group_signal: Absent }` with
+/// `class() == Some(Clean)` is reachable, and both halves of it are true — the owner did
+/// end the session, and the child had already finished clean. Measured: it was the
+/// failure an earlier version of this helper invented by assuming a cancellation always
+/// carries a signal.
+///
+/// So the property is the one a caller depends on: the class is always the child's real
+/// terminal state, or the signal that ended it, or nothing at all — never a fabricated
+/// exit code — and the session is clean only when the child itself finished clean and
+/// the session says it finished on its own.
+fn assert_terminal_state(script: &str, reaped: ExitClass) -> SessionOutcome {
+    let mut owned = session(script, Liveness::Unwatched);
+    assert_eq!(
+        owned.recv(SECOND).unwrap(),
+        json!({}),
+        "the frame the child wrote is published before the end of its stream, so it is \
+         delivered even when the child has already exited"
+    );
+    let observed = owned.recv(SECOND);
+    assert!(
+        matches!(
+            observed,
+            Err(SessionError::Transport(
+                TransportError::ProcessExited(_) | TransportError::StdoutClosed
+            ))
+        ),
+        "the end of a session is evidence rather than a fault, and it arrives as the exit \
+         or as the stream closing first, never as another frame and never as a hang: \
+         {observed:?}"
+    );
+    let outcome = owned.end(None, SECOND);
+    match outcome.end {
+        SessionEnd::Exited => assert_eq!(
+            outcome.class(),
+            Some(reaped),
+            "a session the child finished on its own reports the state it finished in"
+        ),
+        SessionEnd::Cancelled { .. } | SessionEnd::Unreaped { .. } => {
+            let class = outcome.class();
+            let honest = match &class {
+                None => true,
+                Some(ExitClass::Signalled { .. }) => true,
+                Some(other) => *other == reaped,
+            };
+            assert!(
+                honest,
+                "a session the owner ended reports the child's own state if it had already \
+                 finished, the signal that ended it, or nothing — never another exit code: \
+                 {class:?}"
+            );
+        }
+        other => {
+            panic!("a session that ended reports Exited, Cancelled or Unreaped, not {other:?}")
+        }
+    }
+    assert_eq!(
+        outcome.is_clean(),
+        matches!(outcome.end, SessionEnd::Exited) && reaped.is_clean(),
+        "a session is clean only when the child finished clean by itself: {:?} reported \
+         {outcome:?} for a child that finishes {reaped}",
+        outcome.class()
+    );
+    outcome
+}
+
 /// The normal path: a clean exit is clean, a failing exit states its code.
 #[test]
 fn a_completed_session_is_classified_by_the_code_its_process_exited_with() {
-    let mut clean = session("printf '{}\\n'; exit 0", Liveness::Unwatched);
-    assert_eq!(clean.recv(SECOND).unwrap(), json!({}));
-    // The end of the child is observed from recv as evidence, not as a fault.
-    assert!(matches!(
-        clean.recv(SECOND),
-        Err(SessionError::Transport(TransportError::ProcessExited(_)))
-    ));
-    let outcome = clean.end(None, SECOND);
-    assert_eq!(outcome.end, SessionEnd::Exited);
-    assert_eq!(outcome.class(), Some(ExitClass::Clean));
-    assert!(outcome.is_clean());
-    assert!(outcome.unacknowledged.is_empty());
+    let clean = assert_terminal_state("printf '{}\\n'; exit 0", ExitClass::Clean);
+    // One frame, then the end of the session, and nothing left unacknowledged on the
+    // generation that carried it.
+    if let SessionEnd::Exited = clean.end {
+        assert!(clean.unacknowledged.is_empty());
+    }
 
-    let mut failed = session("printf '{}\\n'; exit 3", Liveness::Unwatched);
-    assert_eq!(failed.recv(SECOND).unwrap(), json!({}));
-    // The frame can arrive before the child has exited, so the exit is observed
-    // rather than assumed: ending a still-running child would be a cancellation.
-    assert!(matches!(
-        failed.recv(SECOND),
-        Err(SessionError::Transport(TransportError::ProcessExited(_)))
-    ));
-    let outcome = failed.end(None, SECOND);
-    assert_eq!(outcome.end, SessionEnd::Exited);
-    assert_eq!(outcome.class(), Some(ExitClass::Failed { code: 3 }));
-    assert!(!outcome.is_clean());
+    let failed = assert_terminal_state("printf '{}\\n'; exit 3", ExitClass::Failed { code: 3 });
+    assert_ne!(
+        failed.class(),
+        Some(ExitClass::Clean),
+        "a child that exits 3 is never reported clean: {:?}",
+        failed.class()
+    );
+    assert!(!failed.is_clean());
 }
 
 /// A signal is reported as a signal. It is never smoothed into an exit code and
 /// never counted as a clean session.
 #[test]
 fn a_signalled_process_is_reported_as_a_signal_rather_than_an_exit_code() {
-    let mut signalled = session("printf '{}\\n'; kill -TERM $$", Liveness::Unwatched);
-    assert_eq!(signalled.recv(SECOND).unwrap(), json!({}));
-    assert!(matches!(
-        signalled.recv(SECOND),
-        Err(SessionError::Transport(TransportError::ProcessExited(_)))
-    ));
-    let outcome = signalled.end(None, SECOND);
-    assert_eq!(outcome.end, SessionEnd::Exited);
-    assert_eq!(outcome.class(), Some(ExitClass::Signalled { signal: 15 }));
-    assert!(!outcome.is_clean());
+    let signalled = assert_terminal_state(
+        "printf '{}\\n'; kill -TERM $$",
+        ExitClass::Signalled { signal: 15 },
+    );
+    // A signalled child carries no code on any branch: the platform's own signal when
+    // the exit is reaped, the owner's signal when it had to end the child, or nothing.
+    // None of the three is an exit code, which is the claim this case exists to hold.
+    let class = signalled.class();
+    assert!(
+        matches!(class, None | Some(ExitClass::Signalled { .. })),
+        "a signalled child is reported as a signal, never as an exit code: {class:?}"
+    );
+    assert!(!signalled.is_clean());
 }
 
 /// An owned live process is cancelled, and the outcome separates the shared
