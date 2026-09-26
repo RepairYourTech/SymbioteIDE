@@ -10,6 +10,15 @@ use std::collections::btree_map::Entry;
 /// The bound is applied by taking the Project's tasks in canonical id order
 /// until either the task or the gate bound would be exceeded, so the answer is
 /// exact over what it considered and `progress.partial` says when it is not.
+/// The first task is the one exception and is the one that cannot be refused:
+/// an answer that considered nothing reads as a Project with no work, which is
+/// a measurement rather than a bound, so its gates are cut to the budget
+/// instead and the gates that did not fit travel into `progress.partial`.
+/// The gate bound counts **gating edges**: an edge read once, from the side
+/// that holds the dependent, and only when its kind is one the store enforces.
+/// An unenforced kind is recorded provenance no answer names, and the same
+/// edge is never charged twice, so the bound the contract publishes is the
+/// number of gate entries the answer can actually contain.
 /// Cross-Project targets are read from their own rows: the graph is global, and
 /// a report that hid the other side of a gate would be a guess.
 impl Store {
@@ -50,24 +59,61 @@ impl Store {
         let mut incoming: BTreeMap<TaskId, BTreeSet<TaskDependencyEdge>> = BTreeMap::new();
         let mut referenced: BTreeMap<GraphTaskRef, TaskState> = BTreeMap::new();
         let mut gates = 0usize;
+        let mut dropped = 0usize;
         for (task, stream, body) in rows {
             let record: Task = serde_json::from_str(&body)?;
             let task_id =
                 TaskId::new(&task).map_err(|_| StoreError::Integrity("bad task id".into()))?;
             let stream_id = ChangeStreamId::new(&stream)
                 .map_err(|_| StoreError::Integrity("bad task stream".into()))?;
-            let owned = self.owned_edges(project, &task_id)?;
-            let blocked = self.incoming_edges(project, &task_id)?;
+            // Only the edges that actually gate are read, and only they are
+            // counted. An edge of an unenforced kind is recorded provenance, so
+            // counting it would spend the budget on something no answer names;
+            // and an edge is read once, from the side that holds the dependent,
+            // so a single edge is never charged to the budget twice.
+            let owned: BTreeSet<TaskDependencyEdge> = self
+                .owned_edges(project, &task_id)?
+                .into_iter()
+                .filter(|edge| orders_start(&edge.kind))
+                .collect();
+            let blocked: BTreeSet<TaskDependencyEdge> = self
+                .incoming_edges(project, &task_id)?
+                .into_iter()
+                .filter(|edge| blocks_completion(&edge.kind))
+                .collect();
             // Both bounds are checked before the row is taken, so the answer the
-            // domain computes is always inside the bounds this module states,
-            // and the whole count travels beside the considered one.
+            // domain computes is inside the bounds this module states and the
+            // whole count travels beside the considered one.
             let with_this_row = gates + owned.len() + blocked.len();
             if !tasks.is_empty()
                 && (tasks.len() >= MAX_GRAPH_REPORT_TASKS || with_this_row > MAX_GRAPH_REPORT_GATES)
             {
                 break;
             }
-            gates = with_this_row;
+            // The first row is the one row the gate bound cuts rather than
+            // obeys, and it is cut to the budget and no further: an answer that
+            // considered no task at all reads as a Project with no work, and no
+            // work is a measurement rather than a bound. The gates that did not
+            // fit are counted beside the ones that did, so the answer reports
+            // the shortening instead of handing back a chain it has quietly cut
+            // and calling it whole. No later row is cut: a row the budget
+            // cannot hold ends the read, which the next iteration does.
+            let (owned, blocked) = if with_this_row > MAX_GRAPH_REPORT_GATES {
+                let room = MAX_GRAPH_REPORT_GATES - gates;
+                let from_owned = room.min(owned.len());
+                (
+                    owned.iter().take(from_owned).cloned().collect(),
+                    blocked.iter().take(room - from_owned).cloned().collect(),
+                )
+            } else {
+                (owned, blocked)
+            };
+            // The drop is this row's own gates less the ones that were kept, and
+            // not the running total: a total charged here calls every graph
+            // whose gates span more than one row partial, which is most of
+            // them, and the answer would claim a gate it never held.
+            dropped += with_this_row - gates - owned.len() - blocked.len();
+            gates = gates + owned.len() + blocked.len();
             for edge in owned.iter().chain(blocked.iter()) {
                 let target = GraphTaskRef {
                     project_id: edge.target.project_id.clone(),
@@ -94,12 +140,14 @@ impl Store {
             outgoing,
             incoming,
             referenced,
+            dropped_gates: dropped,
         })?)
     }
 
     /// The edges one task owns, with the indexed columns checked against each
     /// body exactly as the per-task read does: an index that disagrees with the
-    /// record it projects is refused, never trusted.
+    /// record it projects is refused, never trusted. Every kind is returned;
+    /// the caller keeps the ones that gate and drops the rest.
     fn owned_edges(
         &self,
         project: &ProjectId,
@@ -129,10 +177,11 @@ impl Store {
         Ok(edges)
     }
 
-    /// The edges other tasks own that name this one. Only `blocks` is read as
-    /// an incoming dependency (the store enforces exactly that one this way);
-    /// the other kinds are recorded provenance and are fetched so the domain
-    /// can leave them out of the answer explicitly.
+    /// The edges other tasks own that name this one. Every kind naming this
+    /// task is fetched and returned; the caller keeps the ones that hold this
+    /// task back from completing and drops the rest, so a recorded `blocks`
+    /// edge is found from the blocked task's side and a `requires` edge naming
+    /// it is not mistaken for one.
     ///
     /// Read from the blocked task's side, each edge names the *owner* of the
     /// row — the task whose record the `blocks` edge was written on — because

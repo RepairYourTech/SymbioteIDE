@@ -61,6 +61,9 @@ impl GraphTaskRef {
 /// `tasks` the rows the answer considers, `outgoing` the edges those tasks own,
 /// `incoming` the edges other tasks own that name them, and `referenced` the
 /// canonical state of every task those edges name, in any Project.
+/// `dropped_gates` is how many of the edges those rows hold the caller could
+/// not fit inside the gate bound, so a shortened answer is the answer's own
+/// statement rather than a fact the caller has to reconstruct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphInputs {
     pub project_id: ProjectId,
@@ -69,6 +72,7 @@ pub struct GraphInputs {
     pub outgoing: BTreeMap<TaskId, BTreeSet<TaskDependencyEdge>>,
     pub incoming: BTreeMap<TaskId, BTreeSet<TaskDependencyEdge>>,
     pub referenced: BTreeMap<GraphTaskRef, TaskState>,
+    pub dropped_gates: usize,
 }
 
 /// How many tasks sit in one canonical state.
@@ -90,7 +94,8 @@ pub struct TaskProgress {
     /// Task rows the answer read. Below `total` the answer is exact only over
     /// the considered tasks, which are the first in canonical id order.
     pub considered: usize,
-    /// Gates read for the considered tasks.
+    /// Gates read for the considered tasks, which is every gate they hold
+    /// unless the gate bound cut the answer, as `partial` then says.
     pub considered_gates: usize,
     /// The states present, in canonical lifecycle order. A state no task is in
     /// is absent rather than reported as a guessed zero.
@@ -101,9 +106,10 @@ pub struct TaskProgress {
     /// Considered tasks that are not closed — the size of the remaining
     /// closure.
     pub open: usize,
-    /// True when the answer did not read every task the Project holds. The
-    /// flag rather than an arithmetic comparison a caller has to remember to
-    /// make: an answer that dropped work must say so in the answer, and
+    /// True when the answer did not read every task the Project holds, or when
+    /// the gate bound cut a gate out of a task it did read. The flag rather
+    /// than an arithmetic comparison a caller has to remember to make: an
+    /// answer that dropped work must say so in the answer, and
     /// `critical_path.truncated` is about the chain, not about this.
     pub partial: bool,
 }
@@ -129,20 +135,6 @@ pub struct TaskGate {
     pub target_state: TaskState,
 }
 
-/// The gates currently holding one open task, and nothing else: a gate is
-/// satisfied by completion alone, so a cancelled prerequisite keeps the
-/// dependent on this list rather than reading as delivered work. Edge kinds the
-/// store does not enforce (`reviews`, `verifies`, `supersedes`,
-/// `conflicts_with`, `follow_up_to`) are deliberately absent, because reporting
-/// them as blockers would enforce a policy their owning slice has not written
-/// yet.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TaskBlockers {
-    pub task: GraphTaskRef,
-    pub gates: Vec<TaskGate>,
-}
-
 /// The longest recorded chain of gating edges into the Project's open work.
 /// With no effort or duration data recorded, length is measured in tasks, not
 /// time. `length` counts every member of the chain and `open` those that are
@@ -151,6 +143,10 @@ pub struct TaskBlockers {
 /// enforced relations on purpose: a `blocks` link holds the target's
 /// *completion* rather than its start, so it lengthens the chain to delivery
 /// without stopping the target from being started.
+///
+/// A Project holding no work that still needs scheduling has no critical path
+/// to report, and `no_open_work` says so rather than leaving `length` at zero
+/// to be read as a measurement of a chain that was found and found empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CriticalPath {
@@ -164,11 +160,20 @@ pub struct CriticalPath {
     /// chain alone; whether the answer read the whole Project is
     /// `progress.partial`.
     pub truncated: bool,
+    /// True when every task the answer read is closed, so there is no open work
+    /// for a chain to run through and `length` is zero because there is none,
+    /// not because one was measured. Every other field is zero or empty when
+    /// this is true, and a chain is named exactly when it is false.
+    pub no_open_work: bool,
 }
 
-/// The #94 DAG answer for one Project: what is left, what each open task waits
-/// on, and the chain that decides the rest. The scheduling projection serves
-/// this alongside the readiness answer, so there is one surface to read.
+/// The #94 DAG answer for one Project: what is left and the chain that decides
+/// the rest. The scheduling projection serves this beside the readiness answer,
+/// which is the one place the per-task gates are published, so there is one
+/// surface to read and each fact is carried once. A caller asking what blocks an
+/// open task reads it off that task's `waiting_on` in the readiness list; the
+/// gate is the same record either way, so publishing it twice would be two
+/// copies to keep honest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskGraphReport {
@@ -177,15 +182,22 @@ pub struct TaskGraphReport {
     /// The remaining closure: every considered task that is not closed, in
     /// canonical id order.
     pub remaining: Vec<GraphTaskRef>,
-    pub blockers: Vec<TaskBlockers>,
     pub critical_path: CriticalPath,
 }
 
 impl TaskGraphReport {
-    /// Every Project this answer names besides its own: the other side of a
-    /// blocker, of the remaining closure, or of the critical path. A caller must
-    /// hold a read on each of them before the answer is served, because a gate
-    /// with an unnamed other side is a reason the reader cannot act on.
+    /// Every Project the *graph half* of this answer names besides its own: the
+    /// other side of the remaining closure or of the critical path. A caller
+    /// must hold a read on each of them before the answer is served, because a
+    /// record with an unnamed other side is a reason the reader cannot act on.
+    ///
+    /// This is not the set to authorize over, and the reason is the point: the
+    /// readiness half of the answer names Projects this one does not, because a
+    /// closed task can be waiting on work in another Project and the chain does
+    /// not walk closed tasks. [`SchedulingProjection::referenced_projects`] is
+    /// the one that covers the whole answer, and it is the only one the Host
+    /// asks — a second, narrower set beside it is how a cross-Project gate once
+    /// came to be served without a read check.
     pub fn referenced_projects(&self) -> BTreeSet<ProjectId> {
         let mut projects: BTreeSet<ProjectId> = BTreeSet::new();
         let mut note = |task: &GraphTaskRef| {
@@ -195,12 +207,6 @@ impl TaskGraphReport {
         };
         for task in &self.remaining {
             note(task);
-        }
-        for entry in &self.blockers {
-            note(&entry.task);
-            for gate in &entry.gates {
-                note(&gate.target);
-            }
         }
         for task in &self.critical_path.chain {
             note(task);
@@ -238,6 +244,7 @@ pub fn project_answer(inputs: &GraphInputs) -> Result<ProjectAnswer, DomainError
         outgoing,
         incoming,
         referenced,
+        dropped_gates,
     } = inputs;
     if tasks.len() > MAX_GRAPH_REPORT_TASKS
         || gate_count(outgoing, incoming) > MAX_GRAPH_REPORT_GATES
@@ -360,33 +367,15 @@ pub fn project_answer(inputs: &GraphInputs) -> Result<ProjectAnswer, DomainError
         .map(|task| GraphTaskRef::of(task))
         .collect();
 
-    let mut blockers: Vec<TaskBlockers> = Vec::new();
-    for task in &remaining {
-        let Some(task_gates) = gates.get(&task.task_id) else {
-            continue;
-        };
-        let mut open: Vec<TaskGate> = task_gates
-            .iter()
-            .filter(|gate| !gate_satisfied(&gate.target_state))
-            .cloned()
-            .collect();
-        if open.is_empty() {
-            continue;
-        }
-        open.sort();
-        blockers.push(TaskBlockers {
-            task: task.clone(),
-            gates: open,
-        });
-    }
-
     let critical_path = critical_path_of(&ordered, &upstream_of, &depth, &state_of);
 
     // Readiness: every considered task, with the gates that are not satisfied
-    // yet. Published for closed tasks too, with an empty list, because "this
-    // one is finished and nothing holds it" is the answer for a task that has
-    // left the work — and publishing only the held ones would make a caller
-    // infer the difference from a missing entry.
+    // yet. This is the one place the per-task gates are published — a task that
+    // is waiting on work is answered here rather than in a second list that
+    // would carry the same gates. Published for closed tasks too, with an empty
+    // list, because "this one is finished and nothing holds it" is the answer
+    // for a task that has left the work — and publishing only the held ones
+    // would make a caller infer the difference from a missing entry.
     let readiness: Vec<TaskReadiness> = ordered
         .iter()
         .map(|task| {
@@ -423,11 +412,12 @@ pub fn project_answer(inputs: &GraphInputs) -> Result<ProjectAnswer, DomainError
                     .collect(),
                 closed,
                 open: ordered.len() - closed,
-                // The flag, not a comparison the caller has to remember to make.
-                partial: ordered.len() < *total,
+                // The flag, not a comparison the caller has to remember to
+                // make, and not only about rows: a gate the bound cut is work
+                // the answer does not carry, and `total` cannot show it.
+                partial: ordered.len() < *total || *dropped_gates > 0,
             },
             remaining,
-            blockers,
             critical_path,
         },
         readiness,
@@ -469,11 +459,14 @@ fn critical_path_of(
         .filter(|task| !task.state.is_closed())
         .max_by(|a, b| deepest(a).cmp(&deepest(b)))
     else {
+        // Nothing is open: there is no chain to report, and saying so is the
+        // answer. A zero length here would read as a measurement.
         return CriticalPath {
             length: 0,
             open: 0,
             chain: Vec::new(),
             truncated: false,
+            no_open_work: true,
         };
     };
     let mut chain: Vec<GraphTaskRef> = Vec::new();
@@ -515,6 +508,7 @@ fn critical_path_of(
             .count(),
         truncated: length > chain.len(),
         chain,
+        no_open_work: false,
     }
 }
 

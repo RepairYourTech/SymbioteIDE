@@ -169,7 +169,7 @@ impl Drop for Host {
     }
 }
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 29},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 30},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1384,8 +1384,12 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
     let body: Value = serde_json::from_slice(&projection.stdout).unwrap();
     assert_eq!(body["kind"], "scheduling_projection");
     assert_eq!(body["data"]["project_id"], "cli");
-    assert_eq!(body["data"]["progress"]["total"], 0);
-    assert_eq!(body["data"]["progress"]["partial"], false);
+    // Progress is published once, inside the DAG block, and the gates are
+    // published once, in the readiness list.
+    assert_eq!(body["data"]["dag"]["progress"]["total"], 0);
+    assert_eq!(body["data"]["dag"]["progress"]["partial"], false);
+    assert!(body["data"].get("progress").is_none());
+    assert!(body["data"]["dag"].get("blockers").is_none());
     assert!(body["data"]["readiness"].as_array().unwrap().is_empty());
     // A Project this Host does not hold is a refusal, not an empty answer.
     let ghost = run(&["scheduling-projection", "not-a-project"]);

@@ -473,8 +473,10 @@ fn execute(
             // that names a task in a Project the caller cannot read is refused
             // rather than served with that side dropped, because an unnamed
             // blocker is a reason the reader cannot act on. Redaction would also
-            // let the answer's shape report what it withheld.
-            for referenced in projection.dag.referenced_projects() {
+            // let the answer's shape report what it withheld. The set is the
+            // whole answer's, so a gate on a task outside the remaining closure
+            // and outside the critical path is covered too.
+            for referenced in projection.referenced_projects() {
                 if !principal.permits(&referenced, ProjectPermission::Read) {
                     return Err(ProtocolError::new(ErrorCode::PermissionDenied));
                 }
