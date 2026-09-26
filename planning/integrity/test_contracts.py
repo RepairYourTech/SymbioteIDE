@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import tempfile
 import unittest
 
 import contracts
@@ -83,7 +84,7 @@ class TheCensus(unittest.TestCase):
             or "the figure table names no document the census covers")
         moved = []
         for name in documents:
-            derived = contracts.figures(name)
+            derived = contracts.figures(name, root=contracts.ROOT)
             if derived != contracts.FIGURES[name]:
                 moved.append(f"{name} states {derived} figure statements where the census records "
                              f"{contracts.FIGURES[name]}")
@@ -145,10 +146,17 @@ class TheCensus(unittest.TestCase):
             f"the census decides about it without saying why")
 
     def test_the_figure_reading_is_the_one_this_census_states(self):
-        """`BOUND` proven on the spellings it must read and the shapes it must not, so the count in
-        `FIGURES` cannot move because the reading narrowed: each spelling below is a statement the
-        census reads, and each shape after it a line that is not one — a version, a mode, a plain
-        numeral, a worded count.
+        """`BOUND` proven on the spellings it must read and the shapes it must not, and the lines it
+        is offered proven on both sides, so the count in `FIGURES` cannot move because the reading
+        narrowed or widened: each spelling below is a statement the census reads, each shape after it
+        a line that is not one — a version, a mode, a plain numeral, a worded count — and a fenced
+        block is a quotation rather than a claim, so the figures inside one are the quoted program's.
+
+        The two halves of the second part are here together because either alone is a reading that
+        would pass. A reading that skipped prose to quieten a quoted example would leave every count
+        here satisfied and let a contract publish a bound nothing in this directory ever saw; a
+        reading that counted fences would put `cli.md` one figure higher over an envelope the CLI
+        writes, which is how the `request_refused` example was lost in the first place.
         """
         reads = (
             "This limits input to 1 MiB.",
@@ -176,6 +184,56 @@ class TheCensus(unittest.TestCase):
         self.assertEqual(
             wrongly, [],
             "the census reads these as figures and states that it does not: " + "; ".join(wrongly))
+
+        stated = "Configuration is bounded to 32 KiB and validates identity."
+        quoted = '{"message": "' + stated + '"}'
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "stated.md").write_text(
+                "# A contract\n\n" + stated + "\n\nIt also allows at most 16 files.\n")
+            (root / "quoted.md").write_text(
+                "# A contract\n\nIt states nothing numeric.\n\n```json\n" + quoted + "\n```\n")
+            (root / "both.md").write_text(
+                stated + "\n\n```json\n" + quoted + "\n```\n")
+            (root / "unclosed.md").write_text(stated + "\n\n```json\n" + quoted + "\n")
+            self.assertEqual(
+                contracts.figures("stated.md", root=root), 2,
+                "a bound this document states is no longer a figure, so a contract can publish one "
+                "the census never sees and the count moves when the count is the only thing wrong")
+            self.assertEqual(
+                contracts.figures("quoted.md", root=root), 0,
+                "a bound inside a fenced block is counted, so every transcript, shell example and "
+                "message a document quotes moves the figure the census records")
+            self.assertEqual(
+                contracts.figures("both.md", root=root), 1,
+                "a document stating a bound and quoting the same bound counts it twice, so quoting "
+                "a figure is indistinguishable from claiming it")
+            self.assertEqual(
+                contracts.figures("unclosed.md", root=root), 1,
+                "a fence that never closes does not run to the end of the document, so a long "
+                "example's remaining lines are counted as claims the document makes")
+
+            # The case that was actually broken, against the document it happened in: `cli.md` as
+            # this tree publishes it, and the same document with every figure it quotes quoted
+            # again. Where `cli.md` quotes the frame bound — the envelope the CLI writes for a
+            # request too large to send — this is the end-to-end half; where it does not, the three
+            # fixtures above are what hold the rule and this compares a document to itself.
+            published_name = next(one for one in sorted(contracts.FIGURES)
+                                  if one.endswith("cli.md"))
+            published = (contracts.CONTRACTS / "cli.md").read_text()
+            example = [line for line in published.splitlines() if contracts.BOUND.search(line)]
+            (root / "quoted-twice.md").write_text(
+                published + "\n```json\n" + "\n".join(example) + "\n```\n")
+            # `FIGURES` has been spelled two ways in this tree's life — a bare filename under the
+            # contracts directory and a repo-relative path — so the root is read off the name here
+            # rather than defaulted, and this case holds the reading rather than one spelling.
+            census = contracts.CONTRACTS if "/" not in published_name else contracts.ROOT
+            self.assertEqual(
+                contracts.figures("quoted-twice.md", root=root),
+                contracts.figures(published_name, root=census),
+                "quoting cli.md's own figures a second time moves its figure count, so a document "
+                "cannot publish the envelope its refusals are written in without the census moving "
+                "with it — which is the collision that cost the request_refused example")
 
 
 if __name__ == "__main__":

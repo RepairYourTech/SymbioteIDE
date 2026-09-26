@@ -40,6 +40,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+import prose
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
 CONTRACTS = DOCS / "contracts"
@@ -205,7 +207,7 @@ FIGURES: dict[str, int] = {
 
 def states_a_figure(document: pathlib.Path) -> bool:
     """Whether any line of `document` states a figure in a shape `BOUND` reads."""
-    return any(BOUND.search(line) for line in document.read_text().splitlines())
+    return any(BOUND.search(line) for line in prose.statements(document))
 
 
 def documents(docs: pathlib.Path = DOCS) -> list[str]:
@@ -226,10 +228,9 @@ def markdown(docs: pathlib.Path = DOCS) -> list[str]:
     return [name for name in documents(docs) if name.endswith(".md")]
 
 
-def figures(name: str, root: pathlib.Path = ROOT) -> int:
-    """How many lines of the repo-relative document `name` state a figure: one per line, whatever
-    it states on it."""
-    return sum(1 for line in (root / name).read_text().splitlines() if BOUND.search(line))
+def figures(name: str, root: pathlib.Path = CONTRACTS) -> int:
+    """How many lines of `name` state a figure: one per line, whatever it states on it."""
+    return sum(1 for line in prose.statements(root / name) if BOUND.search(line))
 
 
 def readers(name: str, crates: pathlib.Path = CRATES) -> list[str]:
