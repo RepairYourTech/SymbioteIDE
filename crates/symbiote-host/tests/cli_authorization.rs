@@ -489,3 +489,121 @@ fn a_mistyped_argument_to_a_write_command_sends_nothing() {
         );
     }
 }
+
+/// An argument that is there and empty is refused by name, for the same reason
+/// a missing one is: no identity, name, title or branch can be empty, and the
+/// position is known where the command line is read. Each of these is exit 1
+/// and puts no frame on the wire — the daemon would only answer a draft the
+/// operator can see is incomplete, with a cause that names no field.
+#[test]
+fn an_empty_argument_to_a_write_command_is_refused_by_name() {
+    for (arguments, named) in [
+        (
+            vec!["register-project", "", "Name", "lead", "contract@1", "root"],
+            "empty <project_id>",
+        ),
+        (
+            vec!["register-project", "p", "", "lead", "contract@1", "root"],
+            "empty <name>",
+        ),
+        (
+            vec!["register-project", "p", "Name", "", "contract@1", "root"],
+            "empty <lead_role_id>",
+        ),
+        (
+            vec!["create-work", "p", "", "objective", "maintenance", "Title"],
+            "empty <role_id>",
+        ),
+        (
+            vec!["create-work", "p", "lead", "objective", "", "Title"],
+            "empty <class>",
+        ),
+        (
+            vec!["create-work", "p", "lead", "objective", "maintenance", ""],
+            "empty <title>",
+        ),
+        (
+            vec![
+                "create-task",
+                "p",
+                "",
+                "root",
+                "lead",
+                "objective",
+                "coding@1",
+                "task/t",
+            ],
+            "empty <task_id>",
+        ),
+        (
+            vec![
+                "create-task",
+                "p",
+                "t",
+                "root",
+                "lead",
+                "objective",
+                "coding@1",
+                "",
+            ],
+            "empty <branch>",
+        ),
+    ] {
+        let (output, frame) = run_cli(&arguments);
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        assert!(frame.is_none(), "{arguments:?} must not reach the daemon");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(named),
+            "{arguments:?} refused with {stderr:?}, which does not name {named:?}"
+        );
+    }
+}
+
+/// A command line too large to be one bounded frame is refused as the request
+/// it is, with its own code in the envelope, and it never opens the socket. The
+/// fake daemon is right there and would answer anything sent to it, so a frame
+/// here would mean the CLI sent a request it had already refused.
+#[test]
+fn a_request_past_the_frame_bound_names_itself_and_sends_nothing() {
+    let past_the_bound = "t".repeat(65_536);
+    let (output, frame) = run_cli(&[
+        "create-work",
+        "p",
+        "lead",
+        "objective",
+        "maintenance",
+        past_the_bound.as_str(),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        frame.is_none(),
+        "a request past the bound must not reach the daemon"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("past the 65536-byte request bound"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("nothing was sent"), "{stderr}");
+    assert!(
+        !stderr.contains("is symbioted running"),
+        "a request that was never sent must not blame a daemon: {stderr}"
+    );
+    // The envelope carries its own code, so a script can branch on it rather
+    // than on a prose that claims the daemon is down.
+    let (output, frame) = run_cli(&[
+        "--json",
+        "create-work",
+        "p",
+        "lead",
+        "objective",
+        "maintenance",
+        past_the_bound.as_str(),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(frame.is_none());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(envelope["error"]["code"], "request_refused", "{envelope}");
+}

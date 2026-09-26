@@ -30,10 +30,24 @@ pub(crate) struct Command {
         fn(Args, &mut serde_json::Map<String, serde_json::Value>) -> Result<(), Usage>,
 }
 
+/// One required argument, by position. Two refusals live here rather than in
+/// each builder, because a command line has two ways to be incomplete and both
+/// are the operator's to fix by name: the argument is absent, or it is there
+/// and empty. An empty identity, name, title or branch can never be valid —
+/// the domain refuses every one of them — so answering with the daemon's
+/// `invalid_request` would name a cause and a request the operator did not
+/// recognize, when the position is known here. What an argument may *contain*
+/// (its length, its characters, whether it is only whitespace) stays the
+/// domain's: this checks that an argument is there, not what it says.
 fn field(args: Args, index: usize, name: &str) -> Result<String, Usage> {
-    args.get(index)
+    let value = args
+        .get(index)
         .cloned()
-        .ok_or_else(|| Usage(format!("missing <{name}>")))
+        .ok_or_else(|| Usage(format!("missing <{name}>")))?;
+    if value.is_empty() {
+        return Err(Usage(format!("empty <{name}>")));
+    }
+    Ok(value)
 }
 
 /// Every domain identity (TaskId, HostId, DispatchId, …) serializes as a
@@ -542,6 +556,9 @@ pub(crate) fn print_help() {
     println!("  --help, -h        print this table; connects to nothing, honors no other flag");
     println!("  --json            one machine-readable envelope per invocation on stdout");
     println!("  --yes             explicit authorization for this one dangerous command");
+    println!(
+        "  --                end flag parsing, so an argument that begins with -- is an argument"
+    );
     println!();
     println!("flags are per command: daemon commands honor --state-dir, --command-id,");
     println!("--policy, --json and --yes; `schema` honors --write and --check;");

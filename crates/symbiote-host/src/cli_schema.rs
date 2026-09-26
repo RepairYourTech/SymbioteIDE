@@ -280,7 +280,7 @@ fn envelope_schema() -> serde_json::Value {
                 "additionalProperties": false,
                 "properties": {
                     "code": {
-                        "description": "The daemon's error code, or one of the CLI's own: `authorization_required` (nothing was sent), `policy_invalid` (the configured policy could not be honored; nothing was sent), `unreachable`.",
+                        "description": "The daemon's error code, or one of the CLI's own: `authorization_required` (nothing was sent), `policy_invalid` (the configured policy could not be honored; nothing was sent), `request_refused` (the request was past the frame bound; nothing was sent), `unreachable`.",
                         "type": "string",
                         "minLength": 1
                     },

@@ -73,38 +73,65 @@ fn authorization_follows_the_operation_not_the_command_name() {
     assert!(risk_of_kind("").requires_authorization());
 }
 
-/// One synthetic argument per placeholder a command's usage names. The usage
-/// is the command's own statement of its argument shape, so building from it
-/// holds the two together: a command whose builder disagrees with the usage
-/// it prints cannot be built at all, and a placeholder this reading does not
-/// know is a placeholder the command would refuse in an operator's hands.
-fn synthetic_arguments(usage: &str) -> Vec<String> {
-    let mut arguments: Vec<String> = Vec::new();
+/// One required argument as the usage spells it: the name to refuse it by, and
+/// whether the spelling carries a revision after an `@`.
+struct Placeholder {
+    name: String,
+    versioned: bool,
+}
+
+/// Every required argument a command's usage names, in order. The usage is the
+/// command's own statement of its argument shape: `[root_id ...]` and the
+/// bracket that closes it are not required arguments, and
+/// `<contract_id>@<revision>` is one argument spelled as two spans.
+fn placeholders(usage: &str) -> Vec<Placeholder> {
+    let mut names: Vec<Placeholder> = Vec::new();
     for token in usage.split_whitespace() {
-        // `<contract_id>@<revision>` is one argument spelled as two spans: the
-        // `@` joins them, so the revision lands on the contract's own line.
         if let Some(contract) = token.strip_suffix("@<revision>") {
-            let name = contract
-                .strip_prefix('<')
-                .and_then(|name| name.strip_suffix('>'))
-                .unwrap_or(contract);
-            arguments.push(format!("{name}@1"));
+            names.push(Placeholder {
+                name: contract
+                    .strip_prefix('<')
+                    .and_then(|name| name.strip_suffix('>'))
+                    .unwrap_or(contract)
+                    .to_owned(),
+                versioned: true,
+            });
             continue;
         }
-        let Some(name) = token
+        if let Some(name) = token
             .strip_prefix('<')
             .and_then(|name| name.strip_suffix('>'))
-        else {
-            // `[root_id ...]` and the closing bracket are not arguments.
-            continue;
-        };
-        arguments.push(match name {
-            "after" | "limit" => "1".to_owned(),
-            "class" => "maintenance".to_owned(),
-            _ => "id".to_owned(),
-        });
+        {
+            names.push(Placeholder {
+                name: name.to_owned(),
+                versioned: false,
+            });
+        }
     }
-    arguments
+    names
+}
+
+/// One synthetic argument per placeholder a command's usage names, so building
+/// from it holds the usage and the builder together: a command whose builder
+/// disagrees with the usage it prints cannot be built at all, and a placeholder
+/// this reading does not know is a placeholder the command would refuse in an
+/// operator's hands.
+fn synthetic_arguments(usage: &str) -> Vec<String> {
+    placeholders(usage)
+        .into_iter()
+        .map(|placeholder| {
+            let value = match placeholder.name.as_str() {
+                "after" | "limit" => "1".to_owned(),
+                "class" => "maintenance".to_owned(),
+                _ => "id".to_owned(),
+            };
+            if placeholder.versioned {
+                format!("{value}@1")
+            } else {
+                value
+            }
+        })
+        .collect()
 }
 
 #[test]
@@ -290,6 +317,71 @@ fn the_write_commands_build_the_operations_their_usage_spells() {
             task["task"]["stream"][end], "0000000000000000000000000000000000000000",
             "stream.{end}"
         );
+    }
+}
+
+/// Every argument position of every command, driven one position at a time.
+///
+/// A command line that stops before position `i` must be refused naming
+/// position `i` — not by indexing what is not there, which is the panic a
+/// builder writes when it uses an argument it never asked for, and not by
+/// accepting a shorter line than its own usage names. And an argument that is
+/// there and empty is refused by name for the same reason: there is no reading
+/// under which an empty identity, name, title or branch is a value.
+#[test]
+fn every_argument_position_is_asked_for_before_it_is_used() {
+    for command in commands() {
+        // `raw` is the one command with no argument shape: it reads a file
+        // path, which is the one argument it does take.
+        if command.name == "raw" {
+            continue;
+        }
+        let required = placeholders(command.usage);
+        let arguments = synthetic_arguments(command.usage);
+        assert_eq!(
+            required.len(),
+            arguments.len(),
+            "{}: the usage names {} arguments and this reading builds {}",
+            command.name,
+            required.len(),
+            arguments.len()
+        );
+        for (position, placeholder) in required.iter().enumerate() {
+            let name = placeholder.name.as_str();
+            let mut operation = serde_json::Map::new();
+            let prefix = &arguments[..position];
+            match (command.build)(prefix, &mut operation) {
+                Err(error) => {
+                    let message = error.to_string();
+                    assert!(
+                        message.contains(&format!("<{name}>")),
+                        "{} accepted a line stopping before position {position} <{name}> but said \
+                         {message:?}, which names no argument",
+                        command.name
+                    );
+                }
+                Ok(()) => panic!(
+                    "{} accepted {prefix:?}, which is missing <{name}>",
+                    command.name
+                ),
+            }
+            // The same position, present and empty.
+            let mut empty = arguments.clone();
+            empty[position] = String::new();
+            let mut operation = serde_json::Map::new();
+            let built = (command.build)(&empty, &mut operation);
+            assert!(
+                built.is_err(),
+                "{} accepted an empty <{name}> at position {position}: {built:?}",
+                command.name
+            );
+            let message = built.unwrap_err().to_string();
+            assert!(
+                message.contains(&format!("<{name}>")),
+                "{} refused an empty <{name}> with {message:?}, which names no argument",
+                command.name
+            );
+        }
     }
 }
 
@@ -1118,7 +1210,7 @@ fn the_codes_the_documents_state_are_the_ones_this_binary_uses() {
     errors.dedup();
     assert_eq!(
         errors.len(),
-        3,
+        4,
         "the envelope's CLI-origin codes: {errors:?}"
     );
 

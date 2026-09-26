@@ -2052,6 +2052,41 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
             ],
             "<contract_id> must be <contract_id>@<revision>; got \"coding\"",
         ),
+        // An argument that is there and empty. No identity, name, title or
+        // branch can be, so the position is named here rather than a daemon
+        // asked to refuse a draft the operator could see was incomplete.
+        (
+            vec!["register-project", "", "Typed", "lead-typed", "c@1", "root"],
+            "empty <project_id>",
+        ),
+        (
+            vec!["register-project", "typed", "", "lead-typed", "c@1", "root"],
+            "empty <name>",
+        ),
+        (
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-two",
+                "",
+                "Title",
+            ],
+            "empty <class>",
+        ),
+        (
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-main",
+                "lead-typed",
+                "ship-it",
+                "coding@1",
+                "",
+            ],
+            "empty <branch>",
+        ),
     ] {
         let refused = run(&arguments);
         assert_eq!(refused.status.code(), Some(1), "{arguments:?}");
@@ -2118,16 +2153,16 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
             "not_found",
         ),
         (
-            // The branch is required, and an empty one is not a branch.
+            // A title longer than the domain's own bound: that is the domain's
+            // rule, answered as its typed refusal rather than as a CLI usage
+            // error, because the CLI does not restate the domain's lengths.
             vec![
-                "create-task",
+                "create-work",
                 "typed",
-                "task-two",
-                "root-main",
                 "lead-typed",
-                "ship-it",
-                "coding@1",
-                "",
+                "ship-long",
+                "maintenance",
+                &"t".repeat(257),
             ],
             "invalid_request",
         ),
@@ -2156,6 +2191,51 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
     assert_eq!(absent.status.code(), Some(2));
     let error: Value = serde_json::from_slice(&absent.stderr).unwrap();
     assert_eq!(error["code"], "not_found", "{error}");
+
+    // A command line too large to be one bounded frame is refused as the
+    // request it is. The daemon here is running and healthy, so a refusal that
+    // said it could not be reached would name a cause that is not the cause
+    // and offer a remedy for a daemon that needs none: this is the lock
+    // refusal's rule applied to the other way a request never gets sent.
+    let past_the_bound = "t".repeat(65_536);
+    let refused = run(&[
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-huge",
+        "maintenance",
+        &past_the_bound,
+    ]);
+    assert_eq!(refused.status.code(), Some(1), "{:?}", refused.status);
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        message.contains("past the 65536-byte request bound"),
+        "{message}"
+    );
+    assert!(message.contains("nothing was sent"), "{message}");
+    assert!(
+        !message.contains("is symbioted running"),
+        "a request that was never sent must not blame the daemon: {message}"
+    );
+    // The same refusal in the envelope, under its own code rather than
+    // `unreachable`, because a script branches on it.
+    let envelope = run(&[
+        "--json",
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-huge",
+        "maintenance",
+        &past_the_bound,
+    ]);
+    assert_eq!(envelope.status.code(), Some(1));
+    let body: Value = serde_json::from_slice(&envelope.stdout).unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["code"], "request_refused", "{body}");
+    // And nothing was filed by either attempt.
+    assert_eq!(journaled("typed"), before);
+    // The daemon is still serving: a refusal that never asked left it alone.
+    assert!(run(&["health"]).status.success());
 }
 
 /// How `staffing_composition` registers the provider rows the binding's profile

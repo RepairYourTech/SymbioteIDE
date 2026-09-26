@@ -127,11 +127,20 @@ because a work item is filed here and specified through `raw`.
 than one Role, a work item of another kind (a request, a plan, a milestone),
 a fully specified Objective, or a Task whose stream carries real lineage is
 created: the typed commands cover the writes a person or a script types, and
-the daemon still validates and authorizes every field of both. A mistyped
-argument to any of them is refused before anything is sent, and the refusal
-names the argument, the shape it wanted and the value it got — the way a
-refused lock names the lock it could not take — with the command's usage
-beside it.
+the daemon still validates and authorizes every field of both.
+
+A command line that cannot be honored is refused before anything is sent, and
+the refusal names the argument, the shape it wanted and the value it got — the
+way a refused lock names the lock it could not take — with the command's usage
+beside it. An argument that is absent, and an argument that is there and
+empty, are both refused that way, because no identity, name, title or branch
+can be empty; what an argument may *contain* — its length, its characters,
+whether it is only whitespace — is the domain's, and comes back as the
+daemon's own typed refusal. A surplus argument is named rather than dropped,
+and an argument that begins with `--` is a flag unless `--` precedes it, which
+ends flag parsing. A command line large enough to exceed the frame bound is
+refused as the request it is, naming its size and the bound, rather than as a
+daemon that is unreachable: it never asked (see [cli.md](cli.md)).
 
 ### Dangerous operations require explicit authorization
 

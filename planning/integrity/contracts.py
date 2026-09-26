@@ -97,7 +97,7 @@ NOT_HELD = {
 FIGURES = {
     "agent-environment.md": 2,
     "architecture.md": 0,
-    "cli.md": 2,
+    "cli.md": 3,
     "client-sdk.md": 1,
     "configuration.md": 0,
     "constitution.md": 0,

@@ -56,19 +56,56 @@ pub(crate) fn send(
         "operation": operation,
     });
     let bytes = serde_json::to_vec(&request)?;
+    // A request past the frame bound is refused HERE, before the socket is
+    // opened, and it is the request an operator typed that is too large — not
+    // a daemon that is unreachable and healthy. `exchange` refuses the same
+    // shape, but by the time its refusal came back the CLI was already
+    // reporting it as a connection failure, which named a cause that was not
+    // the cause and offered a remedy (start the daemon) for a daemon that was
+    // already serving.
+    if bytes.len() > symbiote_host::transport::FRAME_LIMIT {
+        let message = format!(
+            "the request for {name} is {} bytes, past the {}-byte request bound; nothing was sent \
+             (the command line's own arguments are the whole request)",
+            bytes.len(),
+            symbiote_host::transport::FRAME_LIMIT
+        );
+        if options.json {
+            println!(
+                "{}",
+                error_envelope(name, &command_id, "request_refused", &message)
+            );
+            return Ok(EXIT_USAGE);
+        }
+        eprintln!("symbiote: {message}");
+        return Ok(EXIT_USAGE);
+    }
     let response_bytes = match symbiote_host::transport::exchange(&directory, &bytes) {
         Ok(bytes) => bytes,
         Err(error) => {
-            let message = format!(
-                "cannot reach the daemon at {}: {error} (is symbioted running with --state-dir {}?)",
-                directory.join(symbiote_host::paths::SOCKET_FILE).display(),
-                directory.display()
-            );
+            // `exchange` refuses anything that is not one bounded frame, which
+            // a request this binary serialized never is. Should it, the daemon
+            // was still never asked, so the refusal says so rather than blaming
+            // a socket.
+            let (code, message) = if error.kind() == std::io::ErrorKind::InvalidInput {
+                (
+                    "request_refused",
+                    format!(
+                        "the request for {name} was refused before the socket: {error}; nothing was sent"
+                    ),
+                )
+            } else {
+                (
+                    "unreachable",
+                    format!(
+                        "cannot reach the daemon at {}: {error} (is symbioted running with --state-dir {}?)",
+                        directory.join(symbiote_host::paths::SOCKET_FILE).display(),
+                        directory.display()
+                    ),
+                )
+            };
             if options.json {
-                println!(
-                    "{}",
-                    error_envelope(name, &command_id, "unreachable", &message)
-                );
+                println!("{}", error_envelope(name, &command_id, code, &message));
                 return Ok(EXIT_USAGE);
             }
             eprintln!("symbiote: {message}");

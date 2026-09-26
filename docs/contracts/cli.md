@@ -147,6 +147,10 @@ own:
 - `policy_invalid` — a configured policy that could not be honored: missing,
   unreadable, insecure, oversized, the wrong schema, or naming a kind a policy
   may not name. Exit 1. The CLI never downgrades this to "no policy".
+- `request_refused` — the request could not be sent as one bounded frame: it is
+  past the frame bound, so the daemon was never asked and nothing was filed.
+  Exit 1. A refusal here names the request and the bound rather than a daemon
+  that is running and serving.
 - `unreachable` — the daemon could not be reached, or answered with an
   unparseable frame. Exit 1.
 
@@ -154,6 +158,7 @@ own:
 {"schema":"symbiote.cli/v1","command":"shutdown","command_id":"cli-shutdown-1757556000000-1234-0","ok":true,"result":{"kind":"shutdown"}}
 {"schema":"symbiote.cli/v1","command":"shutdown","command_id":"cli-shutdown-1757556000000-1234-0","ok":false,"error":{"code":"authorization_required","message":"noninteractive runs require --yes or a policy naming \"shutdown\""}}
 {"schema":"symbiote.cli/v1","command":"shutdown","command_id":"cli-shutdown-1757556000000-1234-0","ok":false,"error":{"code":"policy_invalid","message":"cannot use the policy /etc/symbiote/policy.json: the policy is not a valid symbiote.cli-policy/v1 document"}}
+{"schema":"symbiote.cli/v1","command":"create-work","command_id":"cli-create-work-1757556000000-1234-0","ok":false,"error":{"code":"request_refused","message":"the request for create-work is 68105 bytes, past the 65536-byte request bound; nothing was sent (the command line's own arguments are the whole request)"}}
 ```
 
 ## The policy document
