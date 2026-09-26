@@ -50,6 +50,22 @@ is. So `symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote
 `symbiote --json --help health` each exit 1 printing nothing, while `symbiote
 --state-dir DIR shutdown --yes` and `symbiote --json health` are unaffected.
 
+## The write commands on this contract
+
+`register-project`, `create-work` and `create-task` are daemon commands like
+any other: they map onto operations the protocol already had, so they change
+no envelope, no schema and no exit code. What they change is the argument
+shape — identities, names, contract revisions and a branch, rather than a JSON
+document the caller assembled — and that shape is stated in
+[host.md](host.md) beside the other commands. Their operations are
+`register_project`, `create_work` and `create_task`, which the operation-risk
+table classifies as mutations, so they are sent without `--yes` and appear
+unmarked in the command table; a policy naming one is refused, because a
+policy may only name a kind that is dangerous. A mistyped argument is a usage
+failure, so it prints no envelope and exits 1 exactly like any other, and a
+refusal the daemon answers arrives in `error` as any other daemon refusal
+does.
+
 ## Publishing a runtime inventory
 
 `symbiote publish-runtime-inventory DOCUMENT --state-dir DIR` is local, like

@@ -1,7 +1,10 @@
 //! The administrative CLI's authorization gate, proven against a fake daemon
 //! socket. The property that matters is not the message but the wire: a
 //! dangerous operation without explicit authorization must not put a single
-//! byte on the socket, and `raw` must not be a way around it.
+//! byte on the socket, and `raw` must not be a way around it. The other
+//! refusal that happens before the socket — a command line the CLI cannot
+//! honor — is held here too, because it is the same rule for the same reason:
+//! the operation is never built, so there is nothing to send.
 mod support;
 
 use std::os::unix::fs::PermissionsExt;
@@ -397,4 +400,92 @@ fn a_policy_authorizes_sending_but_never_overrides_the_daemon() {
     );
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["code"], "permission_denied");
+}
+
+/// A command line the CLI cannot honor never reaches the socket, the same rule
+/// the gate applies and for the same reason. The write commands are where a
+/// person or a script actually mistypes something, so every way of doing it is
+/// driven here: a missing argument, a contract without its revision, a revision
+/// that is not a number, a classification the domain does not declare, and an
+/// argument the command does not take. Each is exit 1, prints nothing on
+/// stdout, and names the argument that is wrong.
+#[test]
+fn a_mistyped_argument_to_a_write_command_sends_nothing() {
+    for arguments in [
+        // The contract and its revision are missing.
+        vec!["register-project", "p", "Name", "lead"],
+        // The contract is there; its root is not.
+        vec!["register-project", "p", "Name", "lead", "contract@1"],
+        // The contract has no revision.
+        vec![
+            "register-project",
+            "p",
+            "Name",
+            "lead",
+            "contract",
+            "root-main",
+        ],
+        // The revision is not a number.
+        vec![
+            "register-project",
+            "p",
+            "Name",
+            "lead",
+            "contract@next",
+            "root-main",
+        ],
+        // The classification is not one the domain declares.
+        vec!["create-work", "p", "lead", "objective", "urgent", "Title"],
+        // One argument more than the command takes, after the optional one.
+        vec![
+            "create-work",
+            "p",
+            "lead",
+            "objective",
+            "maintenance",
+            "Title",
+            "Body",
+            "surplus",
+        ],
+        // The task's contract has no revision.
+        vec![
+            "create-task",
+            "p",
+            "t",
+            "root-main",
+            "lead",
+            "objective",
+            "coding",
+            "task/t",
+        ],
+        // The branch is missing.
+        vec![
+            "create-task",
+            "p",
+            "t",
+            "root-main",
+            "lead",
+            "objective",
+            "coding@1",
+        ],
+    ] {
+        let (output, frame) = run_cli(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{arguments:?} is a usage failure: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            frame.is_none(),
+            "{arguments:?} must not reach the daemon: a command line the CLI cannot honor is \
+             refused before it builds an operation"
+        );
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with("symbiote: ") && stderr.contains("usage: symbiote"),
+            "{arguments:?} refused with {stderr:?}, which names neither the cause nor the shape"
+        );
+    }
 }

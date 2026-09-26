@@ -41,6 +41,7 @@ target/debug/symbiote --state-dir /absolute/private/state-directory health
 operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `get-project`,
 `list-projects`, `snapshot`,
+`register-project`, `create-work`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
@@ -82,6 +83,56 @@ actor identities exist. The interactive/headless coding-agent experience is
 #467's surface and shares this client plumbing; this binary carries no model
 loop.
 
+### The write commands, and what they leave to `raw`
+
+Registering a Project, creating work and creating a Task are the writes this
+client is built around, and each is a command whose arguments are the facts an
+operator or a script actually holds — an identity, a name, a contract
+revision, a branch — rather than a JSON document somebody assembled by hand:
+
+```sh
+symbiote --state-dir DIR register-project symbiote "Symbiote" lead lead-contract@1 root-main
+symbiote --state-dir DIR create-work symbiote lead ship-it operational "Ship the beta" "and say what done is"
+symbiote --state-dir DIR create-task symbiote task-one root-main lead ship-it coding@1 task/one
+```
+
+Each returns the daemon's own receipt, and each is read back by the typed
+reads: `get-project`, `snapshot` and `read-journal` after a registration,
+`get-task`, `get-task-origin` and `prepare-dispatch` after a Task.
+
+Two spellings recur because two facts do. A contract is written
+`<contract_id>@<revision>`: a contract is recorded under an identity *and* the
+revision of it, and only the caller knows which revision this Project or Task
+is written against. And `<class>` is the classification the domain requires of
+an Objective — `maintenance` and `operational` are the two a Task may
+originate from, `outcome` the third the domain declares — because that
+classification is what decides whether `create-task` may name the work at all.
+
+Everything else the operations accept is derived rather than asked for, and
+each derivation is stated here so that nothing in the record is a surprise. A
+registered Root names neither a repository nor a host path: placement is a
+Host's to record, per Host, once it has observed a checkout. A registered
+Project carries its lead Role, named for the identity it is registered under.
+A created Task's stream is named for the Task it belongs to —
+`stream-<task_id>`, `worktree-<task_id>`, `chat-<task_id>` — and carries the
+branch the caller named with the null Git object id as both its base and its
+target, because creating a Task does no work: its stream names no commit, and
+the null id is the one value that cannot be mistaken for a commit that exists.
+A created Objective states its title, its optional description and its class,
+and leaves its requirements, constraints, risks, acceptance criteria, budget,
+dependencies and external references unstated at the domain's lowest priority,
+because a work item is filed here and specified through `raw`.
+
+`raw` is not a lesser path and not deprecated. It is how a Project with more
+than one Role, a work item of another kind (a request, a plan, a milestone),
+a fully specified Objective, or a Task whose stream carries real lineage is
+created: the typed commands cover the writes a person or a script types, and
+the daemon still validates and authorizes every field of both. A mistyped
+argument to any of them is refused before anything is sent, and the refusal
+names the argument, the shape it wanted and the value it got — the way a
+refused lock names the lock it could not take — with the command's usage
+beside it.
+
 ### Dangerous operations require explicit authorization
 
 Authorization follows the **operation**, not the command name. One table
@@ -94,7 +145,8 @@ the ones that start or end execution or grant capability:
 gated) and `record_resource_consent`. A kind the table does not know
 cannot be proven safe, so it fails closed as dangerous. Reads are free;
 everything else is a mutation the daemon still authorizes — filing
-evidence (`create-task`, `prepare-dispatch`, `request-task-completion`,
+evidence (`register-project`, `create-work`, `create-task`,
+`prepare-dispatch`, `request-task-completion`,
 `request-elevation`) is not starting work.
 
 A dangerous operation is sent only when the invocation is explicitly
