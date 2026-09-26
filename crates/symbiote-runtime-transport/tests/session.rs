@@ -147,19 +147,76 @@ fn an_owned_live_process_is_cancelled_and_classified_cancelled() {
     assert!(!outcome.is_clean());
 }
 
-/// A child that cannot be reaped inside the owner's deadline is `Unreaped`. The
-/// process may still be running, so the final state is unknown rather than clean.
+/// A child the owner cannot reap in time is never reported clean, and the owner's
+/// deadline bounds the wait rather than the child's lifetime.
+///
+/// The two ends this asserts are the two the code promises, and *which* one a run
+/// reaches is a race between the child dying from the group signal and the deadline
+/// expiring: `cancel` reads the exit before it reads the clock, so a child that dies
+/// inside the window is reaped (`Cancelled`) and one that does not is not (`Unreaped`).
+/// Asserting a branch made this case fail under a loaded runner — once in CI on the
+/// 1.85.0 leg, with `Cancelled { group_signal: Sent }` where this test had asserted
+/// `Unreaped` — while both are honest. The properties are the ones a caller depends
+/// on, and they are stated by the code's own documentation: a reaped cancel reports
+/// an exit and an unreaped one does not, neither is clean, and the child is reaped on
+/// the way out so a timed-out session leaves no zombie.
 #[test]
 fn a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean() {
     let live = session("/bin/sleep 30", Liveness::Unwatched);
+    let pid = live.child_id();
+    assert!(pid > 0);
+    let started = Instant::now();
     let outcome = live.end(None, Duration::ZERO);
-    assert_eq!(
-        outcome.end,
-        SessionEnd::Unreaped {
-            error: TransportError::DeadlineExceeded
-        }
+    // The child lives 30 seconds; a wait that tracked the child rather than the
+    // deadline would be visible here as most of that.
+    let waited = started.elapsed();
+    assert!(
+        waited < Duration::from_secs(2),
+        "a zero deadline still waited {waited:?}, so the deadline bounds the wait only \
+         by accident"
     );
-    assert!(!outcome.is_clean());
+    match outcome.end {
+        SessionEnd::Cancelled { ref group_signal } => {
+            assert!(
+                outcome.exit.is_some(),
+                "a cancelled end says the process was reaped, so it must carry the exit: \
+                 {group_signal:?}"
+            );
+        }
+        SessionEnd::Unreaped { ref error } => {
+            assert_eq!(
+                *error,
+                TransportError::DeadlineExceeded,
+                "an unreaped end is the deadline passing, not another failure"
+            );
+            assert!(
+                outcome.exit.is_none(),
+                "an unreaped end means the process had not been reaped when the session was \
+                 retired, so it cannot carry an exit"
+            );
+        }
+        other => panic!("a session the owner ended reports Cancelled or Unreaped, not {other:?}"),
+    }
+    assert!(!outcome.is_clean(), "{:?} is not a clean end", outcome.end);
+    assert!(
+        !matches!(outcome.class(), Some(ExitClass::Clean)),
+        "a child killed on the owner's ask never exits zero: {:?}",
+        outcome.class()
+    );
+    // `end` consumed the session, so the transport's own drop has run its reaper
+    // with a budget of its own. A child left as a zombie would keep a `/proc` entry
+    // for as long as this process lives, which is the leak this asserts is absent.
+    let proc = PathBuf::from(format!("/proc/{pid}"));
+    let deadline = Instant::now() + SECOND;
+    while proc.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !proc.exists(),
+        "the child {pid} is still in /proc {:?} after the session was retired, so an \
+         unreaped session leaves a zombie behind",
+        std::fs::read_to_string(proc.join("stat")).ok()
+    );
 }
 
 /// A faulted session is faulted even when the child exited zero: a status is not
