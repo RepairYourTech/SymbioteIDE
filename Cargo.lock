@@ -3165,6 +3165,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-runtime-transport",
  "symbiote-source-stamp",

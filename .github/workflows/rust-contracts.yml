@@ -113,6 +113,15 @@ jobs:
           cargo run --locked -p symbiote-host --bin symbiote -- schema --write "$schemas"
           diff -ru docs/contracts/schemas "$schemas"
       - run: cargo test --workspace --locked
+      # The structural check proves a document is read by the case the census names; this proves the
+      # case compares what the document publishes — it changes each published claim in turn, a figure
+      # or a name, and requires the suite to go red, which is the only way to catch a document held
+      # by a case that never measured what it publishes. It runs here rather than in Roadmap
+      # integrity because this job has the build warm, and it runs after `cargo test --workspace` for
+      # the same reason: every row reuses it.
+      - name: Revert each published claim and require its case to fail
+        if: matrix.toolchain == 'stable'
+        run: python3 planning/integrity/mutation_probe.py
       - name: Prove pinned Codex discovery without credentials or network
         if: matrix.toolchain == 'stable'
         run: |
