@@ -866,6 +866,45 @@ fn a_first_task_wider_in_gates_than_the_bound_is_answered_at_the_budget() {
 }
 
 #[test]
+fn an_answer_that_cut_no_gate_is_not_partial() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, _, _) = register(&mut store, "one");
+    // Gates on more than one row, and nothing within an order of magnitude of
+    // either bound. This is the whole Project, read whole: three Tasks and two
+    // gates, every one of them in the answer. Count the dropped gates from the
+    // running total instead of from the row and this answer reports a gate it
+    // never held and calls itself partial — which is the small, ordinary graph
+    // every caller has, so the flag would be worth nothing.
+    let a = graph_task(&mut store, "cut-a");
+    let b = graph_task(&mut store, "cut-b");
+    let c = graph_task(&mut store, "cut-c");
+    set_edges(
+        &mut store,
+        "cut-dep-b",
+        &project.id,
+        &b,
+        [requires(&project.id, &a)],
+    )
+    .unwrap();
+    set_edges(
+        &mut store,
+        "cut-dep-c",
+        &project.id,
+        &c,
+        [requires(&project.id, &b)],
+    )
+    .unwrap();
+    let report = graph(&store, &project.id).unwrap();
+    assert_eq!(report.progress.considered_gates, 2);
+    assert_eq!(report.progress.total, report.progress.considered);
+    assert!(
+        !report.progress.partial,
+        "an answer that read every row and every gate it was given is not partial"
+    );
+}
+
+#[test]
 fn an_edge_of_an_unenforced_kind_does_not_spend_the_gate_budget() {
     let temp = Temporary::new();
     let mut store = Store::open(temp.database()).unwrap();

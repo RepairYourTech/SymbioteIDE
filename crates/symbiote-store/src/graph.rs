@@ -99,7 +99,7 @@ impl Store {
             // and calling it whole. No later row is cut: a row the budget
             // cannot hold ends the read, which the next iteration does.
             let (owned, blocked) = if with_this_row > MAX_GRAPH_REPORT_GATES {
-                let room = MAX_GRAPH_REPORT_GATES;
+                let room = MAX_GRAPH_REPORT_GATES - gates;
                 let from_owned = room.min(owned.len());
                 (
                     owned.iter().take(from_owned).cloned().collect(),
@@ -108,7 +108,11 @@ impl Store {
             } else {
                 (owned, blocked)
             };
-            dropped += with_this_row - owned.len() - blocked.len();
+            // The drop is this row's own gates less the ones that were kept, and
+            // not the running total: a total charged here calls every graph
+            // whose gates span more than one row partial, which is most of
+            // them, and the answer would claim a gate it never held.
+            dropped += with_this_row - gates - owned.len() - blocked.len();
             gates = gates + owned.len() + blocked.len();
             for edge in owned.iter().chain(blocked.iter()) {
                 let target = GraphTaskRef {
