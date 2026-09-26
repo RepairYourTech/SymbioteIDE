@@ -28,6 +28,9 @@ def statements(document: pathlib.Path) -> list[str]:
     The lines kept are returned whole and unaltered, so whatever reads figures out of a line reads
     the document's own text and not a rewriting of it: a statement is counted because the document
     states it, and a quotation is left out because the document is showing rather than claiming.
+
+    A fence left open runs to the end of the document, and `unclosed` is what says so by name: a
+    count taken over a document that leaves one open describes a document nobody wrote.
     """
     kept: list[str] = []
     fence: str | None = None
@@ -41,3 +44,27 @@ def statements(document: pathlib.Path) -> list[str]:
         elif stripped.startswith(fence):
             fence = None
     return kept
+
+
+def unclosed(document: pathlib.Path) -> str | None:
+    """Why this document is not well formed, or None when every fence it opens it also closes.
+
+    An unclosed fence is the one shape this reading cannot absorb. It makes every line after it a
+    quotation, so a bound the document states below it stops being counted, the figure a census
+    records is smaller than the document publishes, and nothing says why — a document in that state
+    passes every check that only compares counts. The refusal names the line the fence opened on,
+    because that is the line an author completes or deletes, and it is returned rather than raised
+    so one run can name every document that is wrong instead of the first.
+    """
+    fence: str | None = None
+    opened = 0
+    for number, line in enumerate(document.read_text().splitlines(), 1):
+        stripped = line.lstrip()
+        if fence is None:
+            if stripped.startswith(FENCE):
+                fence, opened = stripped[:3], number
+        elif stripped.startswith(fence):
+            fence = None
+    if fence is None:
+        return None
+    return f"a `{fence}` fence opened on line {opened} is never closed"
