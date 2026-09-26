@@ -122,7 +122,7 @@ FIGURES = {
     "runtime-transport.md": 1,
     "scheduling-leases.md": 0,
     "storage.md": 0,
-    "work-hierarchy.md": 9,
+    "work-hierarchy.md": 8,
     "worker-completion-wiring.md": 0,
     "workforce-bindings.md": 1,
     "worktrees.md": 3,

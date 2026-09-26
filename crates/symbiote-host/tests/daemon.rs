@@ -1120,6 +1120,297 @@ fn leases_fence_stale_owners_and_the_projection_is_explainable() {
     );
 }
 
+/// The widest answer the two published DAG bounds allow, measured on the wire.
+///
+/// The contract states what the whole chain costs at the bound, and a number
+/// nothing measures is a number that decays. So this case builds the widest
+/// graph those bounds admit — every Task, every gate, nothing cut — and counts
+/// the bytes the daemon actually framed.
+///
+/// The count is the transport's own, and that is the whole point: `encode_response`
+/// is what refuses past `MAX_RESPONSE_BYTES`, so the bytes read here are the bytes
+/// the bound is about. They are not the `symbiote` CLI's pretty print, which is a
+/// rendering a human reads and a larger one than the wire, and not a second
+/// serialization either.
+#[test]
+fn the_widest_answer_the_published_bounds_allow_is_measured_on_the_wire() {
+    // Sixteen gates an owner: enough owners to spend the gate bound exactly, and
+    // the remainder of the Task bound spent on the Tasks they wait on. The shape
+    // is derived from the published constants rather than written down, so a
+    // bound that moves cannot leave a fixture measuring the old one.
+    const GATES_PER_OWNER: usize = 16;
+    let owners = symbiote_domain::MAX_GRAPH_REPORT_GATES / GATES_PER_OWNER;
+    let targets = symbiote_domain::MAX_GRAPH_REPORT_TASKS - owners;
+    assert_eq!(
+        owners * GATES_PER_OWNER,
+        symbiote_domain::MAX_GRAPH_REPORT_GATES,
+        "the fixture spends the published gate bound exactly"
+    );
+    assert_eq!(
+        owners + targets,
+        symbiote_domain::MAX_GRAPH_REPORT_TASKS,
+        "the fixture spends the published Task bound exactly"
+    );
+
+    let host = Host::new();
+    ok(&host.call(request("register-ceiling", project("ceiling"))));
+    ok(&host.call(request("ceiling-maintenance", maintenance("ceiling"))));
+    for index in 0..targets {
+        ok(&host.call(request(
+            &format!("ceiling-target-{index}"),
+            task(&format!("target-{index:04}"), "ceiling"),
+        )));
+    }
+    for index in 0..owners {
+        ok(&host.call(request(
+            &format!("ceiling-owner-{index}"),
+            task(&format!("owner-{index:04}"), "ceiling"),
+        )));
+    }
+    for index in 0..owners {
+        let dependencies: Vec<Value> = (0..GATES_PER_OWNER)
+            .map(|gate| {
+                let target = (index * GATES_PER_OWNER + gate) % targets;
+                json!({
+                    "kind": "requires",
+                    "target": {"project_id": "ceiling", "task_id": format!("target-{target:04}")},
+                })
+            })
+            .collect();
+        ok(&host.call(request(
+            &format!("ceiling-edges-{index}"),
+            json!({
+                "kind": "set_task_dependencies",
+                "project_id": "ceiling",
+                "task_id": format!("owner-{index:04}"),
+                "dependencies": dependencies,
+            }),
+        )));
+    }
+
+    let projection_request = request(
+        "ceiling-projection",
+        json!({"kind":"get_scheduling_projection","project_id":"ceiling"}),
+    );
+    let bytes = exchange(
+        &host.directory,
+        &serde_json::to_vec(&projection_request).unwrap(),
+    )
+    .expect("the widest answer is one the daemon can serve");
+    let projection: Value = serde_json::from_slice(&bytes).unwrap();
+    let answered = ok(&projection);
+    let progress = &answered["data"]["dag"]["progress"];
+
+    println!(
+        "   considered={} gates={} partial={} total={} wire bytes={} of {}",
+        progress["considered"],
+        progress["considered_gates"],
+        progress["partial"],
+        progress["total"],
+        bytes.len(),
+        symbiote_protocol::MAX_RESPONSE_BYTES,
+    );
+
+    // Nothing was cut, so the answer is the whole Project: this is the widest one
+    // the published bounds can produce, not a truncation of something wider.
+    assert_eq!(
+        progress["considered"],
+        symbiote_domain::MAX_GRAPH_REPORT_TASKS,
+        "the widest answer considers every Task the bound allows"
+    );
+    assert_eq!(
+        progress["considered_gates"],
+        symbiote_domain::MAX_GRAPH_REPORT_GATES,
+        "the widest answer carries every gate the bound allows"
+    );
+    assert_eq!(
+        progress["total"],
+        symbiote_domain::MAX_GRAPH_REPORT_TASKS,
+        "the Project holds exactly what the bound allows, so nothing was cut"
+    );
+    assert_eq!(
+        progress["partial"], false,
+        "a whole Project read whole is not a partial answer"
+    );
+    assert_eq!(
+        answered["data"]["readiness"].as_array().unwrap().len(),
+        symbiote_domain::MAX_GRAPH_REPORT_TASKS,
+    );
+    // And the transport carried it, which is the claim the contract makes about
+    // the whole chain: the gate bound binds first, and 1 MiB is not what stops it.
+    assert!(
+        bytes.len() <= symbiote_protocol::MAX_RESPONSE_BYTES,
+        "the widest answer is {} bytes and the transport refuses past {}",
+        bytes.len(),
+        symbiote_protocol::MAX_RESPONSE_BYTES,
+    );
+
+    // The contract publishes that measurement, so it is read back and compared as
+    // numbers. The prose witness this replaces asserted that the sentence existed;
+    // this asserts that the sentence is true, and fails by name with both figures
+    // when it is not.
+    // Read with its own line breaks collapsed, so re-wrapping the paragraph cannot
+    // silently move the figure out from under the comparison.
+    let contract = include_str!("../../../docs/contracts/work-hierarchy.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let measured_tasks = progress["considered"].as_u64().unwrap();
+    let measured_gates = progress["considered_gates"].as_u64().unwrap();
+    let measured_bytes = bytes.len() as u64;
+    let measured_percent =
+        measured_bytes as f64 * 100.0 / symbiote_protocol::MAX_RESPONSE_BYTES as f64;
+    let tasks_stated = stated_figure(&contract, "at the bound — ", " Tasks carrying");
+    let gates_stated = stated_figure(&contract, "Tasks carrying ", " gates");
+    let bytes_stated = stated_figure(&contract, "the compact response is ", " bytes");
+    let percent_stated = stated_share(&contract, " bytes, ", "% of the protocol's");
+    println!(
+        "   the contract states {tasks_stated} Tasks, {gates_stated} gates, {bytes_stated} bytes, {percent_stated}%"
+    );
+    assert_eq!(
+        tasks_stated, measured_tasks,
+        "the contract's Task figure is not the one the widest answer carries"
+    );
+    assert_eq!(
+        gates_stated, measured_gates,
+        "the contract's gate figure is not the one the widest answer carries"
+    );
+    assert_eq!(
+        bytes_stated, measured_bytes,
+        "the contract's byte figure is not the one the transport framed"
+    );
+    assert_eq!(
+        (percent_stated * 10.0).round() / 10.0,
+        (measured_percent * 10.0).round() / 10.0,
+        "the contract's share of the response bound is not the measured share"
+    );
+}
+
+/// The whole number a contract sentence states between two markers, read as a
+/// value rather than matched as prose: a figure nothing parses is a figure
+/// nothing holds, and a document that stops stating one fails here by name.
+fn stated_figure(contract: &str, after: &str, before: &str) -> u64 {
+    let digits = stated_digits(contract, after, before);
+    digits.replace(',', "").parse().unwrap_or_else(|_| {
+        panic!("the contract states {digits:?} after {after:?}, which is not a whole number")
+    })
+}
+
+/// The same, for a share of the response bound, which the document states to one
+/// decimal place because a share of a mebibyte is not a whole thing.
+fn stated_share(contract: &str, after: &str, before: &str) -> f64 {
+    stated_digits(contract, after, before)
+        .parse()
+        .unwrap_or_else(|_| panic!("the contract states no share after {after:?}"))
+}
+
+fn stated_digits(contract: &str, after: &str, before: &str) -> String {
+    let rest = contract
+        .split_once(after)
+        .unwrap_or_else(|| panic!("the contract does not state {after:?}"))
+        .1;
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',' || *c == '.')
+        .collect();
+    assert!(
+        !digits.is_empty(),
+        "the contract states {after:?} with no figure before {before:?}"
+    );
+    let tail = &rest[digits.len()..];
+    assert!(
+        tail.starts_with(before),
+        "the contract states {digits:?} after {after:?}, which is not followed by {before:?}: {}",
+        &tail[..tail.len().min(60)]
+    );
+    digits
+}
+
+/// The same measurement for a Project too wide to read whole, so the cost of a
+/// truncated answer is a number too and not an estimate. The shape is the one the
+/// bound proofs use: every owner at the per-task edge bound, past the gate bound
+/// on purpose, so the read stops on the gate bound rather than the Task bound.
+#[test]
+fn an_answer_cut_at_the_gate_bound_is_measured_on_the_wire_too() {
+    const TARGETS: usize = 64;
+    const OWNERS: usize = 40;
+    let host = Host::new();
+    ok(&host.call(request("register-cut", project("cut"))));
+    ok(&host.call(request("cut-maintenance", maintenance("cut"))));
+    for index in 0..TARGETS {
+        ok(&host.call(request(
+            &format!("cut-target-{index}"),
+            task(&format!("target-{index:02}"), "cut"),
+        )));
+    }
+    for index in 0..OWNERS {
+        ok(&host.call(request(
+            &format!("cut-owner-{index}"),
+            task(&format!("owner-{index:02}"), "cut"),
+        )));
+    }
+    for index in 0..OWNERS {
+        let dependencies: Vec<Value> = (0..TARGETS)
+            .map(|target| {
+                json!({
+                    "kind": "requires",
+                    "target": {"project_id": "cut", "task_id": format!("target-{target:02}")},
+                })
+            })
+            .collect();
+        ok(&host.call(request(
+            &format!("cut-edges-{index}"),
+            json!({
+                "kind": "set_task_dependencies",
+                "project_id": "cut",
+                "task_id": format!("owner-{index:02}"),
+                "dependencies": dependencies,
+            }),
+        )));
+    }
+    let projection_request = request(
+        "cut-projection",
+        json!({"kind":"get_scheduling_projection","project_id":"cut"}),
+    );
+    let bytes = exchange(
+        &host.directory,
+        &serde_json::to_vec(&projection_request).unwrap(),
+    )
+    .expect("a truncated answer is one the daemon can serve");
+    let projection: Value = serde_json::from_slice(&bytes).unwrap();
+    let progress = ok(&projection)["data"]["dag"]["progress"].clone();
+    println!(
+        "   considered={} gates={} partial={} total={} wire bytes={} of {}",
+        progress["considered"],
+        progress["considered_gates"],
+        progress["partial"],
+        progress["total"],
+        bytes.len(),
+        symbiote_protocol::MAX_RESPONSE_BYTES,
+    );
+    // Owners of 64 gates each, past the bound on purpose: the gate bound stops the
+    // read after 32 of them and the answer says it was cut.
+    assert_eq!(
+        progress["considered_gates"],
+        symbiote_domain::MAX_GRAPH_REPORT_GATES,
+        "the published gate bound is the number the answer carries"
+    );
+    assert_eq!(
+        progress["considered"],
+        symbiote_domain::MAX_GRAPH_REPORT_GATES / 64,
+        "the Task bound is not what stopped the read; the gate bound is"
+    );
+    assert_eq!(progress["partial"], true, "a cut answer must say so");
+    assert_eq!(progress["total"], OWNERS + TARGETS);
+    assert!(
+        bytes.len() <= symbiote_protocol::MAX_RESPONSE_BYTES,
+        "a truncated answer is {} bytes and the transport refuses past {}",
+        bytes.len(),
+        symbiote_protocol::MAX_RESPONSE_BYTES,
+    );
+}
+
 #[test]
 fn dispatch_preparation_records_composition_and_refusals() {
     let mut host = Host::new();
