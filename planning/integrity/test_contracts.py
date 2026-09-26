@@ -20,6 +20,7 @@ import tempfile
 import unittest
 
 import contracts
+import prose
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CRATES = ROOT / "crates"
@@ -178,6 +179,32 @@ class TheCensus(unittest.TestCase):
                 contracts.figures("unclosed.md", root=root), 1,
                 "a fence that never closes does not run to the end of the document, so a long "
                 "example's remaining lines are counted as claims the document makes")
+
+            # The one shape this reading cannot absorb: a fence left open makes every line after it
+            # a quotation, so a bound the document states below one stops being counted, the figure
+            # recorded for it is smaller than what it publishes, and every check that compares
+            # counts alone passes. So the documents this census records are asked whether they are
+            # well formed, and the refusal names each one and the fence it left open.
+            self.assertIsNone(
+                prose.unclosed(root / "both.md"),
+                "a document whose fence it closes is called malformed: the reading closes a fence "
+                "itself, so refusing one that is well formed is the rule refusing the document")
+            self.assertIn(
+                "line 3", prose.unclosed(root / "unclosed.md") or "",
+                "the refusal does not say which line the fence opened on, so an author is left "
+                "looking for it")
+            malformed = []
+            for name in sorted(contracts.FIGURES):
+                root_of = contracts.CONTRACTS if "/" not in name else contracts.ROOT
+                why = prose.unclosed(root_of / name)
+                if why:
+                    malformed.append(f"{name} is not well formed: {why}")
+            self.assertEqual(
+                malformed, [],
+                "a document the census records leaves a fence open, so the figures below it read as "
+                "quotations and the count it carries stops describing what the document states — a "
+                "bound it publishes would go unheld and every count-only check would stay green: "
+                + "; ".join(malformed))
 
             # The case that was actually broken, against the document it happened in: `cli.md` as
             # this tree publishes it, and the same document with every figure it quotes quoted
