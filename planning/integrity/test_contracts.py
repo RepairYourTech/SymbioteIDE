@@ -198,6 +198,42 @@ class TheCensus(unittest.TestCase):
                 "the refusal does not say which line the fence opened on, so an author is left "
                 "looking for it")
 
+            # The two shapes this reading misreads rather than cannot absorb, and they fail in the
+            # opposite direction: a fence it cannot absorb makes a bound below it stop counting,
+            # while an indented block and a wide fence are quotations to a Markdown reader and
+            # claims to this one, so a figure moves into either and every count-only check stays
+            # green over a bound the document is only quoting. Nothing is parsed here either — a
+            # line of either shape is left uncounted rather than guessed at — so the shape is
+            # refused by the line it begins on, the way the unclosed fence is.
+            (root / "indented.md").write_text(
+                stated + "\n\n    A bound of 64 MiB, indented into a block\n\n"
+                "It also allows at most 16 files.\n")
+            (root / "wide.md").write_text(
+                stated + "\n\n````text\nA bound of 64 MiB, held by the block\n"
+                "A bound of 128 MiB, still inside it\n```\n")
+            self.assertEqual(
+                contracts.figures("indented.md", root=root), 2,
+                "a bound written into an indented block is counted, so a document can move a "
+                "figure into a shape this reading cannot see and keep the count it records")
+            self.assertEqual(
+                contracts.figures("wide.md", root=root), 1,
+                "a fence opened with four markers closes here at the first three, so a block the "
+                "author believes still holds its bounds is read as ending early and counted as a "
+                "claim the moment a three-marker line appears inside it")
+            self.assertIsNone(
+                prose.unseen(root / "quoted.md"),
+                "a document whose fences it opens and closes is refused as unreadable: every shape "
+                "asked about is in the reading, so the rule is refusing the document and not the "
+                "shape, which would cost a well-formed contract a figure nothing took from it")
+            self.assertIn(
+                "line 3", prose.unseen(root / "indented.md") or "",
+                "the refusal does not say which line the block begins on, so an author is left "
+                "looking for it")
+            self.assertIn(
+                "4 markers", prose.unseen(root / "wide.md") or "",
+                "the refusal does not say the block is opened wide, so an author is left to count "
+                "the markers by hand to find the shape that cost the count")
+
             def path_of(name: str) -> pathlib.Path:
                 """Where a name this census records lives, stated here and not read from
                 `contracts.figures`, which reads it the same way on purpose: an assertion that
@@ -240,6 +276,19 @@ class TheCensus(unittest.TestCase):
                 "quotations and the count it carries stops describing what the document states — a "
                 "bound it publishes would go unheld and every count-only check would stay green: "
                 + "; ".join(malformed))
+
+            unread = []
+            for name in sorted(contracts.FIGURES):
+                why = prose.unseen(path_of(name))
+                if why:
+                    unread.append(f"{name} is not read whole: {why}")
+            self.assertEqual(
+                unread, [],
+                "a document the census records holds a shape this reading cannot see, so a figure "
+                "can be moved into it — indented or behind a wide fence — and the count it carries "
+                "stays the number recorded, which is the one hole the unclosed-fence rule above "
+                "does not close: fence the block, or open it with three markers: "
+                + "; ".join(unread))
 
             # The case that was actually broken, against the document it happened in: `cli.md` as
             # this tree publishes it, and the same document with every figure it quotes quoted

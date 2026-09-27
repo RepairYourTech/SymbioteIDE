@@ -165,7 +165,9 @@ can actually apply. When it has no bound for a declared limit the run refuses
 before any worktree is provisioned or transport built, naming the declared
 field and carrying no value, path or account:
 
-    the dispatch declares a CPU demand (max_cpu_millicores) this Host has no kernel bound for
+```text
+the dispatch declares a CPU demand (max_cpu_millicores) this Host has no kernel bound for
+```
 
 A contract that records **no** limits — one journaled before limits were
 recorded — replays rather than breaking the read, and refuses activation for
