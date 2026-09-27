@@ -175,6 +175,51 @@ fully satisfied by client work alone — three operations have to exist before a
 controller has anything to control. Nothing in this branch touches the protocol,
 so it is recorded rather than begun.
 
+**Closed in the fourth pass — then closed again twice, one step at a time.**
+
+The three operations exist: `validate_change_stream`, `begin_task_verification` and
+`complete_task`. `Store::apply_stream` is the write path every other transition had and a
+stream did not, so a stream moves at all. That closed `Verifying` and `Completed`.
+
+The next pass found the same shape one step out: a completed task's work sat on a branch in a
+worktree the Root had never seen, and no client had the operation that would have merged it.
+`integrate_change_stream` does, `--ff-only`, refusing before the merge unless the root is at the
+stream's recorded target and refusing after unless it is at the recorded head. That refusal is
+what exposed a defect in `create-task`, which recorded the null Git object id as the stream's
+target and so made a task created from the command line dispatchable, runnable, completable and
+then permanently un-integratable. The target is the base now.
+
+The step after that was the last one, and it was a leak rather than a gap: every completed run
+left a full git worktree on the operator's disk forever, because nothing ever reclaimed one and
+`symbiote_worktrees::release` — a function with two documented policies and a content
+discipline — had no production caller anywhere in the workspace. `release_change_stream` is that
+caller. It proves the stream's head is still reachable from the root (`merge-base
+--is-ancestor`, so a root that moved on is fine and a root that lost the commit is not), then
+runs `git worktree remove` **without** `--force` so git's own refusal of a dirty checkout is the
+last line of that guard, then releases the reservation under `DeleteIfEmpty`. The branch is never
+deleted: a change stream is integrated, not erased. The stream ends in a new terminal state,
+`Released`, distinct from `Integrated` precisely because a caller must not read "integrated" as
+"still on disk".
+
+`symbiote-worktrees::release` could not have been that caller as it stood: `DeleteIfEmpty` read
+the reserved directory and reported `NotFound` when git had already removed it, which is the
+ordinary end of a materialized reservation. No materialized reservation could ever be released,
+so its marker outlived its directory and `reserve` refused the identity forever. That is fixed in
+the crate, with the honest reading: a location that is already gone holds no entries.
+
+The end-to-end harness in `/mnt/data/tmp/ship` now runs the whole lifecycle from an empty
+directory with no `raw` file: `init`, `add-credential`, ten registrations at sequences 1–10,
+dispatch, run, `validate` (15), `begin` (16), `complete` (17), `integrate` (18, revision 2) and
+`release` (19, revision 3) — after which the reservation base is empty and the branch is still
+there.
+
+**Still open under #211, and named rather than quietly deferred:** the *unintegrated* case. A
+failed or abandoned run's worktree holds unmerged commits, `Retain` detaches its marker and
+leaves a populated directory that `reserve` will never reclaim, so re-running an abandoned stream
+reports `Reservation` until an operator acts. That is the right direction — the work is
+unmerged, and `Retain` is the policy for not deleting it — but there is no operation for it and
+no way for an operator to say "this one is finished, it is not coming back" through the product.
+
 **Candidate, not a decision — the reap test's deadline race.** CI failed
 `a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean` once on the 1.85.0 leg with
 `Cancelled { group_signal: Sent }` where the test asserts `Unreaped { error: DeadlineExceeded }`,

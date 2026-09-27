@@ -649,6 +649,11 @@ pub enum StreamState {
     Collided,
     Validated,
     Integrated,
+    /// The integrated stream's worktree has been reclaimed. Terminal, and
+    /// distinct from `Integrated`: the work landed either way, but the
+    /// location that held it is gone, so the stream can never be provisioned
+    /// again and a caller must not read `Integrated` as "still on disk".
+    Released,
     Cancelled,
 }
 
@@ -712,6 +717,11 @@ pub enum StreamAction {
         head: CommitSha,
         target: CommitSha,
     },
+    /// Reclaim an integrated stream's worktree. Carries no commit: the
+    /// commits are already recorded, and the caller proves they survive the
+    /// removal rather than restating them here as if the Host had not read
+    /// them from the stream.
+    Release,
     Cancel,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -904,7 +914,14 @@ impl ChangeStream {
         {
             return Err(DomainError::InvalidTimestamp);
         }
-        if matches!(self.state, StreamState::Integrated | StreamState::Cancelled) {
+        // `Integrated` and `Cancelled` are terminal, and `Released` is
+        // terminal too — with one exception in the first case: reclaiming the
+        // worktree is the last thing an integrated stream may do, and it is
+        // the only transition that changes nothing about the work.
+        if matches!(self.state, StreamState::Released | StreamState::Cancelled)
+            || (self.state == StreamState::Integrated
+                && !matches!(command.action, StreamAction::Release))
+        {
             return Err(DomainError::IllegalTransition);
         }
         let revision = Revision(
@@ -958,6 +975,19 @@ impl ChangeStream {
                     return Err(DomainError::StaleEvidence);
                 }
                 self.state = StreamState::Integrated;
+            }
+            StreamAction::Release => {
+                // Only an integrated stream's worktree may be reclaimed. Every
+                // earlier state holds work that landed nowhere: `Active` and
+                // `NeedsRevalidation` may be mid-flight, `Collided` is waiting
+                // on reconciliation, and `Validated` is work that has not been
+                // landed. Removing a checkout is undoable by re-materializing;
+                // the uncommitted files in it are not, and git's own refusal
+                // of a dirty worktree is the last line of that guard.
+                if self.state != StreamState::Integrated {
+                    return Err(DomainError::StreamNotReady);
+                }
+                self.state = StreamState::Released;
             }
             StreamAction::Cancel => self.state = StreamState::Cancelled,
         }

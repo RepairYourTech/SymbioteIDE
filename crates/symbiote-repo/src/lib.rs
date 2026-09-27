@@ -650,6 +650,72 @@ pub fn materialize(
     observe_head(git, request.worktree)
 }
 
+/// Removes a materialized worktree: `git worktree remove -- <path>` against
+/// the source repository. Never `--force`, and never `--` anything else.
+///
+/// The missing flag is the whole point. Git refuses to remove a worktree with
+/// uncommitted or untracked content, so this function cannot destroy work that
+/// was never committed, and it cannot destroy work that was: the branch holds
+/// every commit. The caller supplies the evidence that the branch's commits are
+/// already reachable from wherever they are going (`is_ancestor`), and this
+/// function supplies the part only git knows — whether the checkout still holds
+/// something the branch does not.
+///
+/// The worktree's branch is not deleted. A stream's branch is its recorded
+/// lineage; a change stream is integrated, not erased.
+pub fn remove_worktree(
+    git: &mut impl GitExecutor,
+    repository: &Path,
+    worktree: &Path,
+) -> Result<(), GitError> {
+    git.run(
+        repository,
+        &["worktree", "remove", "--", path_arg(worktree)?],
+    )?;
+    Ok(())
+}
+
+/// Whether `ancestor` is reachable from `descendant` in `repository`:
+/// `git merge-base --is-ancestor <ancestor> <descendant>`, which prints
+/// nothing and reports the answer in its exit status.
+///
+/// `GitExecutor` collapses every nonzero exit into `GitRefused`, so "not an
+/// ancestor" (exit 1) and "git could not answer" (a bad object, a broken
+/// repository) arrive identically, and both are reported here as `false`. That
+/// is the deliberate direction: every caller of this function uses it to decide
+/// whether it may destroy something, and "could not prove it" must read the
+/// same as "not proven". A caller that needs to tell the two apart has to
+/// observe git itself.
+pub fn is_ancestor(
+    git: &mut impl GitExecutor,
+    repository: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, GitError> {
+    let ancestor = commit_arg(ancestor)?;
+    let descendant = commit_arg(descendant)?;
+    match git.run(
+        repository,
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+    ) {
+        Ok(_) => Ok(true),
+        Err(GitError::GitRefused) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// A commit argument is bounded hex only. An unvalidated string here would let
+/// a caller smuggle an option (`--upload-pack=...`) into a command line this
+/// crate builds, so the charset is the guard, not a convenience.
+fn commit_arg(commit: &str) -> Result<&str, GitError> {
+    let valid = (4..=64).contains(&commit.len()) && commit.bytes().all(|b| b.is_ascii_hexdigit());
+    if valid {
+        Ok(commit)
+    } else {
+        Err(GitError::InvalidRequest)
+    }
+}
+
 fn path_arg(path: &Path) -> Result<&str, GitError> {
     path.to_str().ok_or(GitError::MalformedOutput)
 }
@@ -914,6 +980,185 @@ mod tests {
         );
         assert_eq!(git.calls[1].0, worktree);
         assert_eq!(git.calls[1].1[0], "checkout");
+    }
+
+    #[test]
+    fn scripted_remove_worktree_pins_the_unforced_invocation() {
+        // The absence of --force is the property, so the exact command line is
+        // pinned: worktree remove, the -- separator, the path, nothing else.
+        // A path that begins with a dash could otherwise be read as an option.
+        let mut git = Scripted::new(vec![Ok(b"".to_vec())]);
+        let repository = Path::new("/source/repo");
+        let worktree = Path::new("/base/proj/st-x");
+        remove_worktree(&mut git, repository, worktree).unwrap();
+        assert_eq!(
+            git.calls,
+            vec![(
+                repository.to_path_buf(),
+                vec![
+                    "worktree".to_string(),
+                    "remove".to_string(),
+                    "--".to_string(),
+                    worktree.to_string_lossy().to_string(),
+                ],
+            )]
+        );
+        // A refused removal is the caller's evidence that the checkout still
+        // holds something, and it must arrive as a refusal rather than a
+        // silent success.
+        let mut refusing = Scripted::new(vec![Err(GitError::GitRefused)]);
+        assert_eq!(
+            remove_worktree(&mut refusing, repository, worktree),
+            Err(GitError::GitRefused)
+        );
+    }
+
+    #[test]
+    fn removal_refuses_a_dirty_worktree_and_keeps_the_branch() {
+        // Real git: a clean worktree is removed and its branch survives, which
+        // is the point — a change stream is integrated, not erased. A worktree
+        // holding uncommitted work is refused by git and stays exactly as it
+        // was, because this crate never passes --force.
+        let repo = TempRepo::new("remove");
+        let git_run = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let base = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&repo.dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let mut git = SystemGit::new();
+        let branch = "symbiote/demo/stream/abc123abc123";
+        fn add_worktree(
+            git: &mut SystemGit,
+            repository: &Path,
+            name: &str,
+            branch: &str,
+            base: &str,
+        ) -> PathBuf {
+            let worktree = repository.join(name);
+            std::fs::create_dir(&worktree).unwrap();
+            materialize(
+                git,
+                MaterializeRequest {
+                    repository,
+                    worktree: &worktree,
+                    branch,
+                    start_point: base,
+                },
+            )
+            .unwrap();
+            worktree
+        }
+        let clean = add_worktree(&mut git, &repo.dir, "wt-clean", branch, &base);
+        remove_worktree(&mut git, &repo.dir, &clean).unwrap();
+        assert!(!clean.exists());
+        // The branch outlives its checkout: the recorded lineage is still
+        // there to inspect.
+        git_run(&repo.dir, &["rev-parse", "--verify", branch]);
+        // A second worktree needs its own branch: `worktree add -b` refuses
+        // a branch that already has a checkout, which is git's own
+        // single-worktree-per-branch rule and not this crate's business.
+        let dirty = add_worktree(
+            &mut git,
+            &repo.dir,
+            "wt-dirty",
+            "symbiote/demo/other/def456def456",
+            &base,
+        );
+        std::fs::write(dirty.join("uncommitted.txt"), "worker output\n").unwrap();
+        assert_eq!(
+            remove_worktree(&mut git, &repo.dir, &dirty),
+            Err(GitError::GitRefused)
+        );
+        assert!(dirty.join("uncommitted.txt").is_file());
+        assert!(dirty.join("README.md").is_file());
+        // Untracked-only content is refused too: `remove` is not a synonym
+        // for discarding what a worker produced but never committed.
+        let _ = std::fs::remove_file(dirty.join("uncommitted.txt"));
+        std::fs::write(dirty.join("produced.txt"), "untracked\n").unwrap();
+        assert_eq!(
+            remove_worktree(&mut git, &repo.dir, &dirty),
+            Err(GitError::GitRefused)
+        );
+        assert!(dirty.join("produced.txt").is_file());
+    }
+
+    #[test]
+    fn ancestry_is_proven_by_git_and_unprovable_reads_as_absent() {
+        let repo = TempRepo::new("ancestry");
+        let run = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        let first = run(&repo.dir, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.dir.join("second.txt"), "second\n").unwrap();
+        run(&repo.dir, &["add", "."]);
+        run(
+            &repo.dir,
+            &[
+                "-c",
+                "user.email=t@symbiote.test",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "second",
+            ],
+        );
+        let second = run(&repo.dir, &["rev-parse", "HEAD"]);
+        let mut git = SystemGit::new();
+        // A commit is reachable from itself and from its descendant.
+        assert!(is_ancestor(&mut git, &repo.dir, &first, &first).unwrap());
+        assert!(is_ancestor(&mut git, &repo.dir, &first, &second).unwrap());
+        // And not the other way round — the direction is what makes it
+        // evidence that a stream's work survived its removal.
+        assert!(!is_ancestor(&mut git, &repo.dir, &second, &first).unwrap());
+        // A commit that does not exist is unproven, not an error: git's
+        // refusal and its "no" arrive identically through this crate.
+        assert!(!is_ancestor(&mut git, &repo.dir, "0".repeat(40).as_str(), &second).unwrap());
+        // Arguments that are not bounded hex are refused before any git call,
+        // so a commit field can never smuggle an option into the command line.
+        // The recorded executor's call log is the evidence that nothing was
+        // invoked: it holds a frame to give away if one call had been made.
+        let mut silent = Scripted::new(vec![Ok(b"".to_vec())]);
+        assert_eq!(
+            is_ancestor(
+                &mut silent,
+                &repo.dir,
+                "--upload-pack=touch /tmp/pwn",
+                &second
+            ),
+            Err(GitError::InvalidRequest)
+        );
+        assert_eq!(
+            is_ancestor(&mut silent, &repo.dir, &first, "HEAD; rm -rf /"),
+            Err(GitError::InvalidRequest)
+        );
+        assert!(silent.calls.is_empty(), "no git call was made");
     }
 
     #[test]

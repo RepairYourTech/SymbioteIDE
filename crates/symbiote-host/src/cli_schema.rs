@@ -83,6 +83,11 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("validate_change_stream", Risk::Mutation),
     ("begin_task_verification", Risk::Mutation),
     ("integrate_change_stream", Risk::Mutation),
+    // Reclaims a worktree, so it removes a directory tree — but it starts and
+    // ends no execution and cannot express any operation, which is what
+    // `Dangerous` means in this table. The removal itself is gated by the
+    // evidence the Host proves before it removes anything.
+    ("release_change_stream", Risk::Mutation),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),

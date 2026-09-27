@@ -918,6 +918,92 @@ fn stream_permissions_concurrency_and_exact_target_integration() {
 }
 
 #[test]
+fn only_an_integrated_stream_may_release_its_worktree() {
+    let mut f = Fixture::new(RuntimeKind::NativeSymbiote);
+    // Every state before `Integrated` holds work that landed nowhere, so
+    // reclaiming the checkout is refused in each of them. `Release` from a
+    // stream nobody integrated is how a run's unmerged work would disappear.
+    assert_eq!(f.stream.state(), &StreamState::Active);
+    let release = f.stream_command("release-early", StreamAction::Release);
+    let mut denied = f.binding.access.clone();
+    denied.grants.clear();
+    assert_eq!(
+        f.stream.apply(release.clone(), &denied),
+        Err(DomainError::PermissionDenied)
+    );
+    assert_eq!(
+        f.stream.apply(release, &f.binding.access),
+        Err(DomainError::StreamNotReady)
+    );
+    f.stream
+        .apply(
+            f.stream_command(
+                "validate",
+                StreamAction::Validate {
+                    head: f.stream.head().clone(),
+                    target: f.stream.target().clone(),
+                    run: id!(VerificationRunId, "run"),
+                },
+            ),
+            &f.binding.access,
+        )
+        .unwrap();
+    assert_eq!(f.stream.state(), &StreamState::Validated);
+    // Validated is not Integrated: the work has been checked and has not
+    // landed, which is exactly the state a premature reclaim would destroy.
+    assert_eq!(
+        f.stream.apply(
+            f.stream_command("release-validated", StreamAction::Release),
+            &f.binding.access
+        ),
+        Err(DomainError::StreamNotReady)
+    );
+    f.stream
+        .apply(
+            f.stream_command(
+                "integrate",
+                StreamAction::Integrate {
+                    head: sha('a'),
+                    target: sha('b'),
+                },
+            ),
+            &f.binding.access,
+        )
+        .unwrap();
+    let released = f.stream.apply(
+        f.stream_command("release-integrated", StreamAction::Release),
+        &f.binding.access,
+    );
+    assert_eq!(released, Ok(Revision(3)));
+    assert_eq!(f.stream.state(), &StreamState::Released);
+    // Released is terminal, and it is not the same fact as Integrated: a
+    // released stream's location is gone, so nothing may re-derive it.
+    for (name, action) in [
+        ("release-twice", StreamAction::Release),
+        ("cancel-released", StreamAction::Cancel),
+    ] {
+        assert_eq!(
+            f.stream
+                .apply(f.stream_command(name, action), &f.binding.access),
+            Err(DomainError::IllegalTransition)
+        );
+    }
+    assert_eq!(
+        f.stream.apply(
+            f.stream_command(
+                "advance-released",
+                StreamAction::Advance {
+                    head: sha('a'),
+                    target: sha('b'),
+                },
+            ),
+            &f.binding.access
+        ),
+        Err(DomainError::IllegalTransition)
+    );
+}
+
+#[test]
 fn independent_and_stacked_streams_have_separate_worktree_and_chat_identity() {
     let f = Fixture::new(RuntimeKind::NativeSymbiote);
     let stacked = ChangeStream::new(NewChangeStream {

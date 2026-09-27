@@ -1223,6 +1223,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "Reclaim an integrated stream's worktree: the checkout leaves the\nfilesystem and the reservation is released. The stream's branch is\nnever deleted — the work is integrated, not erased — and a worktree\nstill holding uncommitted content is refused by git rather than\ndiscarded. Takes a task only, because the Host derives the stream, the\nRoot, the location and the evidence.",
+            "properties": {
+              "kind": {
+                "const": "release_change_stream",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "File the evidence a dispatch contract's gates require and complete the\nTask. `gates` is the claim: which gates the caller says passed. The\nHost binds each claim to the dispatch, the stream's head and target\nand this Host's identity, and refuses a claim that does not cover the\ncontract — so the caller asserts and the Host binds, and neither side\ngets to do the other's half.",
             "properties": {
               "gates": {
@@ -8990,6 +9008,19 @@
             "type": "object"
           },
           {
+            "description": "Reclaim an integrated stream's worktree. Carries no commit: the\ncommits are already recorded, and the caller proves they survive the\nremoval rather than restating them here as if the Host had not read\nthem from the stream.",
+            "properties": {
+              "kind": {
+                "const": "release",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "kind": {
                 "const": "cancel",
@@ -9088,15 +9119,24 @@
         ]
       },
       "StreamState": {
-        "enum": [
-          "active",
-          "needs_revalidation",
-          "collided",
-          "validated",
-          "integrated",
-          "cancelled"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "active",
+              "needs_revalidation",
+              "collided",
+              "validated",
+              "integrated",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "released",
+            "description": "The integrated stream's worktree has been reclaimed. Terminal, and\ndistinct from `Integrated`: the work landed either way, but the\nlocation that held it is gone, so the stream can never be provisioned\nagain and a caller must not read `Integrated` as \"still on disk\".",
+            "type": "string"
+          }
+        ]
       },
       "SurfaceCarriage": {
         "additionalProperties": false,

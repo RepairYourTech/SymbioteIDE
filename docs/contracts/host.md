@@ -46,7 +46,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
 `validate-change-stream`, `begin-task-verification`, `complete-task`,
-`integrate-change-stream`,
+`integrate-change-stream`, `release-change-stream`,
 `scheduling-projection <project_id>`,
 `observe-root-placement`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
@@ -228,6 +228,30 @@ then permanently un-integratable, because a Root can never be "at" a commit
 that does not exist. It records the base instead: that is where the Root is
 until work lands, and a Task that cannot finish should not be creatable. A
 stream that aims somewhere other than its base is created through `raw`.
+
+`release-change-stream` is the step after that, and the only one that removes
+anything. It reclaims the checkout the work ran in, and it refuses to do so
+until the Host has proved the stream's recorded head is still reachable from
+the root — not equal to it, *reachable from* it, because the root may have
+moved on and a descendant proves exactly as much. Only then does it run `git
+worktree remove`, and never with `--force`: git itself refuses a checkout
+holding uncommitted or untracked content, so the removal cannot destroy work
+the branch does not already hold. The branch is never deleted. A change
+stream is integrated, not erased, and the lineage a stream recorded stays
+inspectable after its checkout is gone. The reservation marker goes with the
+directory, under `DeleteIfEmpty`, so a git layer that left something behind
+keeps the evidence rather than reporting a release that did not happen.
+
+The operation is classified a mutation rather than dangerous: it starts and
+ends no execution and cannot express any operation, which is what the
+dangerous kind means in this table. What gates it is the evidence above, not
+a flag.
+
+Until this existed, every completed run left a full git worktree on the
+operator's disk forever, and `symbiote-worktrees::release` — a function its
+own contract describes in detail, with two policies and a content discipline
+— had no production caller anywhere in the workspace. A task that reached
+`Integrated` and stopped there was not a state anyone could leave.
 
 `complete-task` is classified dangerous, because it ends a task's execution
 rather than changing it. The refusals name themselves — a claim that does not

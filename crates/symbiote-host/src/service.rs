@@ -1163,6 +1163,123 @@ fn execute(
                 .map(receipt)
                 .map_err(storage_error)
         }
+        Operation::ReleaseChangeStream { task_id } => {
+            // The last step of a stream's life: the work landed and the
+            // checkout that held it is reclaimed. Without it every run left a
+            // full git worktree on the operator's disk forever, and
+            // `symbiote_worktrees::release` — a policy the crate designed and
+            // documented — had no production caller at all.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let dispatch = task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            // The Host's own derivation, and the domain refuses a stream that
+            // is not `Integrated` — the same check the worktree removal's own
+            // safety depends on, made once in the layer that owns the rule.
+            let reservation_base = workers.reservation_base().map_err(worker_error)?;
+            let derived = crate::runner::derived_worktree(
+                task_record.project_id(),
+                task_record.root_id(),
+                task_record.stream_id(),
+            )
+            .map_err(worker_error)?;
+            if derived.worktree_id != *stream.worktree_id() {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "recorded worktree identity is not the one this Host derives".into(),
+                });
+            }
+            let worktree = derived.worktree_path(&reservation_base);
+            let checkout = store
+                .root(task_record.root_id())
+                .map_err(storage_error)?
+                .host_paths
+                .get(inventory.host_id())
+                .ok_or_else(|| worker_error(crate::runner::RunnerError::NoHostPath))?
+                .clone();
+            let mut git = workers.git();
+            let head = symbiote_repo::observe_head(&mut git, std::path::Path::new(&checkout))
+                .map_err(|error| {
+                    storage_error(StoreError::Integrity(format!(
+                        "root checkout head is not observable: {error:?}"
+                    )))
+                })?;
+            let descendant = symbiote_domain::CommitSha::new(head.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            // The evidence, checked before anything is removed: the stream's
+            // recorded head must still be reachable from the root. Equality
+            // is not required — the root may have moved on, and a descendant
+            // is exactly as good: the integrated commit survives either way.
+            if !symbiote_repo::is_ancestor(
+                &mut git,
+                std::path::Path::new(&checkout),
+                stream.head().as_str(),
+                descendant.as_str(),
+            )
+            .map_err(|error| {
+                storage_error(StoreError::Integrity(format!(
+                    "integrated commit ancestry is not observable: {error:?}"
+                )))
+            })? {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "the stream's head is not reachable from the root checkout".into(),
+                });
+            }
+            // `git worktree remove` without `--force`: git itself refuses a
+            // checkout holding uncommitted or untracked content, so the
+            // removal cannot destroy work the branch does not hold. The
+            // branch is never deleted — a change stream is integrated, not
+            // erased.
+            symbiote_repo::remove_worktree(&mut git, std::path::Path::new(&checkout), &worktree)
+                .map_err(|error| ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!("worktree removal refused: {error:?}"),
+                })?;
+            // The reservation marker is the location's own record, and
+            // `DeleteIfEmpty` removes it only when the directory holds nothing
+            // — a git layer that left something behind keeps its evidence.
+            let reservation = symbiote_worktrees::Reservation {
+                derived,
+                base: reservation_base,
+            };
+            match symbiote_worktrees::release(
+                &reservation,
+                symbiote_worktrees::ReleasePolicy::DeleteIfEmpty,
+            ) {
+                Ok(symbiote_worktrees::Outcome::Deleted) => {}
+                Ok(symbiote_worktrees::Outcome::Retained) => {
+                    return Err(ProtocolError {
+                        code: ErrorCode::FailedPrecondition,
+                        message: "worktree location was retained rather than released".into(),
+                    });
+                }
+                Err(error) => {
+                    return Err(ProtocolError {
+                        code: ErrorCode::FailedPrecondition,
+                        message: format!("worktree reservation release refused: {error:?}"),
+                    });
+                }
+            }
+            let command = symbiote_domain::StreamCommand {
+                id: request.command_id.clone(),
+                expected_revision: stream.revision(),
+                host_id: inventory.host_id().clone(),
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::StreamAction::Release,
+            };
+            store
+                .apply_stream(
+                    task_record.stream_id(),
+                    command,
+                    dispatch.contract().effective_access(),
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::GetDispatchPreparation { task_id } => store
             .dispatch_preparation(task_id)
             .map(|preparation| ResponseBody::DispatchPreparation(Box::new(preparation)))

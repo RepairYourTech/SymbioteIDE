@@ -292,6 +292,15 @@ pub enum Operation {
     IntegrateChangeStream {
         task_id: TaskId,
     },
+    /// Reclaim an integrated stream's worktree: the checkout leaves the
+    /// filesystem and the reservation is released. The stream's branch is
+    /// never deleted — the work is integrated, not erased — and a worktree
+    /// still holding uncommitted content is refused by git rather than
+    /// discarded. Takes a task only, because the Host derives the stream, the
+    /// Root, the location and the evidence.
+    ReleaseChangeStream {
+        task_id: TaskId,
+    },
     /// File the evidence a dispatch contract's gates require and complete the
     /// Task. `gates` is the claim: which gates the caller says passed. The
     /// Host binds each claim to the dispatch, the stream's head and target
@@ -450,7 +459,8 @@ impl Operation {
             Self::ValidateChangeStream { .. }
             | Self::BeginTaskVerification { .. }
             | Self::CompleteTask { .. }
-            | Self::IntegrateChangeStream { .. } => None,
+            | Self::IntegrateChangeStream { .. }
+            | Self::ReleaseChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -512,6 +522,7 @@ impl Operation {
                 | Self::BeginTaskVerification { .. }
                 | Self::CompleteTask { .. }
                 | Self::IntegrateChangeStream { .. }
+                | Self::ReleaseChangeStream { .. }
         )
     }
 }
@@ -854,7 +865,8 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::ValidateChangeStream { .. }
         | Operation::BeginTaskVerification { .. }
         | Operation::CompleteTask { .. }
-        | Operation::IntegrateChangeStream { .. } => {
+        | Operation::IntegrateChangeStream { .. }
+        | Operation::ReleaseChangeStream { .. } => {
             // The three steps a dispatched Task could not take at all, so a
             // run stayed `completion_requested` for the life of the store.
             // They are the same authority `start_prepared_task` holds: the

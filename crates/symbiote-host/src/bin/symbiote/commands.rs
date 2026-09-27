@@ -1433,6 +1433,17 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "release-change-stream",
+            summary: "reclaim an integrated stream's worktree",
+            usage: "release-change-stream <task_id>",
+            kind: Some("release_change_stream"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("release_change_stream"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                Ok(())
+            },
+        },
+        Command {
             name: "complete-task",
             summary: "file the gates that passed and complete the task",
             usage: "complete-task <task_id> <reviewer> <gate>[,<gate>...]",

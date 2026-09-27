@@ -98,7 +98,9 @@ git content after the refusal); (3) the worktree is materialized at the
 stream's derived branch, created at the validated base. Errors are
 stage-honest (`Reservation` / `BaseUnresolved` / `BaseMoved` / `Git`) so
 retry policy can distinguish a compromised location from a stale premise
-from a git refusal. Provisioning is not idempotent across a crash between
+from a git refusal. `remove_worktree(git, repository, worktree)` runs `git worktree remove -- <path>` and never `--force`, so git's own refusal of a checkout holding uncommitted or untracked content is the last line of that guard; the branch is never deleted, because a change stream is integrated rather than erased. `is_ancestor(git, repository, ancestor, descendant)` runs `merge-base --is-ancestor` and reports `false` for every `GitRefused`, because this crate collapses exit statuses and "not an ancestor" must not be distinguishable from "git could not answer" in a function whose callers use it to decide whether they may destroy something. Commit arguments are bounded hex only, so no field can smuggle an option into a command line this crate builds.
+
+Provisioning is not idempotent across a crash between
 reserve and materialize: the reservation layer's O_EXCL marker refuses
 re-claim until an explicit `release()` — operationally, a failed run's
 task cannot re-activate without that release, and the refusal reports the

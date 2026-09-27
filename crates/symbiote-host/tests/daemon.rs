@@ -4216,6 +4216,78 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
         !branches.is_empty(),
         "the worktree branch exists in the root's ref store: {branches:?}"
     );
+    assert!(
+        worktree.exists(),
+        "integrating does not reclaim the checkout — that is a separate, \
+         evidence-checked step"
+    );
+
+    // The evidence, refused. Rewriting the root's commit leaves the stream's
+    // recorded head reachable from nothing in the repository, and a release
+    // that removed the only checkout holding it would destroy the work. The
+    // refusal has to arrive before anything is removed — so the checkout is
+    // still here afterwards, and the stream is still integrable-and-releasable
+    // once the root is restored.
+    let rewrite = Command::new("git")
+        .current_dir(&repository)
+        .args(["commit", "--amend", "-qm", "root rewritten"])
+        .output()
+        .unwrap();
+    assert!(rewrite.status.success());
+    let refused = host.call(request(
+        "run-release-unreachable",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    let body = refused["result"]["Err"].clone();
+    assert_eq!(body["code"], "failed_precondition", "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("not reachable from the root checkout"),
+        "the refusal names what could not be proven: {body}"
+    );
+    assert!(worktree.exists(), "a refused release removes nothing");
+    let restore = Command::new("git")
+        .current_dir(&repository)
+        .args(["reset", "--hard", head.as_str()])
+        .output()
+        .unwrap();
+    assert!(restore.status.success());
+    // And the last step: the checkout leaves the operator's disk. Nothing
+    // reclaimed it before, so every run leaked a full git worktree, and the
+    // reservation marker that `symbiote-worktrees` documents as the thing
+    // release removes had no production caller at all.
+    let released = host.call(request(
+        "run-release",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    ok_step("run-release", &released);
+    assert!(
+        !worktree.exists(),
+        "the worktree directory is gone after the release"
+    );
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("run-stream").worktree_id
+    ));
+    assert!(!marker.exists(), "the reservation marker is gone with it");
+    // The branch is NOT gone: a change stream is integrated, not erased, and
+    // its recorded lineage stays inspectable after the checkout is.
+    let after = Command::new("git")
+        .current_dir(&repository)
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}", staffing_worktree("run-stream").branch),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        after.status.success(),
+        "the integrated branch outlives its checkout: {}",
+        String::from_utf8_lossy(&after.stderr)
+    );
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();
 }

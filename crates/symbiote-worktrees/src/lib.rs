@@ -527,14 +527,29 @@ pub fn release(reservation: &Reservation, policy: ReleasePolicy) -> Result<Outco
             Ok(Outcome::Retained)
         }
         ReleasePolicy::DeleteIfEmpty => {
-            let mut entries = fs::read_dir(&worktree).map_err(|_| WorktreeError::NotFound)?;
-            if entries.next().is_some() {
+            // A location that is already gone holds no entries, so it
+            // satisfies "delete if empty". This is the ordinary end of a
+            // materialized reservation: the repository layer removes the
+            // worktree git put there, and the marker is what release is for.
+            // Refusing here meant no materialized reservation could ever be
+            // released at all, so its marker outlived the directory it
+            // reserved and `reserve` kept refusing the identity forever.
+            let empty = match fs::read_dir(&worktree) {
+                Ok(mut entries) => entries.next().is_none(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(_) => return Err(WorktreeError::NotFound),
+            };
+            if !empty {
                 return Err(WorktreeError::NotEmpty);
             }
             // Remove the directory first: remove_dir fails closed on any
             // content, and a failure here keeps the marker as the source of
             // truth instead of downgrading the reservation to abandoned.
-            fs::remove_dir(&worktree).map_err(|_| WorktreeError::Io)?;
+            match fs::remove_dir(&worktree) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(WorktreeError::Io),
+            }
             if unlink(&marker_path).is_err() {
                 // Roll back to a consistent marker-plus-empty-directory
                 // state so a retry can proceed instead of leaving a stale
@@ -750,6 +765,38 @@ mod tests {
             base: elsewhere.join("does").join("not").join("exist"),
         };
         assert_eq!(verify(&dangling).unwrap_err(), WorktreeError::UnsafePath);
+    }
+
+    #[test]
+    fn a_reservation_whose_location_the_repository_removed_still_releases() {
+        // The repository layer removes a materialized worktree; the marker is
+        // then the only thing left of the reservation. Release has to be able
+        // to say so, or the identity stays reserved for a directory that no
+        // longer exists and `reserve` refuses it forever.
+        let base = temp_base("materialized");
+        let d = derived("stream-9", "seed");
+        let reservation = reserve(&d, &base, Timestamp(1)).unwrap();
+        let path = d.worktree_path(&base);
+        fs::create_dir(path.join("nested")).unwrap();
+        fs::remove_dir_all(&path).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            release(&reservation, ReleasePolicy::DeleteIfEmpty).unwrap(),
+            Outcome::Deleted
+        );
+        assert!(read_marker(&base.join("demo").join(format!("{}.json", d.worktree_id))).is_err());
+        // The released identity is reservable again, which is the whole
+        // point: nothing about this location can still claim it.
+        let reclaimed = reserve(&d, &base, Timestamp(2)).unwrap();
+        verify(&reclaimed).unwrap();
+        // Retain says the same thing about an absent location: the marker is
+        // gone and there was nothing to keep.
+        fs::remove_dir_all(&path).unwrap();
+        assert_eq!(
+            release(&reclaimed, ReleasePolicy::Retain).unwrap(),
+            Outcome::Retained
+        );
+        assert!(read_marker(&base.join("demo").join(format!("{}.json", d.worktree_id))).is_err());
     }
 
     #[test]
