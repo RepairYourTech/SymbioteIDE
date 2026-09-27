@@ -189,16 +189,16 @@ class TheCensus(unittest.TestCase):
             # recorded for it is smaller than what it publishes, and every check that compares
             # counts alone passes. So the documents this census records are asked whether they are
             # well formed, and the refusal names each one and the fence it left open.
-            self.assertIsNone(
-                prose.unclosed(root / "both.md"),
+            self.assertEqual(
+                [], prose.unclosed(root / "both.md"),
                 "a document whose fence it closes is called malformed: the reading closes a fence "
                 "itself, so refusing one that is well formed is the rule refusing the document")
             self.assertIn(
-                "line 3", prose.unclosed(root / "unclosed.md") or "",
+                "line 3", "\n".join(prose.unclosed(root / "unclosed.md")),
                 "the refusal does not say which line the fence opened on, so an author is left "
                 "looking for it")
 
-            # The two shapes this reading misreads rather than cannot absorb, and they fail in the
+            # The shapes this reading cannot see rather than cannot absorb, and they fail in the
             # opposite direction: a fence it cannot absorb makes a bound below it stop counting,
             # while an indented block and a wide fence are quotations to a Markdown reader and
             # claims to this one, so a figure moves into either and every count-only check stays
@@ -220,19 +220,98 @@ class TheCensus(unittest.TestCase):
                 "a fence opened with four markers closes here at the first three, so a block the "
                 "author believes still holds its bounds is read as ending early and counted as a "
                 "claim the moment a three-marker line appears inside it")
-            self.assertIsNone(
-                prose.unseen(root / "quoted.md"),
+            self.assertEqual(
+                [], prose.unseen(root / "quoted.md"),
                 "a document whose fences it opens and closes is refused as unreadable: every shape "
                 "asked about is in the reading, so the rule is refusing the document and not the "
                 "shape, which would cost a well-formed contract a figure nothing took from it")
             self.assertIn(
-                "line 3", prose.unseen(root / "indented.md") or "",
+                "line 3", "\n".join(prose.unseen(root / "indented.md")),
                 "the refusal does not say which line the block begins on, so an author is left "
                 "looking for it")
             self.assertIn(
-                "4 markers", prose.unseen(root / "wide.md") or "",
+                "4 markers", "\n".join(prose.unseen(root / "wide.md")),
                 "the refusal does not say the block is opened wide, so an author is left to count "
                 "the markers by hand to find the shape that cost the count")
+
+            # The shape of a quotation is a class, and the two refusals above are two spellings
+            # of it. A blockquote is a container, so the same shapes hide inside one: read
+            # without the prefix, `> ` + four columns is an indented code block and `> ` + three
+            # markers is a fence, and a reading that classified either by the bare line would
+            # count a quoted bound as a claim with the count unchanged and nothing refused.
+            (root / "quoted-indent.md").write_text(
+                stated + "\n\n>     A bound of 64 MiB, indented inside a quote\n")
+            (root / "quoted-wide.md").write_text(
+                stated + "\n\n> ````text\n> A bound of 64 MiB, held by a quoted block\n> ```\n")
+            (root / "quoted-fence.md").write_text(
+                stated + "\n\n> ```text\n> A bound of 64 MiB, quoted inside a quote\n> ```\n")
+            self.assertEqual(
+                contracts.figures("quoted-indent.md", root=root), 1,
+                "a block written into a blockquote's code block is counted, so a figure moves into "
+                "a quotation the reading cannot see and the count it carries does not move")
+            self.assertEqual(
+                contracts.figures("quoted-fence.md", root=root), 1,
+                "a fence inside a blockquote is not a fence to this reading, so every bound a "
+                "document quotes inside one is counted as its own claim")
+            self.assertEqual(
+                [], prose.unseen(root / "quoted-fence.md"),
+                "a fence this reading opens and closes is refused as unreadable: it read the block "
+                "inside the quote, so refusing it would be refusing a document it can see whole")
+            self.assertIn(
+                "line 3", "\n".join(prose.unseen(root / "quoted-indent.md")),
+                "a block inside a blockquote is not refused, or an author with a quoted code block "
+                "is told to fence prose and cannot tell from this which line the walk meant")
+            self.assertIn(
+                "4 markers", "\n".join(prose.unseen(root / "quoted-wide.md")),
+                "a wide fence inside a blockquote is not refused, so a block opened with four "
+                "markers is refused or not depending on what quotes it, which is the same rule "
+                "answering two different things about one shape")
+
+            # The other direction, and the one that costs: a line indented four columns is a code
+            # block only when it is four columns past the content of the block it is in. A list
+            # item that indents its own content by four is writing a paragraph, and a bound on
+            # such a line is a claim the document makes. Refusing it drops a real figure out of
+            # the count and tells the author to fence a line that was never a quotation.
+            (root / "wrapped.md").write_text(
+                stated + "\n\n1.  Read the plan, then check the registry holds every key,\n"
+                "    allowing at most 16 files.\n")
+            (root / "nested.md").write_text(
+                "- a step\n  - a sub-step that is bounded to 8 MiB,\n    and wraps here\n")
+            (root / "in-list.md").write_text(
+                "- a step\n\n      A bound of 64 MiB, a block inside the item\n")
+            self.assertEqual(
+                contracts.figures("wrapped.md", root=root), 2,
+                "a list item that indents its own content by four is writing a paragraph, and a "
+                "bound on that line is a claim: refusing it drops a real figure out of the count")
+            self.assertEqual(
+                contracts.figures("nested.md", root=root), 1,
+                "a nested bullet that indents its content by four is a paragraph too, so a bound "
+                "written on its continuation line is a claim and not a quoted block")
+            self.assertEqual(
+                contracts.figures("in-list.md", root=root), 0,
+                "a block six columns into a list item is four past the item's own content column, "
+                "so it is a code block and a bound inside it is the block's, not the document's")
+            self.assertEqual(
+                [], prose.unseen(root / "nested.md"),
+                "an ordinary nested bullet is refused as unreadable, so a document is turned away "
+                "from the census over a list it wrote the ordinary way")
+            self.assertIn(
+                "line 3", "\n".join(prose.unseen(root / "in-list.md")),
+                "a code block inside a list item is measured from the item's content column and "
+                "not from column zero, so the refusal has to name the line that column reaches")
+
+            # Every reason, not the first: an author mends a file in one pass, and two shapes in
+            # one document reported one at a time is a second run to find the second.
+            (root / "two.md").write_text(
+                "    A bound of 64 MiB, indented\n\n````text\nA bound of 128 MiB, held\n```\n")
+            self.assertEqual(
+                2, len(prose.unseen(root / "two.md")),
+                "a document holding two shapes is told about one, so the author fixes what was "
+                "named, runs the census again, and is sent back for a shape the first run saw")
+            self.assertIn(
+                "line 1", "\n".join(prose.unseen(root / "two.md")),
+                "the reasons are returned but do not name their lines, so one run cannot tell the "
+                "author which two lines to mend")
 
             def path_of(name: str) -> pathlib.Path:
                 """Where a name this census records lives, stated here and not read from
@@ -267,8 +346,7 @@ class TheCensus(unittest.TestCase):
 
             malformed = []
             for name in sorted(contracts.FIGURES):
-                why = prose.unclosed(path_of(name))
-                if why:
+                for why in prose.unclosed(path_of(name)):
                     malformed.append(f"{name} is not well formed: {why}")
             self.assertEqual(
                 malformed, [],
@@ -279,15 +357,15 @@ class TheCensus(unittest.TestCase):
 
             unread = []
             for name in sorted(contracts.FIGURES):
-                why = prose.unseen(path_of(name))
-                if why:
+                for why in prose.unseen(path_of(name)):
                     unread.append(f"{name} is not read whole: {why}")
             self.assertEqual(
                 unread, [],
                 "a document the census records holds a shape this reading cannot see, so a figure "
-                "can be moved into it — indented or behind a wide fence — and the count it carries "
-                "stays the number recorded, which is the one hole the unclosed-fence rule above "
-                "does not close: fence the block, or open it with three markers: "
+                "can be moved into it — indented, behind a wide fence, or behind either inside a "
+                "blockquote — and the count it carries stays the number recorded, which is the one "
+                "hole the unclosed-fence rule above does not close: fence the block, or open it "
+                "with three markers: "
                 + "; ".join(unread))
 
             # The case that was actually broken, against the document it happened in: `cli.md` as
