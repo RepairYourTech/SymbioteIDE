@@ -229,8 +229,16 @@ def markdown(docs: pathlib.Path = DOCS) -> list[str]:
 
 
 def figures(name: str, root: pathlib.Path = CONTRACTS) -> int:
-    """How many lines of `name` state a figure: one per line, whatever it states on it."""
-    return sum(1 for line in prose.statements(root / name) if BOUND.search(line))
+    """How many lines of the document `name` names state a figure: one per line, whatever it states
+    on it. `FIGURES` has been spelled two ways in this tree's life — a bare filename under
+    `docs/contracts/` and a repo-relative path — and one default root is right for one spelling and
+    `docs/contracts/docs/contracts/cli.md` for the other, so the name decides: a name carrying a
+    directory is read from the repository root and a bare one from the contracts directory, and the
+    default is only where a name is read from when it does not say. `root` reads a document written
+    elsewhere, which is what a fixture in a temporary directory is.
+    """
+    base = root if root != CONTRACTS else (ROOT if "/" in name else CONTRACTS)
+    return sum(1 for line in prose.statements(base / name) if BOUND.search(line))
 
 
 def readers(name: str, crates: pathlib.Path = CRATES) -> list[str]:

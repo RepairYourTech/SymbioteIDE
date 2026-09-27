@@ -85,7 +85,7 @@ class TheCensus(unittest.TestCase):
             or "the figure table names no document the census covers")
         moved = []
         for name in documents:
-            derived = contracts.figures(name, root=contracts.ROOT)
+            derived = contracts.figures(name)
             if derived != contracts.FIGURES[name]:
                 moved.append(f"{name} states {derived} figure statements where the census records "
                              f"{contracts.FIGURES[name]}")
@@ -152,12 +152,16 @@ class TheCensus(unittest.TestCase):
         narrowed or widened: each spelling below is a statement the census reads, each shape after it
         a line that is not one — a version, a mode, a plain numeral, a worded count — and a fenced
         block is a quotation rather than a claim, so the figures inside one are the quoted program's.
+        Every name the table records resolves to a document on its own as well, so the count cannot
+        move because the census changed where it reads its own keys from.
 
-        The two halves of the second part are here together because either alone is a reading that
+        The three parts of the second half are here together because each alone is a reading that
         would pass. A reading that skipped prose to quieten a quoted example would leave every count
         here satisfied and let a contract publish a bound nothing in this directory ever saw; a
         reading that counted fences would put `cli.md` one figure higher over an envelope the CLI
-        writes, which is how the `request_refused` example was lost in the first place.
+        writes, which is how the `request_refused` example was lost in the first place; and a census
+        that read its names from the wrong root would fail on a path no document has — every count
+        here satisfied, and every count in `FIGURES` a number nobody took.
         """
         reads = (
             "This limits input to 1 MiB.",
@@ -227,10 +231,41 @@ class TheCensus(unittest.TestCase):
                 "line 3", prose.unclosed(root / "unclosed.md") or "",
                 "the refusal does not say which line the fence opened on, so an author is left "
                 "looking for it")
+
+            def path_of(name: str) -> pathlib.Path:
+                """Where a name this census records lives, stated here and not read from
+                `contracts.figures`, which reads it the same way on purpose: an assertion that
+                called the function it is checking would be the rule agreeing with itself. The
+                two are written out separately so a census whose count disagrees with this is
+                something the reading case can catch, and `FIGURES` has been spelled two ways in
+                this tree's life — a bare filename under `docs/contracts/` and a repo-relative
+                path — so the name is what says which.
+                """
+                return contracts.CONTRACTS / name if "/" not in name else contracts.ROOT / name
+
+            # The key space the tables are written in and the root they are read from are one
+            # decision, and this holds `figures` to it: every recorded name is counted by naming
+            # it and nothing else, so a resolver that reads one spelling from the other's root is
+            # named here rather than raised as `docs/contracts/docs/contracts/cli.md` — which is
+            # how one branch's spelling and the other branch's default met in a merged tree and
+            # every count in `FIGURES` became a number nobody took. It asks before the sweep below
+            # reads the same names, so the answer is the thirty-seven names and not the first path.
+            uncounted = []
+            for name in sorted(contracts.FIGURES):
+                try:
+                    contracts.figures(name)
+                except FileNotFoundError:
+                    uncounted.append(name)
+            self.assertEqual(
+                uncounted, [],
+                "a name the figure table records cannot be counted without naming a root, so what "
+                "this census writes its names in and where it reads them from are two decisions "
+                "rather than one, and every count below would have to name a root to be taken at "
+                "all: " + ", ".join(uncounted))
+
             malformed = []
             for name in sorted(contracts.FIGURES):
-                root_of = contracts.CONTRACTS if "/" not in name else contracts.ROOT
-                why = prose.unclosed(root_of / name)
+                why = prose.unclosed(path_of(name))
                 if why:
                     malformed.append(f"{name} is not well formed: {why}")
             self.assertEqual(
@@ -247,17 +282,15 @@ class TheCensus(unittest.TestCase):
             # fixtures above are what hold the rule and this compares a document to itself.
             published_name = next(one for one in sorted(contracts.FIGURES)
                                   if one.endswith("cli.md"))
-            published = (contracts.CONTRACTS / "cli.md").read_text()
+            published = path_of(published_name).read_text()
             example = [line for line in published.splitlines() if contracts.BOUND.search(line)]
             (root / "quoted-twice.md").write_text(
                 published + "\n```json\n" + "\n".join(example) + "\n```\n")
-            # `FIGURES` has been spelled two ways in this tree's life — a bare filename under the
-            # contracts directory and a repo-relative path — so the root is read off the name here
-            # rather than defaulted, and this case holds the reading rather than one spelling.
-            census = contracts.CONTRACTS if "/" not in published_name else contracts.ROOT
+            # The document is named, not its spelling: `path_of` reads either, so this half
+            # compares a count with the count the census records for the document itself.
             self.assertEqual(
                 contracts.figures("quoted-twice.md", root=root),
-                contracts.figures(published_name, root=census),
+                contracts.figures(published_name),
                 "quoting cli.md's own figures a second time moves its figure count, so a document "
                 "cannot publish the envelope its refusals are written in without the census moving "
                 "with it — which is the collision that cost the request_refused example")
