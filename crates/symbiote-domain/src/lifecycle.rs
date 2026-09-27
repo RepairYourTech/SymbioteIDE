@@ -146,6 +146,28 @@ impl TaskState {
         }
     }
 
+    /// This state's own name, for a sentence about it.
+    ///
+    /// A refusal that says "this task is running" is an answer; one that says
+    /// `(IllegalTransition)` is the sound of a gate with no door in it. The
+    /// match is exhaustive by construction for the same reason
+    /// `lifecycle_order` is: a new variant cannot be added and go unnamed.
+    pub fn name(&self) -> &'static str {
+        match self {
+            TaskState::Ready => "ready",
+            TaskState::Queued => "queued",
+            TaskState::Assigned => "assigned",
+            TaskState::Blocked => "held",
+            TaskState::Running => "running",
+            TaskState::CompletionRequested => "awaiting completion",
+            TaskState::Verifying => "verifying",
+            TaskState::Completed => "completed",
+            TaskState::Failed => "failed",
+            TaskState::Cancelled => "cancelled",
+            TaskState::Interrupted => "interrupted",
+        }
+    }
+
     /// The startable pre-dispatch pair: `Ready`, or `Assigned` once the Host
     /// has bound the Task's canonical Role. Dispatch compilation, the `Start`
     /// transition, the dispatch preparation and the scheduler's projections all
@@ -304,6 +326,30 @@ impl Task {
     }
     pub fn history(&self) -> &[TaskEvent] {
         &self.history
+    }
+
+    /// Why this task is being held, when it is.
+    ///
+    /// The domain puts the reason in the command history and nowhere else, on
+    /// the grounds that the history is the record — so reading it back is the
+    /// only way to answer "why is this not running" in the operator's own
+    /// words rather than in the scheduler's. Newest wins, because a task that
+    /// was held, released and held again is held for the reason given last,
+    /// and a caller reading the first would be told something untrue.
+    ///
+    /// None in every other state, including `Ready` after an unblock: the
+    /// release is a fact about the past and not a reason for anything now.
+    pub fn blocked_by(&self) -> Option<&str> {
+        if self.state != TaskState::Blocked {
+            return None;
+        }
+        self.history
+            .iter()
+            .rev()
+            .find_map(|event| match &event.command.action {
+                TaskAction::Block { reason } => Some(reason.as_str()),
+                _ => None,
+            })
     }
 
     /// A duplicate returns its original resulting revision, even after later work.

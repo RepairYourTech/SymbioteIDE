@@ -428,26 +428,52 @@ impl Store {
             })
             .collect();
 
+        // `blocked` is in this set because a held task is exactly what a caller
+        // asking this question needs told about, and leaving it out is what
+        // made the answer read as "not waiting" for a task somebody was
+        // deliberately waiting on. The body comes along because the reason is
+        // in its history, and no column carries it: the domain keeps a hold's
+        // reason in the command record and nowhere else, which is the right
+        // place for it and the only place it is.
         let mut statement = self.connection.prepare(
-            "SELECT id, stream_id, role_id FROM tasks WHERE project_id=?1 AND json_extract(body,'$.state') IN ('ready','assigned') ORDER BY id",
+            "SELECT id, stream_id, role_id, body FROM tasks WHERE project_id=?1 AND \
+             json_extract(body,'$.state') IN ('ready','assigned','blocked') ORDER BY id",
         )?;
         let rows = statement.query_map(params![project.as_str()], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })?;
         let mut schedulable = Vec::new();
         let mut blocked = Vec::new();
         for row in rows {
-            let (task, stream, role) = row?;
+            let (task, stream, role, body) = row?;
             let task_id =
                 TaskId::new(&task).map_err(|_| StoreError::Integrity("bad task id".into()))?;
             let stream_id = ChangeStreamId::new(&stream)
                 .map_err(|_| StoreError::Integrity("bad task stream".into()))?;
             let role_id =
                 RoleId::new(&role).map_err(|_| StoreError::Integrity("bad task role".into()))?;
+            let record: Task = serde_json::from_str(&body)?;
+            // A hold is asked about before every derived blocker, and it wins
+            // when it applies. Reporting `stream_leased` for a task somebody is
+            // holding would name a lease the operator can do nothing about and
+            // hide the sentence they wrote; reporting a dependency for one
+            // whose hold they lifted is a category error, because the gates are
+            // not what is stopping it.
+            if let Some(reason) = record.blocked_by() {
+                blocked.push(BlockedTask {
+                    project_id: project.clone(),
+                    task_id,
+                    stream_id,
+                    reason: BlockedReason::OperatorHeld,
+                    detail: Some(reason.to_owned()),
+                });
+                continue;
+            }
 
             // Stream state decides before dependencies: an unsafe stream
             // blocks regardless of the task graph.
@@ -467,6 +493,7 @@ impl Store {
                     task_id,
                     stream_id,
                     reason: BlockedReason::StreamUnsafe,
+                    detail: None,
                 });
                 continue;
             }
@@ -485,6 +512,7 @@ impl Store {
                     task_id,
                     stream_id,
                     reason: BlockedReason::StreamLeased,
+                    detail: None,
                 });
                 continue;
             }
@@ -500,6 +528,7 @@ impl Store {
                     task_id,
                     stream_id,
                     reason: BlockedReason::NotConsidered,
+                    detail: None,
                 });
                 continue;
             };
@@ -509,6 +538,10 @@ impl Store {
                     task_id,
                     stream_id,
                     reason: BlockedReason::DependencyUnresolved,
+                    // The gates are named per task in `readiness`, and this is
+                    // the one place the answer says so rather than repeats
+                    // them: the same gate is never carried twice.
+                    detail: None,
                 });
             } else {
                 schedulable.push(SchedulableTask {

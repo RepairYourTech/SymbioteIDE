@@ -370,6 +370,35 @@ pub enum Operation {
         task_id: TaskId,
         reason: String,
     },
+    /// Hold a task that is not ready to run, and say why.
+    ///
+    /// The domain has had `TaskAction::Block` and `TaskState::Blocked` since
+    /// the lifecycle was written, with nothing to construct either, so a task
+    /// that was not ready could not be held: it was either created and run, or
+    /// never created. The one lever an operator had was a dependency on a task
+    /// that never finishes, which reports `dependency_unresolved` and names a
+    /// task that has nothing to do with the real reason — so the only way to
+    /// say "not until the key is provisioned" made the store say something
+    /// else, and the task itself carried nothing but `state: ready`.
+    ///
+    /// `reason` is the operator's own sentence, not a category, and it is
+    /// carried into the scheduling projection verbatim: a hold nobody can read
+    /// the reason for is a hold that has to be lifted to find out what it was
+    /// for. The domain refuses an empty one, so the refusal cannot be sent.
+    BlockTask {
+        task_id: TaskId,
+        reason: String,
+    },
+    /// Lift a hold, and say why — the same shape as the hold, because a release
+    /// nobody records the reason for is how the next operator repeats it.
+    ///
+    /// The task returns to `Ready` and nothing more: the scheduler still
+    /// applies its dependency and stream checks, so lifting a hold offers the
+    /// task for scheduling and does not start it.
+    UnblockTask {
+        task_id: TaskId,
+        reason: String,
+    },
     /// Close a Task that is not coming back: `Ready`, `Queued`, `Assigned` or
     /// `Blocked` becomes `Cancelled`, and so does a run the Host is executing.
     /// `reason` is the caller's, because only the caller knows whether the
@@ -556,6 +585,8 @@ impl Operation {
             | Self::ReconcileChangeStream { .. }
             | Self::InterruptTask { .. }
             | Self::CancelTask { .. }
+            | Self::BlockTask { .. }
+            | Self::UnblockTask { .. }
             | Self::AbandonChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
@@ -624,6 +655,8 @@ impl Operation {
                 | Self::ReconcileChangeStream { .. }
                 | Self::InterruptTask { .. }
                 | Self::CancelTask { .. }
+                | Self::BlockTask { .. }
+                | Self::UnblockTask { .. }
                 | Self::AbandonChangeStream { .. }
         )
     }
@@ -974,6 +1007,8 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         | Operation::ReconcileChangeStream { .. }
         | Operation::InterruptTask { .. }
         | Operation::CancelTask { .. }
+        | Operation::BlockTask { .. }
+        | Operation::UnblockTask { .. }
         | Operation::AbandonChangeStream { .. } => {
             // The three steps a dispatched Task could not take at all, so a
             // run stayed `completion_requested` for the life of the store.

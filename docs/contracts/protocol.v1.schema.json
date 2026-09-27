@@ -1335,6 +1335,50 @@
           },
           {
             "additionalProperties": false,
+            "description": "Hold a task that is not ready to run, and say why.\n\nThe domain has had `TaskAction::Block` and `TaskState::Blocked` since\nthe lifecycle was written, with nothing to construct either, so a task\nthat was not ready could not be held: it was either created and run, or\nnever created. The one lever an operator had was a dependency on a task\nthat never finishes, which reports `dependency_unresolved` and names a\ntask that has nothing to do with the real reason — so the only way to\nsay \"not until the key is provisioned\" made the store say something\nelse, and the task itself carried nothing but `state: ready`.\n\n`reason` is the operator's own sentence, not a category, and it is\ncarried into the scheduling projection verbatim: a hold nobody can read\nthe reason for is a hold that has to be lifted to find out what it was\nfor. The domain refuses an empty one, so the refusal cannot be sent.",
+            "properties": {
+              "kind": {
+                "const": "block_task",
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Lift a hold, and say why — the same shape as the hold, because a release\nnobody records the reason for is how the next operator repeats it.\n\nThe task returns to `Ready` and nothing more: the scheduler still\napplies its dependency and stream checks, so lifting a hold offers the\ntask for scheduling and does not start it.",
+            "properties": {
+              "kind": {
+                "const": "unblock_task",
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "Close a Task that is not coming back: `Ready`, `Queued`, `Assigned` or\n`Blocked` becomes `Cancelled`, and so does a run the Host is executing.\n`reason` is the caller's, because only the caller knows whether the\nwork was withdrawn, superseded, or simply wrong.\n\nThis is the state nothing could reach. `TaskState::Cancelled` has been\nin the lifecycle since it was written and no operation constructed\n`TaskAction::Cancel`, so a task whose stream had been abandoned stayed\nstartable for the life of the store: every dispatch of it ran into a\nstream the abandon had already cancelled. `Failed` and `Interrupted`\nare not cancelled from here either — `recover_task` returns them to\n`Ready`, and that is the state a cancel takes.\n\nRefused while the stream still holds its reservation. A cancel is a\nclaim about a Task, not authority over a directory, and the directory\nis the one thing here that can lose commits. `abandon_change_stream`\nis the operation that reclaims it, and says so when it refuses.",
             "properties": {
               "kind": {
@@ -3745,6 +3789,11 @@
             "type": "string"
           },
           {
+            "const": "operator_held",
+            "description": "An operator is holding this task, and `BlockedTask::detail` is the\nreason they gave.\n\nA hold is the one blocker with a person behind it. The other three are\nfacts the store derived from rows, and a caller who wants to know why\na task is not starting can read the rows. This one exists only because\nsomebody decided it should, and the decision is a sentence rather than\na row — so it is the one reason that carries words.",
+            "type": "string"
+          },
+          {
             "const": "stream_unsafe",
             "description": "The owning Change Stream is not Active (collided, integrated...).",
             "type": "string"
@@ -3764,6 +3813,13 @@
       "BlockedTask": {
         "additionalProperties": false,
         "properties": {
+          "detail": {
+            "description": "What the operator said, when the reason is one they gave. None for a\nblocker the store derived, because there is nothing of anybody's to\nreport: a `stream_leased` is a fact about a lease and not an opinion.\n\nThis is the field that makes a held task answerable. A caller asking\nwhy a task is not starting gets four reasons, and three of them are\nself-explanatory; the fourth is \"an operator decided so\" and it is\nuseless without the decision. The reason is the operator's own words,\ncarried from the command that recorded it rather than re-typed by a\nscheduler that was not in the conversation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "project_id": {
             "$ref": "#/$defs/ProjectId"
           },
@@ -4358,6 +4414,26 @@
             "required": [
               "kind",
               "waiting_on"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The operator's hold on this task and the sentence they gave, or `None`\nwhen nobody is holding it.\n\nThis step exists for the reason the one above it does, and it is the\nsame argument reached from a different direction. A hold makes\n`Scheduling { schedulable: false }` true and the `Dependencies` step\nempty — the task has no unmet gates, its stream is `Active`, its role\nresolved and its provider validated — so a report assembled from those\nfacts refuses a dispatch and says nothing about which of them did it. An\noperator reading that before dispatching goes looking for a stream\nproblem, a lease, or a missing route, and the answer they are missing is\nthe one sentence somebody wrote.\n\nThe hold is read from the task's own record, the same record the\n`block_task` boundary transition writes, so the report cannot disagree\nwith the boundary about whether the task is held.",
+            "properties": {
+              "kind": {
+                "const": "hold",
+                "type": "string"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind"
             ],
             "type": "object"
           },

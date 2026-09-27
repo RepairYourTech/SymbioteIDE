@@ -174,6 +174,18 @@ pub struct BlockedTask {
     pub task_id: TaskId,
     pub stream_id: ChangeStreamId,
     pub reason: BlockedReason,
+    /// What the operator said, when the reason is one they gave. None for a
+    /// blocker the store derived, because there is nothing of anybody's to
+    /// report: a `stream_leased` is a fact about a lease and not an opinion.
+    ///
+    /// This is the field that makes a held task answerable. A caller asking
+    /// why a task is not starting gets four reasons, and three of them are
+    /// self-explanatory; the fourth is "an operator decided so" and it is
+    /// useless without the decision. The reason is the operator's own words,
+    /// carried from the command that recorded it rather than re-typed by a
+    /// scheduler that was not in the conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -181,6 +193,15 @@ pub struct BlockedTask {
 pub enum BlockedReason {
     /// A blocking dependency target is not Completed.
     DependencyUnresolved,
+    /// An operator is holding this task, and `BlockedTask::detail` is the
+    /// reason they gave.
+    ///
+    /// A hold is the one blocker with a person behind it. The other three are
+    /// facts the store derived from rows, and a caller who wants to know why
+    /// a task is not starting can read the rows. This one exists only because
+    /// somebody decided it should, and the decision is a sentence rather than
+    /// a row — so it is the one reason that carries words.
+    OperatorHeld,
     /// The owning Change Stream is not Active (collided, integrated...).
     StreamUnsafe,
     /// Another task holds a lease on this task's stream — serialized by policy.

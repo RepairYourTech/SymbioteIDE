@@ -44,6 +44,25 @@ pub enum CompositionStep {
     Dependencies {
         waiting_on: Vec<TaskGate>,
     },
+    /// The operator's hold on this task and the sentence they gave, or `None`
+    /// when nobody is holding it.
+    ///
+    /// This step exists for the reason the one above it does, and it is the
+    /// same argument reached from a different direction. A hold makes
+    /// `Scheduling { schedulable: false }` true and the `Dependencies` step
+    /// empty — the task has no unmet gates, its stream is `Active`, its role
+    /// resolved and its provider validated — so a report assembled from those
+    /// facts refuses a dispatch and says nothing about which of them did it. An
+    /// operator reading that before dispatching goes looking for a stream
+    /// problem, a lease, or a missing route, and the answer they are missing is
+    /// the one sentence somebody wrote.
+    ///
+    /// The hold is read from the task's own record, the same record the
+    /// `block_task` boundary transition writes, so the report cannot disagree
+    /// with the boundary about whether the task is held.
+    Hold {
+        reason: Option<String>,
+    },
     Routing {
         resolved: Option<RoleId>,
     },
@@ -225,6 +244,12 @@ impl DispatchPreparation {
         steps.push(CompositionStep::Scheduling { schedulable });
         steps.push(CompositionStep::Dependencies {
             waiting_on: waiting_on.clone(),
+        });
+        // The hold, read off the task rather than passed in: it is a property
+        // of the task's own state, and a caller that had to supply it would be
+        // able to supply a reason for a task that is not held.
+        steps.push(CompositionStep::Hold {
+            reason: task.blocked_by().map(|reason| reason.to_owned()),
         });
         steps.push(CompositionStep::Routing {
             resolved: routed_role.clone(),

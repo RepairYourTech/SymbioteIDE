@@ -50,7 +50,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `begin-task-verification`, `complete-task`,
 `integrate-change-stream`, `release-change-stream`,
 `abandon-change-stream`, `recover-task`, `interrupt-task`,
-`cancel-task`,
+`cancel-task`, `block-task`, `unblock-task`,
 `scheduling-projection <project_id>`,
 `observe-root-placement`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
@@ -523,6 +523,42 @@ frame with no NUL terminator is either a foreign shape or one the bounded
 reader cut short, and reading a clean merge out of a truncated one is the
 guess the rest of this crate refuses to make. An unsupported git is refused
 with the paths unnamed rather than guessed at.
+
+`block-task` is the state a task could not reach, and the one a product without
+it has no vocabulary for. `TaskState::Blocked` and `TaskAction::{Block, Unblock}`
+had been in the domain since the lifecycle was written with nothing to construct
+them, so an operator whose task was not ready had two moves: create it and let
+it run, or never create it. The one lever in between was a dependency on a task
+that never finishes — which reports `dependency_unresolved` and names a task
+that has nothing to do with the real reason, so the only way to say "not until
+the key is provisioned" made the store say something else and left the task
+carrying nothing but `state: ready`.
+
+`block-task <task_id> <reason>` holds the task and `unblock-task <task_id>
+<reason>` lifts it. The reason is the operator's own sentence, not a category,
+and it is required at the command line: a hold the scheduling projection cannot
+explain is a hold that has to be lifted to find out what it was for. The
+projection now lists held tasks at all — the query behind it read only `ready`
+and `assigned`, so a held task was absent from both lists and the answer read
+as "not waiting" for a task somebody was deliberately waiting on — and reports
+them as `operator_held` with the reason in `detail`. The other three reasons
+carry no detail, because they are facts the store derived from rows and there is
+nothing of anybody's to report; the gates are named per task in `readiness`, and
+the same gate is never carried twice. A hold is asked about *before* every
+derived blocker and wins when it applies: naming a lease an operator can do
+nothing about would hide the sentence they wrote, and naming a dependency for a
+task whose hold they lifted is a category error.
+
+The refusals say what the task is rather than that a transition failed, because
+"this task is running" is an answer and `(IllegalTransition)` is the sound of a
+gate with no door in it. A task that is running is `interrupt-task` or
+`cancel-task`; one that failed or was interrupted is `recover-task` first; one
+that is completed or cancelled has nothing left to hold. A second `block-task`
+on a held task repeats the reason it is held for, which is the only way a caller
+who cannot see the projection can find it. Lifting a hold returns the task to
+`ready` and no further: it offers the task for scheduling and does not start it,
+so the dependency and stream checks still apply — which is also why neither
+command is a dangerous kind, since neither can begin execution.
 
 `complete-task` is classified dangerous, because it ends a task's execution
 rather than changing it. The refusals name themselves — a claim that does not

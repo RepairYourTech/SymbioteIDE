@@ -672,6 +672,88 @@ it has landed, which is the state the filter is checking for. The post-merge anc
 survives mutation because real git does not exit zero without merging. Both are defence in
 depth against a git that behaves differently, and both are reported here rather than claimed.
 
+**Found in the eleventh pass — a task that is not ready could not be held, and a held
+task would not have been visible.** The tenth pass took the `StreamAction` half of the
+orphan sweep, which left `TaskAction::{Queue, Assign, Block, Unblock}` at `production = 0`.
+This one took `Block` and `Unblock`, and the question the sweep cannot answer is what an
+operator loses by a variant nobody constructs.
+
+Measured, not read. A transcript created two tasks and asked what can be done with one
+that is not ready:
+
+```
+  hold-task                    no such command
+  block-task                   no such command
+  pause-task                   no such command
+  defer-task                   no such command
+  the only way to hold it      create-task dependencies on a task that never finishes
+
+  and the task is still ready, with nothing on it saying why:
+      state: ready
+      keys a caller can read: dispatch, history, id, project_id, revision, role_id, root_id, state, stream_id, task_contract
+```
+
+So the product offered exactly two moves — create it and let it run, or never create it
+— and one pretending to be a third. The pretending is the interesting part, because it
+works right up to the reporting: a dependency on a task that never finishes does hold
+this one, and the store reports `dependency_unresolved` naming a task that has nothing
+to do with the real reason. So the only way to say "not until the key is provisioned"
+made the store say something else, and the task itself carried nothing but `state: ready`.
+
+The second half is the compounding one, and it was found by looking rather than by
+guessing. The scheduling projection's query reads
+`json_extract(body,'$.state') IN ('ready','assigned')` — so a held task would have been
+absent from **both** its lists. That is not "nothing is blocking this"; it is silence,
+and silence about a task somebody is deliberately waiting on reads as a task that is not
+waiting. This is the ninth pass's own lesson (`a report that says ready is worse than no
+report`) applied to a new gate, and it would have been introduced by fixing the first
+half of this one.
+
+Two things were checked and found *not* to be defects, which is why they are recorded
+here rather than fixed. A running task's absence from the projection is by its stated
+contract — `blocked` means "start candidates that cannot run", and a running task is
+neither, with `dag.progress` carrying the in-flight count. And `BlockedReason`'s
+`NotConsidered` doc promises `progress.partial` is set whenever it appears; that field
+does exist, on the graph report, and is set from the same bounded answer the reason comes
+from. Both were nearly written up as findings.
+
+So a hold is now `block-task <task_id> <reason>` and its end is
+`unblock-task <task_id> <reason>`, with the reason required at the command line because
+a hold the projection cannot explain is a hold that has to be lifted to find out what it
+was for. The reason is the operator's own sentence rather than a category, and it is
+read back out of the task's command history by `Task::blocked_by`, which is the only
+place the domain keeps it and therefore the only place it can be read from.
+
+Three surfaces now answer the same question with the same words: the projection reports
+`operator_held` with the sentence in a new `BlockedTask::detail`; the dispatch report
+records a `hold` step; and a second `block-task` on a held task repeats the reason it is
+held for. A hold is asked about *before* every derived blocker and wins when it applies,
+because naming a lease the operator cannot act on would hide the sentence they wrote, and
+naming a dependency for a task whose hold they lifted is a category error.
+
+**The dispatch report was the defect the transcript found, and it was found after the
+fix rather than before it.** `prepare-dispatch` on a held task returned
+`outcome: refused` with `scheduling: {schedulable: false}`, `dependencies: {waiting_on: []}`,
+`worktree: {startable: true, state: "active"}`, `routing: {resolved: "engineer"}` and
+`provider: {validated: true}` — every fact true, the refusal right, and nothing anywhere
+saying a person was holding the task. An operator reading that before dispatching goes
+looking for a stream problem, a lease or a missing route. `CompositionStep::Hold` now
+carries the reason, read off the task rather than passed into `compose`, because a caller
+that had to supply it could supply a reason for a task that is not held.
+
+Eight dying mutants hold this pass: the projection's SQL dropping `blocked` again; the
+hold ceasing to win over a derived blocker; the report's `hold` step not being recorded;
+the report recording that a hold exists but not its reason; a hold reason outliving the
+hold; the already-held refusal ceasing to repeat the reason; the hold's empty-reason
+refusal dropped; and the release's empty-reason refusal dropped.
+
+The four `TaskAction` orphans are now two: `Queue` and `Assign` remain, and they are a
+different question. They are the canonical scheduler's own states — `Queued` is "the Host
+has admitted this to its durable queue" and `Assigned` is "the Role is explicitly bound
+before dispatch" — so producing them means building the queue that admits them, which is
+not a missing command but a missing component. Worth saying plainly rather than
+discovering it as a twelfth-pass surprise.
+
 ## Exercised, and what it returned
 
 Two tables, because the two passes measured different things and the difference is not worth

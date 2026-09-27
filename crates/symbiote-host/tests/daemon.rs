@@ -6142,6 +6142,301 @@ fn work_that_landed_before_the_record_did_is_integrated_rather_than_refused() {
 /// them: it is a claim about a Task, not authority over a directory.
 /// `abandon-change-stream` is the operation for the directory, and it is what
 /// the refusal names.
+/// A task that is not ready has to be holdable, because otherwise it is either
+/// created and run or never created.
+///
+/// That is the whole of the defect, and it is worth stating what the product
+/// offered instead: a dependency on a task that never finishes. Which works,
+/// right up to the reporting — the store says `dependency_unresolved` and names
+/// a task that has nothing to do with the real reason, so the only way to say
+/// "not until the key is provisioned" made the store say something else, and
+/// the task itself carried nothing but `state: ready`.
+///
+/// The second half is the compounding one. The scheduling projection's query
+/// read only `ready` and `assigned`, so a held task would have been absent
+/// from both of its lists — which is not "not blocking anything", it is
+/// silence, and silence about a task somebody is deliberately waiting on reads
+/// as a task that is not waiting. So the projection has to list it and say who
+/// is holding it and why.
+#[test]
+fn a_held_task_says_why_it_is_held_and_comes_back_when_the_reason_is_gone() {
+    let (repository, head) = real_repository("hold-task");
+    let base = std::env::temp_dir().join(format!("symbiote-hold-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "hold-placement",
+        &host.call(request(
+            "hold-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "hold-create",
+        "held-task",
+        "held-stream",
+        &head,
+        &head,
+    );
+    let held = |tag: &'static str| {
+        host.call(request(
+            tag,
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"held-task"}),
+        ))
+    };
+    let projection = |tag: &'static str| {
+        host.call(request(
+            tag,
+            json!({"kind":"get_scheduling_projection","project_id":"staffing-demo"}),
+        ))
+    };
+    // The entry the projection makes for this task, and nothing else.
+    let entry = |tag: &'static str| {
+        let answer = ok_step(tag, &projection(tag))["data"].clone();
+        let mut entries: Vec<Value> = Vec::new();
+        for key in ["schedulable", "blocked"] {
+            for row in answer[key].as_array().cloned().unwrap_or_default() {
+                if row["task_id"] == "held-task" {
+                    entries.push(row);
+                }
+            }
+        }
+        entries
+    };
+
+    // Before the hold, this is a start candidate with nothing holding it.
+    assert_eq!(
+        entry("hold-projection-before")
+            .first()
+            .and_then(|row| row["reason"].as_str()),
+        Some("no_blocking_dependencies"),
+        "a task with no gates and no hold is schedulable, which is the whole \
+         of what this test changes"
+    );
+
+    // The hold. A reason is required, and required at the boundary rather than
+    // discovered in a refusal, because a hold nobody can read is a hold that
+    // has to be lifted to find out what it was for.
+    let nameless = host.call(request(
+        "hold-nameless",
+        json!({"kind":"block_task","task_id":"held-task","reason":"   "}),
+    ));
+    assert_eq!(
+        nameless["result"]["Err"]["code"], "invalid_request",
+        "an empty reason is refused, not stored: {nameless}"
+    );
+    assert!(
+        nameless["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("a hold has to say why"),
+        "and the refusal says what is wrong with it: {nameless}"
+    );
+
+    ok_step(
+        "hold-block",
+        &host.call(request(
+            "hold-block",
+            json!({"kind":"block_task","task_id":"held-task",
+            "reason":"the key this needs is not provisioned yet"}),
+        )),
+    );
+    assert_eq!(ok(&held("hold-read-held"))["data"]["state"], "blocked");
+
+    // The projection's answer is the point of the whole pass: the held task is
+    // listed, it is listed as held by an operator rather than by a derived
+    // fact, and it carries the sentence the operator wrote.
+    let listed = entry("hold-projection-after");
+    assert_eq!(
+        listed.len(),
+        1,
+        "the held task is listed exactly once: {listed:?}"
+    );
+    assert_eq!(listed[0]["reason"], "operator_held");
+    assert_eq!(
+        listed[0]["detail"], "the key this needs is not provisioned yet",
+        "the operator's own words, not a category"
+    );
+
+    // And it is not also offered for scheduling. A task in both lists is a task
+    // a caller could pick up and run, which is the one thing a hold is for.
+    let answer =
+        ok_step("hold-projection-both", &projection("hold-projection-both"))["data"].clone();
+    let offered = answer["schedulable"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let schedulable: Vec<&Value> = offered
+        .iter()
+        .filter(|row| row["task_id"] == "held-task")
+        .collect();
+    assert!(
+        schedulable.is_empty(),
+        "a held task must not also be offered for scheduling: {answer:?}"
+    );
+
+    // The boundary agrees. `prepare-dispatch` and `start-prepared-task` both
+    // refuse a task that is not startable, and the ninth pass's lesson is that
+    // the report has to say the same thing the refusal will — so the report is
+    // asked first here and the refusal second, in that order.
+    let report = host.call(request(
+        "hold-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"held-task"}),
+    ));
+    let steps = ok(&report)["data"]["steps"].clone();
+    assert!(
+        ok(&report)["data"]["outcome"] != "ready",
+        "a report that says ready for a held task is worse than no report: {report}"
+    );
+    // And it says WHY, which is the half that was missing. Every other step in
+    // that report is healthy — no unmet gates, an active stream, a resolved
+    // role, a validated provider — so a report that only refused left an
+    // operator looking for a stream problem, a lease or a missing route, and
+    // the answer they were missing was the one sentence somebody wrote.
+    let hold_step = steps
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "hold")
+        .unwrap_or_else(|| panic!("no hold step in the report: {report}"));
+    assert_eq!(
+        hold_step["reason"], "the key this needs is not provisioned yet",
+        "the report carries the operator's own sentence: {report}"
+    );
+    let started = host.call(request(
+        "hold-start",
+        json!({"kind":"start_prepared_task","task_id":"held-task","host_id":host_id}),
+    ));
+    assert!(
+        started["result"]["Err"].is_object(),
+        "a held task must not start: {started}"
+    );
+
+    // Asking again about a held task repeats the reason it is held for, which
+    // is the only way a caller who cannot read the projection finds it.
+    let again = host.call(request(
+        "hold-block-again",
+        json!({"kind":"block_task","task_id":"held-task","reason":"a different reason"}),
+    ));
+    let said = again["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        said, "this task is already held: the key this needs is not provisioned yet",
+        "the second ask answers with the hold, not with the new reason: {said}"
+    );
+
+    // Lifting a hold that is not there is refused by name, so an operator who
+    // guesses wrong is told what the task actually is.
+    staffing_task(
+        &host,
+        "hold-create-ready",
+        "ready-task",
+        "ready-stream",
+        &head,
+        &head,
+    );
+    let not_held = host.call(request(
+        "hold-unblock-not-held",
+        json!({"kind":"unblock_task","task_id":"ready-task","reason":"nothing was holding it"}),
+    ));
+    assert!(
+        not_held["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("it is ready"),
+        "lifting a hold that is not there names the state instead of failing a \
+         transition: {not_held}"
+    );
+
+    // The way out. The task comes back to `ready` and no further: it is offered
+    // for scheduling again, and nothing about it has been cancelled or lost.
+    ok_step(
+        "hold-unblock",
+        &host.call(request(
+            "hold-unblock",
+            json!({"kind":"unblock_task","task_id":"held-task",
+            "reason":"the key is provisioned and the run is wanted"}),
+        )),
+    );
+    assert_eq!(ok(&held("hold-read-released"))["data"]["state"], "ready");
+    let released = host.call(request(
+        "hold-prepare-released",
+        json!({"kind":"prepare_dispatch","task_id":"held-task"}),
+    ));
+    let steps = ok(&released)["data"]["steps"].clone();
+    let hold_step = steps
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "hold")
+        .unwrap_or_else(|| panic!("no hold step in the released report: {released}"));
+    assert!(
+        hold_step["reason"].is_null(),
+        "a task that is not held reports no hold, rather than the last reason \
+         it was held for: {released}"
+    );
+    assert_eq!(
+        entry("hold-projection-released")
+            .first()
+            .and_then(|row| row["reason"].as_str()),
+        Some("no_blocking_dependencies"),
+        "and the projection offers it again, which is the same place it stopped"
+    );
+    // The sentence is gone from the projection with the hold, because the task
+    // is no longer held: a reason that outlived its state would be an answer to
+    // a question nobody asked.
+    let after = entry("hold-projection-released");
+    assert!(
+        after[0].get("detail").is_none(),
+        "a task that is not held carries no hold reason: {after:?}"
+    );
+    // And the history carries both, because the release is the only account of
+    // why the hold went away.
+    let history = ok(&held("hold-read-history"))["data"]["history"].clone();
+    let said_by: Vec<&str> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| {
+            let action = &event["command"]["action"];
+            if action["kind"] == "block" || action["kind"] == "unblock" {
+                action["reason"].as_str()
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        said_by,
+        vec![
+            "the key this needs is not provisioned yet",
+            "the key is provisioned and the run is wanted",
+        ],
+        "both the hold and the release are in the record, in the order they \
+         happened: {history:?}"
+    );
+}
+
 #[test]
 fn a_task_is_closed_only_after_its_stream_gave_up_its_checkout() {
     let (repository, head) = real_repository("close-task");

@@ -507,6 +507,16 @@ pub(crate) fn consequence(name: &str) -> Option<&'static str> {
             "the Task is Cancelled and nothing will run it again; the stream it was cut from stays \
              on the Root, and only the Task is closed.",
         ),
+        "block-task" => Some(
+            "the Task is held and will not be offered for scheduling, and the reason you gave is \
+             what scheduling-projection reports for it; nothing has been cancelled and \
+             unblock-task puts it back to ready when it is",
+        ),
+        "unblock-task" => Some(
+            "the hold is lifted and the Task is ready again, which offers it for scheduling and \
+             does not start it; the dependency and stream checks still apply, and a Task whose \
+             gates are unmet stays blocked with dependency_unresolved",
+        ),
         _ => None,
     }
 }
@@ -1685,6 +1695,50 @@ pub(crate) fn commands() -> Vec<Command> {
                 plain("kind", serde_json::json!("get_task_dependencies"), map);
                 id_field(args, 0, "project_id", "project_id", map)?;
                 id_field(args, 1, "task_id", "task_id", map)?;
+                Ok(())
+            },
+        },
+        Command {
+            name: "block-task",
+            summary: "hold a task that is not ready to run, and say why",
+            usage: "block-task <task_id> <reason>",
+            kind: Some("block_task"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("block_task"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // The reason is the whole of this command. A hold the
+                // scheduling projection cannot explain is a hold that has to be
+                // lifted to find out what it was for, so it is required here
+                // rather than at the far end where the refusal would be
+                // cheaper to write and later to read.
+                let reason = args.get(1).ok_or_else(|| {
+                    Usage("missing <reason>: say why this task is not ready".into())
+                })?;
+                if reason.trim().is_empty() {
+                    return Err(Usage("<reason> must not be empty".into()));
+                }
+                plain("reason", serde_json::json!(reason), map);
+                Ok(())
+            },
+        },
+        Command {
+            name: "unblock-task",
+            summary: "lift a hold, and say why",
+            usage: "unblock-task <task_id> <reason>",
+            kind: Some("unblock_task"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("unblock_task"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // A release is recorded for the same reason a hold is: a hold
+                // lifted without a note is a hold the next operator repeats,
+                // because nobody can tell whether it was still true.
+                let reason = args.get(1).ok_or_else(|| {
+                    Usage("missing <reason>: say why this task is ready now".into())
+                })?;
+                if reason.trim().is_empty() {
+                    return Err(Usage("<reason> must not be empty".into()));
+                }
+                plain("reason", serde_json::json!(reason), map);
                 Ok(())
             },
         },

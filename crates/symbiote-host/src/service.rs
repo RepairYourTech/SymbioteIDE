@@ -1421,6 +1421,131 @@ fn execute(
                 .map(receipt)
                 .map_err(storage_error)
         }
+        Operation::BlockTask { task_id, reason } => {
+            // The state a task could not reach, and the one a product without
+            // it has no vocabulary for. `TaskState::Blocked` and
+            // `TaskAction::{Block, Unblock}` have been in the domain since the
+            // lifecycle was written with nothing to construct them, so an
+            // operator whose task was not ready had two moves: create it and
+            // let it run, or never create it. The one lever in between was a
+            // dependency on a task that never finishes — which reports
+            // `dependency_unresolved` and names a task that has nothing to do
+            // with the actual reason, so the only way to say "not until the
+            // key is provisioned" made the store say something else and left
+            // the task carrying nothing but `state: ready`.
+            //
+            // The reason is the operator's sentence and is carried verbatim
+            // into the scheduling projection, so this is the one operation in
+            // this arm of the lifecycle whose argument is a judgement rather
+            // than a fact. The domain refuses an empty one, and the refusal is
+            // named here rather than left to arrive as `(EmptyReport)`.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            if task_record.state() == &symbiote_domain::TaskState::Blocked {
+                // Asked again about a held task, the answer is the hold: a
+                // caller who cannot see the reason cannot find it, and this is
+                // the only place it is written down for them.
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!(
+                        "this task is already held: {}",
+                        task_record
+                            .blocked_by()
+                            .unwrap_or("for a reason the record does not carry")
+                    ),
+                });
+            }
+            if !matches!(
+                task_record.state(),
+                symbiote_domain::TaskState::Ready
+                    | symbiote_domain::TaskState::Queued
+                    | symbiote_domain::TaskState::Assigned
+            ) {
+                // Named here rather than as a refused transition, and the
+                // remedy is part of the answer because "this task is running"
+                // on its own leaves an operator guessing which of the eleven
+                // operations applies to a running task.
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!(
+                        "a task that is {} cannot be held; {}",
+                        task_record.state().name(),
+                        match task_record.state() {
+                            symbiote_domain::TaskState::Running
+                            | symbiote_domain::TaskState::CompletionRequested
+                            | symbiote_domain::TaskState::Verifying => {
+                                "interrupt-task stops the run and cancel-task closes the task"
+                            }
+                            symbiote_domain::TaskState::Failed
+                            | symbiote_domain::TaskState::Interrupted => {
+                                "recover-task puts it back in the queue, and then it can be held"
+                            }
+                            _ => "there is nothing left to hold",
+                        }
+                    ),
+                });
+            }
+            if reason.trim().is_empty() {
+                return Err(ProtocolError {
+                    code: ErrorCode::InvalidRequest,
+                    message: "a hold has to say why; an empty reason is a hold nobody can later \
+                              read, and the scheduling projection carries this sentence to whoever \
+                              asks why the task is not running"
+                        .into(),
+                });
+            }
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(inventory.host_id().clone()),
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::TaskAction::Block {
+                    reason: reason.clone(),
+                },
+            };
+            store
+                .apply_task(task_id, command)
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::UnblockTask { task_id, reason } => {
+            // The other end, and the only way a held task becomes runnable
+            // again. It returns the task to `Ready` and no further: the
+            // scheduler still applies its dependency and stream checks, so
+            // lifting a hold offers the task for scheduling and does not start
+            // it — which is the same boundary `start_prepared_task` holds, and
+            // the same reason this operation does not call it.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            if task_record.state() != &symbiote_domain::TaskState::Blocked {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!(
+                        "this task is not held, so there is no hold to lift; it is {}",
+                        task_record.state().name()
+                    ),
+                });
+            }
+            if reason.trim().is_empty() {
+                return Err(ProtocolError {
+                    code: ErrorCode::InvalidRequest,
+                    message: "lifting a hold has to say why; an empty reason is how the next \
+                              operator repeats the hold without knowing what it was for"
+                        .into(),
+                });
+            }
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(inventory.host_id().clone()),
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::TaskAction::Unblock {
+                    reason: reason.clone(),
+                },
+            };
+            store
+                .apply_task(task_id, command)
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::AdvanceChangeStream { task_id } => {
             // The one thing a Change Stream exists to carry, and the operation
             // the workspace was missing. The domain has had

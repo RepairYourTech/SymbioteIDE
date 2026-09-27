@@ -110,6 +110,16 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     // future, and only an operator may say so.
     ("interrupt_task", Risk::Dangerous),
     ("cancel_task", Risk::Dangerous),
+    // Holds a task, which changes what the scheduler offers and nothing else:
+    // no run starts, stops, or is expressible, and nothing is discarded — the
+    // task and its stream are exactly where they were, one state further from
+    // being started. A mutation.
+    ("block_task", Risk::Mutation),
+    // Lifts a hold, which is the same class of change in the other direction.
+    // Notably NOT a start: this offers the task for scheduling and the
+    // scheduler's own checks still decide, so a caller cannot use it to begin
+    // execution — which is why it is a mutation and not a dangerous kind.
+    ("unblock_task", Risk::Mutation),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),
