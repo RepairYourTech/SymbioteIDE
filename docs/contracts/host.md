@@ -47,6 +47,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `request-task-completion`, `request-elevation`,
 `validate-change-stream`, `begin-task-verification`, `complete-task`,
 `integrate-change-stream`, `release-change-stream`,
+`abandon-change-stream`, `recover-task`,
 `scheduling-projection <project_id>`,
 `observe-root-placement`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
@@ -253,6 +254,40 @@ own contract describes in detail, with two policies and a content discipline
 — had no production caller anywhere in the workspace. A task that reached
 `Integrated` and stopped there was not a state anyone could leave.
 
+A failed run is the other end, and until `abandon-change-stream` existed it
+had nowhere to go. A provisioning that refused — a base that moved, a
+credential the broker would not lease, a transport with no factory — left the
+task `Running` with nothing running it, because the Host constructed no
+`TaskAction::Fail` anywhere in the workspace, and left a reserved location
+that `release-change-stream` could not touch because that path requires an
+integrated stream. The operator's only answer was to edit the filesystem by
+hand. Three things fix that, and they are one story:
+
+The run itself now records its own refusal. Every error past the two
+request-identity preconditions — a foreign dispatch id, and a task that is not
+`Running`, which refuse the request rather than the run — is filed as a
+`Fail` against the task before it is returned, under a command id derived
+from the run's own so a retry replays rather than appends. The reason is the
+same content-free sentence the caller receives, so the journal and the
+operator read one classification. The caller still gets the refusal: a run
+that did not happen is never reported as one that did.
+
+`abandon-change-stream` then reclaims what the failure left, and it is the
+one operation that destroys work. It refuses an integrated stream outright —
+that work landed, and `release-change-stream` is the operation for it, and it
+refuses a dirty checkout rather than forcing it — so it is never a second,
+weaker way to do the same thing. Everywhere else it cancels the stream and
+reclaims the location with `--force`, which is the authorization the caller's
+word provides and the only place in the product where that flag appears. The
+branch is still never deleted.
+
+`recover-task` is the way out of the failure rather than around it:
+`Failed` and `Interrupted` become `Ready` and the dispatch binding is
+dropped, so the task is dispatched afresh. The lifecycle reaches `Ready`
+only through this, which is why the two were missing together: a failure
+that can be filed and a failure that can be left are the same gap seen from
+opposite ends.
+
 `complete-task` is classified dangerous, because it ends a task's execution
 rather than changing it. The refusals name themselves — a claim that does not
 cover the contract arrives as `lifecycle refused the transition
@@ -315,10 +350,14 @@ decided by it — so `raw shutdown.json` cannot bypass the gate on
 the ones that start or end execution or grant capability:
 `shutdown`, `start_prepared_task`, `run_started_dispatch`,
 `decide_elevation` (the grant; `revoke_elevation` narrows and is not
-gated), `record_resource_consent` and `complete_task` — which ends a task's
+gated), `record_resource_consent`, `complete_task` — which ends a task's
 execution rather than changing it, so it is gated like the operations that
-start it. A kind the table does not know
-cannot be proven safe, so it fails closed as dangerous. Reads are free;
+start it — and `abandon_change_stream`, which discards a checkout and the
+uncommitted files in it. That last one is the only operation in the product
+that destroys work, and the branch it leaves behind holds every commit, so
+what it destroys is work that was never recorded anywhere else.
+A kind the table does not know cannot be proven safe, so it fails closed as
+dangerous. Reads are free;
 everything else is a mutation the daemon still authorizes — filing
 evidence (`register-project`, `create-work`, `create-task`,
 `prepare-dispatch`, `request-task-completion`,

@@ -45,6 +45,7 @@ fn authorization_follows_the_operation_not_the_command_name() {
     assert_eq!(
         dangerous,
         vec![
+            "abandon-change-stream",
             "complete-task",
             "run-started-dispatch",
             "shutdown",
@@ -2137,7 +2138,12 @@ fn every_dangerous_kind_in_the_table_can_be_named_by_a_policy() {
     // Pins the set the help text and the policy schema describe.
     assert_eq!(
         dangerous,
+        // The table's own order, which is what the help text and the policy
+        // schema describe. `abandon_change_stream` is the one operation that
+        // destroys work: a policy that has to name it is a policy that has to
+        // be told about it, which is the point of the list.
         vec![
+            "abandon_change_stream",
             "start_prepared_task",
             "run_started_dispatch",
             "shutdown",

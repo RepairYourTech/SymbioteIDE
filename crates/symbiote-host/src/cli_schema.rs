@@ -88,6 +88,12 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     // `Dangerous` means in this table. The removal itself is gated by the
     // evidence the Host proves before it removes anything.
     ("release_change_stream", Risk::Mutation),
+    // Discards a checkout, uncommitted files included. The commits survive in
+    // the branch, so this destroys work that was never recorded anywhere else
+    // — which is exactly what the dangerous kind is for, and the caller's
+    // word is the confirmation the Change Stream contract asks for.
+    ("abandon_change_stream", Risk::Dangerous),
+    ("recover_task", Risk::Mutation),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),

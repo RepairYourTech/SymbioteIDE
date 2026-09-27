@@ -1241,6 +1241,42 @@
           },
           {
             "additionalProperties": false,
+            "description": "Abandon a stream whose work never landed: cancel it and reclaim its\nworktree, discarding whatever is in the checkout. This is the one\noperation that destroys work — a run that failed or was abandoned\nleaves commits and uncommitted files in a location nothing else can\nreclaim, and an operator has to be able to say \"this one is finished\nand is not coming back\". The branch is still never deleted, so every\ncommit the run made stays inspectable; only the checkout goes. Refuses\nan integrated stream: that work landed, and `release_change_stream` is\nthe operation for it.",
+            "properties": {
+              "kind": {
+                "const": "abandon_change_stream",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Put a failed or interrupted task back in the queue: `Failed` or\n`Interrupted` becomes `Ready` and the dispatch binding is dropped, so\nthe task can be dispatched afresh. Without it a failed run is a dead\nend — the lifecycle can leave `Running` for a failure and into\n`Ready` only from a state nothing could reach.",
+            "properties": {
+              "kind": {
+                "const": "recover_task",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "File the evidence a dispatch contract's gates require and complete the\nTask. `gates` is the claim: which gates the caller says passed. The\nHost binds each claim to the dispatch, the stream's head and target\nand this Host's identity, and refuses a claim that does not cover the\ncontract — so the caller asserts and the Host binds, and neither side\ngets to do the other's half.",
             "properties": {
               "gates": {

@@ -29,7 +29,7 @@
 pub mod provision;
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -650,29 +650,76 @@ pub fn materialize(
     observe_head(git, request.worktree)
 }
 
-/// Removes a materialized worktree: `git worktree remove -- <path>` against
-/// the source repository. Never `--force`, and never `--` anything else.
+/// Whether a removal may discard uncommitted content. It is a parameter and
+/// not a property of this crate because the decision is the caller's, and the
+/// two callers disagree for honest reasons: reclaiming an integrated
+/// stream's checkout refuses, because that work is landed and anything still
+/// in the tree is a surprise; abandoning an unintegrated stream's checkout
+/// allows it, because the caller has authorized discarding exactly that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemovalForce {
+    /// Let git refuse a worktree holding uncommitted or untracked content.
+    Refuse,
+    /// Discard it, as the caller has authorized.
+    Allow,
+}
+
+/// Removes a materialized worktree: `git worktree remove [--force] -- <path>`
+/// against the source repository.
 ///
-/// The missing flag is the whole point. Git refuses to remove a worktree with
-/// uncommitted or untracked content, so this function cannot destroy work that
-/// was never committed, and it cannot destroy work that was: the branch holds
-/// every commit. The caller supplies the evidence that the branch's commits are
-/// already reachable from wherever they are going (`is_ancestor`), and this
-/// function supplies the part only git knows — whether the checkout still holds
-/// something the branch does not.
+/// Under `RemovalForce::Refuse` — the absent flag — git itself refuses a
+/// worktree with uncommitted or untracked content, so this cannot destroy work
+/// that was never committed, and it cannot destroy work that was: the branch
+/// holds every commit. The caller supplies the evidence that the branch's
+/// commits are already reachable from wherever they are going
+/// (`is_ancestor`), and this supplies the part only git knows — whether the
+/// checkout still holds something the branch does not.
 ///
-/// The worktree's branch is not deleted. A stream's branch is its recorded
-/// lineage; a change stream is integrated, not erased.
+/// The worktree's branch is never deleted. A stream's branch is its recorded
+/// lineage; a change stream is integrated or abandoned, not erased.
 pub fn remove_worktree(
     git: &mut impl GitExecutor,
     repository: &Path,
     worktree: &Path,
+    force: RemovalForce,
 ) -> Result<(), GitError> {
-    git.run(
-        repository,
-        &["worktree", "remove", "--", path_arg(worktree)?],
-    )?;
+    let mut arguments = vec!["worktree", "remove"];
+    if force == RemovalForce::Allow {
+        arguments.push("--force");
+    }
+    arguments.extend(["--", path_arg(worktree)?]);
+    git.run(repository, &arguments)?;
     Ok(())
+}
+
+/// The worktree paths git has registered for `repository`, from
+/// `worktree list --porcelain`.
+///
+/// This is the fact that separates "there is a checkout here" from "there is
+/// a directory here". A provisioning that refused before materializing leaves
+/// the reserved location and its marker with no git worktree behind them, and
+/// every `worktree remove` against such a path is a refusal that means
+/// "nothing to remove" rather than "work in the way". A caller deciding
+/// whether it may remove something has to be able to tell those apart.
+pub fn registered_worktrees(
+    git: &mut impl GitExecutor,
+    repository: &Path,
+) -> Result<Vec<PathBuf>, GitError> {
+    let bytes = git.run(repository, &["worktree", "list", "--porcelain"])?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| GitError::MalformedOutput)?;
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        // Every record's first line is `worktree <path>`; the rest of the
+        // record (HEAD, branch, detached, locked, prunable) is not this
+        // crate's to interpret.
+        if let Some(path) = line.strip_prefix("worktree ") {
+            paths.push(PathBuf::from(path));
+        }
+    }
+    if paths.is_empty() {
+        return Err(GitError::MalformedOutput);
+    }
+    Ok(paths)
 }
 
 /// Whether `ancestor` is reachable from `descendant` in `repository`:
@@ -990,7 +1037,7 @@ mod tests {
         let mut git = Scripted::new(vec![Ok(b"".to_vec())]);
         let repository = Path::new("/source/repo");
         let worktree = Path::new("/base/proj/st-x");
-        remove_worktree(&mut git, repository, worktree).unwrap();
+        remove_worktree(&mut git, repository, worktree, RemovalForce::Refuse).unwrap();
         assert_eq!(
             git.calls,
             vec![(
@@ -1008,7 +1055,7 @@ mod tests {
         // silent success.
         let mut refusing = Scripted::new(vec![Err(GitError::GitRefused)]);
         assert_eq!(
-            remove_worktree(&mut refusing, repository, worktree),
+            remove_worktree(&mut refusing, repository, worktree, RemovalForce::Refuse),
             Err(GitError::GitRefused)
         );
     }
@@ -1068,7 +1115,7 @@ mod tests {
             worktree
         }
         let clean = add_worktree(&mut git, &repo.dir, "wt-clean", branch, &base);
-        remove_worktree(&mut git, &repo.dir, &clean).unwrap();
+        remove_worktree(&mut git, &repo.dir, &clean, RemovalForce::Refuse).unwrap();
         assert!(!clean.exists());
         // The branch outlives its checkout: the recorded lineage is still
         // there to inspect.
@@ -1085,7 +1132,7 @@ mod tests {
         );
         std::fs::write(dirty.join("uncommitted.txt"), "worker output\n").unwrap();
         assert_eq!(
-            remove_worktree(&mut git, &repo.dir, &dirty),
+            remove_worktree(&mut git, &repo.dir, &dirty, RemovalForce::Refuse),
             Err(GitError::GitRefused)
         );
         assert!(dirty.join("uncommitted.txt").is_file());
@@ -1095,10 +1142,152 @@ mod tests {
         let _ = std::fs::remove_file(dirty.join("uncommitted.txt"));
         std::fs::write(dirty.join("produced.txt"), "untracked\n").unwrap();
         assert_eq!(
-            remove_worktree(&mut git, &repo.dir, &dirty),
+            remove_worktree(&mut git, &repo.dir, &dirty, RemovalForce::Refuse),
             Err(GitError::GitRefused)
         );
         assert!(dirty.join("produced.txt").is_file());
+    }
+
+    #[test]
+    fn an_authorized_removal_discards_the_uncommitted_work_and_keeps_the_commits() {
+        // The abandon path's half: the same dirty worktree, removed with the
+        // authorization the caller supplies. What goes is the checkout and the
+        // files in it; what stays is every commit, because the branch is never
+        // deleted. An operator who abandons an unlanded stream gets the
+        // inspection trail without the disk.
+        let repo = TempRepo::new("forced");
+        let base = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&repo.dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let mut git = SystemGit::new();
+        let worktree = repo.dir.join("wt");
+        std::fs::create_dir(&worktree).unwrap();
+        materialize(
+            &mut git,
+            MaterializeRequest {
+                repository: &repo.dir,
+                worktree: &worktree,
+                branch: "symbiote/demo/stream/forced",
+                start_point: &base,
+            },
+        )
+        .unwrap();
+        // A commit the run made, and a file it never committed.
+        std::fs::write(worktree.join("produced.txt"), "the run's output\n").unwrap();
+        let committed = Command::new("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        assert!(committed.status.success());
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args([
+                "-c",
+                "user.email=t@symbiote.test",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "run",
+            ])
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let run_head = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&worktree)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        std::fs::write(worktree.join("uncommitted.txt"), "never committed\n").unwrap();
+        remove_worktree(&mut git, &repo.dir, &worktree, RemovalForce::Allow).unwrap();
+        assert!(!worktree.exists(), "the checkout is gone");
+        // The commit survives, reachable from the branch the Host never
+        // deletes — which is the whole reason discarding the checkout is
+        // recoverable and abandoning a stream is not a data loss.
+        let verify = Command::new("git")
+            .arg("-C")
+            .arg(&repo.dir)
+            .args([
+                "rev-parse",
+                "--verify",
+                "refs/heads/symbiote/demo/stream/forced",
+            ])
+            .output()
+            .unwrap();
+        assert!(verify.status.success());
+        let at = String::from_utf8_lossy(&verify.stdout).trim().to_string();
+        assert_eq!(at, run_head, "the branch still carries the run's commit");
+    }
+
+    #[test]
+    fn a_location_git_never_knew_is_not_a_worktree() {
+        // The distinction the reclaim path turns on. A provisioning that
+        // refused before materializing leaves a reserved directory and a
+        // marker with no git worktree behind them, and `worktree remove`
+        // against such a path is a refusal that means "nothing to remove",
+        // not "work in the way". Reading the registration is how a caller
+        // tells those apart instead of guessing from the refusal.
+        let repo = TempRepo::new("registered");
+        let base = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&repo.dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let mut git = SystemGit::new();
+        let present = repo.dir.join("wt-present");
+        std::fs::create_dir(&present).unwrap();
+        materialize(
+            &mut git,
+            MaterializeRequest {
+                repository: &repo.dir,
+                worktree: &present,
+                branch: "symbiote/demo/stream/present",
+                start_point: &base,
+            },
+        )
+        .unwrap();
+        // A plain directory beside it: reserved, claimed, never materialized.
+        let absent = repo.dir.join("st-never-materialized");
+        std::fs::create_dir(&absent).unwrap();
+        let registered = registered_worktrees(&mut git, &repo.dir).unwrap();
+        assert!(
+            registered.contains(&present),
+            "the materialized worktree is registered: {registered:?}"
+        );
+        assert!(
+            !registered.contains(&absent),
+            "a directory git never knew is not a worktree: {registered:?}"
+        );
+        // And the refusal it would have produced is exactly the one a dirty
+        // worktree produces, which is why reading the registration is the
+        // only way to act on it honestly.
+        assert_eq!(
+            remove_worktree(&mut git, &repo.dir, &absent, RemovalForce::Allow,),
+            Err(GitError::GitRefused)
+        );
     }
 
     #[test]

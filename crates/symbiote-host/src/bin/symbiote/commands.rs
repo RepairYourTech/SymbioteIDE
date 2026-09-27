@@ -1444,6 +1444,28 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "abandon-change-stream",
+            summary: "cancel a stream that never landed and reclaim its worktree",
+            usage: "abandon-change-stream <task_id>",
+            kind: Some("abandon_change_stream"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("abandon_change_stream"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                Ok(())
+            },
+        },
+        Command {
+            name: "recover-task",
+            summary: "put a failed or interrupted task back in the queue",
+            usage: "recover-task <task_id>",
+            kind: Some("recover_task"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("recover_task"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                Ok(())
+            },
+        },
+        Command {
             name: "complete-task",
             summary: "file the gates that passed and complete the task",
             usage: "complete-task <task_id> <reviewer> <gate>[,<gate>...]",

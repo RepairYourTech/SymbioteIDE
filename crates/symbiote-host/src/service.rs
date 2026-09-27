@@ -703,203 +703,30 @@ fn execute(
                     _ => Err(dispatch_binding_refused()),
                 };
             }
-            // The third precondition, and the one that makes #447 real: what
-            // executes is the contract's PINNED profile, so its registration
-            // is re-validated here at execution time. A registration that was
-            // valid at preparation and start can lapse before the run
-            // (entitlement expiry, supersession), and an expired or unknown
-            // entitlement must not execute. Checked before run configuration
-            // and before any worktree side effect.
-            let registration = store
-                .provider_registration(current.contract().profile(), at)
-                .map_err(storage_error)?;
-            if let Some(refusal) = registration.refusal {
-                // The same refusal a start would report, through the one
-                // mapping that turns a dispatch refusal into the protocol's
-                // answer.
-                return Err(storage_error(StoreError::DispatchRefused(
-                    symbiote_domain::DispatchRefusal::Provider(refusal),
-                )));
-            } // And the second execution-time precondition: the limits the
-            // dispatch declared must bind the execution it is about to
-            // produce. Every process a tool spawns is launched with the bound
-            // they reduce to; a limit the Host has no kernel bound for — and a
-            // contract that records no limits at all — refuses the run here,
-            // naming the reason, rather than running unbound.
-            let bound =
-                crate::limits::bounds_for(current.contract().limits()).map_err(limit_unbounded)?;
-            let runtime = current.contract().profile().runtime;
-            // Worktree provisioning happens after the precondition checks
-            // and before any transport is built: the #211 composition
-            // verifies the stream's reserved location, validates the source
-            // repository's HEAD against the stream's recorded base, and
-            // materializes the derived worktree. A moved base or tampered
-            // location refuses before any transport factory runs.
-            // The reservation base is Host configuration, not store state:
-            // its absence is the production refusal, and it fires before the
-            // provisioning reads and git calls below — but after the dispatch
-            // preconditions above, which read recorded state (the task, its
-            // pinned profile's registration) and touch no worktree, git call
-            // or transport.
-            let reservation_base = workers.reservation_base().map_err(worker_error)?;
-            let this_host = inventory.host_id().clone();
-            let provisioned = crate::runner::provision_worktree(
+            // Everything past the two request-identity preconditions above is
+            // an execution attempt, and an attempt that refuses has to leave
+            // the task somewhere honest. The failure is filed first and the
+            // original refusal is returned unchanged, so the operator sees
+            // why it failed and the record says it too.
+            match run_started_dispatch_body(
                 store,
+                workers,
+                inventory,
+                principal,
+                &task_record,
                 task_id,
-                &this_host,
-                &mut workers.git(),
-                &reservation_base,
-            )
-            .map_err(worker_error)?;
-            let context = resolve_run_context(store, task_id, current)?;
-            let prompt = symbiote_context::render_prompt(&context);
-            match runtime {
-                symbiote_domain::RuntimeKind::NativeSymbiote => {
-                    let mut transport = workers.native_build().map_err(worker_error)?;
-                    // Credential leases (#217): the dispatch's profile
-                    // references a credential, so the operator's broker
-                    // must be configured and THIS dispatch's binding
-                    // access must grant `UseCredential` — the typed
-                    // authority that a credential lease may issue at all.
-                    // Cross-project references are refused by the broker's
-                    // own project check; with no broker the run refuses
-                    // rather than proceeding without a credential it
-                    // declared. The lease is issued, held for this run's
-                    // scope check, and DROPPED UNMATERIALIZED: the native
-                    // loop has no environment-injection mechanism yet, so
-                    // no value moves anywhere. Values never enter the
-                    // journal — the lease lives in process memory only.
-                    let credential = current.contract().profile().credential.clone();
-                    let scope = symbiote_context::LeaseScope {
-                        dispatch_id: current.id().clone(),
-                        project_id: context.project_id.clone(),
-                        role_id: current.contract().binding().role_id.clone(),
-                        profile_id: current.contract().profile().id.clone(),
-                        host_id: this_host.clone(),
-                    };
-                    let profile_refs = [credential.clone()];
-                    // The typed authority to hold a credential lease:
-                    // the binding's own grant, or an explicit elevation
-                    // lease the owner approved for THIS dispatch and
-                    // whose window is still open at the run's clock.
-                    let use_credential_granted = current
-                        .contract()
-                        .effective_access()
-                        .grants
-                        .contains(&symbiote_domain::Permission::UseCredential)
-                        || store
-                            .active_elevation(
-                                current.id(),
-                                &symbiote_domain::Permission::UseCredential,
-                                at,
-                            )
-                            .map_err(storage_error)?;
-                    let lease = workers
-                        .resolve_native_credential(
-                            store,
-                            task_id,
-                            current,
-                            &credential,
-                            symbiote_context::BrokerRequest {
-                                scope: &scope,
-                                profile_credential_refs: &profile_refs,
-                                use_credential_granted,
-                                at,
-                            },
-                            at,
-                        )
-                        .map_err(worker_error)?;
-                    drop(lease);
-                    // Shell tool execution is the operator's composition:
-                    // with a configured executor factory, declared shell
-                    // tools run through the sandbox inside the provisioned
-                    // worktree under the operator's consent authority; with
-                    // none, declared tools stay propose-only (recorded,
-                    // never executed). The inputs come from the dispatch
-                    // contract and the provisioning outcome — never from
-                    // loop or model input. The current policy is the
-                    // binding's access, widened with ExecuteProcess only
-                    // while an owner-decided elevation lease for this
-                    // dispatch is active (the sandbox independently
-                    // re-checks every grant it requires).
-                    let shell_access = crate::runner::resolve_shell_access(store, current, at)
-                        .map_err(worker_error)?;
-                    let inputs = crate::runner::ShellExecutorInputs {
-                        root_id: &provisioned.root_id,
-                        worktree: &provisioned.worktree,
-                        host: &this_host,
-                        project_id: task_record.project_id(),
-                        role_id: &current.contract().binding().role_id,
-                        profile_id: &current.contract().profile().id,
-                        access: &shell_access,
-                        user_id: principal.user_id(),
-                        bound,
-                    };
-                    let tool_execution = match workers.shell_build(inputs) {
-                        Ok(Some(executor)) => Some(crate::runner::ToolExecution {
-                            executor,
-                            worktree: provisioned.worktree.clone(),
-                        }),
-                        Ok(None) => None,
-                        Err(error) => return Err(worker_error(error)),
-                    };
-                    let outcome = crate::runner::run_native_boxed(
-                        store,
-                        task_id,
-                        current,
-                        &prompt,
-                        transport.as_mut(),
-                        tool_execution,
-                        at,
-                    )
-                    .map_err(worker_error)?;
-                    Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
-                        task_id: task_id.clone(),
-                        dispatch_id: outcome.dispatch_id,
-                        runtime,
-                        completed: outcome.completion_filed,
-                    })))
-                }
-                symbiote_domain::RuntimeKind::ExternalHarness => {
-                    // The Host launches the sandboxed harness itself, under
-                    // the dispatch's declared ceiling: the bound is applied by
-                    // the launcher, not asserted by a transport, so the lane
-                    // cannot promise a bound it does not apply. The one
-                    // process this lane starts is the one the Host bounds.
-                    let harness_access = current.contract().effective_access().clone();
-                    let mut transport = workers
-                        .external_build(crate::runner::ExternalHarnessInputs {
-                            root_id: &provisioned.root_id,
-                            worktree: &provisioned.worktree,
-                            host: &this_host,
-                            project_id: task_record.project_id(),
-                            role_id: &current.contract().binding().role_id,
-                            profile_id: &current.contract().profile().id,
-                            access: &harness_access,
-                            user_id: principal.user_id(),
-                            at,
-                            bound,
-                        })
-                        .map_err(worker_error)?;
-                    // The sandboxed launcher mounts the reserved worktree at
-                    // /workspace; that is the only cwd the harness sees.
-                    let outcome = crate::runner::run_external_boxed(
-                        store,
-                        task_id,
-                        current,
-                        &prompt,
-                        "/workspace",
-                        transport.as_mut(),
-                        at,
-                    )
-                    .map_err(worker_error)?;
-                    Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
-                        task_id: task_id.clone(),
-                        dispatch_id: outcome.dispatch_id,
-                        runtime,
-                        completed: outcome.completion_filed,
-                    })))
-                }
+                at,
+            ) {
+                Ok(body) => Ok(body),
+                Err(error) => Err(file_run_failure(
+                    store,
+                    principal,
+                    inventory,
+                    request,
+                    &task_record,
+                    task_id,
+                    error,
+                )?),
             }
         }
         Operation::RequestTaskCompletion {
@@ -1192,7 +1019,16 @@ fn execute(
                     message: "recorded worktree identity is not the one this Host derives".into(),
                 });
             }
-            let worktree = derived.worktree_path(&reservation_base);
+            // The same rule the domain applies, asked BEFORE anything is
+            // removed rather than after. `StreamAction::Release` is still the
+            // authority for the write; this ordering is what stops a caller
+            // who asks twice from running the irreversible half twice and
+            // only then hearing that the stream is already released.
+            if stream.state() != &symbiote_domain::StreamState::Integrated {
+                return Err(storage_error(StoreError::Domain(
+                    symbiote_domain::DomainError::StreamNotReady,
+                )));
+            }
             let checkout = store
                 .root(task_record.root_id())
                 .map_err(storage_error)?
@@ -1229,41 +1065,18 @@ fn execute(
                     message: "the stream's head is not reachable from the root checkout".into(),
                 });
             }
-            // `git worktree remove` without `--force`: git itself refuses a
-            // checkout holding uncommitted or untracked content, so the
-            // removal cannot destroy work the branch does not hold. The
-            // branch is never deleted — a change stream is integrated, not
-            // erased.
-            symbiote_repo::remove_worktree(&mut git, std::path::Path::new(&checkout), &worktree)
-                .map_err(|error| ProtocolError {
-                    code: ErrorCode::FailedPrecondition,
-                    message: format!("worktree removal refused: {error:?}"),
-                })?;
-            // The reservation marker is the location's own record, and
-            // `DeleteIfEmpty` removes it only when the directory holds nothing
-            // — a git layer that left something behind keeps its evidence.
-            let reservation = symbiote_worktrees::Reservation {
-                derived,
-                base: reservation_base,
-            };
-            match symbiote_worktrees::release(
-                &reservation,
-                symbiote_worktrees::ReleasePolicy::DeleteIfEmpty,
-            ) {
-                Ok(symbiote_worktrees::Outcome::Deleted) => {}
-                Ok(symbiote_worktrees::Outcome::Retained) => {
-                    return Err(ProtocolError {
-                        code: ErrorCode::FailedPrecondition,
-                        message: "worktree location was retained rather than released".into(),
-                    });
-                }
-                Err(error) => {
-                    return Err(ProtocolError {
-                        code: ErrorCode::FailedPrecondition,
-                        message: format!("worktree reservation release refused: {error:?}"),
-                    });
-                }
-            }
+            reclaim_worktree(
+                &mut git,
+                std::path::Path::new(&checkout),
+                &symbiote_worktrees::Reservation {
+                    derived,
+                    base: reservation_base,
+                },
+                // No `--force`: git itself refuses a checkout holding
+                // uncommitted or untracked content, so this cannot destroy
+                // work the branch does not already hold.
+                symbiote_repo::RemovalForce::Refuse,
+            )?;
             let command = symbiote_domain::StreamCommand {
                 id: request.command_id.clone(),
                 expected_revision: stream.revision(),
@@ -1277,6 +1090,128 @@ fn execute(
                     command,
                     dispatch.contract().effective_access(),
                 )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::AbandonChangeStream { task_id } => {
+            // The other end of the cleanup policy, and the only operation in
+            // the product that destroys work. A run that failed leaves commits
+            // and uncommitted files in a location nothing else can reclaim: the
+            // release path needs an integrated stream, and the stream of a
+            // failed run never becomes one. Without this, every failure is a
+            // permanent reservation and the operator's only answer is to edit
+            // the filesystem by hand.
+            //
+            // The caller's word is the evidence the Change Stream contract asks
+            // for — separate evidence and authorized confirmation — and it is
+            // confirmed twice over: the kind is dangerous, and the branch is
+            // never deleted, so every commit survives this. Only the checkout
+            // goes, and only with it uncommitted files.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            // Which states may be abandoned, asked BEFORE anything is removed
+            // rather than after. `StreamAction::Cancel` is still the authority
+            // for the write; this ordering is what stops a caller who asks
+            // twice from running the irreversible half twice.
+            //
+            // An integrated stream's work landed, so abandoning it would be a
+            // second, weaker way to do what `release_change_stream` does — and
+            // that one refuses a dirty checkout instead of forcing it. A
+            // cancelled or already released stream is terminal, and there is
+            // nothing left in it to abandon.
+            match stream.state() {
+                symbiote_domain::StreamState::Integrated => {
+                    return Err(ProtocolError {
+                        code: ErrorCode::FailedPrecondition,
+                        message: "an integrated stream is released, not abandoned".into(),
+                    });
+                }
+                symbiote_domain::StreamState::Released
+                | symbiote_domain::StreamState::Cancelled => {
+                    return Err(storage_error(StoreError::Domain(
+                        symbiote_domain::DomainError::IllegalTransition,
+                    )));
+                }
+                symbiote_domain::StreamState::Active
+                | symbiote_domain::StreamState::NeedsRevalidation
+                | symbiote_domain::StreamState::Collided
+                | symbiote_domain::StreamState::Validated => {}
+            }
+            let reservation_base = workers.reservation_base().map_err(worker_error)?;
+            let derived = crate::runner::derived_worktree(
+                task_record.project_id(),
+                task_record.root_id(),
+                task_record.stream_id(),
+            )
+            .map_err(worker_error)?;
+            if derived.worktree_id != *stream.worktree_id() {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "recorded worktree identity is not the one this Host derives".into(),
+                });
+            }
+            let checkout = store
+                .root(task_record.root_id())
+                .map_err(storage_error)?
+                .host_paths
+                .get(inventory.host_id())
+                .ok_or_else(|| worker_error(crate::runner::RunnerError::NoHostPath))?
+                .clone();
+            let mut git = workers.git();
+            reclaim_worktree(
+                &mut git,
+                std::path::Path::new(&checkout),
+                &symbiote_worktrees::Reservation {
+                    derived,
+                    base: reservation_base,
+                },
+                // `--force` here and nowhere else: the caller has authorized
+                // discarding the uncommitted contents of a checkout whose work
+                // landed nowhere.
+                symbiote_repo::RemovalForce::Allow,
+            )?;
+            // The cancel is journalled and audited like every other stream
+            // transition, under the same access the task's dispatch carried.
+            // A task with no dispatch has no snapshot to record, and a stream
+            // nobody ever dispatched has nothing to abandon.
+            let access = match task_record.current_dispatch() {
+                Some(dispatch) => dispatch.contract().effective_access().clone(),
+                None => {
+                    return Err(dispatch_binding_refused());
+                }
+            };
+            let command = symbiote_domain::StreamCommand {
+                id: request.command_id.clone(),
+                expected_revision: stream.revision(),
+                host_id: inventory.host_id().clone(),
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::StreamAction::Cancel,
+            };
+            store
+                .apply_stream(task_record.stream_id(), command, &access)
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::RecoverTask { task_id } => {
+            // The way out of a failure, and the only one: `Failed` and
+            // `Interrupted` are terminal for the run that produced them, and
+            // the lifecycle reaches `Ready` only through this. The dispatch
+            // binding is dropped by the domain, so the recovered task is
+            // dispatched afresh rather than resuming a run that is not
+            // running.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let at = start_timestamp(store, request)?;
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(inventory.host_id().clone()),
+                at,
+                action: symbiote_domain::TaskAction::Recover,
+            };
+            store
+                .apply_task(task_id, command)
                 .map(receipt)
                 .map_err(storage_error)
         }
@@ -2128,6 +2063,351 @@ fn resolve_route(
     let team = store.get_team(&request.project_id).map_err(storage_error)?;
     symbiote_workforce::resolve_route(&team, request)
         .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
+}
+
+/// The execution half of `run_started_dispatch`, split out so every refusal
+/// it can produce is recorded against the task before it reaches the caller.
+///
+/// It starts after the two request-identity preconditions — a foreign dispatch
+/// id, and a task that is not `Running` — because those refuse the *request*,
+/// not the run: nothing has been claimed and nothing has executed, so no
+/// failure belongs to the task. Everything here has: the worktree is reserved,
+/// a transport may be built, a worker may run. A refusal in this half that
+/// left the task `Running` would be a task claiming to be executed with
+/// nothing executing it, and no operation could ever move it out, because
+/// nothing constructed a `TaskAction::Fail`.
+fn run_started_dispatch_body(
+    store: &mut Store,
+    workers: &mut crate::runner::WorkerTransports,
+    inventory: &mut crate::inventory::InventoryService,
+    principal: &Principal,
+    task_record: &symbiote_domain::Task,
+    task_id: &TaskId,
+    at: symbiote_domain::Timestamp,
+) -> Result<ResponseBody, ProtocolError> {
+    let current = task_record
+        .current_dispatch()
+        .ok_or_else(dispatch_binding_refused)?;
+    // executes is the contract's PINNED profile, so its registration
+    // is re-validated here at execution time. A registration that was
+    // valid at preparation and start can lapse before the run
+    // (entitlement expiry, supersession), and an expired or unknown
+    // entitlement must not execute. Checked before run configuration
+    // and before any worktree side effect.
+    let registration = store
+        .provider_registration(current.contract().profile(), at)
+        .map_err(storage_error)?;
+    if let Some(refusal) = registration.refusal {
+        // The same refusal a start would report, through the one
+        // mapping that turns a dispatch refusal into the protocol's
+        // answer.
+        return Err(storage_error(StoreError::DispatchRefused(
+            symbiote_domain::DispatchRefusal::Provider(refusal),
+        )));
+    } // And the second execution-time precondition: the limits the
+    // dispatch declared must bind the execution it is about to
+    // produce. Every process a tool spawns is launched with the bound
+    // they reduce to; a limit the Host has no kernel bound for — and a
+    // contract that records no limits at all — refuses the run here,
+    // naming the reason, rather than running unbound.
+    let bound = crate::limits::bounds_for(current.contract().limits()).map_err(limit_unbounded)?;
+    let runtime = current.contract().profile().runtime;
+    // Worktree provisioning happens after the precondition checks
+    // and before any transport is built: the #211 composition
+    // verifies the stream's reserved location, validates the source
+    // repository's HEAD against the stream's recorded base, and
+    // materializes the derived worktree. A moved base or tampered
+    // location refuses before any transport factory runs.
+    // The reservation base is Host configuration, not store state:
+    // its absence is the production refusal, and it fires before the
+    // provisioning reads and git calls below — but after the dispatch
+    // preconditions above, which read recorded state (the task, its
+    // pinned profile's registration) and touch no worktree, git call
+    // or transport.
+    let reservation_base = workers.reservation_base().map_err(worker_error)?;
+    let this_host = inventory.host_id().clone();
+    let provisioned = crate::runner::provision_worktree(
+        store,
+        task_id,
+        &this_host,
+        &mut workers.git(),
+        &reservation_base,
+    )
+    .map_err(worker_error)?;
+    let context = resolve_run_context(store, task_id, current)?;
+    let prompt = symbiote_context::render_prompt(&context);
+    match runtime {
+        symbiote_domain::RuntimeKind::NativeSymbiote => {
+            let mut transport = workers.native_build().map_err(worker_error)?;
+            // Credential leases (#217): the dispatch's profile
+            // references a credential, so the operator's broker
+            // must be configured and THIS dispatch's binding
+            // access must grant `UseCredential` — the typed
+            // authority that a credential lease may issue at all.
+            // Cross-project references are refused by the broker's
+            // own project check; with no broker the run refuses
+            // rather than proceeding without a credential it
+            // declared. The lease is issued, held for this run's
+            // scope check, and DROPPED UNMATERIALIZED: the native
+            // loop has no environment-injection mechanism yet, so
+            // no value moves anywhere. Values never enter the
+            // journal — the lease lives in process memory only.
+            let credential = current.contract().profile().credential.clone();
+            let scope = symbiote_context::LeaseScope {
+                dispatch_id: current.id().clone(),
+                project_id: context.project_id.clone(),
+                role_id: current.contract().binding().role_id.clone(),
+                profile_id: current.contract().profile().id.clone(),
+                host_id: this_host.clone(),
+            };
+            let profile_refs = [credential.clone()];
+            // The typed authority to hold a credential lease:
+            // the binding's own grant, or an explicit elevation
+            // lease the owner approved for THIS dispatch and
+            // whose window is still open at the run's clock.
+            let use_credential_granted = current
+                .contract()
+                .effective_access()
+                .grants
+                .contains(&symbiote_domain::Permission::UseCredential)
+                || store
+                    .active_elevation(
+                        current.id(),
+                        &symbiote_domain::Permission::UseCredential,
+                        at,
+                    )
+                    .map_err(storage_error)?;
+            let lease = workers
+                .resolve_native_credential(
+                    store,
+                    task_id,
+                    current,
+                    &credential,
+                    symbiote_context::BrokerRequest {
+                        scope: &scope,
+                        profile_credential_refs: &profile_refs,
+                        use_credential_granted,
+                        at,
+                    },
+                    at,
+                )
+                .map_err(worker_error)?;
+            drop(lease);
+            // Shell tool execution is the operator's composition:
+            // with a configured executor factory, declared shell
+            // tools run through the sandbox inside the provisioned
+            // worktree under the operator's consent authority; with
+            // none, declared tools stay propose-only (recorded,
+            // never executed). The inputs come from the dispatch
+            // contract and the provisioning outcome — never from
+            // loop or model input. The current policy is the
+            // binding's access, widened with ExecuteProcess only
+            // while an owner-decided elevation lease for this
+            // dispatch is active (the sandbox independently
+            // re-checks every grant it requires).
+            let shell_access =
+                crate::runner::resolve_shell_access(store, current, at).map_err(worker_error)?;
+            let inputs = crate::runner::ShellExecutorInputs {
+                root_id: &provisioned.root_id,
+                worktree: &provisioned.worktree,
+                host: &this_host,
+                project_id: task_record.project_id(),
+                role_id: &current.contract().binding().role_id,
+                profile_id: &current.contract().profile().id,
+                access: &shell_access,
+                user_id: principal.user_id(),
+                bound,
+            };
+            let tool_execution = match workers.shell_build(inputs) {
+                Ok(Some(executor)) => Some(crate::runner::ToolExecution {
+                    executor,
+                    worktree: provisioned.worktree.clone(),
+                }),
+                Ok(None) => None,
+                Err(error) => return Err(worker_error(error)),
+            };
+            let outcome = crate::runner::run_native_boxed(
+                store,
+                task_id,
+                current,
+                &prompt,
+                transport.as_mut(),
+                tool_execution,
+                at,
+            )
+            .map_err(worker_error)?;
+            Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
+                task_id: task_id.clone(),
+                dispatch_id: outcome.dispatch_id,
+                runtime,
+                completed: outcome.completion_filed,
+            })))
+        }
+        symbiote_domain::RuntimeKind::ExternalHarness => {
+            // The Host launches the sandboxed harness itself, under
+            // the dispatch's declared ceiling: the bound is applied by
+            // the launcher, not asserted by a transport, so the lane
+            // cannot promise a bound it does not apply. The one
+            // process this lane starts is the one the Host bounds.
+            let harness_access = current.contract().effective_access().clone();
+            let mut transport = workers
+                .external_build(crate::runner::ExternalHarnessInputs {
+                    root_id: &provisioned.root_id,
+                    worktree: &provisioned.worktree,
+                    host: &this_host,
+                    project_id: task_record.project_id(),
+                    role_id: &current.contract().binding().role_id,
+                    profile_id: &current.contract().profile().id,
+                    access: &harness_access,
+                    user_id: principal.user_id(),
+                    at,
+                    bound,
+                })
+                .map_err(worker_error)?;
+            // The sandboxed launcher mounts the reserved worktree at
+            // /workspace; that is the only cwd the harness sees.
+            let outcome = crate::runner::run_external_boxed(
+                store,
+                task_id,
+                current,
+                &prompt,
+                "/workspace",
+                transport.as_mut(),
+                at,
+            )
+            .map_err(worker_error)?;
+            Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
+                task_id: task_id.clone(),
+                dispatch_id: outcome.dispatch_id,
+                runtime,
+                completed: outcome.completion_filed,
+            })))
+        }
+    }
+}
+
+/// Reclaims a stream's reserved location: the git worktree if one is
+/// registered there, and the reservation marker with it.
+///
+/// The two callers disagree only about `force` and about what evidence they
+/// have proved before arriving here. Everything that decides *what is deleted*
+/// lives in this one function, so the integrated path and the abandoned path
+/// cannot drift apart in the only respect that matters.
+///
+/// The registration check is the part that is easy to get wrong. A
+/// provisioning that refused before materializing leaves the reserved location
+/// and its marker on disk with no git worktree behind them, and `worktree
+/// remove` against a path git does not know refuses for a reason that has
+/// nothing to do with work in the way — a refusal the caller must not read as
+/// "someone's work is in there". Conversely, a directory that holds content
+/// and is *not* a registered worktree is something this Host did not put
+/// there, and `DeleteIfEmpty` refuses it rather than deleting a stranger's
+/// files.
+fn reclaim_worktree(
+    git: &mut impl symbiote_repo::GitExecutor,
+    checkout: &std::path::Path,
+    reservation: &symbiote_worktrees::Reservation,
+    force: symbiote_repo::RemovalForce,
+) -> Result<(), ProtocolError> {
+    let worktree = reservation.derived.worktree_path(&reservation.base);
+    let registered = symbiote_repo::registered_worktrees(git, checkout)
+        .map_err(|error| {
+            storage_error(StoreError::Integrity(format!(
+                "registered worktrees are not observable: {error:?}"
+            )))
+        })?
+        .contains(&worktree);
+    if registered {
+        symbiote_repo::remove_worktree(git, checkout, &worktree, force).map_err(|error| {
+            ProtocolError {
+                code: ErrorCode::FailedPrecondition,
+                message: format!("worktree removal refused: {error:?}"),
+            }
+        })?;
+    }
+    match symbiote_worktrees::release(
+        reservation,
+        symbiote_worktrees::ReleasePolicy::DeleteIfEmpty,
+    ) {
+        Ok(symbiote_worktrees::Outcome::Deleted) => Ok(()),
+        Ok(symbiote_worktrees::Outcome::Retained) => Err(ProtocolError {
+            code: ErrorCode::FailedPrecondition,
+            message: "worktree location was retained rather than released".into(),
+        }),
+        Err(error) => Err(ProtocolError {
+            code: ErrorCode::FailedPrecondition,
+            message: format!("worktree reservation release refused: {error:?}"),
+        }),
+    }
+}
+
+/// Records a run refusal against the task it refused to run, and hands the
+/// original error back. A caller must not see success for a run that did not
+/// happen, and a task must not stay `Running` for one.
+///
+/// The reason is the same content-free sentence the caller receives, so the
+/// journal and the operator read one classification rather than two
+/// vocabularies that can drift.
+///
+/// The command id is derived from the run's own, so a retry that fails the
+/// same way files the same failure and the store replays it instead of
+/// appending a second one.
+fn file_run_failure(
+    store: &mut Store,
+    principal: &Principal,
+    inventory: &crate::inventory::InventoryService,
+    request: &Request,
+    task_record: &symbiote_domain::Task,
+    task_id: &TaskId,
+    error: ProtocolError,
+) -> Result<ProtocolError, ProtocolError> {
+    // A task with no current dispatch is not `Running` — the domain already
+    // proved that when the state was read — so there is nothing to fail.
+    if task_record.current_dispatch().is_none() {
+        return Ok(error);
+    }
+    let command_id =
+        symbiote_domain::CommandId::new(format!("{}-run-failed", request.command_id.as_str()))
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+    let command = symbiote_domain::TaskCommand {
+        id: command_id,
+        expected_revision: task_record.revision(),
+        actor: Actor::Host(inventory.host_id().clone()),
+        at: now_timestamp()?,
+        action: symbiote_domain::TaskAction::Fail {
+            reason: error.message.clone(),
+        },
+    };
+    store.apply_task(task_id, command).map_err(storage_error)?;
+    // The lease too. A lease is the claim that a live owner is running this
+    // task, and the run that held it just ended by refusing — so leaving it
+    // held is a second thing that says a run is in progress when none is, and
+    // it fences the task's own recovery: a re-dispatch is refused while the
+    // old lease is held. Releasing it is the same claim withdrawn.
+    //
+    // A missing lease is not a failure: a run can refuse before a lease
+    // exists, and there is then nothing to withdraw.
+    if let Ok(lease) = store.task_lease(task_id) {
+        let lease_command = symbiote_domain::CommandId::new(format!(
+            "{}-run-failed-lease",
+            request.command_id.as_str()
+        ))
+        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+        store
+            .release_lease(
+                lease_command,
+                task_id.clone(),
+                lease.dispatch_id.clone(),
+                lease.fencing_token,
+                // The actor that acquired it. The lease audit attributes a
+                // release the same way it attributed the acquisition, and the
+                // acquisition was recorded against the authenticated caller.
+                principal.user_id().clone(),
+                now_timestamp()?,
+            )
+            .map_err(storage_error)?;
+    }
+    Ok(error)
 }
 
 #[cfg(test)]

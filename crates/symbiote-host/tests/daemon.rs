@@ -1593,7 +1593,10 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     );
     let task_response = host.call(task_read);
     let task = ok(&task_response);
-    assert_eq!(task["data"]["state"], "running");
+    // The run refused, and the task says so. It used to read `running` here —
+    // a task claiming to be executed with nothing executing it, which no
+    // operation could ever move it out of.
+    assert_eq!(task["data"]["state"], "failed");
     // Activation against a foreign dispatch id is refused before anything
     // (message pins the ordering: the binding check precedes any transport
     // build, so this can never read as a no-transport refusal).
@@ -1608,14 +1611,16 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     );
     host.crash();
     host.start();
-    // The refusal left no residue: state replays identically.
+    // The foreign-dispatch refusal left no residue: it is refused as a bad
+    // *request*, before any execution was attempted, so it files no failure of
+    // its own and the state replays as the run's own refusal left it.
     let task_read = request(
         "activation-task-read-2",
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
     );
     let task_response = host.call(task_read);
     let task = ok(&task_response);
-    assert_eq!(task["data"]["state"], "running");
+    assert_eq!(task["data"]["state"], "failed");
 }
 
 #[test]
@@ -3008,8 +3013,9 @@ fn a_limit_the_host_cannot_bind_refuses_the_run_that_would_exceed_it() {
         next["result"]["Err"]["message"],
         "no worktree reservation base configured"
     );
-    // Nothing ran for the refused one: its task is still Running under its
-    // dispatch and replays identically after a crash.
+    // Nothing ran for the refused one, and the record says the run failed
+    // rather than leaving the task claiming to be executing. The failure
+    // survives a crash like everything else it wrote.
     demanding.crash();
     demanding.start();
     let task = ok(&demanding.call(request(
@@ -3017,7 +3023,7 @@ fn a_limit_the_host_cannot_bind_refuses_the_run_that_would_exceed_it() {
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
     )))["data"]
         .clone();
-    assert_eq!(task["state"], "running");
+    assert_eq!(task["state"], "failed");
 }
 
 /// The report an operator consults before dispatching and the run that would
@@ -3291,14 +3297,16 @@ fn run_started_dispatch_refuses_a_registration_that_lapsed_after_start() {
         run["result"]["Err"]["message"],
         "dispatch refused by recorded state (expired_entitlement)"
     );
-    // The refusal executed nothing: the dispatch is still the one that was
-    // started, and the task is still Running under it.
+    // The refusal executed nothing, and the task records that its run failed
+    // rather than staying `Running` under a dispatch that is executing
+    // nothing. The dispatch is still the one that was started — `recover_task`
+    // is what drops it, and only an operator asks for that.
     let task = ok(&host.call(request(
         "lapse-task-read",
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
     )))
     .clone();
-    assert_eq!(task["data"]["state"], "running");
+    assert_eq!(task["data"]["state"], "failed");
 }
 
 /// The same re-check refuses a registration whose authentication/billing pair
@@ -4085,6 +4093,230 @@ fn real_repository(tag: &str) -> (PathBuf, String) {
 /// here is the fixture's own explicitly labeled value, the same shape the
 /// workflow demo's operator configuration carries, and the binding grants
 /// `UseCredential` because the broker's gate is what the grant is for.
+/// A run that refuses must not leave a task that says it is running, and what
+/// it leaves on disk must be reclaimable by the operator rather than by hand.
+///
+/// The refusal here is the one a person causes by accident: they commit to
+/// their own repository between creating the task and dispatching it, so the
+/// stream's recorded base is no longer where the root is and provisioning
+/// refuses with `BaseMoved` before any worker exists. That leaves the task
+/// `Running` with nothing running it, and a reserved location no operation
+/// could touch — which is what this test walks from end to end.
+#[test]
+fn a_refused_run_is_recorded_and_what_it_left_can_be_abandoned_and_recovered() {
+    let (repository, head) = real_repository("refused-run");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-refused-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "refused-placement",
+        &host.call(request(
+            "refused-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "refused-task",
+        "refused-task",
+        "refused-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "refused-prepare",
+        &host.call(request(
+            "refused-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"refused-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "refused-start",
+        json!({"kind":"start_prepared_task","task_id":"refused-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("refused-start", &started)["data"]["dispatch_id"].clone();
+
+    // The operator commits to their own repository, the way a person does.
+    let commit = Command::new("git")
+        .current_dir(&repository)
+        .args(["commit", "--allow-empty", "-qm", "operator commit"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+
+    let refused = host.call(request(
+        "refused-run",
+        json!({"kind":"run_started_dispatch","task_id":"refused-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    // The caller still learns the run refused, and why: a run that did not
+    // happen is never reported as one that did.
+    assert_eq!(refused["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        refused["result"]["Err"]["message"],
+        "worktree provisioning refused: BaseMoved"
+    );
+    // And the record agrees with the refusal. This used to read `running`:
+    // a task claiming to be executed with nothing executing it, and no
+    // operation in the workspace able to move it out, because nothing
+    // constructed a `TaskAction::Fail`.
+    let after = host.call(request(
+        "refused-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"refused-task"}),
+    ));
+    assert_eq!(ok(&after)["data"]["state"], "failed");
+
+    // The reservation the refused provisioning left behind: a directory and a
+    // marker, with no git worktree behind them. Nothing could reclaim it —
+    // the release path requires an integrated stream, and this stream never
+    // becomes one.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("refused-stream").worktree_id.as_str());
+    assert!(worktree.is_dir(), "the refused provisioning claimed it");
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("refused-stream").worktree_id
+    ));
+    assert!(marker.is_file(), "and left its reservation behind");
+
+    // The operator's way out. Abandoning is the one operation that destroys
+    // work, so it is gated: at the protocol it is a dangerous kind, and the
+    // authorization a caller supplies is what the contract asks for here.
+    let abandoned = host.call(request(
+        "refused-abandon",
+        json!({"kind":"abandon_change_stream","task_id":"refused-task"}),
+    ));
+    ok_step("refused-abandon", &abandoned);
+    assert!(
+        !worktree.exists() && !marker.exists(),
+        "the reservation is gone, marker and all"
+    );
+
+    // A second abandon is refused, not repeated: the stream is terminal, and
+    // a caller that asks twice must not delete a location twice.
+    let again = host.call(request(
+        "refused-abandon-2",
+        json!({"kind":"abandon_change_stream","task_id":"refused-task"}),
+    ));
+    // A lifecycle refusal names itself, and a second cancel of a cancelled
+    // stream is one: the code is the generic one, the sentence is the answer.
+    assert_eq!(
+        again["result"]["Err"]["message"], "lifecycle refused the transition (IllegalTransition)",
+        "{again}"
+    );
+
+    // And the task can be queued again. Without this the failure was a dead
+    // end: the lifecycle reaches `Ready` only through a recovery, and a
+    // recovery is what the Host could not construct.
+    let recovered = host.call(request(
+        "refused-recover",
+        json!({"kind":"recover_task","task_id":"refused-task"}),
+    ));
+    ok_step("refused-recover", &recovered);
+    let queued = host.call(request(
+        "refused-task-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"refused-task"}),
+    ));
+    assert_eq!(ok(&queued)["data"]["state"], "ready");
+    // Recovering a task that is not failed is refused rather than queued. The
+    // domain checks authority before applicability, and a recovered task has
+    // no dispatch — the recovery is what dropped it — so this arrives as the
+    // authority refusal it actually is rather than as a state complaint.
+    let premature = host.call(request(
+        "refused-recover-2",
+        json!({"kind":"recover_task","task_id":"refused-task"}),
+    ));
+    assert_eq!(
+        premature["result"]["Err"]["message"],
+        "lifecycle refused the transition (PermissionDenied)",
+        "{premature}"
+    );
+
+    // The abandoned stream is terminal, so the recovered task cannot be
+    // dispatched under it — and that is the correct answer, not a gap: a
+    // cancelled stream is exactly as unusable as an integrated one, and
+    // re-running the same task against it would contradict the lifecycle.
+    // The start is where the stream state bites, and the refusal names it:
+    // `stream_inactive` is a cancelled stream, which is exactly as unusable
+    // as an integrated one. Re-running the same task against it would
+    // contradict the lifecycle, so the retry is a new task.
+    let restarted_again = host.call(request(
+        "refused-restart",
+        json!({"kind":"start_prepared_task","task_id":"refused-task","host_id":host_id}),
+    ));
+    assert_eq!(
+        restarted_again["result"]["Err"]["message"],
+        "dispatch refused by recorded state (stream_inactive)",
+        "the abandoned stream is not reusable"
+    );
+
+    // So the retry is a new task, which is what a person does, and it works
+    // because the reservation the failure left is gone. The whole point of
+    // the three operations above is that this line reaches a run at all.
+    let current = String::from_utf8(
+        Command::new("git")
+            .current_dir(&repository)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    staffing_task(
+        &host,
+        "retry-task",
+        "retry-task",
+        "retry-stream",
+        &current,
+        &current,
+    );
+    ok_step(
+        "retry-prepare",
+        &host.call(request(
+            "retry-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"retry-task"}),
+        )),
+    );
+    let restarted = host.call(request(
+        "retry-start",
+        json!({"kind":"start_prepared_task","task_id":"retry-task","host_id":host_id}),
+    ));
+    let retry_dispatch = ok_step("retry-start", &restarted)["data"]["dispatch_id"].clone();
+    let rerun = host.call(request(
+        "retry-run",
+        json!({"kind":"run_started_dispatch","task_id":"retry-task",
+        "dispatch_id":retry_dispatch}),
+    ));
+    assert_eq!(
+        ok_step("retry-run", &rerun)["data"]["completed"],
+        true,
+        "the retry completes where the first run refused"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
 #[test]
 fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configuration() {
     let (repository, head) = real_repository("run");

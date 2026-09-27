@@ -301,6 +301,26 @@ pub enum Operation {
     ReleaseChangeStream {
         task_id: TaskId,
     },
+    /// Abandon a stream whose work never landed: cancel it and reclaim its
+    /// worktree, discarding whatever is in the checkout. This is the one
+    /// operation that destroys work — a run that failed or was abandoned
+    /// leaves commits and uncommitted files in a location nothing else can
+    /// reclaim, and an operator has to be able to say "this one is finished
+    /// and is not coming back". The branch is still never deleted, so every
+    /// commit the run made stays inspectable; only the checkout goes. Refuses
+    /// an integrated stream: that work landed, and `release_change_stream` is
+    /// the operation for it.
+    AbandonChangeStream {
+        task_id: TaskId,
+    },
+    /// Put a failed or interrupted task back in the queue: `Failed` or
+    /// `Interrupted` becomes `Ready` and the dispatch binding is dropped, so
+    /// the task can be dispatched afresh. Without it a failed run is a dead
+    /// end — the lifecycle can leave `Running` for a failure and into
+    /// `Ready` only from a state nothing could reach.
+    RecoverTask {
+        task_id: TaskId,
+    },
     /// File the evidence a dispatch contract's gates require and complete the
     /// Task. `gates` is the claim: which gates the caller says passed. The
     /// Host binds each claim to the dispatch, the stream's head and target
@@ -460,7 +480,9 @@ impl Operation {
             | Self::BeginTaskVerification { .. }
             | Self::CompleteTask { .. }
             | Self::IntegrateChangeStream { .. }
-            | Self::ReleaseChangeStream { .. } => None,
+            | Self::ReleaseChangeStream { .. }
+            | Self::RecoverTask { .. }
+            | Self::AbandonChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -523,6 +545,8 @@ impl Operation {
                 | Self::CompleteTask { .. }
                 | Self::IntegrateChangeStream { .. }
                 | Self::ReleaseChangeStream { .. }
+                | Self::RecoverTask { .. }
+                | Self::AbandonChangeStream { .. }
         )
     }
 }
@@ -866,7 +890,9 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         | Operation::BeginTaskVerification { .. }
         | Operation::CompleteTask { .. }
         | Operation::IntegrateChangeStream { .. }
-        | Operation::ReleaseChangeStream { .. } => {
+        | Operation::ReleaseChangeStream { .. }
+        | Operation::RecoverTask { .. }
+        | Operation::AbandonChangeStream { .. } => {
             // The three steps a dispatched Task could not take at all, so a
             // run stayed `completion_requested` for the life of the store.
             // They are the same authority `start_prepared_task` holds: the
