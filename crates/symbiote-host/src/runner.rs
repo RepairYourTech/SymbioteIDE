@@ -83,7 +83,7 @@ pub struct ShellExecutorInputs<'a> {
 /// sandboxed launch composition with the operator's consent authority; tests
 /// install scripted executors — a model cannot cause a side effect in a test
 /// through any other path.
-pub trait ShellExecutorFactory {
+pub trait ShellExecutorFactory: Send {
     fn build(
         &mut self,
         inputs: ShellExecutorInputs<'_>,
@@ -112,7 +112,14 @@ pub struct WorkerTransports {
     /// referencing a credential gets the typed `NoCredentialBroker`
     /// refusal instead of a silent empty lease. The broker itself holds
     /// the ONLY plaintext; nothing here serializes values.
-    pub(crate) broker: Option<std::rc::Rc<std::cell::RefCell<symbiote_context::CredentialBroker>>>,
+    /// Shared across the Host's connection threads, so it is an
+    /// `Arc<Mutex<..>>` and not the `Rc<RefCell<..>>` a single-threaded
+    /// daemon could use. Poison recovery follows the workspace convention
+    /// (`symbiote-desktop`, `symbiote-runtime-transport`): a panic in one
+    /// connection's lease read must not refuse every later run, and the
+    /// broker's own operations are total — they return a `BrokerError`
+    /// rather than unwinding part-way through a mutation.
+    pub(crate) broker: Option<std::sync::Arc<std::sync::Mutex<symbiote_context::CredentialBroker>>>,
     /// The Host's reserved-location base directory for derived worktrees
     /// (the premise symbiote-worktrees verifies). Empty means worktree
     /// provisioning has no configured base and refuses.
@@ -231,7 +238,7 @@ impl WorkerTransports {
     /// path); a run only ever reads leases from it.
     pub fn with_credential_broker(
         mut self,
-        broker: std::rc::Rc<std::cell::RefCell<symbiote_context::CredentialBroker>>,
+        broker: std::sync::Arc<std::sync::Mutex<symbiote_context::CredentialBroker>>,
     ) -> Self {
         self.broker = Some(broker);
         self
@@ -339,7 +346,8 @@ impl WorkerTransports {
             return Err(RunnerError::NoCredentialBroker);
         };
         broker
-            .borrow()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .resolve(reference, request)
             .map(Some)
             .map_err(|error| RunnerError::CredentialRefused(broker_error_name(error)))
@@ -391,7 +399,7 @@ fn broker_error_name(error: symbiote_context::BrokerError) -> &'static str {
 /// Builds one native inference transport per run. Tests install a factory
 /// producing the scripted transport; production installs the live client
 /// only after explicit user authorization for credentials and billing.
-pub trait NativeTransportFactory {
+pub trait NativeTransportFactory: Send {
     fn build(&mut self)
     -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str>;
 }
@@ -434,7 +442,7 @@ mod sealed {
 /// [`crate::external_harness`]), so no transport can promise a memory bound it
 /// does not apply. It is handed the dispatch's declared `bound` for the
 /// transports that consult it. Sealed to this crate — see [`sealed`].
-pub trait ExternalTransportFactory: sealed::Sealed {
+pub trait ExternalTransportFactory: sealed::Sealed + Send {
     fn build(
         &mut self,
         inputs: ExternalHarnessInputs<'_>,
@@ -1224,10 +1232,27 @@ mod tests {
         ));
     }
 
+    /// The operator's whole worker-transport composition has to be movable
+    /// onto one of the Host's connection threads, because the Host serves
+    /// connections concurrently: a run holds this value across the agent
+    /// turn, and the turn happens on that connection's thread.
+    ///
+    /// This is a compile-time hold, not a runtime observation — it cannot
+    /// pass vacuously and it fails to COMPILE rather than fail, so the
+    /// failure names the offending field. Before the bounds this commit
+    /// added, the credential broker was `Rc<RefCell<..>>` and the three
+    /// factory traits carried no `Send`, so `WorkerTransports` was `!Send`
+    /// and the concurrent server could not have been written at all.
+    #[test]
+    fn the_operator_transport_composition_can_be_moved_to_a_connection_thread() {
+        fn moves_across_threads<T: Send>() {}
+        moves_across_threads::<WorkerTransports>();
+    }
+
     /// An in-process external factory that only records whether the Host ever
     /// consulted it, so precedence over a configured harness is observable.
     pub struct ObservedExternalFactory {
-        pub built: std::rc::Rc<std::cell::Cell<bool>>,
+        pub built: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
     impl super::sealed::Sealed for ObservedExternalFactory {}
     impl ExternalTransportFactory for ObservedExternalFactory {
@@ -1235,7 +1260,8 @@ mod tests {
             &mut self,
             _inputs: ExternalHarnessInputs<'_>,
         ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str> {
-            self.built.set(true);
+            self.built
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(Box::new(fixture::ScriptedCodex::new(
                 Vec::new(),
                 Vec::new(),
@@ -1252,7 +1278,7 @@ mod tests {
         // launch refuses instead of falling back to the in-process factory
         // installed alongside it. That refusal is the proof the Host — not a
         // transport — owned the launch and therefore the ceiling.
-        let built = std::rc::Rc::new(std::cell::Cell::new(false));
+        let built = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut transports = WorkerTransports::default()
             .with_external(Box::new(ObservedExternalFactory {
                 built: built.clone(),
@@ -1270,7 +1296,7 @@ mod tests {
         ));
         assert!(matches!(result, Err(RunnerError::TransportBuild(_))));
         assert!(
-            !built.get(),
+            !built.load(std::sync::atomic::Ordering::SeqCst),
             "a configured harness takes precedence over the in-process factory"
         );
     }
@@ -1974,9 +2000,11 @@ mod tests {
             Err(RunnerError::NoCredentialBroker)
         ));
         // Broker without a registration: UnknownReference.
-        let bare_broker = WorkerTransports::default().with_credential_broker(std::rc::Rc::new(
-            std::cell::RefCell::new(symbiote_context::CredentialBroker::new()),
-        ));
+        let bare_broker = WorkerTransports::default().with_credential_broker(
+            std::sync::Arc::new(std::sync::Mutex::new(
+                symbiote_context::CredentialBroker::new(),
+            )),
+        );
         assert!(matches!(
             bare_broker.resolve_leases(
                 &credential,
@@ -1991,11 +2019,12 @@ mod tests {
         ));
         // Registered under the dispatch's project: the lease issues and
         // its scope matches the contract verbatim.
-        let broker = std::rc::Rc::new(std::cell::RefCell::new(
+        let broker = std::sync::Arc::new(std::sync::Mutex::new(
             symbiote_context::CredentialBroker::new(),
         ));
         broker
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .register(
                 credential.clone(),
                 scope.project_id.clone(),
@@ -2043,7 +2072,10 @@ mod tests {
             Err(RunnerError::CredentialRefused("cross_project_denied"))
         ));
         // Revocation flips the next resolution to the sticky refusal.
-        broker.borrow_mut().revoke(&credential);
+        broker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .revoke(&credential);
         assert!(matches!(
             configured.resolve_leases(
                 &credential,
@@ -2083,11 +2115,12 @@ mod tests {
             profile_id: dispatch.contract().profile().id.clone(),
             host_id: HostId::new("host-native-ask").unwrap(),
         };
-        let broker = std::rc::Rc::new(std::cell::RefCell::new(
+        let broker = std::sync::Arc::new(std::sync::Mutex::new(
             symbiote_context::CredentialBroker::new(),
         ));
         broker
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .register(
                 credential.clone(),
                 scope.project_id.clone(),
@@ -3927,12 +3960,13 @@ pub fn assemble_operator_transports(
         }));
     }
     if !config.credential_broker.is_empty() {
-        let broker = std::rc::Rc::new(std::cell::RefCell::new(
+        let broker = std::sync::Arc::new(std::sync::Mutex::new(
             symbiote_context::CredentialBroker::new(),
         ));
         for registration in &config.credential_broker {
             broker
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .register(
                     symbiote_domain::CredentialReferenceId::new(&registration.reference)
                         .map_err(|_| "operator credential reference")?,
