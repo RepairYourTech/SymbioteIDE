@@ -27,6 +27,10 @@ impl ContextSource for StoreContextSource<'_> {
             .map_err(|_| ResolutionError::StoreFailed)?;
         let spec = item.spec();
         Ok(Some(WorkItemText {
+            // The title is the run's prompt when the description is blank, so
+            // the adapter has to carry it: the domain requires a title and
+            // leaves the description optional.
+            title: spec.title.clone(),
             description: spec.description.clone(),
             requirements: spec.requirements.clone(),
             constraints: spec.constraints.clone(),
