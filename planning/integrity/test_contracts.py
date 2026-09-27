@@ -267,6 +267,30 @@ class TheCensus(unittest.TestCase):
                 "markers is refused or not depending on what quotes it, which is the same rule "
                 "answering two different things about one shape")
 
+            # Four columns are one number and the quote beside them is what decides what they
+            # are: four columns behind the line that opens a quote is the block above, and
+            # four columns behind a line that goes on inside a quote already open is that
+            # paragraph's own wrapping, which is the same rule every wrapped line in this
+            # file is held by. So the question is not what the columns are but whether the
+            # quote was already open when the line arrived, and a walk that measures the
+            # columns without asking turns a bound a document states into one it is shown —
+            # dropping it out of the count, refusing a sentence nobody quoted, and sending
+            # its author to fence prose the document never held in a block.
+            (root / "lazy-quote.md").write_text(
+                "> a step\n"
+                ">     A bound of 512 KiB, four columns into a quote already open\n")
+            self.assertEqual(
+                contracts.figures("lazy-quote.md", root=root), 1,
+                "a line four columns into a paragraph a quote already holds is that "
+                "paragraph's own wrapping rather than a block, so reading it as a quotation "
+                "drops a bound the document states out of the count and tells its author to "
+                "fence a sentence it never quoted")
+            self.assertEqual(
+                [], prose.unseen(root / "lazy-quote.md"),
+                "a line continuing a paragraph inside a quote is refused as a shape this "
+                "reading cannot see, so an author with an ordinary wrapped blockquote is "
+                "sent away from the census over the way blockquotes are written")
+
             # The other direction, and the one that costs: a line indented four columns is a code
             # block only when it is four columns past the content of the block it is in. A list
             # item that indents its own content by four is writing a paragraph, and a bound on
@@ -300,6 +324,29 @@ class TheCensus(unittest.TestCase):
                 "a code block inside a list item is measured from the item's content column and "
                 "not from column zero, so the refusal has to name the line that column reaches")
 
+            # A heading is a block of its own, so it ends the paragraph above it however that
+            # paragraph was written, and until it does only a blank line was ending one. That
+            # is the whole weight of the arm: with the paragraph still open, four columns
+            # below a heading are that item's own wrapping and a bound on them is a claim,
+            # and with it closed the same four columns are a block and the bound is the
+            # block's. A walk that reads a heading as one more line of the paragraph above it
+            # cannot tell which of the two it is looking at, so it counts a bound the author
+            # quoted as one the document states — the direction that loses a hold rather than
+            # dropping one, and the direction nothing above here would notice.
+            (root / "heading-in-item.md").write_text(
+                "- a step\n  # heading\n"
+                "      A bound of 512 KiB, four past the item's content\n")
+            self.assertEqual(
+                contracts.figures("heading-in-item.md", root=root), 0,
+                "a heading closes the paragraph above it, so the four columns below one are a "
+                "block rather than that item's own wrapping, and reading them as prose counts a "
+                "bound the document only quotes")
+            self.assertIn(
+                "line 3", "\n".join(prose.unseen(root / "heading-in-item.md")),
+                "a block below a heading is refused without naming the line it begins on, so an "
+                "author is told a document cannot be read whole and cannot tell which of the "
+                "three lines to mend")
+
             # Every reason, not the first: an author mends a file in one pass, and two shapes in
             # one document reported one at a time is a second run to find the second.
             (root / "two.md").write_text(
@@ -312,6 +359,133 @@ class TheCensus(unittest.TestCase):
                 "line 1", "\n".join(prose.unseen(root / "two.md")),
                 "the reasons are returned but do not name their lines, so one run cannot tell the "
                 "author which two lines to mend")
+
+            # The columns a list marker's own spacing leaves are one question asked of the same
+            # line twice, and a question answered in two places is answered two ways. One to four
+            # spaces after a marker are spacing, so the item is writing a paragraph and the bound
+            # on it is the item's own claim; a fifth space is not spacing, so the content starts
+            # one column in and the text is four past it, which is a block inside the item. A
+            # fence written after a marker is the item's fence, and an HTML comment is not
+            # Markdown at all, so nothing under one is a block and a bound written there is a
+            # remark about the document rather than a claim it makes. An item or a quote with
+            # nothing after its marker holds nothing, so the lines below it are read one column
+            # further right than a reader would guess: that is what keeps an empty item's own
+            # spacing from reading as a block, and what makes four columns below it a block.
+            (root / "five-spaced.md").write_text(
+                stated + "\n\n-     A bound of 64 MiB, five columns into an item\n")
+            (root / "four-spaced.md").write_text(
+                stated + "\n\n-    A bound of 128 MiB, four columns after a marker\n")
+            (root / "fenced-in-item.md").write_text(
+                "- a step\n\n  ```json\n  A bound of 64 MiB, in a quoted envelope\n  ```\n")
+            (root / "commented.md").write_text(
+                stated + "\n\n<!--\nA bound of 256 MiB, inside a comment\n-->\n")
+            (root / "empty-item.md").write_text(
+                "-\n     A bound of 512 MiB, under an item that holds nothing\n")
+            (root / "empty-quote.md").write_text(
+                "- >\n      A bound of 64 MiB, under a quote that holds nothing\n")
+            self.assertEqual(
+                contracts.figures("five-spaced.md", root=root), 1,
+                "five spaces after a marker are not spacing, so the bound is four columns past "
+                "the item's own content, and a document can move a figure into a block this "
+                "reading cannot see and keep the count it records")
+            self.assertEqual(
+                contracts.figures("four-spaced.md", root=root), 2,
+                "four spaces after a marker are spacing, so refusing that line drops a real "
+                "figure out of the count and tells an author to fence a paragraph")
+            self.assertEqual(
+                contracts.figures("fenced-in-item.md", root=root), 0,
+                "a fence written after a list marker is a fence, so a bound a document quotes "
+                "inside one is counted as its own claim and the item's column is then applied to "
+                "the block that follows it")
+            self.assertEqual(
+                contracts.figures("commented.md", root=root), 1,
+                "a bound written inside an HTML comment is a remark about the document rather "
+                "than a claim it makes, so it is not a figure the census records")
+            self.assertEqual(
+                contracts.figures("empty-item.md", root=root), 1,
+                "an item with nothing after its marker is read one column further right than its "
+                "marker alone, so five columns below it is still the item's own prose, and "
+                "refusing it drops a real figure out of the count")
+            self.assertEqual(
+                contracts.figures("empty-quote.md", root=root), 0,
+                "a quote with nothing after it holds nothing, so the columns below it are read "
+                "against the item the quote is in, and four past that is a block")
+            refused = [name for name in ("commented.md", "empty-item.md", "fenced-in-item.md",
+                                         "four-spaced.md")
+                       if prose.unseen(root / name)]
+            self.assertEqual(
+                refused, [],
+                "a document written the ordinary way is refused as unreadable, so a well-formed "
+                "contract is turned away from the census over spacing, a comment or a quote")
+            self.assertIn(
+                "line 3", "\n".join(prose.unseen(root / "five-spaced.md")),
+                "a block five columns into a list item is not refused, or an author is told to "
+                "fence a line that is a quotation and cannot tell which line the walk meant")
+            self.assertIn(
+                "line 2", "\n".join(prose.unseen(root / "empty-quote.md")),
+                "a block under a quote that holds nothing is not refused, so one rule answers two "
+                "different things about one shape depending on what quotes it")
+
+            # Three rules follow from the same measurement, and they are held here for the same
+            # reason the six above are: a container that holds nothing states nothing, and a line
+            # with no marker goes on inside a quote only while the quote holds a paragraph to go
+            # on inside. So four columns below an item whose marker is bare are a block rather
+            # than that item's own second line, a quote holding such an item ends with it instead
+            # of running on into the columns below, and the content of a marker with five columns
+            # of spacing is the marker and one space — five of them are not spacing, so the
+            # item's content is not six columns to the right of it, and eight columns below that
+            # are still a block.
+            (root / "empty-then-block.md").write_text(
+                "1.\n        A bound of 64 MiB, a block under an item that holds nothing\n")
+            (root / "empty-item-in-quote.md").write_text(
+                "> -\n    A bound of 64 MiB, a block under a quote holding an empty item\n")
+            (root / "wide-marker.md").write_text(
+                "-     \n        A bound of 64 MiB, a block under a marker with wide spacing\n")
+            self.assertEqual(
+                contracts.figures("empty-then-block.md", root=root), 0,
+                "an item whose marker is bare states nothing, so a line four columns past the "
+                "item's content is a block and not the item's own second line, and reading it as "
+                "a claim counts a quoted bound that no count-only check notices")
+            self.assertEqual(
+                contracts.figures("empty-item-in-quote.md", root=root), 0,
+                "a quote holding an item that holds nothing holds no paragraph, so a markerless "
+                "line does not go on inside it and those columns are read from the document's "
+                "own margin rather than from the item inside the quote")
+            self.assertEqual(
+                contracts.figures("wide-marker.md", root=root), 0,
+                "five columns of spacing after a marker are not spacing, so the content of that "
+                "item is the marker and one space, and eight columns below it are still a block: "
+                "reading the spacing as the content turns a quoted bound into a claim")
+            unnamed = [name for name in ("empty-item-in-quote.md", "empty-then-block.md",
+                                         "wide-marker.md")
+                       if "line 2" not in "\n".join(prose.unseen(root / name))]
+            self.assertEqual(
+                unnamed, [],
+                "a block under a container that holds nothing is refused without naming the line "
+                "it begins on, so an author is told a document cannot be read whole and cannot "
+                "tell which of the three lines to mend")
+
+            # The four-column rule says a block whatever the line says, and a list marker is
+            # something: a marker four columns in is quoted text, not an item nested four
+            # columns in. The count on the document above says the other half of the same rule,
+            # that a line with nothing on it is not a quotation however its spacing reads, so
+            # only the line that has text on it is named.
+            (root / "marked-block.md").write_text(
+                "    - A bound of 64 MiB, a block that opens an item\n")
+            self.assertEqual(
+                contracts.figures("marked-block.md", root=root), 0,
+                "a list marker four columns into the document's own indent is quoted text rather "
+                "than an item nested four columns in, so a bound on that line is the block's "
+                "and not a claim, and reading it as a claim counts it")
+            self.assertIn(
+                "line 1", "\n".join(prose.unseen(root / "marked-block.md")),
+                "a block that opens a list item is refused without naming its line, so an author "
+                "with quoted text that looks like a list cannot tell which line the walk meant")
+            self.assertEqual(
+                len(prose.unseen(root / "wide-marker.md")), 1,
+                "a line with nothing on it is refused as a quotation, so a marker line holding "
+                "no text is named as a shape to mend and an author is sent to a line with "
+                "nothing on it")
 
             def path_of(name: str) -> pathlib.Path:
                 """Where a name this census records lives, stated here and not read from
