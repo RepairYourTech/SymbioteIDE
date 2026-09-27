@@ -46,6 +46,7 @@ fn authorization_follows_the_operation_not_the_command_name() {
         dangerous,
         vec![
             "abandon-change-stream",
+            "cancel-task",
             "complete-task",
             "interrupt-task",
             "run-started-dispatch",
@@ -2148,6 +2149,7 @@ fn every_terminal_step_says_what_it_costs_and_where_it_will_appear() {
         "complete-task",
         "interrupt-task",
         "recover-task",
+        "cancel-task",
     ] {
         let note = super::commands::consequence(command).unwrap_or_else(|| {
             panic!("{command} is a step an operator cannot undo, and it says nothing")
@@ -2180,6 +2182,7 @@ fn every_dangerous_kind_in_the_table_can_be_named_by_a_policy() {
         vec![
             "abandon_change_stream",
             "interrupt_task",
+            "cancel_task",
             "start_prepared_task",
             "run_started_dispatch",
             "shutdown",

@@ -1317,6 +1317,28 @@
           },
           {
             "additionalProperties": false,
+            "description": "Close a Task that is not coming back: `Ready`, `Queued`, `Assigned` or\n`Blocked` becomes `Cancelled`, and so does a run the Host is executing.\n`reason` is the caller's, because only the caller knows whether the\nwork was withdrawn, superseded, or simply wrong.\n\nThis is the state nothing could reach. `TaskState::Cancelled` has been\nin the lifecycle since it was written and no operation constructed\n`TaskAction::Cancel`, so a task whose stream had been abandoned stayed\nstartable for the life of the store: every dispatch of it ran into a\nstream the abandon had already cancelled. `Failed` and `Interrupted`\nare not cancelled from here either — `recover_task` returns them to\n`Ready`, and that is the state a cancel takes.\n\nRefused while the stream still holds its reservation. A cancel is a\nclaim about a Task, not authority over a directory, and the directory\nis the one thing here that can lose commits. `abandon_change_stream`\nis the operation that reclaims it, and says so when it refuses.",
+            "properties": {
+              "kind": {
+                "const": "cancel_task",
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "File the evidence a dispatch contract's gates require and complete the\nTask. `gates` is the claim: which gates the caller says passed. The\nHost binds each claim to the dispatch, the stream's head and target\nand this Host's identity, and refuses a claim that does not cover the\ncontract — so the caller asserts and the Host binds, and neither side\ngets to do the other's half.",
             "properties": {
               "gates": {

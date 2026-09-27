@@ -102,6 +102,7 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     // gated for, and for the same reason: the run stops being the task's
     // future, and only an operator may say so.
     ("interrupt_task", Risk::Dangerous),
+    ("cancel_task", Risk::Dangerous),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),

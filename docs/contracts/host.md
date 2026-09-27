@@ -49,6 +49,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `begin-task-verification`, `complete-task`,
 `integrate-change-stream`, `release-change-stream`,
 `abandon-change-stream`, `recover-task`, `interrupt-task`,
+`cancel-task`,
 `scheduling-projection <project_id>`,
 `observe-root-placement`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
@@ -113,8 +114,9 @@ what the Task it just created is committed to: the Task owns one Change Stream
 for its whole life, its worktree and branch derive from that stream, and
 abandoning the stream is terminal — so the retry after an abandon is a new
 Task. The commands that charge that cost say the same thing when they charge
-it, and so do the two that end a run (`interrupt-task`) or a task
-(`complete-task`, which is not the same as landing the work). The note is
+it, and so do the ones that end a run (`interrupt-task`) or a task
+(`complete-task`, which is not the same as landing the work, and
+`cancel-task`, which is not the same as abandoning the stream). The note is
 stderr and never part of the response: `--json` prints one envelope per
 invocation, and that envelope is a published contract
 (`symbiote.cli.v1.schema.json`). A refusal prints no note, because nothing was
@@ -347,6 +349,51 @@ only through this, which is why the two were missing together: a failure
 that can be filed and a failure that can be left are the same gap seen from
 opposite ends.
 
+`cancel-task` is the operation that closes a Task, and the workspace had
+no way to close one. `TaskState::Cancelled` has been in the lifecycle since
+the lifecycle was written and nothing constructed `TaskAction::Cancel`:
+a Task is created `Ready` and leaves `Ready` only by being started, so a
+Task whose stream was abandoned stayed startable for the life of the
+store. Every dispatch of it ran into a stream the abandon had already
+cancelled, and the work hierarchy counts `Cancelled` as *closed* against
+`open`, so a task the operator was done with had no way to be anything but
+running.
+
+The order an operator wants is abandon, then cancel — and refusing
+otherwise is the whole design. Cancelling a Task is a claim about the
+Task, not authority over a directory, and the directory is the one thing
+here that can lose commits. So `cancel-task` reads the stream's
+reservation marker first and, while one is present, refuses with
+`the task's stream still holds a reservation; abandon-change-stream
+reclaims it`. `abandon-change-stream` and `release-change-stream` are the
+two that clear it, so either one makes the cancel a one-call close; the
+marker is the record of the hold rather than the checkout's presence on
+disk, which is the difference between a reservation and a directory
+somebody left behind. A Host with no `reservation_base` configured cannot
+be holding one, so that is the answer and not a refusal — the base is
+worker configuration, and a caller whose Host was never set up to run work
+still has to be able to close a task.
+
+The gate is the hold and not the task, and the two halves of that are
+worth separating because they are not symmetric. A reservation is taken by
+*provisioning*, not by `create-task`, so a Task nobody ever dispatched
+holds nothing and closes in one call; a Task whose run provisioned holds a
+checkout, and there the refusal stands until the abandon or the release
+has reclaimed it.
+
+`Failed` and `Interrupted` are not cancelled from here either, because the
+lifecycle does not draw that edge: `recover-task` returns them to `Ready`
+and `Ready` is the state a cancel takes. So the whole of a failed run's
+cleanup is three commands, in this order — `abandon-change-stream` to
+reclaim what the failure left, `recover-task` to make the task startable
+again, `cancel-task` to close it — and the second one is only there
+because the third cannot be reached without it. A Task nobody ever
+dispatched needs only the third, because it never held a reservation. The
+reason is required, as on `interrupt-task`: a Task closed as "cancelled"
+with no record of why is the least useful entry in the journal. A lease
+left on a cancelled task is released, for the same reason a failure
+releases one.
+
 `advance-change-stream` is the operation the Change Stream contract was
 written around and the workspace did not have. A stream carries a head and a
 target, a run that commits moves the head, and `StreamAction::Advance` — the
@@ -436,7 +483,9 @@ uncommitted files in it. That last one is the only operation in the product
 that destroys work, and the branch it leaves behind holds every commit, so
 what it destroys is work that was never recorded anywhere else — and
 `interrupt_task`, which ends a run's execution authority, the same reason
-`complete_task` is gated.
+`complete_task` is gated, and `cancel_task`, which closes a Task outright
+and can never reopen it — the lifecycle recovers a failed or interrupted
+run and nothing else, so a policy has to be told about this one as well.
 A kind the table does not know cannot be proven safe, so it fails closed as
 dangerous. Reads are free;
 everything else is a mutation the daemon still authorizes — filing

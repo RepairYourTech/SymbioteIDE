@@ -465,6 +465,10 @@ pub(crate) fn consequence(name: &str) -> Option<&'static str> {
             "the Task is Ready again and its dispatch binding is dropped; the next run provisions \
              the same stream's own checkout again, so a run that failed there is not lost.",
         ),
+        "cancel-task" => Some(
+            "the Task is Cancelled and nothing will run it again; the stream it was cut from stays \
+             on the Root, and only the Task is closed.",
+        ),
         _ => None,
     }
 }
@@ -1550,6 +1554,28 @@ pub(crate) fn commands() -> Vec<Command> {
                 let reason = args.get(1).ok_or_else(|| {
                     Usage("missing <reason>: say why the run is not coming back".into())
                 })?;
+                if reason.trim().is_empty() {
+                    return Err(Usage("<reason> must not be empty".into()));
+                }
+                plain("reason", serde_json::json!(reason), map);
+                Ok(())
+            },
+        },
+        Command {
+            name: "cancel-task",
+            summary: "close a task that is not coming back",
+            usage: "cancel-task <task_id> <reason>",
+            kind: Some("cancel_task"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("cancel_task"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // The reason is required for the same reason it is on
+                // `interrupt-task`: a Task closed as "cancelled" records no
+                // more than the fact, and the fact is the only account anyone
+                // will have of why the work was withdrawn.
+                let reason = args
+                    .get(1)
+                    .ok_or_else(|| Usage("missing <reason>: say why this task is closed".into()))?;
                 if reason.trim().is_empty() {
                     return Err(Usage("<reason> must not be empty".into()));
                 }

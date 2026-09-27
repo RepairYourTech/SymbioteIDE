@@ -5190,6 +5190,42 @@ fn a_created_task_says_out_loud_what_abandoning_its_stream_will_cost() {
         !said.contains("a new Task"),
         "nothing was charged, so nothing is announced: {said}"
     );
+
+    // The same table, on the step that closes a task. This one is dangerous
+    // rather than merely costly — nothing reopens a cancelled task — so it
+    // is gated, and `--yes` is the authorization. It holds nothing (this task
+    // was never dispatched), so it is also the one-call close, and the note
+    // has to say what the operator cannot get back.
+    let refused = run(&["cancel-task", "costly-task", "withdrawn"]);
+    assert_eq!(
+        refused.status.code(),
+        Some(3),
+        "an unauthorized cancel is the gate, not the lifecycle: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let closed = run(&["cancel-task", "costly-task", "withdrawn", "--yes"]);
+    assert!(
+        closed.status.success(),
+        "cancel-task: {}",
+        String::from_utf8_lossy(&closed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&closed.stdout).contains("\"state\": \"cancelled\""),
+        "the response is the daemon's own body: {}",
+        String::from_utf8_lossy(&closed.stdout)
+    );
+    let said = String::from_utf8_lossy(&closed.stderr);
+    assert!(
+        said.contains("nothing will run it again"),
+        "the note has to say the step is final, not gesture at it: {said}"
+    );
+    // And a read says nothing, which is the other half of the table staying a
+    // table rather than becoming a note on every command.
+    assert!(
+        String::from_utf8_lossy(&run(&["get-task", "staffing-demo", "costly-task"]).stderr)
+            .is_empty(),
+        "a read of a closed task is still just a read"
+    );
 }
 
 /// A stream's head is the one record in the lifecycle a caller must never be
@@ -5607,6 +5643,209 @@ fn work_that_landed_before_the_record_did_is_integrated_rather_than_refused() {
         .trim()
             == root_head,
         "while the work it landed stays exactly where it landed"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// A Task could be started, failed, interrupted, recovered and completed, and
+/// not one of those is a way to stop wanting it. `TaskState::Cancelled` has
+/// been in the lifecycle since the lifecycle was written and no operation
+/// constructed `TaskAction::Cancel`, so a task the operator was done with was
+/// still `Ready` — still startable, still in the scheduling projection — and
+/// the only way to run it again was into the stream its own abandon had
+/// already cancelled, which the dispatch then refused as inactive. The work
+/// hierarchy counts `Cancelled` as *closed* against `open`, so the one state
+/// that closes a task was the state nothing could reach.
+///
+/// The gate on it is the hold, not the task. A reservation is taken by
+/// provisioning and not by `create_task`, so a Task nobody ever dispatched
+/// holds nothing and closes in one call. A Task whose run did provision holds
+/// a location that can still carry commits and uncommitted files, and there
+/// the cancel refuses rather than becoming a second, quieter way to discard
+/// them: it is a claim about a Task, not authority over a directory.
+/// `abandon-change-stream` is the operation for the directory, and it is what
+/// the refusal names.
+#[test]
+fn a_task_is_closed_only_after_its_stream_gave_up_its_checkout() {
+    let (repository, head) = real_repository("close-task");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-close-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "close-placement",
+        &host.call(request(
+            "close-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+
+    // The one-call close, and the state nothing could reach before this
+    // operation existed. No run, so no provisioning, so no reservation: the
+    // gate is the hold and there is nothing held.
+    staffing_task(
+        &host,
+        "close-quiet",
+        "close-quiet",
+        "close-quiet-stream",
+        &head,
+        &head,
+    );
+    let quiet = host.call(request(
+        "close-quiet-cancel",
+        json!({"kind":"cancel_task","task_id":"close-quiet","reason":"never started"}),
+    ));
+    assert_eq!(
+        ok(&quiet)["data"]["state"],
+        "cancelled",
+        "a task that held nothing closes in one call: {quiet}"
+    );
+
+    // Now the other half, where the hold is real. The run provisions the
+    // stream's own checkout, and everything in it belongs to that run.
+    staffing_task(
+        &host,
+        "close-task",
+        "close-task",
+        "close-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "close-prepare",
+        &host.call(request(
+            "close-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"close-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "close-start",
+        json!({"kind":"start_prepared_task","task_id":"close-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("close-start", &started)["data"]["dispatch_id"].clone();
+    ok_step(
+        "close-run",
+        &host.call(request(
+            "close-run",
+            json!({"kind":"run_started_dispatch","task_id":"close-task",
+            "dispatch_id":dispatch_id}),
+        )),
+    );
+    let worktree_id = staffing_worktree("close-stream").worktree_id;
+    let marker = base
+        .join("staffing-demo")
+        .join(format!("{worktree_id}.json"));
+    let worktree = base.join("staffing-demo").join(worktree_id.as_str());
+    assert!(marker.is_file(), "the run's own reservation is on disk");
+    // The run's uncommitted work, which is what a cancel must never be able
+    // to take with it.
+    std::fs::write(worktree.join("the-work.txt"), "what the run did\n").unwrap();
+
+    // The refusal, on a task with a live dispatch and a checkout full of
+    // somebody's afternoon. Said before the lifecycle is asked, because a
+    // refusal that had already written the transition would leave the
+    // operator with a cancelled task and the directory still right there.
+    let holding = host.call(request(
+        "close-holding",
+        json!({"kind":"cancel_task","task_id":"close-task","reason":"withdrawn"}),
+    ));
+    assert_eq!(
+        holding["result"]["Err"]["message"],
+        "the task's stream still holds a reservation; abandon-change-stream reclaims it",
+        "{holding}"
+    );
+    assert!(
+        worktree.join("the-work.txt").is_file(),
+        "and the file is exactly where it was: a refused cancel deletes nothing"
+    );
+    let untouched = host.call(request(
+        "close-read-holding",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"close-task"}),
+    ));
+    assert_eq!(
+        ok(&untouched)["data"]["state"],
+        "completion_requested",
+        "a refused cancel took nothing, and this says so"
+    );
+
+    // The abandon reclaims, which is the authorization the one operation that
+    // destroys work needs, and the uncommitted file goes with the checkout.
+    ok_step(
+        "close-abandon",
+        &host.call(request(
+            "close-abandon",
+            json!({"kind":"abandon_change_stream","task_id":"close-task"}),
+        )),
+    );
+    assert!(
+        !marker.exists() && !worktree.exists(),
+        "the reservation is gone, marker and checkout alike"
+    );
+
+    // And now the task closes, because the thing that could have been lost is
+    // not there any more.
+    let closed = host.call(request(
+        "close-cancel",
+        json!({"kind":"cancel_task","task_id":"close-task",
+        "reason":"the operator withdrew the work"}),
+    ));
+    assert_eq!(
+        ok(&closed)["data"]["state"],
+        "cancelled",
+        "the close returns the task, because the state is the answer: {closed}"
+    );
+
+    // Terminal, both ways. A cancelled task is neither recoverable nor
+    // dispatchable, so "closed" means closed rather than "closed for now":
+    // the lifecycle recovers a failed or interrupted run and nothing else.
+    let reopened = host.call(request(
+        "close-recover",
+        json!({"kind":"recover_task","task_id":"close-task"}),
+    ));
+    assert!(
+        reopened["result"]["Err"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("IllegalTransition"),
+        "a cancelled task is not recovered: {reopened}"
+    );
+    let restarted = host.call(request(
+        "close-restart",
+        json!({"kind":"start_prepared_task","task_id":"close-task","host_id":host_id}),
+    ));
+    assert_eq!(
+        restarted["result"]["Err"]["code"], "failed_precondition",
+        "and it is not run again either: {restarted}"
+    );
+
+    // The reason is the only account anyone will have of why the work was
+    // withdrawn, so the journal carries it rather than the bare fact.
+    let journal = host.call(request(
+        "close-journal",
+        json!({"kind":"read_journal","project_id":"staffing-demo","after":0,"limit":100}),
+    ));
+    let entries = ok(&journal)["data"].to_string();
+    assert!(
+        entries.contains("the operator withdrew the work") && entries.contains("never started"),
+        "the reason is in the record, for both closes: {entries}"
     );
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();

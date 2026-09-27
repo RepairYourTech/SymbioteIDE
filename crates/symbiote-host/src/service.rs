@@ -1342,6 +1342,92 @@ fn execute(
                 .map(receipt)
                 .map_err(storage_error)
         }
+        Operation::CancelTask { task_id, reason } => {
+            // The state nothing could reach. `TaskState::Cancelled` has been in
+            // the lifecycle since the lifecycle was written, and nothing
+            // constructed `TaskAction::Cancel`: so a task whose stream had been
+            // abandoned stayed startable for the life of the store, and every
+            // dispatch of it ran into a stream the abandon had already
+            // cancelled. There was no operation that closed a task, and the
+            // work hierarchy counts `Cancelled` as closed against `open`.
+            //
+            // The reservation is asked about first, before anything is
+            // written. Cancelling a Task is a claim about the Task, not
+            // authority over a directory, and the directory is the one thing
+            // here that can lose commits — so this refuses while the stream
+            // still holds it and points at the operation that reclaims it.
+            // The marker is the record of the hold: `abandon_change_stream`
+            // and `release_change_stream` are the two that clear it, and
+            // either one makes this a one-call close.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            // A Host with no reservation base configured cannot be holding a
+            // reservation, so the absence is the answer and not a refusal. It
+            // is the answer that keeps this operation usable at all: the base
+            // is worker configuration, and a caller whose Host was never set
+            // up to run work still has to be able to close a task. Every
+            // other path that needs the base has to provision first, and
+            // provisioning is where that refusal belongs.
+            let holds_reservation = workers
+                .reservation_base()
+                .ok()
+                .map(|base| {
+                    symbiote_worktrees::list(&base, task_record.project_id())
+                        .map(|markers| {
+                            markers
+                                .iter()
+                                .any(|marker| marker.derived.stream_id == *stream.id())
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if holds_reservation {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message:
+                        "the task's stream still holds a reservation; abandon-change-stream reclaims it"
+                            .into(),
+                });
+            }
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(inventory.host_id().clone()),
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::TaskAction::Cancel {
+                    reason: reason.clone(),
+                },
+            };
+            store.apply_task(task_id, command).map_err(storage_error)?;
+            // A cancelled task has no run, so a lease left on it is a claim by
+            // an owner that is not executing anything. Released for the same
+            // reason a failure releases one.
+            if let Ok(lease) = store.task_lease(task_id) {
+                let lease_command = symbiote_domain::CommandId::new(format!(
+                    "{}-cancelled-lease",
+                    request.command_id.as_str()
+                ))
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+                store
+                    .release_lease(
+                        lease_command,
+                        task_id.clone(),
+                        lease.dispatch_id.clone(),
+                        lease.fencing_token,
+                        principal.user_id().clone(),
+                        now_timestamp()?,
+                    )
+                    .map_err(storage_error)?;
+            }
+            // A task, not a receipt: what the caller asked to close is what it
+            // reads next, and the state it landed in is the answer.
+            store
+                .task(task_id)
+                .map(|task| ResponseBody::Task(Box::new(task)))
+                .map_err(storage_error)
+        }
         Operation::InterruptTask { task_id, reason } => {
             // The case no run can file for itself. A refused run observes its
             // own failure; a Host that died with a task `Running` has no run

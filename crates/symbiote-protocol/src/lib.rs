@@ -348,6 +348,27 @@ pub enum Operation {
         task_id: TaskId,
         reason: String,
     },
+    /// Close a Task that is not coming back: `Ready`, `Queued`, `Assigned` or
+    /// `Blocked` becomes `Cancelled`, and so does a run the Host is executing.
+    /// `reason` is the caller's, because only the caller knows whether the
+    /// work was withdrawn, superseded, or simply wrong.
+    ///
+    /// This is the state nothing could reach. `TaskState::Cancelled` has been
+    /// in the lifecycle since it was written and no operation constructed
+    /// `TaskAction::Cancel`, so a task whose stream had been abandoned stayed
+    /// startable for the life of the store: every dispatch of it ran into a
+    /// stream the abandon had already cancelled. `Failed` and `Interrupted`
+    /// are not cancelled from here either — `recover_task` returns them to
+    /// `Ready`, and that is the state a cancel takes.
+    ///
+    /// Refused while the stream still holds its reservation. A cancel is a
+    /// claim about a Task, not authority over a directory, and the directory
+    /// is the one thing here that can lose commits. `abandon_change_stream`
+    /// is the operation that reclaims it, and says so when it refuses.
+    CancelTask {
+        task_id: TaskId,
+        reason: String,
+    },
     /// File the evidence a dispatch contract's gates require and complete the
     /// Task. `gates` is the claim: which gates the caller says passed. The
     /// Host binds each claim to the dispatch, the stream's head and target
@@ -511,6 +532,7 @@ impl Operation {
             | Self::RecoverTask { .. }
             | Self::AdvanceChangeStream { .. }
             | Self::InterruptTask { .. }
+            | Self::CancelTask { .. }
             | Self::AbandonChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
@@ -577,6 +599,7 @@ impl Operation {
                 | Self::RecoverTask { .. }
                 | Self::AdvanceChangeStream { .. }
                 | Self::InterruptTask { .. }
+                | Self::CancelTask { .. }
                 | Self::AbandonChangeStream { .. }
         )
     }
@@ -925,6 +948,7 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         | Operation::RecoverTask { .. }
         | Operation::AdvanceChangeStream { .. }
         | Operation::InterruptTask { .. }
+        | Operation::CancelTask { .. }
         | Operation::AbandonChangeStream { .. } => {
             // The three steps a dispatched Task could not take at all, so a
             // run stayed `completion_requested` for the life of the store.

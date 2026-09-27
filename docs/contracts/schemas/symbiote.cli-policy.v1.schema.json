@@ -10,6 +10,7 @@
         "description": "A kind this CLI classifies as dangerous.",
         "enum": [
           "abandon_change_stream",
+          "cancel_task",
           "complete_task",
           "decide_elevation",
           "interrupt_task",

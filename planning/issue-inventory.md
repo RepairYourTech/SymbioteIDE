@@ -422,6 +422,68 @@ had written nothing; it now commits in each checkout and advances each stream, a
 reads `repo: HEAD is 697b1d1 the run's work` for both Roots — the promise the product makes, with
 first-class commands and no `raw` file.
 
+**Found in the eighth pass — a task that could be run but never closed.** The sweep that
+found `StreamAction::Advance` is the one worth repeating: enumerate every variant of the two
+lifecycle action enums and grep for a production constructor. `TaskAction::Cancel { reason }` had
+unit tests in `symbiote-domain/tests/contracts.rs` and **no constructor anywhere in the workspace**
+— `production=0`, same signature as the advance. So `TaskState::Cancelled` was unreachable, and
+`docs/contracts/work-hierarchy.md` counts `Cancelled` as *closed* against `open`: the one state
+that closes a task was the one state the product could not reach.
+
+The symptom is not a crash, it is a task that will not go away. A Task is created `Ready`, and
+`Ready` and `Assigned` are the states `TaskState::is_startable` reports, so it stays in the
+scheduling projection for the life of the store. An operator who abandons a stream and then wants
+the task itself gone has nowhere to put it: `abandon_change_stream` cancels the *stream*, and the
+only way to "run it again" is a dispatch into the stream the abandon already cancelled, which
+`DispatchRefusal::StreamInactive` refuses. Every retry is the same refusal.
+
+`Operation::CancelTask { task_id, reason }` closes it, and the design question was where to put
+the gate. The obvious place — the state — is wrong, because the states a cancel legitimately takes
+are exactly the ones a live run occupies. The gate is the **hold**: a cancel is a claim about a
+Task, not authority over a directory, and the directory is the one thing here that can lose
+commits and uncommitted files. So the arm reads the stream's reservation marker and refuses with
+`the task's stream still holds a reservation; abandon-change-stream reclaims it` while one is
+present, naming the operation that has the authority the cancel does not. Measuring that produced
+the asymmetry that makes the operation usable: **provisioning takes the reservation, `create_task`
+does not**. A Task nobody ever dispatched holds nothing and closes in one call; a Task whose run
+provisioned holds a checkout and needs the abandon first. That was not a guess — the first draft
+of the test asserted the refusal on a freshly created task and the daemon cancelled it, because
+there was no marker to refuse on.
+
+The same test then found a defect in the draft. `workers.reservation_base()` was propagated with
+`?`, so on a Host with no `reservation_base` configured — which is what `Host::new()` gives the
+real-binary tests — the cancel refused with `no worktree reservation base configured`. That is
+backwards: a Host with no base cannot be *holding* a reservation, so the absence is the answer and
+not a refusal, and propagating it made the operation unusable on exactly the Host an operator is
+most likely to be talking to. The base is worker configuration; every path that truly needs it has
+to provision, and provisioning is where that refusal belongs. It is now `.ok()` into the same
+predicate, so the check is total: no base, no project directory, or no matching marker all read
+as "not held", and only a marker for this stream is a hold.
+
+Held by `a_task_is_closed_only_after_its_stream_gave_up_its_checkout`, which walks both halves
+against a real repository: a never-dispatched task closed in one call, a run that provisioned
+writing an uncommitted file into its own checkout, the refusal twice over (once for a task that
+was never dispatched *and* never provisioned is not asserted — the one that matters is the one
+with a real dispatch behind it), the abandon reclaiming, the close, and then terminality from both
+sides: a cancelled task is refused by `recover_task` and by `start_prepared_task`. Three mutants
+die on it. Dropping the hold check entirely dies on the refusal line with a task that went
+`completion_requested` → `cancelled` while `the-work.txt` was still on disk. Making the marker
+match never fire dies on the same line. And skipping the lease release — which is *why* a
+cancelled task's own restart is refused with `failed_precondition` rather than as a live run — dies
+on that restart.
+
+`cancel_task` is classified **dangerous**, not merely a mutation, and for the same reason
+`complete_task` is: `Cancelled` is terminal and the lifecycle recovers only `Failed` and
+`Interrupted`, so a policy has to be told about a step that cannot be undone. It is the ninth
+dangerous kind in the table, and both pin lists in the CLI's own tests move with it.
+
+The orphan sweep now returns six, down from seven: `TaskAction::{Queue, Assign, Block, Unblock}`
+and `StreamAction::{Collision, Reconcile}`. The four task actions are the pre-dispatch states the
+lifecycle already models — `DispatchRefusal::NotSchedulable` and `is_startable` both exist to
+read them — and nothing moves a task into one, so a task is either run or not run. The two stream
+actions are the Root moving under an active stream, which is a real operator event with no
+operation at all.
+
 **Candidate, not a decision — the reap test's deadline race.** CI failed
 `a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean` once on the 1.85.0 leg with
 `Cancelled { group_signal: Sent }` where the test asserts `Unreaped { error: DeadlineExceeded }`,
