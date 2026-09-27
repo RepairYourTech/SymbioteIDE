@@ -36,6 +36,16 @@ pub enum CompositionStep {
     },
     Worktree {
         declared: bool,
+        /// Whether the stream is in the one state a start compiles against.
+        /// The stream row declares the identity either way, and a report that
+        /// said only that would answer a question nobody asked: the boundary
+        /// refuses every state but `Active` with `stream_inactive`, so the
+        /// report has to be able to say the same thing — otherwise it reports
+        /// a dispatch the start is about to refuse.
+        startable: bool,
+        /// The state it read, so the report names which state refused rather
+        /// than only that something did.
+        state: StreamState,
     },
     Provider {
         validated: bool,
@@ -194,7 +204,16 @@ impl DispatchPreparation {
         });
         // The stream row declares the worktree identity; filesystem
         // reservation is issue 211's separate concern and is NOT checked here.
-        steps.push(CompositionStep::Worktree { declared: true });
+        // What IS reported is the state: a start compiles against `Active` and
+        // refuses every other state with `stream_inactive`, so a report that
+        // said only "declared" would promise a dispatch the boundary refuses.
+        // An operator reading this before dispatching learns it here.
+        let stream_startable = stream.state() == &StreamState::Active;
+        steps.push(CompositionStep::Worktree {
+            declared: true,
+            startable: stream_startable,
+            state: stream.state().clone(),
+        });
         // The provider step is earned by the registry validating the
         // profile's stored connection/entitlement/model registration, not by
         // the presence of a profile. A refused registration is recorded with
@@ -207,7 +226,7 @@ impl DispatchPreparation {
             validated: refusal.is_none(),
             refusal,
         });
-        let ready = schedulable && routed_role.is_some() && refusal.is_none();
+        let ready = schedulable && routed_role.is_some() && refusal.is_none() && stream_startable;
         Self {
             version: PREPARATION_VERSION,
             project_id: task.project_id().clone(),
@@ -243,6 +262,9 @@ impl DispatchPreparation {
                 Some(DispatchRefusal::NotSchedulable)
             }
             CompositionStep::Routing { resolved: None } => Some(DispatchRefusal::Unrouted),
+            CompositionStep::Worktree {
+                startable: false, ..
+            } => Some(DispatchRefusal::StreamInactive),
             CompositionStep::Provider {
                 refusal: Some(refusal),
                 ..
@@ -260,6 +282,16 @@ impl DispatchPreparation {
             // exactly when the step did not validate.
             if let CompositionStep::Provider { validated, refusal } = step {
                 if *validated != refusal.is_none() {
+                    return Err(DomainError::InvalidStream);
+                }
+            }
+            // And the stream step must agree with the state it reports, so a
+            // report cannot call a cancelled stream startable.
+            if let CompositionStep::Worktree {
+                startable, state, ..
+            } = step
+            {
+                if *startable != (*state == StreamState::Active) {
                     return Err(DomainError::InvalidStream);
                 }
             }

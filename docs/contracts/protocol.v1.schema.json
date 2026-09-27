@@ -4309,11 +4309,21 @@
               "kind": {
                 "const": "worktree",
                 "type": "string"
+              },
+              "startable": {
+                "description": "Whether the stream is in the one state a start compiles against.\nThe stream row declares the identity either way, and a report that\nsaid only that would answer a question nobody asked: the boundary\nrefuses every state but `Active` with `stream_inactive`, so the\nreport has to be able to say the same thing — otherwise it reports\na dispatch the start is about to refuse.",
+                "type": "boolean"
+              },
+              "state": {
+                "$ref": "#/$defs/StreamState",
+                "description": "The state it read, so the report names which state refused rather\nthan only that something did."
               }
             },
             "required": [
               "kind",
-              "declared"
+              "declared",
+              "startable",
+              "state"
             ],
             "type": "object"
           },

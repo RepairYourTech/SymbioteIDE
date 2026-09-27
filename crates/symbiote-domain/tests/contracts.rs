@@ -917,6 +917,93 @@ fn stream_permissions_concurrency_and_exact_target_integration() {
     );
 }
 
+/// The report and the boundary must agree about the stream. A start compiles
+/// against `Active` and refuses every other state with `stream_inactive`; the
+/// report used to say only that a worktree was "declared" and still reported
+/// `ready`, so it promised a dispatch the start was about to refuse. The
+/// vocabulary already had the refusal — only the report could not reach it.
+#[test]
+fn a_stream_a_start_would_refuse_is_refused_by_the_report_too() {
+    let f = Fixture::new(RuntimeKind::NativeSymbiote);
+    let compose = |stream: &ChangeStream| {
+        DispatchPreparation::compose(
+            &f.task,
+            Some(f.role.id.clone()),
+            None,
+            stream,
+            Some(ProviderResolution {
+                connection: id!(ProviderConnectionId, "connection"),
+                model: id!(ModelId, "model"),
+                refusal: None,
+            }),
+            Timestamp(30),
+        )
+    };
+
+    // An active stream: ready, and the step names the state that made it so.
+    let active = compose(&f.stream);
+    assert_eq!(active.outcome, PreparationOutcome::Ready);
+    assert_eq!(active.refusal(), None);
+    assert!(active.steps.iter().any(|step| matches!(
+        step,
+        CompositionStep::Worktree {
+            declared: true,
+            startable: true,
+            state: StreamState::Active,
+        }
+    )));
+    active.validate().unwrap();
+
+    // A stream that moved on, and one that was cancelled: both refused, both
+    // with the name the start boundary gives for the same condition.
+    let mut moved = f.stream.clone();
+    moved
+        .apply(
+            f.stream_command(
+                "advance",
+                StreamAction::Advance {
+                    head: sha('c'),
+                    target: sha('b'),
+                },
+            ),
+            &f.binding.access,
+        )
+        .unwrap();
+    let mut cancelled = f.stream.clone();
+    cancelled
+        .apply(
+            f.stream_command("cancel", StreamAction::Cancel),
+            &f.binding.access,
+        )
+        .unwrap();
+    for stream in [&moved, &cancelled] {
+        let report = compose(stream);
+        assert_eq!(report.outcome, PreparationOutcome::Refused);
+        assert_eq!(report.refusal(), Some(DispatchRefusal::StreamInactive));
+        assert_eq!(
+            report.refusal().map(|refusal| refusal.name()),
+            Some("stream_inactive"),
+            "the report names the same refusal the start gives"
+        );
+        report.validate().unwrap();
+    }
+
+    // And a report whose step disagrees with the state it carries is refused
+    // by `validate`, so nothing can hand a client a report that calls a
+    // cancelled stream startable.
+    let mut forged = compose(&cancelled);
+    for step in &mut forged.steps {
+        if let CompositionStep::Worktree { startable, .. } = step {
+            *startable = true;
+        }
+    }
+    assert_eq!(
+        forged.validate(),
+        Err(DomainError::InvalidStream),
+        "a report that contradicts its own recorded state is refused"
+    );
+}
+
 #[test]
 fn only_an_integrated_stream_may_release_its_worktree() {
     let mut f = Fixture::new(RuntimeKind::NativeSymbiote);

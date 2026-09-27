@@ -213,12 +213,72 @@ dispatch, run, `validate` (15), `begin` (16), `complete` (17), `integrate` (18, 
 `release` (19, revision 3) — after which the reservation base is empty and the branch is still
 there.
 
-**Still open under #211, and named rather than quietly deferred:** the *unintegrated* case. A
-failed or abandoned run's worktree holds unmerged commits, `Retain` detaches its marker and
-leaves a populated directory that `reserve` will never reclaim, so re-running an abandoned stream
-reports `Reservation` until an operator acts. That is the right direction — the work is
-unmerged, and `Retain` is the policy for not deleting it — but there is no operation for it and
-no way for an operator to say "this one is finished, it is not coming back" through the product.
+**Found in the fifth pass — the happy path was complete and a refused run was a dead end.**
+With the lifecycle walkable, the harness was rewritten to run three tasks in a row, because a path
+that works exactly once is not a product. That passed: three distinct worktrees, three branches,
+an empty reservation base after each release, one `git worktree` registration left in the root.
+Then the same harness asked the question a user asks constantly — what does a *refused* run say?
+
+The refusal is one a person causes by accident: they commit to their own repository between
+creating the task and dispatching it, so the stream's recorded base is no longer where the root
+is, and `provision_worktree` refuses with `BaseMoved` before any worker exists. The transcript
+then read:
+
+```
+run-started-dispatch {"code":"failed_precondition","message":"worktree provisioning refused: BaseMoved"}
+state afterwards = running
+```
+
+`running`, with nothing running. Over the whole workspace the Host constructed four `TaskAction`s
+and `Fail` was not one of them, so a task that entered `Running` could only leave it by completing
+— and a run that refused pinned it there for the life of the store. Worse, four tests *asserted*
+`running` after a refusal, one of them with a comment calling the state "intact for Host retry
+policy". That assertion was the defect: the retry policy those tests meant to protect is the
+dispatch binding, which does survive; the task's own state was never the part that had to hold.
+
+The second blocker was a consequence of the release commit above. The reservation the refused
+provisioning left could not be reclaimed by anything: `release_change_stream` requires an
+integrated stream, and this stream never becomes one. It answered
+`worktree removal refused: GitRefused` — because the directory existed and git had never heard of
+it. That refusal means "nothing to remove"; reading it as "work in the way" is the mirror image of
+reading a dirty worktree as an empty one.
+
+Three operations close it, and they are one story. A refused run now files its own `Fail` before
+returning the refusal — every error past the two request-identity preconditions, under a command
+id derived from the run's own — and releases the lease, which was a second claim that execution
+was in progress and which fenced the task's own re-dispatch with `resource conflict`.
+`abandon_change_stream` cancels an unlanded stream and reclaims its location, and is the only
+operation in the product that destroys work: it refuses an integrated stream outright, and
+`--force` is a parameter (`RemovalForce`) rather than a property of the repository crate, because
+only the abandon may discard uncommitted files and only the release may not. `recover_task` returns
+`Failed` or `Interrupted` to `Ready`; the lifecycle reaches `Ready` only through it, which is why
+the two were missing together.
+
+`symbiote_repo::registered_worktrees` is the fact the reclaim path turns on, and it exists because
+conflating "no worktree" with "dirty worktree" in either direction is wrong. `reclaim_worktree` is
+one function both paths call, so the integrated and abandoned cases cannot drift apart in the only
+respect that matters: what is deleted. Both ask their state question *before* the irreversible
+half — the first version of the abandon answered its own second call with
+`worktree reservation release refused: NotFound`, having deleted nothing and then reported a
+filesystem error instead of the lifecycle answer.
+
+The second harness transcript, `/mnt/data/tmp/ship/failing_run.sh`, walks it with first-class
+commands only and ends with a new task running to completion.
+
+**And the report that could have said so, did not.** `prepare_dispatch` on that same recovered
+task returned `outcome: "ready"` — and then the start refused with `stream_inactive`. The report's
+`Worktree` step was `declared: true`, a constant that could not be false, and the refusal the
+boundary used was `DispatchRefusal::StreamInactive`, a vocabulary member *no report could reach*.
+The same shape as the three defects above, one level down: a step reporting a fact it never
+checked. The step now carries `startable` and the `state` it read, the outcome accounts for it, and
+`validate` refuses a report whose step contradicts its own recorded state — so nothing can hand a
+client a report calling a cancelled stream startable.
+
+**Named, not deferred:** the abandoned stream is terminal, so the retry is a *new* task — a
+recovered task cannot be re-dispatched under a cancelled stream. That is the correct answer
+rather than a gap, but it means a failed unit of work costs a new task record, and while the
+preparation now says `stream_inactive` up front, nothing tells an operator that up front *at
+create* time.
 
 **Candidate, not a decision — the reap test's deadline race.** CI failed
 `a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean` once on the 1.85.0 leg with
