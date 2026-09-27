@@ -880,6 +880,23 @@ impl ChangeStream {
     pub fn lineage(&self) -> &StreamLineage {
         &self.lineage
     }
+
+    /// The stream this one collided with, when it has been told it collided.
+    ///
+    /// A refusal that cannot say who took the Root is a refusal the operator
+    /// has to go and find out for themselves, and the record of who did was
+    /// written by the Host at the moment it found out. Reading it back is how
+    /// a second attempt says the same thing as the first: the state says
+    /// `Collided` but not why, and this is the why.
+    pub fn collided_with(&self) -> Option<&ChangeStreamId> {
+        self.history
+            .iter()
+            .rev()
+            .find_map(|event| match &event.command.action {
+                StreamAction::Collision { other } => Some(other),
+                _ => None,
+            })
+    }
     pub fn history(&self) -> &[StreamEvent] {
         &self.history
     }

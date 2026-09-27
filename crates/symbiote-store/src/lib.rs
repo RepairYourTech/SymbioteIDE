@@ -810,6 +810,19 @@ impl Store {
         read_stream(&self.connection, id)
     }
 
+    /// Every change stream cut against one root, in id order.
+    ///
+    /// This exists because two streams cut from the same base both believe
+    /// they are the Root's next commit, and the Host can only say *which one
+    /// got there first* if it can read the others. Naming the stream that
+    /// holds the Root is the whole of what a collision report says, so a
+    /// question that has no answer in the store cannot be answered in a
+    /// refusal. The read is one query, because a refusal that costs a scan
+    /// per candidate stream is a refusal nobody can afford to make.
+    pub fn root_streams(&self, project: &ProjectId, root: &RootId) -> Result<Vec<ChangeStream>> {
+        read_root_streams(&self.connection, project, root)
+    }
+
     /// Internal trusted Host boundary for a change stream, exactly as
     /// [`Store::apply_task`] is for a task: the caller authenticates and
     /// constructs the command, this method does not.
@@ -2231,6 +2244,52 @@ fn read_stream(connection: &Connection, id: &ChangeStreamId) -> Result<ChangeStr
         ));
     }
     Ok(stream)
+}
+
+/// The same row contract as [`read_stream`], applied to every stream on one
+/// root. The column/body cross-check is not repeated per row because it is the
+/// same check: a body whose columns disagree is the same defect whichever
+/// query found it, and skipping it here would make a listing a weaker
+/// guarantee than a single read.
+fn read_root_streams(
+    connection: &Connection,
+    project: &ProjectId,
+    root: &RootId,
+) -> Result<Vec<ChangeStream>> {
+    let mut statement = connection.prepare(
+        "SELECT id,project_id,root_id,worktree_id,branch,body FROM streams \
+         WHERE project_id=?1 AND root_id=?2 ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map(params![project.as_str(), root.as_str()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut streams = Vec::with_capacity(rows.len());
+    for (id, project_column, root_column, worktree, branch, body) in rows {
+        let stream: ChangeStream = serde_json::from_str(&body)?;
+        if stream.id().as_str() != id
+            || stream.project_id().as_str() != project_column
+            || stream.root_id().as_str() != root_column
+            || stream.worktree.as_str() != worktree
+            || stream.branch != branch
+            || project_column != project.as_str()
+            || root_column != root.as_str()
+        {
+            return Err(StoreError::Integrity(
+                "stream columns differ from validated body".into(),
+            ));
+        }
+        streams.push(stream);
+    }
+    Ok(streams)
 }
 
 #[cfg(test)]

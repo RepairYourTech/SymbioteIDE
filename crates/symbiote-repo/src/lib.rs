@@ -41,6 +41,43 @@ pub trait GitExecutor {
     /// spawn failure, deadline, nonzero exit, and oversized output — the
     /// caller cannot distinguish them and must not guess.
     fn run(&mut self, worktree: &Path, args: &[&str]) -> Result<Vec<u8>, GitError>;
+
+    /// What merging `theirs` into `ours` would take, asked without touching
+    /// either side: `git merge-tree --write-tree --no-messages --name-only -z
+    /// <ours> <theirs>` writes the merged tree and, when both sides moved a
+    /// path, that path after it.
+    ///
+    /// `--no-messages` and `-z` are what make the frame readable at all. Git
+    /// writes its `Auto-merging` and `CONFLICT` prose to STDOUT, interleaved
+    /// with the very paths this needs, so a caller that trusted the lines
+    /// would report `CONFLICT (content): Merge conflict in README.md` as a
+    /// filename; and a NUL-separated frame cannot be confused with prose the
+    /// way a line-separated one can.
+    ///
+    /// This is a second method rather than a shape of `run` because for this
+    /// one git a nonzero exit IS the answer, and `run` throws its output away
+    /// in that case. The distinction `run` refuses to guess at is preserved
+    /// here rather than relaxed: `Conflicted` is returned only for a frame
+    /// that parses as a tree followed by paths, and a frame that parses as
+    /// nothing stays `Err(GitError::GitRefused)`.
+    fn preview_merge(
+        &mut self,
+        worktree: &Path,
+        ours: &str,
+        theirs: &str,
+    ) -> Result<MergePreview, GitError>;
+}
+
+/// The answer to "would these two histories merge without a decision from
+/// anyone". Asked before anything is moved, so that the question can be asked
+/// at all on the day it needs answering.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MergePreview {
+    /// Both sides merge: no path is claimed by both.
+    Clean,
+    /// Both sides moved these paths, and a person must say which wins.
+    Conflicted { paths: Vec<String> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +140,49 @@ impl GitExecutor for SystemGit {
     /// cannot hold the caller forever); the output bound is enforced by the
     /// reader. Exit status: nonzero is `GitRefused`.
     fn run(&mut self, worktree: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
+        let (succeeded, buffer) = self.invoke(worktree, args)?;
+        if succeeded {
+            Ok(buffer)
+        } else {
+            Err(GitError::GitRefused)
+        }
+    }
+
+    /// The same invocation, keeping the output a nonzero exit produced so the
+    /// conflict paths survive to the caller that has to name them.
+    fn preview_merge(
+        &mut self,
+        worktree: &Path,
+        ours: &str,
+        theirs: &str,
+    ) -> Result<MergePreview, GitError> {
+        let (succeeded, buffer) = self.invoke(
+            worktree,
+            &[
+                "merge-tree",
+                "--write-tree",
+                "--no-messages",
+                "--name-only",
+                "-z",
+                ours,
+                theirs,
+            ],
+        )?;
+        match parse_merge_preview(&buffer) {
+            Some(preview) => Ok(preview),
+            // A tree and no paths is a clean merge; a tree and paths is a
+            // conflict; anything else is not an answer this crate will read.
+            None if succeeded => Err(GitError::MalformedOutput),
+            None => Err(GitError::GitRefused),
+        }
+    }
+}
+
+impl SystemGit {
+    /// The invocation itself, reporting the exit status and the bounded
+    /// output together. Shared by the two trait methods above so the deadline,
+    /// the output bound, and the null stdin cannot drift between them.
+    fn invoke(&mut self, worktree: &Path, args: &[&str]) -> Result<(bool, Vec<u8>), GitError> {
         use std::io::Read;
         use std::sync::{
             Arc,
@@ -158,11 +238,45 @@ impl GitExecutor for SystemGit {
         completion_flag.store(true, Ordering::Release);
         let _ = watchdog.join();
         match (read_result, status) {
-            (Ok(()), Ok(status)) if status.success() => Ok(buffer),
-            (Ok(()), Ok(_)) => Err(GitError::GitRefused),
+            (Ok(()), Ok(status)) => Ok((status.success(), buffer)),
             (Ok(()), Err(_)) => Err(GitError::Execution),
             (Err(error), _) => Err(error),
         }
+    }
+}
+
+/// Reads a NUL-separated `merge-tree --write-tree` frame: the merged tree,
+/// then only when both sides moved a path, those paths. `None` for anything
+/// else, which is how an exit that carried no answer stays an error instead
+/// of becoming a guess. The trailing NUL git writes leaves an empty final
+/// record, dropped here rather than counted as an empty path.
+///
+/// A frame that does not end in a NUL is refused rather than read: git
+/// terminates every record, so a frame missing one is either a foreign shape
+/// or a frame the bounded reader cut short, and reading a clean merge out of
+/// a truncated one is precisely the guess this function exists to refuse.
+fn parse_merge_preview(buffer: &[u8]) -> Option<MergePreview> {
+    let text = std::str::from_utf8(buffer).ok()?;
+    if !text.ends_with('\0') {
+        return None;
+    }
+    let mut records = text.split('\0');
+    // The same object-id shape every other fact in this crate is held to.
+    trimmed_hex(records.next()?.as_bytes()).ok()?;
+    let mut paths = Vec::new();
+    for record in records {
+        if record.is_empty() {
+            continue;
+        }
+        if record.len() > MAX_PATH_BYTES {
+            return None;
+        }
+        paths.push(record.to_string());
+    }
+    if paths.is_empty() {
+        Some(MergePreview::Clean)
+    } else {
+        Some(MergePreview::Conflicted { paths })
     }
 }
 
@@ -839,6 +953,18 @@ mod tests {
             ));
             self.frames.pop_front().unwrap_or(Err(GitError::GitRefused))
         }
+
+        /// A scripted executor answers with what it was scripted with. Nothing
+        /// in this module's tests previews a merge, and the alternative — a
+        /// stand-in that invented an answer — is the guessing `run` refuses.
+        fn preview_merge(
+            &mut self,
+            _worktree: &Path,
+            _ours: &str,
+            _theirs: &str,
+        ) -> Result<MergePreview, GitError> {
+            Err(GitError::GitRefused)
+        }
     }
 
     /// A recording executor for test call-count pins.
@@ -854,6 +980,161 @@ mod tests {
             ));
             Ok(Vec::new())
         }
+
+        fn preview_merge(
+            &mut self,
+            _worktree: &Path,
+            _ours: &str,
+            _theirs: &str,
+        ) -> Result<MergePreview, GitError> {
+            Err(GitError::GitRefused)
+        }
+    }
+
+    /// The question the collision story depends on, asked of real git: does
+    /// putting the Root's work under the stream need a decision from a person?
+    /// Both answers are pinned, because the Host refuses to rebase on the
+    /// strength of this and must be right about the difference.
+    #[test]
+    fn preview_merge_separates_a_clean_merge_from_one_needing_a_decision() {
+        let repo = TempRepo::new("preview");
+        let git_run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo.dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let commit = |args: &[&str]| {
+            git_run(&[
+                "-c",
+                "user.email=t@symbiote.test",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "work",
+                "--allow-empty",
+            ]);
+            let _ = args;
+        };
+        let head = |ref_name: &str| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo.dir)
+                .args(["rev-parse", ref_name])
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        let base = head("HEAD");
+
+        // Two sides that moved different files: the merge needs no decision.
+        git_run(&["checkout", "-q", "-b", "rootwork", &base]);
+        std::fs::write(repo.dir.join("root-only.md"), "root\n").unwrap();
+        git_run(&["add", "."]);
+        commit(&[]);
+        let root = head("HEAD");
+        git_run(&["checkout", "-q", "-b", "stream", &base]);
+        std::fs::write(repo.dir.join("stream-only.md"), "stream\n").unwrap();
+        git_run(&["add", "."]);
+        commit(&[]);
+        let stream = head("HEAD");
+
+        let mut git = SystemGit::new();
+        assert_eq!(
+            git.preview_merge(&repo.dir, &root, &stream).unwrap(),
+            MergePreview::Clean
+        );
+        // Asking must move nothing: the branch and the root still point where
+        // they did, or the question is not a question.
+        assert_eq!(head("HEAD"), stream);
+        assert_eq!(head("rootwork"), root);
+
+        // The same two sides after both touched one file: now a person must
+        // decide, and the path is part of the answer.
+        git_run(&["checkout", "-q", "rootwork"]);
+        std::fs::write(repo.dir.join("README.md"), "# both\n").unwrap();
+        git_run(&["add", "."]);
+        commit(&[]);
+        let root = head("HEAD");
+        git_run(&["checkout", "-q", "stream"]);
+        std::fs::write(repo.dir.join("README.md"), "# stream\n").unwrap();
+        git_run(&["add", "."]);
+        commit(&[]);
+        let stream = head("HEAD");
+
+        assert_eq!(
+            git.preview_merge(&repo.dir, &root, &stream).unwrap(),
+            MergePreview::Conflicted {
+                paths: vec!["README.md".to_string()]
+            }
+        );
+        assert_eq!(head("HEAD"), stream);
+        assert_eq!(head("rootwork"), root);
+    }
+
+    /// A nonzero exit that carried no tree is not an answer, and the crate
+    /// does not read one into existence: an unsupported flag and a broken
+    /// repository both stay the refusal they are.
+    #[test]
+    fn preview_merge_refuses_a_frame_that_is_not_a_merge_answer() {
+        let mut git = SystemGit::new();
+        let missing = std::env::temp_dir().join("symbiote-repo-no-such-repo");
+        let _ = std::fs::remove_dir_all(&missing);
+        assert!(matches!(
+            git.preview_merge(&missing, "HEAD", "HEAD"),
+            Err(GitError::Execution) | Err(GitError::GitRefused)
+        ));
+        // A frame whose first record is not an object id is not an answer
+        // either, whatever the exit status was.
+        let tree = "a".repeat(40);
+        assert_eq!(parse_merge_preview(b""), None);
+        // A frame with no NUL terminator at all: git terminates every record,
+        // so this is a foreign shape or a frame the bounded reader cut short.
+        assert_eq!(parse_merge_preview(tree.as_bytes()), None);
+        assert_eq!(
+            parse_merge_preview(format!("{tree}\0README.md").as_bytes()),
+            None
+        );
+        assert_eq!(parse_merge_preview(b"not-a-tree\0README.md\0"), None);
+        // This is the frame as git writes it WITHOUT `--no-messages`, and it
+        // is the reason that flag is on the invocation: the paths are there
+        // and so is the prose, and nothing in the frame tells a parser which
+        // is which. A caller reading this reports two of its own "paths" as
+        // filenames, so the flag — not a heuristic — is what makes the answer
+        // trustworthy.
+        assert_eq!(
+            parse_merge_preview(
+                format!("{tree}\0Auto-merging README.md\0CONFLICT (content): Merge conflict in README.md\n\0")
+                    .as_bytes()
+            ),
+            Some(MergePreview::Conflicted {
+                paths: vec![
+                    "Auto-merging README.md".to_string(),
+                    "CONFLICT (content): Merge conflict in README.md\n".to_string()
+                ]
+            })
+        );
+        // The two frames that are answers, in the shape `--no-messages -z`
+        // writes: NUL-separated, with the trailing NUL git leaves behind.
+        assert_eq!(
+            parse_merge_preview(format!("{tree}\0").as_bytes()),
+            Some(MergePreview::Clean)
+        );
+        assert_eq!(
+            parse_merge_preview(format!("{tree}\0README.md\0src/lib.rs\0").as_bytes()),
+            Some(MergePreview::Conflicted {
+                paths: vec!["README.md".to_string(), "src/lib.rs".to_string()]
+            })
+        );
     }
 
     #[test]

@@ -1295,6 +1295,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "Put a collided stream's work back on top of the Root, and record that\nit is there.\n\n`AdvanceChangeStream` re-points a stream at the Root's current head,\nwhich is the right answer when nothing else moved and the wrong one\nwhen another stream already landed: the branch's commits are not\nbuilt on the Root's new head, so the re-pointed stream still cannot\nfast-forward and the collision is only renamed. The domain has said so\nsince the lifecycle was written — `StreamAction::Reconcile` is legal\nfrom `Collided` and `Advance` refuses it — and no operation carried\neither half, so a collided stream had no way out but to be abandoned\nwith its work thrown away.\n\nThe rebase happens here rather than in the caller's hands because the\nHost is the only party that can prove it is safe to do: it asks git\nwhat the merge would take before moving anything, and refuses naming\nthe paths when a person has to decide. A caller that has already\nrebased by hand gets the same answer — the question is asked of the\ncheckout, not of the request.",
+            "properties": {
+              "kind": {
+                "const": "reconcile_change_stream",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "Declare that a run is not coming back. `Running`,\n`CompletionRequested` and `Verifying` become `Interrupted`, which is\nthe one state a crashed or abandoned run can be moved out of.\n\nA refused run files its own failure, so this is for the case nothing\nelse can file: the Host died with the task `Running`, and no run is\nleft to observe. `reason` is the caller's, because only the caller\nknows which of those it was — the Host cannot distinguish a crash from\nan operator walking away, and both arrive here.",
             "properties": {
               "kind": {

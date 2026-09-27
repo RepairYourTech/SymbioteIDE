@@ -98,6 +98,13 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     // Root is, which invalidates the evidence the previous target was
     // validated against. A mutation: it decides what may be merged where.
     ("advance_change_stream", Risk::Mutation),
+    // Merges the Root into the stream's branch, adding a commit to it. A
+    // mutation and not a dangerous kind because the one thing that would
+    // destroy work is the one thing this refuses: where both sides changed a
+    // path the Host asks git first, says which paths, and merges nothing.
+    // Nothing already committed is rewritten, so no id the store has recorded
+    // moves under a caller.
+    ("reconcile_change_stream", Risk::Mutation),
     // Ends a run's execution authority — the same thing `complete_task` is
     // gated for, and for the same reason: the run stops being the task's
     // future, and only an operator may say so.

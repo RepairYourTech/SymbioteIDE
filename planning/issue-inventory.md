@@ -581,6 +581,97 @@ and no hang. The product behaviour is honest in both branches; the **test** asse
 race the code does not promise. That is a flaky assertion, not a product defect, and it was left
 alone.
 
+**Found in the tenth pass — two streams cut from one base, and the second had no way
+through.** The orphan sweep's standing note was that `StreamAction::{Collision, Reconcile}`
+had `production = 0` while `StreamState::Collided` was unreachable. The ninth pass took the
+four `TaskAction` orphans as its subject; this one took the stream half, because the sweep
+can say a variant is unconstructed but not what an operator loses by that.
+
+The subject was measured, not read. A transcript cut two streams from the same commit, ran
+both to `completed`, integrated the first, and then asked the second what it could do. The
+first probe ordered its own steps badly — it abandoned the stream before asking about
+`advance` and `validate`, so those refusals were partly consequences of the probe — and
+re-ordering it changed the picture: `advance-change-stream` **succeeded**, re-pointing the
+stream at the Root's new head, and the next integrate failed with
+`fast-forward integration refused: GitRefused`. So there was a second defect underneath the
+first: the operation that looked like a way out was a way of renaming the collision. A
+stream re-pointed at a Root its branch was never built on still cannot fast-forward, and
+`GitRefused` is the whole of what git's answer survived as, because `GitExecutor::run`
+discards stdout on a nonzero exit and this crate's `GitError` has no stderr.
+
+The wedge was this. Two streams cut from one base both hold verified work and both expect to
+be the Root's next commit. The first to integrate moves the Root. The second then has:
+`integrate` refusing with `root checkout is not at the stream's recorded target`, naming
+neither who moved the Root nor what to do; `release` refusing, because it needs an integrated
+stream; `validate` refusing from `Collided`; and `advance` either refusing or, before this
+pass, succeeding and making the next integrate fail. The only exit left was to abandon a
+stream whose work had been verified, and throw it away.
+
+So the collision is now a **state the Host records**, which is what makes the rest walkable:
+`StreamState::Collided` refuses `Advance` and admits `Reconcile`, and the domain had said so
+since the lifecycle was written. The integrate refusal names the stream that took the Root,
+the commit it is at, and the work stranded on top of what it had recorded; the record of
+*who* collided is read back on a second ask, so the answer does not depend on how many times
+it was asked. The command id it is journaled under is derived from the Root's commit rather
+than the caller's — a collision is the Host's own observation, and spending the caller's id
+on it would hand a retry a receipt for an action it never asked for.
+
+A collision with **nobody to collide with** is a different thing and is not recorded. When no
+stream cut against that root accounts for the move — a person committed there, or the
+checkout was reset — `Collision { other }` has no honest value to record, because the domain
+refuses an `other` equal to this stream and inventing one would accuse a stream of something
+it did not do. That case is told apart and points at `advance-change-stream`, which
+re-points the stream at a Root nobody else is competing for, and is right for it.
+
+Naming the holder needed a question the store could not answer: `Store::root_streams` reads
+every stream cut against one root in one query, in id order, and is now pinned for order,
+repeatability, and for *not* returning another project's streams — a refusal naming a stream
+from another project would be worse than no refusal at all.
+
+`reconcile-change-stream` gets the Root's commits into the stream's history, and it is a
+**merge, not a rebase**, for a reason the first draft got wrong and the test caught. The
+first draft rebased onto the Root and gated that on
+`git merge-tree --write-tree --name-only -z`, asking whether the two tips merge without a
+decision. Those are not the same question: a rebase replays the branch's commits one at a
+time, so two tips can agree while an earlier commit still conflicts. The daemon test found
+exactly that — after an operator resolved the conflicting file by hand so the *tips* agreed,
+the preview said clean and the rebase still failed halfway. A merge of the Root into the
+branch is one operation between the same two tips, which is precisely what `merge-tree`
+computes, so the preview became the move asked in advance rather than an approximation of it.
+It also stops rewriting every commit id the stream had already recorded, which is what the
+operation was for: no id the store holds moves under a caller.
+
+The preview needed a second thing, found by reading git's own frame rather than assuming it.
+Git writes its `Auto-merging` and `CONFLICT` prose to **standard output**, interleaved with
+the very paths the refusal has to name; a parser that trusted the lines would report
+`CONFLICT (content): Merge conflict in shared/file.txt` as a filename, and the test caught it
+doing so. `--no-messages` is what makes the frame readable, and a frame that is not a tree
+followed by paths is not read as an answer at all — a frame with no NUL terminator is either
+a foreign shape or one the bounded reader cut short, and reading a clean merge out of a
+truncated one is the guess the rest of that crate refuses to make.
+
+The refusals promise what they cost, which is the part a caller has to be able to trust.
+Where both sides moved a path, the refusal names those paths and says `nothing was merged`;
+the checkout's head is proved unchanged and no `MERGE_HEAD` is left behind. A checkout with
+uncommitted work is refused *before* git is asked to start anything, with its changed and
+untracked counts, because a merge over a dirty worktree fails after it has begun. A merge
+that fails after the preview promised it would not is aborted, so the checkout is what the
+caller had either way. And the ancestry is re-checked afterwards, because a merge that exited
+zero and left the Root outside the branch's history would hand `integrate` the same failure
+this operation exists to leave.
+
+A caller who resolves the conflict by hand gets the same answer on the next ask, because the
+question is asked of the repository and never of the request — that path is in the test, and
+it is the reason a refusal costs nothing: the work is still exactly where it was.
+
+Two of the guards in this pass are **not** held by a test, and are kept deliberately. The
+`Integrated | Released` filter on the holder search survives mutation because no fixture can
+produce a stream that is not integrated yet whose head is an ancestor of the Root's — a
+`Validated` stream's head is on its own branch line, and the Root contains a head only once
+it has landed, which is the state the filter is checking for. The post-merge ancestry proof
+survives mutation because real git does not exit zero without merging. Both are defence in
+depth against a git that behaves differently, and both are reported here rather than claimed.
+
 ## Exercised, and what it returned
 
 Two tables, because the two passes measured different things and the difference is not worth

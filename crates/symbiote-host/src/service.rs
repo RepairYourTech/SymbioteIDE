@@ -327,6 +327,155 @@ fn work_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Protoco
     ))
 }
 
+/// The refusal an integrate owes when the Root is not where this stream left
+/// it, and the collision record written on the way out.
+///
+/// The refusal this replaces said only that the Root had moved, which is true
+/// and useless: it named neither who moved it nor what can be done, and the
+/// domain has had `StreamState::Collided` and `StreamAction::Reconcile` since
+/// the lifecycle was written with nothing to construct either. So a second
+/// stream cut from the same base and integrated first left the first with a
+/// state the store called `Validated` and a repository that disagreed, and
+/// every operation available to it either refused (integrate, release) or
+/// pretended (advance re-points at a Root the branch is not built on, and the
+/// next integrate then fails on a fast-forward that can never be one). The
+/// only exit left was to abandon a stream whose work had been verified, and
+/// throw it away.
+///
+/// Recording the collision is what makes the rest of the story walkable: the
+/// domain refuses `Advance` from `Collided` and admits `Reconcile` into it,
+/// so the stream stops pretending and gains the one way through.
+#[allow(clippy::too_many_arguments)]
+fn collided_with_root(
+    store: &mut Store,
+    git: &mut impl symbiote_repo::GitExecutor,
+    request: &Request,
+    task_record: &symbiote_domain::Task,
+    stream: &symbiote_domain::ChangeStream,
+    host_id: &symbiote_domain::HostId,
+    checkout: &std::path::Path,
+    target: &symbiote_domain::CommitSha,
+    access: &symbiote_domain::AccessSnapshot,
+) -> Result<ProtocolError, ProtocolError> {
+    // Who put the Root where it is. Only a stream whose work the Root actually
+    // holds counts, so the states are the two that mean it landed: a stream
+    // that validated but never integrated moved nothing, and naming it would
+    // accuse it of a collision it is not in.
+    // Owned rather than borrowed out of the listing: the answer outlives the
+    // loop that found it, and a record this size is cheaper to carry than to
+    // restructure the scan around.
+    let mut landed: Option<symbiote_domain::ChangeStream> = None;
+    for sibling in store
+        .root_streams(task_record.project_id(), task_record.root_id())
+        .map_err(storage_error)?
+    {
+        if sibling.id() == stream.id()
+            || !matches!(
+                sibling.state(),
+                symbiote_domain::StreamState::Integrated | symbiote_domain::StreamState::Released
+            )
+        {
+            continue;
+        }
+        // The Root standing exactly on a stream's head is the sharpest
+        // evidence there is — that stream is the one that moved it — so an
+        // exact match outranks every ancestor. Failing that, the Root has
+        // moved on since, and the most recently moved of them is the answer
+        // an operator wants: "second landed, and then something landed on top
+        // of second" says more than naming the first of three.
+        let exact = sibling.head() == target;
+        if !exact && !is_ancestry(git, checkout, sibling.head(), target)? {
+            continue;
+        }
+        landed = match landed {
+            None => Some(sibling),
+            // The incumbent is not an exact match — the arm above caught that
+            // — so an exact match here simply wins.
+            Some(current) if current.head() == target => Some(current),
+            Some(_) if exact => Some(sibling),
+            Some(current) if current.revision() > sibling.revision() => Some(current),
+            Some(_) => Some(sibling),
+        };
+    }
+    let Some(holder) = landed else {
+        // No stream accounts for the move, so there is nobody to collide with
+        // and the domain's `Collision { other }` — which refuses an `other`
+        // equal to this stream — has no honest value to record. The Root moved
+        // underneath for a reason the store does not hold: a person committed
+        // there, or the checkout was reset. Both are recoverable, and
+        // `advance` is the operation for them, because it re-points the stream
+        // at a Root nobody else is competing for.
+        return Ok(ProtocolError {
+            code: ErrorCode::FailedPrecondition,
+            message: format!(
+                "the root checkout is at {} and no stream cut against this root put it \
+                 there; advance-change-stream re-points this stream at it, and \
+                 abandon-change-stream gives the work up",
+                target.as_str()
+            ),
+        });
+    };
+    // Recorded once. A second integrate on a stream already told it collided
+    // says the same thing from the record rather than writing a second event:
+    // the state is already right, and a refusal that changed the store would
+    // mean the answer depended on how many times it had been asked.
+    if stream.state() != &symbiote_domain::StreamState::Collided {
+        // The command id is derived from the Root commit rather than taken
+        // from the request, for two reasons. It must not consume the caller's
+        // id: this write is the Host's own observation, and a caller that
+        // retried the integrate would find its id already spent on a
+        // `Collision` and be handed a receipt for an action it never asked
+        // for. And it must be the same id on a retry, so the journal replays
+        // the collision instead of writing a second one. A 40- or 64-character
+        // object id and a fixed prefix is inside the 128-character bound and
+        // inside the character set, whatever the caller sent.
+        let id = symbiote_domain::CommandId::new(format!("collision-{}", target.as_str()))
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+        let command = symbiote_domain::StreamCommand {
+            id,
+            expected_revision: stream.revision(),
+            host_id: host_id.clone(),
+            at: start_timestamp(store, request)?,
+            action: symbiote_domain::StreamAction::Collision {
+                other: holder.id().clone(),
+            },
+        };
+        store
+            .apply_stream(task_record.stream_id(), command, access)
+            .map_err(storage_error)?;
+    }
+    Ok(ProtocolError {
+        code: ErrorCode::FailedPrecondition,
+        message: format!(
+            "this stream collided: {} landed on the root at {} first, and this stream's \
+             work is at {} on top of {}; reconcile-change-stream puts the root's work \
+             under it when nothing needs deciding, and abandon-change-stream gives \
+             this work up",
+            holder.id(),
+            target.as_str(),
+            stream.head().as_str(),
+            stream.target().as_str(),
+        ),
+    })
+}
+
+/// The ancestry question, asked in one place so the collision report and the
+/// release guard cannot come to disagree about what the Root holds.
+fn is_ancestry(
+    git: &mut impl symbiote_repo::GitExecutor,
+    checkout: &std::path::Path,
+    ancestor: &symbiote_domain::CommitSha,
+    descendant: &symbiote_domain::CommitSha,
+) -> Result<bool, ProtocolError> {
+    symbiote_repo::is_ancestor(git, checkout, ancestor.as_str(), descendant.as_str()).map_err(
+        |error| {
+            storage_error(StoreError::Integrity(format!(
+                "root checkout ancestry is not observable: {error:?}"
+            )))
+        },
+    )
+}
+
 fn execute(
     store: &mut Store,
     principal: &Principal,
@@ -988,10 +1137,17 @@ fn execute(
             // abandon that refuses a stream whose work landed. The same
             // idempotence the reclaim needed, one step later in the lifecycle.
             if target != *stream.target() && target != *stream.head() {
-                return Err(ProtocolError {
-                    code: ErrorCode::FailedPrecondition,
-                    message: "root checkout is not at the stream's recorded target".into(),
-                });
+                return Err(collided_with_root(
+                    store,
+                    &mut git,
+                    request,
+                    &task_record,
+                    &stream,
+                    &this_host,
+                    std::path::Path::new(checkout),
+                    &target,
+                    dispatch.contract().effective_access(),
+                )?);
             }
             // A fast-forward only: a merge the Host would have to resolve is a
             // merge the Host has no authority to decide. It is a no-op when the
@@ -1363,6 +1519,216 @@ fn execute(
                 host_id: this_host,
                 at: start_timestamp(store, request)?,
                 action: symbiote_domain::StreamAction::Advance { head, target },
+            };
+            store
+                .apply_stream(
+                    task_record.stream_id(),
+                    command,
+                    dispatch.contract().effective_access(),
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::ReconcileChangeStream { task_id } => {
+            // The way out of a collision, and the reason the collision is
+            // recorded as a state rather than a message.
+            //
+            // A stream whose work is on top of a Root that another stream has
+            // already moved cannot fast-forward, and the only way to make it
+            // fast-forwardable is to get the Root's commits into its history.
+            // Where both sides changed a file, that needs a person: git stops
+            // and asks. So the order here is the whole of the operation — ask
+            // first, move second, record third.
+            //
+            // The move is a MERGE and not a rebase, and the reason is that the
+            // question asked first has to be the question the move answers. A
+            // rebase replays the branch's commits one at a time onto the Root,
+            // so "does this merge need a decision" is not the same question:
+            // two tips can agree while an earlier commit still conflicts, and
+            // a rebase then fails halfway with a conflict to clean up. A merge
+            // of the Root into the branch is one operation between the same
+            // two tips, which is exactly what `preview_merge` computes — so
+            // the preview is the move, asked in advance, rather than an
+            // approximation of it. A rebase would also rewrite every commit id
+            // the stream had already recorded, for no gain: the work is the
+            // same work under the same content, and those commits are the
+            // record of what the run did.
+            //
+            // Asking first is why the Host does this at all rather than
+            // handing the caller a merge to run. `preview_merge` is asked of
+            // the checkout and changes nothing, so the refusal that matters
+            // ("both sides changed these paths") costs no commits and leaves
+            // no merge in progress. A caller who has already resolved the
+            // conflict by hand lands in the same place: the question is asked
+            // of the repository, never of the request.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let dispatch = task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            let this_host = inventory.host_id().clone();
+            // Asked before anything irreversible, for the same reason the
+            // reclaim asks it: a caller who asks twice must not run the
+            // irreversible half twice and only then hear the stream is
+            // already reconciled. The domain would refuse the second write
+            // anyway, having moved to `NeedsRevalidation` — but only after the
+            // merge had run again, and a second merge of a Root the branch
+            // already contains is a commit nobody asked for.
+            if stream.state() != &symbiote_domain::StreamState::Collided {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!(
+                        "this stream has not collided, so there is nothing to reconcile; it \
+                         is {} and only a collided stream is put back on the root",
+                        match stream.state() {
+                            symbiote_domain::StreamState::Active => "active",
+                            symbiote_domain::StreamState::NeedsRevalidation => {
+                                "awaiting revalidation"
+                            }
+                            symbiote_domain::StreamState::Validated => "validated",
+                            symbiote_domain::StreamState::Integrated => "integrated",
+                            symbiote_domain::StreamState::Released => "released",
+                            symbiote_domain::StreamState::Cancelled => "cancelled",
+                            symbiote_domain::StreamState::Collided => "collided",
+                        }
+                    ),
+                });
+            }
+            let root = store.root(task_record.root_id()).map_err(storage_error)?;
+            let checkout = root
+                .host_paths
+                .get(&this_host)
+                .ok_or_else(|| worker_error(crate::runner::RunnerError::NoHostPath))?
+                .clone();
+            let reservation_base = workers.reservation_base().map_err(worker_error)?;
+            let derived = crate::runner::derived_worktree(
+                task_record.project_id(),
+                task_record.root_id(),
+                task_record.stream_id(),
+            )
+            .map_err(worker_error)?;
+            let worktree = derived.worktree_path(&reservation_base);
+            if !worktree.join(".git").exists() {
+                // Named here rather than as a git failure, and before the
+                // preview: a checkout that is not there cannot be merged into,
+                // and a `GitError` from a missing directory is
+                // indistinguishable from every other way git can refuse.
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "the stream's checkout does not exist; there is nothing to \
+                              reconcile onto the root"
+                        .into(),
+                });
+            }
+            let mut git = workers.git();
+            // What the Root is at now, which is what the work goes on top of.
+            let at_root = symbiote_repo::observe_head(&mut git, std::path::Path::new(&checkout))
+                .map_err(|error| {
+                    storage_error(StoreError::Integrity(format!(
+                        "root checkout head is not observable: {error:?}"
+                    )))
+                })?;
+            let onto = symbiote_domain::CommitSha::new(at_root.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            // Uncommitted work first. A merge over a dirty checkout fails
+            // after git has already decided to start one, and what it leaves
+            // behind is a merge in progress that the next operator has to
+            // find. Saying so before asking anything is the difference between
+            // a refusal and a mess.
+            let status = symbiote_repo::observe_status(&mut git, &worktree).map_err(|error| {
+                storage_error(StoreError::Integrity(format!(
+                    "stream worktree status is not observable: {error:?}"
+                )))
+            })?;
+            if !status.uncommitted.is_empty() || !status.untracked.is_empty() {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!(
+                        "the stream's checkout holds {} changed and {} untracked paths, so \
+                         nothing was merged; commit or clear them in the checkout and ask \
+                         again",
+                        status.uncommitted.len(),
+                        status.untracked.len(),
+                    ),
+                });
+            }
+            // The question, asked of the repository and not of the request.
+            // The Root is `ours` and the stream's branch is `theirs`, which is
+            // the direction the merge below runs in.
+            match symbiote_repo::GitExecutor::preview_merge(
+                &mut git,
+                &worktree,
+                onto.as_str(),
+                stream.branch.as_str(),
+            ) {
+                Ok(symbiote_repo::MergePreview::Clean) => {}
+                Ok(symbiote_repo::MergePreview::Conflicted { paths }) => {
+                    return Err(ProtocolError {
+                        code: ErrorCode::FailedPrecondition,
+                        message: format!(
+                            "the root's work and the stream's work both changed {}, so \
+                             nothing was merged; resolve it in the checkout and ask again",
+                            paths.join(", ")
+                        ),
+                    });
+                }
+                Err(error) => {
+                    return Err(storage_error(StoreError::Integrity(format!(
+                        "the merge onto the root is not observable: {error:?}"
+                    ))));
+                }
+            }
+            // Now the move. `--no-edit` because this Host gives git a null
+            // stdin and no terminal, so an editor would be a failure rather
+            // than a prompt. A merge that fails here is one git refused after
+            // the preview said it would not, and the abort is what keeps the
+            // checkout the caller had: without it the worktree is left mid-
+            // merge, which is a state neither this Host nor the next one knows
+            // how to read.
+            if let Err(error) = symbiote_repo::GitExecutor::run(
+                &mut git,
+                &worktree,
+                &["merge", onto.as_str(), "--no-edit"],
+            ) {
+                let _ = symbiote_repo::GitExecutor::run(&mut git, &worktree, &["merge", "--abort"]);
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!(
+                        "the merge of the root was refused ({error:?}) after the merge preview \
+                         said it would not be; the checkout was put back as it was"
+                    ),
+                });
+            }
+            let observed = symbiote_repo::observe_head(&mut git, &worktree).map_err(|error| {
+                storage_error(StoreError::Integrity(format!(
+                    "stream worktree head is not observable: {error:?}"
+                )))
+            })?;
+            let head = symbiote_domain::CommitSha::new(observed.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            // The proof the merge did what it was asked to. A merge that
+            // exited zero and left the Root outside the branch's history would
+            // make the fast-forward in `integrate` fail on exactly the ground
+            // this operation exists to leave, so it is asked here where the
+            // answer can still be refused.
+            if !is_ancestry(&mut git, &worktree, &onto, &head)? {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: format!(
+                        "the merge finished but {} is not in the stream's history, so \
+                         nothing was recorded",
+                        onto.as_str()
+                    ),
+                });
+            }
+            let command = symbiote_domain::StreamCommand {
+                id: request.command_id.clone(),
+                expected_revision: stream.revision(),
+                host_id: this_host,
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::StreamAction::Reconcile { head, target: onto },
             };
             store
                 .apply_stream(
@@ -2810,6 +3176,19 @@ mod reclaim_tests {
                 return Ok(text.into_bytes());
             }
             Ok(Vec::new())
+        }
+
+        /// This double scripts the worktree list and nothing else; a reconcile
+        /// asking it about a merge has not been scripted, and saying so is the
+        /// honest answer rather than a clean bill of health.
+        fn preview_merge(
+            &mut self,
+            _worktree: &std::path::Path,
+            _ours: &str,
+            _theirs: &str,
+        ) -> Result<symbiote_repo::MergePreview, symbiote_repo::GitError> {
+            self.calls.set(self.calls.get() + 1);
+            Err(symbiote_repo::GitError::GitRefused)
         }
     }
 

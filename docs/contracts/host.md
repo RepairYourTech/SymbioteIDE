@@ -45,7 +45,8 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
-`advance-change-stream`, `validate-change-stream`,
+`advance-change-stream`, `reconcile-change-stream`,
+`validate-change-stream`,
 `begin-task-verification`, `complete-task`,
 `integrate-change-stream`, `release-change-stream`,
 `abandon-change-stream`, `recover-task`, `interrupt-task`,
@@ -450,6 +451,78 @@ this stream. The advance invalidates any earlier evidence by construction
 (`Advance` clears `last_validated_*` and returns the stream to
 `NeedsRevalidation`), so `validate-change-stream` has to run again, and the
 CLI says so where the operator is standing.
+
+`reconcile-change-stream` is the way out of a collision, and the collision
+itself was a state nothing could reach. Two streams cut from the same base
+both hold validated work and both expect to be the Root's next commit; the
+first to integrate moves the Root, and the second then cannot fast-forward
+onto it. The refusal said only that the Root was not where the stream left
+it, which named neither who moved it nor what to do, and every remaining
+operation was worse than useless: `integrate` refused, `release` needed an
+integrated stream, and `advance` — which re-points a stream at the Root's
+head — pretended the collision away by aiming at a Root the branch was never
+built on, so the next integrate failed on a fast-forward that could never be
+one. The only exit left was to abandon a stream whose work had been verified
+and throw it away. `StreamState::Collided` and `StreamAction::Reconcile` had
+been in the domain since the lifecycle was written, with nothing in the
+workspace to construct either.
+
+The integrate refusal now names the stream that took the Root, the commit it
+is at, and the work that is stranded on top of what it had recorded, and it
+records the collision as a state — which is what makes the rest walkable,
+because the domain refuses `Advance` from `Collided` and admits `Reconcile`
+into it. The record of who collided is read back on a second attempt, so the
+answer does not change with how many times it is asked, and the command id it
+is written under is derived from the Root's commit rather than the caller's,
+so a retry replays the record instead of writing a second one or spending an
+id the caller still owns.
+
+A collision with nobody to collide with is a different thing and is not
+recorded: when no stream cut against that root accounts for the move — a person
+committed there, or the checkout was reset — `advance-change-stream` is the
+honest answer, because it re-points the stream at a Root nobody else is
+competing for.
+
+`reconcile-change-stream` gets the Root's commits into the stream's history, and
+where both sides changed a file that needs a person: git stops and asks. So the
+order is the whole of it — ask, move, record.
+
+The move is a merge of the Root into the stream's branch, and it is a merge
+rather than a rebase because the question asked first has to be the question
+the move answers. A rebase replays the branch's commits one at a time, so "do
+these two tips merge without a decision" is a different question: two tips can
+agree while an earlier commit still conflicts, and the rebase then fails
+halfway with a conflict to clean up. A merge is one operation between the same
+two tips, which is exactly what the preview computes, so the preview is the
+move asked in advance rather than an approximation of it. A rebase would also
+have rewritten every commit id the stream had already recorded, for no gain.
+
+So the Host asks git first, with
+`git merge-tree --write-tree --no-messages --name-only -z`, which writes the
+merged tree and the conflicting paths and touches nothing at all, and it
+refuses naming those paths rather than resolving them. A caller who has already
+resolved the conflict by hand gets the same answer, because the question is
+asked of the repository and never of the request. The checkout is asked to be
+clean first, because a merge over a dirty worktree fails after git has already
+started one and leaves a merge in progress behind it; and a merge that fails
+after the preview said it would not is aborted, so the checkout is what the
+caller had either way. The ancestry is re-checked afterwards, since a merge
+that exited zero and left the Root outside the branch's history would hand the
+fast-forward in `integrate` the same failure this operation exists to leave.
+Nothing already committed is rewritten, so no id the store recorded moves under
+a caller; but the head has moved, so the evidence is stale and the CLI says
+`validate-change-stream` has to run again before the work lands — the same
+staleness `Advance` carries, reached here by the other road.
+
+`--no-messages` is what makes that frame readable. Git writes its `Auto-merging`
+and `CONFLICT` prose to standard output, interleaved with the very paths the
+refusal has to name, and a caller that trusted the lines would report
+`CONFLICT (content): Merge conflict in shared/file.txt` as a filename. A
+frame that is not a tree followed by paths is not read as an answer at all: a
+frame with no NUL terminator is either a foreign shape or one the bounded
+reader cut short, and reading a clean merge out of a truncated one is the
+guess the rest of this crate refuses to make. An unsupported git is refused
+with the paths unnamed rather than guessed at.
 
 `complete-task` is classified dangerous, because it ends a task's execution
 rather than changing it. The refusals name themselves — a claim that does not

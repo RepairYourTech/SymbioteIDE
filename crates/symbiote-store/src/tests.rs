@@ -966,6 +966,41 @@ fn task_records(suffix: &str) -> (Task, ChangeStream) {
     .unwrap();
     (task, stream)
 }
+/// A task and stream on a different project's root. The same shape as
+/// [`task_records`], which is hard-wired to the one fixture project, so the
+/// "another project does not appear" case needs its own — and it takes the
+/// root and role of the project it is for, because those belong to it.
+fn task_records_elsewhere(project_id: &ProjectId) -> (Task, ChangeStream) {
+    let root_id = id!(RootId, "root-two");
+    let task_id = id!(TaskId, "task-elsewhere");
+    let stream_id = id!(ChangeStreamId, "stream-elsewhere");
+    let task = Task::new(
+        task_id.clone(),
+        project_id.to_owned(),
+        root_id.clone(),
+        id!(RoleId, "role-two"),
+        stream_id.clone(),
+        VersionedTaskContract {
+            id: id!(TaskContractId, "task-contract"),
+            revision: Revision(1),
+        },
+    );
+    let stream = ChangeStream::new(NewChangeStream {
+        id: stream_id,
+        project_id: project_id.to_owned(),
+        root_id,
+        tasks: BTreeSet::from([task_id]),
+        originating_chat: id!(ChatId, "chat-elsewhere"),
+        worktree: id!(WorktreeId, "worktree-elsewhere"),
+        branch: "branch-elsewhere".into(),
+        lineage: StreamLineage::Independent,
+        base: sha('a'),
+        target: sha('b'),
+    })
+    .unwrap();
+    (task, stream)
+}
+
 fn start_command(task: &Task, role: &Role) -> TaskCommand {
     let host_id = id!(HostId, "host");
     let profile = RuntimeProfile {
@@ -2192,6 +2227,68 @@ fn process_kill_at_migration_state_journal_and_commit_boundaries_is_atomic() {
             );
         }
     }
+}
+
+/// The root's streams are a question the collision refusal cannot be asked
+/// without: "which stream took the Root" has no answer if the store cannot
+/// list the streams that share it. Read in one query, in id order so a caller
+/// sees the same list twice, and bounded to the root asked about rather than
+/// the project's whole registry.
+#[test]
+fn the_streams_sharing_a_root_are_listed_in_id_order_and_only_for_that_root() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(temporary.database()).unwrap();
+    let project = register(&mut store, "one").0;
+    let root = project.roots.iter().next().unwrap();
+    // Three streams on this root, created out of order so a listing that
+    // sorted by insertion could not hide behind the fixture.
+    for suffix in ["charlie", "alpha", "bravo"] {
+        let (task, stream) = task_records(suffix);
+        store
+            .create_fixture_task(id!(CommandId, format!("create-{suffix}")), task, stream)
+            .unwrap();
+    }
+    // And one in a different project entirely, which must not appear: a
+    // collision is with a stream that competes for the SAME checkout, and a
+    // stream on another root cannot be what took this one. A filter that
+    // forgot the project would name it, and a refusal naming a stream from
+    // another project is worse than no refusal at all.
+    let other_project = register(&mut store, "two").0;
+    let (other_task, other_stream) = task_records_elsewhere(&other_project.id);
+    store
+        .create_fixture_task(id!(CommandId, "create-elsewhere"), other_task, other_stream)
+        .unwrap();
+
+    let listed: Vec<String> = store
+        .root_streams(&project.id, root)
+        .unwrap()
+        .iter()
+        .map(|stream| stream.id().as_str().to_owned())
+        .collect();
+    assert_eq!(
+        listed,
+        vec!["stream-alpha", "stream-bravo", "stream-charlie"],
+        "the root's streams in id order, and nothing from another root"
+    );
+    // Asked twice, the same list: a listing that reordered between calls would
+    // make a refusal name a different stream each time it was asked.
+    let again: Vec<String> = store
+        .root_streams(&project.id, root)
+        .unwrap()
+        .iter()
+        .map(|stream| stream.id().as_str().to_owned())
+        .collect();
+    assert_eq!(listed, again);
+    // A root with no streams is an empty answer, not an error: "nobody else
+    // put the Root where it is" is exactly what a collision has to be able to
+    // say.
+    assert!(
+        store
+            .root_streams(&project.id, &id!(RootId, "root-with-nothing-on-it"))
+            .unwrap()
+            .is_empty()
+    );
+    store.integrity_check().unwrap();
 }
 
 /// A change stream moves, journals once per command, replays an identical

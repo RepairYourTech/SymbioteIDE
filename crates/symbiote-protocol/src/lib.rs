@@ -335,6 +335,28 @@ pub enum Operation {
     AdvanceChangeStream {
         task_id: TaskId,
     },
+    /// Put a collided stream's work back on top of the Root, and record that
+    /// it is there.
+    ///
+    /// `AdvanceChangeStream` re-points a stream at the Root's current head,
+    /// which is the right answer when nothing else moved and the wrong one
+    /// when another stream already landed: the branch's commits are not
+    /// built on the Root's new head, so the re-pointed stream still cannot
+    /// fast-forward and the collision is only renamed. The domain has said so
+    /// since the lifecycle was written — `StreamAction::Reconcile` is legal
+    /// from `Collided` and `Advance` refuses it — and no operation carried
+    /// either half, so a collided stream had no way out but to be abandoned
+    /// with its work thrown away.
+    ///
+    /// The rebase happens here rather than in the caller's hands because the
+    /// Host is the only party that can prove it is safe to do: it asks git
+    /// what the merge would take before moving anything, and refuses naming
+    /// the paths when a person has to decide. A caller that has already
+    /// rebased by hand gets the same answer — the question is asked of the
+    /// checkout, not of the request.
+    ReconcileChangeStream {
+        task_id: TaskId,
+    },
     /// Declare that a run is not coming back. `Running`,
     /// `CompletionRequested` and `Verifying` become `Interrupted`, which is
     /// the one state a crashed or abandoned run can be moved out of.
@@ -531,6 +553,7 @@ impl Operation {
             | Self::ReleaseChangeStream { .. }
             | Self::RecoverTask { .. }
             | Self::AdvanceChangeStream { .. }
+            | Self::ReconcileChangeStream { .. }
             | Self::InterruptTask { .. }
             | Self::CancelTask { .. }
             | Self::AbandonChangeStream { .. } => None,
@@ -598,6 +621,7 @@ impl Operation {
                 | Self::ReleaseChangeStream { .. }
                 | Self::RecoverTask { .. }
                 | Self::AdvanceChangeStream { .. }
+                | Self::ReconcileChangeStream { .. }
                 | Self::InterruptTask { .. }
                 | Self::CancelTask { .. }
                 | Self::AbandonChangeStream { .. }
@@ -947,6 +971,7 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         | Operation::ReleaseChangeStream { .. }
         | Operation::RecoverTask { .. }
         | Operation::AdvanceChangeStream { .. }
+        | Operation::ReconcileChangeStream { .. }
         | Operation::InterruptTask { .. }
         | Operation::CancelTask { .. }
         | Operation::AbandonChangeStream { .. } => {

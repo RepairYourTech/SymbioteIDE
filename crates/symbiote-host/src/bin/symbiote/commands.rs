@@ -489,6 +489,12 @@ pub(crate) fn consequence(name: &str) -> Option<&'static str> {
              HEAD, so any evidence recorded before this is stale and validate-change-stream has \
              to run again",
         ),
+        "reconcile-change-stream" => Some(
+            "the Root's work is merged into the stream's branch, so the evidence recorded before \
+             this is stale and validate-change-stream has to run again before this work lands; \
+             where the Root and the stream both changed a path this refuses, names them, and \
+             changes nothing",
+        ),
         "complete-task" => Some(
             "the gates are filed as evidence and the Task is Completed; the work is not on the \
              Root yet, and integrate-change-stream is what lands it.",
@@ -1497,6 +1503,20 @@ pub(crate) fn commands() -> Vec<Command> {
                 // No commit arguments, which is the whole point: the Host reads
                 // both commits out of the stream's own checkout and the Root's,
                 // so nothing a caller types can become the stream's record.
+                Ok(())
+            },
+        },
+        Command {
+            name: "reconcile-change-stream",
+            summary: "put a collided stream's work back on top of the Root",
+            usage: "reconcile-change-stream <task_id>",
+            kind: Some("reconcile_change_stream"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("reconcile_change_stream"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // No commit argument, like advance: the Root to go on top of and
+                // the head that results are both read out of the checkouts by
+                // the Host, so a caller cannot name either.
                 Ok(())
             },
         },

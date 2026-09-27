@@ -175,6 +175,16 @@ impl Drop for Host {
         let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
+/// A command id derived from a task's own name. `staffing_task` takes its
+/// command id as a `&'static str` and its task and stream ids as `&str`, so a
+/// test that walks the same steps three times cannot hold one binding for
+/// both spellings; this is the `&'static str` half. The suffix carries its own
+/// separator, because a helper that added one would spell `first--stream` and
+/// every assertion naming the stream would have to know that.
+fn concat_id(tag: &str, suffix: &str) -> &'static str {
+    Box::leak(format!("{tag}{suffix}").into_boxed_str())
+}
+
 fn request(command: &str, operation: Value) -> Value {
     json!({"version":{"major":1,"minor": 30},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
@@ -5225,6 +5235,472 @@ fn a_created_task_says_out_loud_what_abandoning_its_stream_will_cost() {
         String::from_utf8_lossy(&run(&["get-task", "staffing-demo", "costly-task"]).stderr)
             .is_empty(),
         "a read of a closed task is still just a read"
+    );
+}
+
+/// Two streams cut from one base, both with work, one integrating first. The
+/// second is then a stream that cannot land, and before this the only thing
+/// the operator was told was that the Root was not where they left it.
+///
+/// The wedge this pins is specific. `advance-change-stream` re-points a stream
+/// at the Root's current head, which looks like a way out and is not: the
+/// branch was never built on the Root the Root has become, so the re-pointed
+/// stream still cannot fast-forward and the collision has only been renamed.
+/// `release` needs an integrated stream, `validate` refuses from `Collided`,
+/// and the one exit left was to abandon a stream whose work had been verified
+/// and throw it away. So the test walks the whole way round: collide, be told
+/// who took the Root, reconcile, land — and then the half that must NOT work,
+/// where both sides moved one file and the merge has to be refused.
+#[test]
+fn a_stream_that_loses_the_race_for_the_root_is_named_and_put_back_on_it() {
+    let (repository, head) = real_repository("collision");
+    let base = std::env::temp_dir().join(format!(
+        "symbiote-collision-worktrees-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "collision-placement",
+        &host.call(request(
+            "collision-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    let git = |directory: &std::path::Path, arguments: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(directory)
+            .args(arguments)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {arguments:?} failed");
+    };
+    let head_of = |directory: &std::path::Path| {
+        String::from_utf8(
+            Command::new("git")
+                .current_dir(directory)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned()
+    };
+    // One task carried all the way to verified, twice over, each writing the
+    // file it is named for. `first` and `third` write the SAME file on purpose
+    // and `second` a different one, so the clean merge and the refused one
+    // are the same fixture rather than two fixtures that each prove half.
+    let carry = |tag: &'static str, file: &str| {
+        staffing_task(
+            &host,
+            concat_id(tag, "-create"),
+            tag,
+            concat_id(tag, "-stream"),
+            &head,
+            &head,
+        );
+        ok_step(
+            concat_id(tag, "-prepare"),
+            &host.call(request(
+                concat_id(tag, "-prepare"),
+                json!({"kind":"prepare_dispatch","task_id":tag}),
+            )),
+        );
+        let started = host.call(request(
+            concat_id(tag, "-start"),
+            json!({"kind":"start_prepared_task","task_id":tag,"host_id":host_id}),
+        ));
+        let dispatch_id =
+            ok_step(concat_id(tag, "-start"), &started)["data"]["dispatch_id"].clone();
+        ok_step(
+            concat_id(tag, "-run"),
+            &host.call(request(
+                concat_id(tag, "-run"),
+                json!({"kind":"run_started_dispatch","task_id":tag,
+                "dispatch_id":dispatch_id}),
+            )),
+        );
+        let worktree = base.join("staffing-demo").join(
+            staffing_worktree(concat_id(tag, "-stream"))
+                .worktree_id
+                .as_str(),
+        );
+        std::fs::write(worktree.join(file), format!("{tag} did the work\n")).unwrap();
+        git(&worktree, &["add", "-A"]);
+        git(
+            &worktree,
+            &[
+                "-c",
+                "user.email=daemon@example.invalid",
+                "-c",
+                "user.name=daemon test",
+                "commit",
+                "-qm",
+                "the run's own work",
+            ],
+        );
+        ok_step(
+            concat_id(tag, "-advance"),
+            &host.call(request(
+                concat_id(tag, "-advance"),
+                json!({"kind":"advance_change_stream","task_id":tag}),
+            )),
+        );
+        ok_step(
+            concat_id(tag, "-validate"),
+            &host.call(request(
+                concat_id(tag, "-validate"),
+                json!({"kind":"validate_change_stream","task_id":tag,
+                "verification_run":concat_id(tag, "-verify")}),
+            )),
+        );
+        ok_step(
+            concat_id(tag, "-begin"),
+            &host.call(request(
+                concat_id(tag, "-begin"),
+                json!({"kind":"begin_task_verification","task_id":tag}),
+            )),
+        );
+        ok_step(
+            concat_id(tag, "-complete"),
+            &host.call(request(
+                concat_id(tag, "-complete"),
+                json!({"kind":"complete_task","task_id":tag,
+                "gates":["tests","security","impact","documentation",
+                "independent_review","delivery","capability_closure"],
+                "reviewer":"lead"}),
+            )),
+        );
+        worktree
+    };
+
+    // All three are in flight before any of them lands, because a stream
+    // cannot be provisioned from a base the Root has already moved past —
+    // which is why a collision is a race that was lost, not a state a stream
+    // can be created into.
+    let first_worktree = carry("first", "first-only.txt");
+    let second_worktree = carry("second", "second-only.txt");
+    let third_worktree = carry("third", "first-only.txt");
+
+    // The race is decided.
+    ok_step(
+        "first-integrate",
+        &host.call(request(
+            "first-integrate",
+            json!({"kind":"integrate_change_stream","task_id":"first"}),
+        )),
+    );
+    let after_first = head_of(&repository);
+    assert_eq!(
+        after_first,
+        head_of(&first_worktree),
+        "the first stream's work is the Root now, which is what makes the second a collision"
+    );
+
+    let second_before = head_of(&second_worktree);
+    // The refusal. It has to name the stream that took the Root, because
+    // "the Root moved" is what the operator had before and could not act on.
+    let collided = host.call(request(
+        "second-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"second"}),
+    ));
+    let said = collided["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("first-stream"),
+        "the refusal has to name the stream that took the Root: {said}"
+    );
+    assert!(
+        said.contains("reconcile-change-stream"),
+        "the refusal has to name the way out of it: {said}"
+    );
+    assert!(
+        said.contains(&after_first),
+        "the refusal has to name where the Root actually is: {said}"
+    );
+    // And the state really moved: `Advance` is refused from `Collided`, which
+    // is the proof the collision was recorded rather than merely described.
+    // This is the operation that used to succeed here and make things worse.
+    // Its own command id, because the one `carry` spent has moved on with the
+    // stream: an id whose command no longer matches is an idempotency
+    // conflict, which is its own answer and not the one under test.
+    let pretended = host.call(request(
+        "second-advance-pretended",
+        json!({"kind":"advance_change_stream","task_id":"second"}),
+    ));
+    assert!(
+        pretended["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("IllegalTransition"),
+        "a collided stream must not be able to re-point itself at the Root and \
+         call the collision settled: {pretended}"
+    );
+    // Asking again says the same thing, because the holder is read back out of
+    // the record rather than re-derived into a second event.
+    let again = host.call(request(
+        "second-integrate-repeated",
+        json!({"kind":"integrate_change_stream","task_id":"second"}),
+    ));
+    assert_eq!(
+        again["result"]["Err"]["message"].as_str().unwrap(),
+        said,
+        "the answer must not depend on how many times it was asked"
+    );
+
+    // The way out, and the whole point of recording the collision: the Root's
+    // work goes underneath this stream's, on top of nothing needing deciding.
+    ok_step(
+        "second-reconcile",
+        &host.call(request(
+            "second-reconcile",
+            json!({"kind":"reconcile_change_stream","task_id":"second"}),
+        )),
+    );
+    let second_after = head_of(&second_worktree);
+    assert_ne!(
+        second_after, second_before,
+        "the Root is in the branch now, so its head cannot be the one it had"
+    );
+    assert_eq!(
+        std::fs::read_to_string(second_worktree.join("second-only.txt")).unwrap(),
+        "second did the work\n",
+        "the merge moved the work, it did not drop it"
+    );
+    // The commit the run made is still the same commit, reachable and
+    // unchanged. A rebase here would have rewritten every id the stream had
+    // already recorded, and a stream whose ids move under a caller is a stream
+    // whose evidence cannot be cited.
+    let output = Command::new("git")
+        .current_dir(&second_worktree)
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            second_before.as_str(),
+            "HEAD",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the run's own commit is still in the branch's history, under its own id"
+    );
+    // The evidence recorded before the merge is gone with it, so the stream
+    // cannot be integrated on the strength of a validation of other commits.
+    let stale = host.call(request(
+        "second-integrate-stale",
+        json!({"kind":"integrate_change_stream","task_id":"second"}),
+    ));
+    assert!(
+        stale["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("StreamNotReady"),
+        "the validation the second stream held was of commits that no longer \
+         exist: {stale}"
+    );
+    ok_step(
+        "second-validate-again",
+        &host.call(request(
+            "second-validate-again",
+            json!({"kind":"validate_change_stream","task_id":"second",
+            "verification_run":"second-verify-again"}),
+        )),
+    );
+    ok_step(
+        "second-integrate-landed",
+        &host.call(request(
+            "second-integrate-landed",
+            json!({"kind":"integrate_change_stream","task_id":"second"}),
+        )),
+    );
+    assert_eq!(
+        head_of(&repository),
+        second_after,
+        "both streams' work is on the Root, which is the whole of the story"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.join("first-only.txt")).unwrap(),
+        "first did the work\n",
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.join("second-only.txt")).unwrap(),
+        "second did the work\n",
+    );
+
+    // The half that must not work. `third` moves the same file `first` moved,
+    // so the Root and this stream both have an opinion about it and git has to
+    // ask a person. The Host asks first and merges nothing, so the refusal
+    // costs the operator no commits and leaves no merge in progress.
+    let third_before = head_of(&third_worktree);
+    host.call(request(
+        "third-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"third"}),
+    ));
+    let refused = host.call(request(
+        "third-reconcile",
+        json!({"kind":"reconcile_change_stream","task_id":"third"}),
+    ));
+    let said = refused["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("first-only.txt"),
+        "the refusal has to name the path that needs deciding: {said}"
+    );
+    assert!(
+        said.contains("nothing was merged"),
+        "the refusal has to say it cost nothing: {said}"
+    );
+    // Named as the conflict it is, not merely as a refusal: "nothing was
+    // merged" is also what a dirty checkout is told, and a test that accepted
+    // either would pass with the conflict check removed.
+    assert!(
+        said.contains("both changed first-only.txt") && !said.contains("untracked"),
+        "this is the conflict, named by its path: {said}"
+    );
+    assert_eq!(
+        head_of(&third_worktree),
+        third_before,
+        "a refused reconcile merges nothing, so the branch is where it was"
+    );
+    assert!(
+        !third_worktree.join(".git").join("MERGE_HEAD").exists(),
+        "a refused reconcile leaves no merge in progress for the next operator to find"
+    );
+    // And the stream is still exactly where the refusal found it: collided,
+    // with the same recorded head, so the operator can resolve the file by
+    // hand and ask again.
+    let after_refusal = host.call(request(
+        "third-reconcile-repeated",
+        json!({"kind":"reconcile_change_stream","task_id":"third"}),
+    ));
+    assert_eq!(
+        after_refusal["result"]["Err"]["message"].as_str().unwrap(),
+        said,
+        "asking again refuses the same way, because nothing changed"
+    );
+
+    // A stream that has not collided has nothing to reconcile. Said as itself
+    // rather than left to the domain's `IllegalTransition`, because "this
+    // stream is integrated" is an answer and "(IllegalTransition)" is not.
+    let healthy = host.call(request(
+        "first-reconcile",
+        json!({"kind":"reconcile_change_stream","task_id":"first"}),
+    ));
+    let said = healthy["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("has not collided") && said.contains("integrated"),
+        "a healthy stream is told what it is, not that a transition failed: {said}"
+    );
+
+    // A checkout with uncommitted work in it is refused before git is asked to
+    // start anything, for the same reason: a merge over a dirty worktree fails
+    // after it has begun and leaves the mess behind.
+    std::fs::write(third_worktree.join("first-only.txt"), "half a thought\n").unwrap();
+    let dirty = host.call(request(
+        "third-reconcile-dirty",
+        json!({"kind":"reconcile_change_stream","task_id":"third"}),
+    ));
+    let said = dirty["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("holds 1 changed and 0 untracked paths"),
+        "a dirty checkout is refused by its own counts, before git is asked \
+         anything: {said}"
+    );
+    assert!(
+        !said.contains("both changed"),
+        "and it is not refused as a conflict, because the conflict was not \
+         what stopped it: {said}"
+    );
+    // A Root that has moved on past the stream that landed is the other half
+    // of the question. Nothing is standing exactly on `second`'s head any
+    // more, so the holder has to be found by ancestry — and the one named is
+    // the most recently moved, not the first, because "second landed and then
+    // something landed on top of second" is what an operator needs to hear.
+    git(
+        &repository,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "a person committed here",
+        ],
+    );
+    let moved_on = host.call(request(
+        "third-integrate-moved-on",
+        json!({"kind":"integrate_change_stream","task_id":"third"}),
+    ));
+    let said = moved_on["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("second-stream"),
+        "the Root moved on past second, so second is the stream that took it: {said}"
+    );
+    assert!(
+        !said.contains("first-stream"),
+        "first landed earlier and someone committed on top of second, so naming \
+         first is naming the wrong stream: {said}"
+    );
+
+    // Resolving it by hand and asking again is the documented way out, and it
+    // works because the question is asked of the repository and never of the
+    // request.
+    std::fs::write(
+        third_worktree.join("first-only.txt"),
+        std::fs::read_to_string(repository.join("first-only.txt")).unwrap(),
+    )
+    .unwrap();
+    git(&third_worktree, &["add", "-A"]);
+    git(
+        &third_worktree,
+        &[
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "commit",
+            "-qm",
+            "the operator's resolution",
+        ],
+    );
+    ok_step(
+        "third-reconcile-resolved",
+        &host.call(request(
+            "third-reconcile-resolved",
+            json!({"kind":"reconcile_change_stream","task_id":"third"}),
+        )),
     );
 }
 
