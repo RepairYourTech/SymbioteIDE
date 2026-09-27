@@ -474,6 +474,33 @@ fn check_private_dir(path: &Path, exact: bool) -> Result<(), WorktreeError> {
 /// identity binding, ownership and private modes. This is the provisioner-side
 /// premise the sandbox launcher relies on; the launcher still revalidates.
 pub fn verify(reservation: &Reservation) -> Result<Marker, WorktreeError> {
+    let marker = verify_reservation(reservation)?;
+    // The reserved worktree is empty until Git materialization populates it;
+    // any other content means someone else used this location.
+    let mut entries = fs::read_dir(reservation.derived.worktree_path(&reservation.base))
+        .map_err(|_| WorktreeError::NotFound)?;
+    if entries.next().is_some() {
+        return Err(WorktreeError::NotEmpty);
+    }
+    Ok(marker)
+}
+
+/// Everything `verify` proves, minus the emptiness rule: this stream still
+/// holds this location, and the location is private and bound to that
+/// identity.
+///
+/// Emptiness has to be separable because it is the one premise a location
+/// stops meeting the moment a run materializes a checkout in it. A caller
+/// asking "whose location is this?" — the provisioning layer, deciding
+/// whether an existing directory is this stream's own earlier work or
+/// something it must refuse — needs the first question answered on its own.
+/// A caller about to hand the location to `git worktree add` needs both, and
+/// that is `verify`.
+///
+/// Verification never creates state, so every absence is a refusal: a
+/// missing base, a missing marker, and a marker for another identity are all
+/// answered the same way, and none of them is a claim.
+pub fn verify_reservation(reservation: &Reservation) -> Result<Marker, WorktreeError> {
     let base = &reservation.base;
     // Verification never creates state: a missing or non-private base fails.
     validate_absolute(base, MAX_BASE_BYTES)?;
@@ -493,12 +520,6 @@ pub fn verify(reservation: &Reservation) -> Result<Marker, WorktreeError> {
         read_marker(&project_dir.join(format!("{}.json", reservation.derived.worktree_id)))?;
     if marker.derived != reservation.derived {
         return Err(WorktreeError::IdentityMismatch);
-    }
-    // The reserved worktree is empty until Git materialization populates it;
-    // any other content means someone else used this location.
-    let mut entries = fs::read_dir(&worktree).map_err(|_| WorktreeError::NotFound)?;
-    if entries.next().is_some() {
-        return Err(WorktreeError::NotEmpty);
     }
     Ok(marker)
 }

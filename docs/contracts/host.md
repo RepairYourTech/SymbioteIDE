@@ -47,7 +47,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `request-task-completion`, `request-elevation`,
 `validate-change-stream`, `begin-task-verification`, `complete-task`,
 `integrate-change-stream`, `release-change-stream`,
-`abandon-change-stream`, `recover-task`,
+`abandon-change-stream`, `recover-task`, `interrupt-task`,
 `scheduling-projection <project_id>`,
 `observe-root-placement`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
@@ -281,6 +281,50 @@ reclaims the location with `--force`, which is the authorization the caller's
 word provides and the only place in the product where that flag appears. The
 branch is still never deleted.
 
+`interrupt-task` is the one case a run cannot file for itself. A refused
+run observes its own failure; a Host that died with a task `Running` has no
+run left to observe anything, and the task sits there for the life of the
+store claiming to be executed. The Host cannot tell a crash from an operator
+walking away, so the reason is a required argument rather than a default: only
+the caller knows which it was. It releases the lease for the same reason a
+failure does, and then `recover-task` applies. A crash therefore costs an
+operator one declaration and two commands rather than a task stuck in
+`Running`, and — because the stream is still `Active` — the recovered task
+can be dispatched again under the same stream, which is the one retry path
+that does not cost a new task record.
+
+The reclaim is idempotent, and that is load-bearing. A caller whose first
+attempt removed the location and then failed to record its stream transition
+would otherwise be stuck: the retry would refuse `NotFound` for work it had
+already done. The marker is the reservation, so an absent marker means the
+reclaim is complete — including for a directory left behind without one,
+which the reservation crate explicitly calls an abandoned location and never
+reclaims. A marker that exists and cannot be *read* is a tamper signal and is
+not absorbed.
+
+An abandon refuses before it destroys anything, and the order is the point.
+This is the one operation in the product that deletes work, so a refusal it
+had already acted on would leave the caller holding a failed call and an
+absent checkout. Both preconditions are therefore asked first: the stream's
+state (an integrated stream is released, not abandoned; a cancelled or
+released one is terminal) and the task's dispatch binding, which is where the
+access snapshot a stream transition is journalled under comes from. A task
+that was recovered has no dispatch — recovering is what dropped it — so its
+abandon is refused, and it is refused with the checkout still on disk and the
+stream still `Active`. Asking again is the same refusal rather than a second
+attempt at the work. The order an operator wants is the other one: abandon
+before recovering, or recover and let the next run reuse the location.
+
+Which is the other half of the crash story, and it is a repository-layer
+fact rather than a Host one. A recovered task can only ever be re-dispatched
+under the same stream, so provisioning has to be able to answer twice for one
+stream: it reuses a location the stream still holds — proven by the marker
+binding the derived identity, the base still matching, git registering a
+worktree at exactly that path, and its HEAD being the stream's branch — and
+refuses anything it cannot attribute. Before that, every run of a recovered
+task failed with `Reservation`, and `recover_task` was a way to make a task
+unrunnable. See `docs/contracts/repository.md` for the contract.
+
 `recover-task` is the way out of the failure rather than around it:
 `Failed` and `Interrupted` become `Ready` and the dispatch binding is
 dropped, so the task is dispatched afresh. The lifecycle reaches `Ready`
@@ -355,7 +399,9 @@ execution rather than changing it, so it is gated like the operations that
 start it — and `abandon_change_stream`, which discards a checkout and the
 uncommitted files in it. That last one is the only operation in the product
 that destroys work, and the branch it leaves behind holds every commit, so
-what it destroys is work that was never recorded anywhere else.
+what it destroys is work that was never recorded anywhere else — and
+`interrupt_task`, which ends a run's execution authority, the same reason
+`complete_task` is gated.
 A kind the table does not know cannot be proven safe, so it fails closed as
 dangerous. Reads are free;
 everything else is a mutation the daemon still authorizes — filing

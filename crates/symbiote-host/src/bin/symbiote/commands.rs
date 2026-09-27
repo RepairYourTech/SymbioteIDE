@@ -1466,6 +1466,28 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "interrupt-task",
+            summary: "declare that a run is not coming back",
+            usage: "interrupt-task <task_id> <reason>",
+            kind: Some("interrupt_task"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("interrupt_task"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // The reason is a required argument, not a default: only the
+                // caller knows whether a run was lost to a crash or abandoned,
+                // and a record that said "interrupted" alone would answer
+                // neither question.
+                let reason = args.get(1).ok_or_else(|| {
+                    Usage("missing <reason>: say why the run is not coming back".into())
+                })?;
+                if reason.trim().is_empty() {
+                    return Err(Usage("<reason> must not be empty".into()));
+                }
+                plain("reason", serde_json::json!(reason), map);
+                Ok(())
+            },
+        },
+        Command {
             name: "complete-task",
             summary: "file the gates that passed and complete the task",
             usage: "complete-task <task_id> <reviewer> <gate>[,<gate>...]",

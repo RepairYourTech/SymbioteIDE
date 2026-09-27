@@ -47,6 +47,7 @@ fn authorization_follows_the_operation_not_the_command_name() {
         vec![
             "abandon-change-stream",
             "complete-task",
+            "interrupt-task",
             "run-started-dispatch",
             "shutdown",
             "start-prepared-task",
@@ -2144,6 +2145,7 @@ fn every_dangerous_kind_in_the_table_can_be_named_by_a_policy() {
         // be told about it, which is the point of the list.
         vec![
             "abandon_change_stream",
+            "interrupt_task",
             "start_prepared_task",
             "run_started_dispatch",
             "shutdown",

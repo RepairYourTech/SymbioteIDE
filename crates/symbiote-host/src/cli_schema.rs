@@ -94,6 +94,10 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     // word is the confirmation the Change Stream contract asks for.
     ("abandon_change_stream", Risk::Dangerous),
     ("recover_task", Risk::Mutation),
+    // Ends a run's execution authority — the same thing `complete_task` is
+    // gated for, and for the same reason: the run stops being the task's
+    // future, and only an operator may say so.
+    ("interrupt_task", Risk::Dangerous),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),

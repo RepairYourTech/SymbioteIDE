@@ -4671,3 +4671,401 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();
 }
+
+/// The crash case, and the only failure the workspace cannot file for itself.
+///
+/// The two failure tests above are both runs that lived long enough to see
+/// their own refusal and record it. A `kill -9` is the other thing entirely:
+/// the task is `Running`, the lease is held, and no process is left to observe
+/// any of it — so the canonical record says a run is executing the task, and
+/// the only party that can correct it is an operator. This walks that, with a
+/// real `SIGKILL` between the start and everything after it.
+///
+/// The state it dies in is the composite one an operator reaches by retrying.
+/// A first run left a checkout with its uncommitted output, the task was
+/// recovered and dispatched again, and the daemon died with the second run
+/// owning the first run's directory: a checkout holding content nobody is
+/// running, behind a lease that belongs to a process which no longer exists.
+///
+/// How it ends is the difference from abandoning. An abandoned stream is
+/// cancelled and the retry has to be a new task under a new stream; an
+/// interrupted task still has its stream, so the same task is dispatched again
+/// on the same location. One crash costs a run, not a task.
+#[test]
+fn a_run_a_crash_took_is_interrupted_and_runs_again_on_the_same_stream() {
+    let (repository, head) = real_repository("crash");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-crash-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let broker = json!([{"reference": "native-vault-ref",
+        "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+        "value": "fixture-not-a-real-secret"}]);
+    let mut host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        // The first run reports nothing, so its loop halts with a checkout and
+        // its uncommitted output left behind.
+        "native_fixture": {"echo_text": ""},
+        "credential_broker": broker,
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "crash-placement",
+        &host.call(request(
+            "crash-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "crash-task",
+        "crash-task",
+        "crash-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "crash-prepare",
+        &host.call(request(
+            "crash-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"crash-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "crash-start",
+        json!({"kind":"start_prepared_task","task_id":"crash-task","host_id":host_id}),
+    ));
+    let first = ok_step("crash-start", &started)["data"]["dispatch_id"].clone();
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("crash-stream").worktree_id.as_str());
+    // A start is a record and a lease; the checkout is materialized by the run
+    // that uses it, which is why the reservation below belongs to the run and
+    // not to the start.
+    assert!(
+        !worktree.exists(),
+        "nothing is provisioned until a run needs it"
+    );
+    let halted = host.call(request(
+        "crash-run-1",
+        json!({"kind":"run_started_dispatch","task_id":"crash-task","dispatch_id":first}),
+    ));
+    assert_eq!(
+        halted["result"]["Err"]["message"],
+        "worker loop halted without finishing"
+    );
+    assert!(
+        worktree.join("README.md").exists(),
+        "and this run provisioned it"
+    );
+    std::fs::write(
+        worktree.join("half-written.txt"),
+        "the first run's last output\n",
+    )
+    .unwrap();
+
+    // The operator recovers and dispatches again, so the second run inherits
+    // the first run's directory with its uncommitted content in it.
+    ok_step(
+        "crash-recover-1",
+        &host.call(request(
+            "crash-recover-1",
+            json!({"kind":"recover_task","task_id":"crash-task"}),
+        )),
+    );
+    ok_step(
+        "crash-prepare-2",
+        &host.call(request(
+            "crash-prepare-2",
+            json!({"kind":"prepare_dispatch","task_id":"crash-task"}),
+        )),
+    );
+    let restarted = host.call(request(
+        "crash-start-2",
+        json!({"kind":"start_prepared_task","task_id":"crash-task","host_id":host_id}),
+    ));
+    // The start is what makes this a new run, not the dispatch's name: a lease
+    // was taken again and a fresh contract revision was accepted, which is what
+    // the run after the crash has to be able to do — and what an abandoned
+    // stream refuses.
+    ok_step("crash-start-2", &restarted);
+
+    // The crash. Nothing runs after this start, so nothing gets to file
+    // anything, which is the whole difference between this and a run that
+    // refused.
+    host.crash();
+    // And the operator fixes the configuration and restarts. It is read at
+    // startup, so a crash is the only moment a Host will look at it again —
+    // which is the one piece of good news this story has.
+    let configuration = host.config.clone().expect("the operator's own file");
+    let fixed = json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran after the crash"},
+        "credential_broker": broker,
+    });
+    std::fs::write(
+        &configuration,
+        serde_json::to_string_pretty(&fixed).unwrap().as_bytes(),
+    )
+    .unwrap();
+    host.start();
+
+    // The store is durable, and so is the claim nobody is behind any more.
+    let stuck = host.call(request(
+        "crash-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"crash-task"}),
+    ));
+    assert_eq!(
+        ok(&stuck)["data"]["state"],
+        "running",
+        "a SIGKILL cannot tell the store anything, and running is the truth it holds"
+    );
+    assert!(
+        worktree.join("half-written.txt").exists(),
+        "and the dead run's uncommitted output is still in its checkout"
+    );
+
+    // The way out that was supposed to be the way out refuses, and that refusal
+    // is why the operation after it exists: a recovery accepts `Failed` and
+    // `Interrupted`, which are states a run files about itself.
+    let too_early = host.call(request(
+        "crash-recover-early",
+        json!({"kind":"recover_task","task_id":"crash-task"}),
+    ));
+    assert_eq!(
+        too_early["result"]["Err"]["message"],
+        "lifecycle refused the transition (IllegalTransition)",
+        "{too_early}"
+    );
+
+    // So the operator says what happened, in their own words. The reason is
+    // required rather than defaulted because the Host cannot tell a crash from
+    // somebody who walked away from a terminal, and this record is the only
+    // place that distinction survives to whoever reads it next.
+    let interrupted = host.call(request(
+        "crash-interrupt",
+        json!({"kind":"interrupt_task","task_id":"crash-task",
+        "reason":"the host was killed mid-run"}),
+    ));
+    let filed = ok(&interrupted);
+    assert_eq!(
+        filed["kind"], "task",
+        "the caller reads the task it changed"
+    );
+    assert_eq!(filed["data"]["state"], "interrupted");
+    // An interrupt with nothing to say is refused: a record that read
+    // "interrupted" alone would answer neither question it exists to answer.
+    let mute = host.call(request(
+        "crash-interrupt-mute",
+        json!({"kind":"interrupt_task","task_id":"crash-task","reason":"  "}),
+    ));
+    assert_eq!(mute["result"]["Err"]["code"], "invalid_request", "{mute}");
+
+    // The lease went with it, and the re-dispatch below is the proof rather
+    // than a claim about it: a lease is the fence on a task, so a task whose
+    // lost lease is still held cannot be started again. That is why the
+    // interrupt releases one instead of only writing a state — a task marked
+    // `interrupted` and fenced forever is the same dead end one layer down.
+    ok_step(
+        "crash-recover-2",
+        &host.call(request(
+            "crash-recover-2",
+            json!({"kind":"recover_task","task_id":"crash-task"}),
+        )),
+    );
+    let queued = host.call(request(
+        "crash-task-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"crash-task"}),
+    ));
+    assert_eq!(ok(&queued)["data"]["state"], "ready");
+
+    // The same stream, which is the whole difference from abandoning. An
+    // abandoned stream is cancelled and this start would answer
+    // `stream_inactive`; an interrupted one is still `Active`, so the task that
+    // lost a run gets another one under the stream it was created for.
+    ok_step(
+        "crash-prepare-3",
+        &host.call(request(
+            "crash-prepare-3",
+            json!({"kind":"prepare_dispatch","task_id":"crash-task"}),
+        )),
+    );
+    let third = host.call(request(
+        "crash-start-3",
+        json!({"kind":"start_prepared_task","task_id":"crash-task","host_id":host_id}),
+    ));
+    let dispatch = ok_step("crash-start-3", &third)["data"]["dispatch_id"].clone();
+    let ran = host.call(request(
+        "crash-run-3",
+        json!({"kind":"run_started_dispatch","task_id":"crash-task","dispatch_id":dispatch}),
+    ));
+    assert_eq!(
+        ok_step("crash-run-3", &ran)["data"]["completed"],
+        true,
+        "the third run files the completion two of them could not"
+    );
+    let done = host.call(request(
+        "crash-task-read-3",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"crash-task"}),
+    ));
+    assert_eq!(ok(&done)["data"]["state"], "completion_requested");
+    assert!(
+        worktree.exists(),
+        "on the same location, reused rather than duplicated"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// A refusal that arrives after the destruction it precedes is a refusal an
+/// operator cannot undo, so this walks the one operation that can destroy work
+/// in a state where it has to refuse, and checks that it refused first.
+///
+/// The state is one an operator makes in an ordinary order: a run halts, they
+/// recover the task to try again, and *then* think better of the stream.
+/// Recovering is what drops the dispatch binding, and the binding is where the
+/// access snapshot a stream transition is journalled under comes from — so the
+/// cancel has nothing to record itself with. The answer is a refusal. It is
+/// not an answer to come after the checkout is gone.
+#[test]
+fn an_abandon_that_cannot_journal_its_decision_removes_nothing() {
+    let (repository, head) = real_repository("orphan-abandon");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-orphan-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        // An empty report, so the loop halts: a run that failed on its own
+        // account rather than one the operator had to interrupt.
+        "native_fixture": {"echo_text": ""},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "orphan-placement",
+        &host.call(request(
+            "orphan-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "orphan-task",
+        "orphan-task",
+        "orphan-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "orphan-prepare",
+        &host.call(request(
+            "orphan-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"orphan-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "orphan-start",
+        json!({"kind":"start_prepared_task","task_id":"orphan-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("orphan-start", &started)["data"]["dispatch_id"].clone();
+    let halted = host.call(request(
+        "orphan-run",
+        json!({"kind":"run_started_dispatch","task_id":"orphan-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        halted["result"]["Err"]["message"],
+        "worker loop halted without finishing"
+    );
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("orphan-stream").worktree_id.as_str());
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("orphan-stream").worktree_id
+    ));
+    assert!(
+        worktree.join("README.md").exists(),
+        "the failed run's checkout"
+    );
+    assert!(marker.is_file(), "and its reservation");
+    // Uncommitted content, so "nothing was removed" is a claim about the files
+    // and not only about the directory.
+    std::fs::write(worktree.join("half-written.txt"), "the run's last output\n").unwrap();
+
+    // The operator recovers, which drops the dispatch binding, and then wants
+    // the stream gone after all.
+    ok_step(
+        "orphan-recover",
+        &host.call(request(
+            "orphan-recover",
+            json!({"kind":"recover_task","task_id":"orphan-task"}),
+        )),
+    );
+    let refused = host.call(request(
+        "orphan-abandon",
+        json!({"kind":"abandon_change_stream","task_id":"orphan-task"}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["message"], "task is not running under the requested dispatch",
+        "there is no access snapshot to journal the cancellation under: {refused}"
+    );
+    // The order this arm used to have them in removed the checkout first and
+    // refused afterwards, which left a refused call next to deleted work and a
+    // stream nothing could cancel afterwards.
+    assert!(
+        worktree.join("half-written.txt").exists(),
+        "a refused abandon removes nothing, and it means nothing"
+    );
+    assert!(marker.is_file(), "the reservation is still there too");
+
+    // Asking again is the same refusal, not a second attempt at the work: the
+    // operation refuses before it acts, so a caller who retries cannot make
+    // things worse.
+    let again = host.call(request(
+        "orphan-abandon-2",
+        json!({"kind":"abandon_change_stream","task_id":"orphan-task"}),
+    ));
+    assert_eq!(
+        again["result"]["Err"]["message"], "task is not running under the requested dispatch",
+        "{again}"
+    );
+    // And the stream is unharmed by the refusal, so the operator's other option
+    // still works: the recovered task runs again under the stream it has.
+    let reprepared = host.call(request(
+        "orphan-prepare-2",
+        json!({"kind":"prepare_dispatch","task_id":"orphan-task"}),
+    ));
+    assert_eq!(
+        ok_step("orphan-prepare-2", &reprepared)["data"]["outcome"],
+        "ready"
+    );
+    let restarted = host.call(request(
+        "orphan-start-2",
+        json!({"kind":"start_prepared_task","task_id":"orphan-task","host_id":host_id}),
+    ));
+    ok_step("orphan-start-2", &restarted);
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}

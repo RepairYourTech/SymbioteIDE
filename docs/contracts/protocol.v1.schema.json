@@ -1277,6 +1277,28 @@
           },
           {
             "additionalProperties": false,
+            "description": "Declare that a run is not coming back. `Running`,\n`CompletionRequested` and `Verifying` become `Interrupted`, which is\nthe one state a crashed or abandoned run can be moved out of.\n\nA refused run files its own failure, so this is for the case nothing\nelse can file: the Host died with the task `Running`, and no run is\nleft to observe. `reason` is the caller's, because only the caller\nknows which of those it was — the Host cannot distinguish a crash from\nan operator walking away, and both arrive here.",
+            "properties": {
+              "kind": {
+                "const": "interrupt_task",
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "File the evidence a dispatch contract's gates require and complete the\nTask. `gates` is the claim: which gates the caller says passed. The\nHost binds each claim to the dispatch, the stream's head and target\nand this Host's identity, and refuses a claim that does not cover the\ncontract — so the caller asserts and the Host binds, and neither side\ngets to do the other's half.",
             "properties": {
               "gates": {

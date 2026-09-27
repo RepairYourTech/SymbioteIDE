@@ -297,6 +297,59 @@ rather than a gap, but it means a failed unit of work costs a new task record, a
 preparation now says `stream_inactive` up front, nothing tells an operator that up front *at
 create* time.
 
+**Found in the sixth pass — the crash, which is the one failure nothing can file for itself.**
+The two transcripts above are runs that lived long enough to see their own refusal. A `kill -9`
+mid-run is the other thing: the `host_id` survives and the store is durable, so the daemon comes
+back and a re-dispatched `run_started_dispatch` replays to `completion_requested` — but a run the
+operator never retried sat at `running` for the life of the store, holding a lease and a checkout,
+with no process behind either. `recover_task` refused it: a recovery accepts `Failed` and
+`Interrupted`, which are states a *run* files about itself. And the abandon answered
+`worktree reservation release refused: NotFound` — the reclaim had already removed the location in
+an earlier attempt, and the retry reported a filesystem error for work the caller had done.
+
+Three things close that, and the third was the real one.
+
+`Operation::InterruptTask` is the operation for the case nothing else can reach, with
+`interrupt-task <task_id> <reason>` in front of it, classified dangerous like the rest of the
+execution-ending operations. The reason is a required argument rather than a default because the
+Host cannot tell a crash from an operator who walked away from a terminal, and this record is the
+only place that survives to whoever reads it next. It files `TaskAction::Interrupt` as the Host and
+releases the lease, which is what makes the recovery that follows possible at all: a task marked
+`interrupted` and fenced by a lease held by a dead process is the same dead end one layer down.
+`reclaim_worktree` is idempotent, because an absent marker *is* the reservation crate's own
+definition of released — a directory left behind without one is an abandoned location it never
+reclaims, and a tamper signal (a marker that exists and cannot be read) is not absorbed.
+
+And then the re-dispatch refused `worktree provisioning refused: Reservation`, which is the finding
+that mattered. A Task has exactly one Change Stream for its whole life, so a recovered task can
+only ever be dispatched again against the stream it has — and provisioning refused a location the
+stream had claimed itself. `recover_task` was therefore a trap: it moved a task from `failed`, with
+a readable reason and a reclaimable checkout, to `ready`, and every run from there on refused. A
+task that can only be run once is not a task with a recovery operation. `provision` now asks
+whether the stream still holds the location (`verify_reservation`, the identity half of `verify`
+with the emptiness rule left out, because emptiness is a premise for handing a directory to `git
+worktree add` and not a property of holding it) and reuses it only when git registers a worktree
+at exactly that path whose HEAD is the stream's derived branch — four proofs, all of which the
+first claim made, and content that fails any of them is refused exactly as before. A held location
+with nothing in it is not a reuse case but a claim whose materialization never happened, so it
+materializes as a first run does: the operator who restores a moved base and runs again now gets a
+checkout instead of `AlreadyReserved`.
+
+The same pass found the abandon asking its questions in the wrong order. It is the one operation
+in the product that destroys work, and it reclaimed the checkout *before* discovering that a
+recovered task has no dispatch binding to journal the cancellation under — a refusal the caller
+could not undo, on a stream nothing could then cancel. Both preconditions now precede the
+irreversible half, and `an_abandon_that_cannot_journal_its_decision_removes_nothing` pins it with
+an uncommitted file in the checkout: a mutant that puts the reclaim back first dies on
+`a refused abandon removes nothing, and it means nothing`.
+
+The third transcript, `/mnt/data/tmp/ship/crash_run.sh`, walks the whole thing with first-class
+commands only: a halted run, a re-dispatch, `kill -9`, a restart, the task still `running` with
+the dead run's output on disk, `recover-task` refused, `interrupt-task` with a reason, the empty
+reason refused by name, `recover-task`, and the same task running to completion under the same
+stream in the same checkout.
+
+
 **Candidate, not a decision — the reap test's deadline race.** CI failed
 `a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean` once on the 1.85.0 leg with
 `Cancelled { group_signal: Sent }` where the test asserts `Unreaped { error: DeadlineExceeded }`,

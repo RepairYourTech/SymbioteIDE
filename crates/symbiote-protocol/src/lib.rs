@@ -321,6 +321,19 @@ pub enum Operation {
     RecoverTask {
         task_id: TaskId,
     },
+    /// Declare that a run is not coming back. `Running`,
+    /// `CompletionRequested` and `Verifying` become `Interrupted`, which is
+    /// the one state a crashed or abandoned run can be moved out of.
+    ///
+    /// A refused run files its own failure, so this is for the case nothing
+    /// else can file: the Host died with the task `Running`, and no run is
+    /// left to observe. `reason` is the caller's, because only the caller
+    /// knows which of those it was — the Host cannot distinguish a crash from
+    /// an operator walking away, and both arrive here.
+    InterruptTask {
+        task_id: TaskId,
+        reason: String,
+    },
     /// File the evidence a dispatch contract's gates require and complete the
     /// Task. `gates` is the claim: which gates the caller says passed. The
     /// Host binds each claim to the dispatch, the stream's head and target
@@ -482,6 +495,7 @@ impl Operation {
             | Self::IntegrateChangeStream { .. }
             | Self::ReleaseChangeStream { .. }
             | Self::RecoverTask { .. }
+            | Self::InterruptTask { .. }
             | Self::AbandonChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
@@ -546,6 +560,7 @@ impl Operation {
                 | Self::IntegrateChangeStream { .. }
                 | Self::ReleaseChangeStream { .. }
                 | Self::RecoverTask { .. }
+                | Self::InterruptTask { .. }
                 | Self::AbandonChangeStream { .. }
         )
     }
@@ -892,6 +907,7 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         | Operation::IntegrateChangeStream { .. }
         | Operation::ReleaseChangeStream { .. }
         | Operation::RecoverTask { .. }
+        | Operation::InterruptTask { .. }
         | Operation::AbandonChangeStream { .. } => {
             // The three steps a dispatched Task could not take at all, so a
             // run stayed `completion_requested` for the life of the store.

@@ -1457,16 +1457,16 @@ mod tests {
             &head.state,
             symbiote_repo::HeadState::Branch { .. }
         ));
-        // Re-provisioning refuses honestly (non-empty worktree).
-        let second = provision_worktree(&store, &task, &host_id, &mut git, &reservation_base);
-        // The stage must be Reservation (the reservation layer's
-        // non-empty rule), not a Store or wrong-stage error.
-        assert!(matches!(
-            second,
-            Err(RunnerError::Provisioning(
-                symbiote_repo::provision::ProvisionError::Reservation
-            ))
-        ));
+        // Re-provisioning the same stream answers with the same location,
+        // because this is the retry `recover_task` exists to enable: a Task has
+        // one Change Stream for its whole life, and the checkout the first run
+        // made is that stream's own work in that stream's own directory. The
+        // observed head is the branch tip, and it has not moved.
+        let second =
+            provision_worktree(&store, &task, &host_id, &mut git, &reservation_base).unwrap();
+        assert_eq!(second.worktree, provisioned.worktree);
+        assert_eq!(second.branch, provisioned.branch);
+        assert_eq!(second.observed_head, base_sha);
         let _ = std::fs::remove_dir_all(&repo_dir);
         let _ = std::fs::remove_dir_all(&reservation_base);
     }

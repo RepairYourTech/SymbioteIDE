@@ -4,14 +4,24 @@
 //! stream's worktree is materialized for a started dispatch.
 //!
 //! Ordering is the security contract:
-//! 1. **Verify the reservation** — the marker must match the derived
-//!    identity exactly; a foreign or tampered location fails loudly.
+//! 1. **Establish the reservation** — the marker must match the derived
+//!    identity exactly; a foreign or tampered location fails loudly. A
+//!    location this stream already holds is not re-claimed, it is
+//!    re-proven: see `provision` for what reuse additionally requires.
 //! 2. **Validate the base** — the source repository's actual HEAD must
 //!    resolve and equal the stream's recorded base commit. A moved base
 //!    means the stream's recorded premise is stale: refusal, never a
 //!    materialization against unknown ground.
-//! 3. **Materialize** — `git worktree add` onto the verified-empty
-//!    location at the stream's derived branch, then observe the result.
+//! 3. **Materialize, or reuse** — `git worktree add` onto the
+//!    verified-empty location at the stream's derived branch, then observe
+//!    the result. A location that already holds a checkout is reused only
+//!    when git registers that checkout at exactly this path on exactly this
+//!    stream's branch.
+//!
+//! Every step here refuses before it acts, and a refusal in any of them
+//! leaves the location exactly as it found it: a refused run never takes
+//! work with it, which is what lets the operator fix the cause and run
+//! again.
 //!
 //! The composition takes the canonical identities only (stream record,
 //! root host path, reservation base directory, policy seed). It never
@@ -94,11 +104,39 @@ impl<'a> ProvisionInputs<'a> {
     }
 }
 
-/// Runs the three-stage provisioning for one dispatch. Idempotent by
-/// construction: `worktrees::reserve` claims exactly the derived location,
-/// `verify` accepts an existing correct marker, and re-materializing over a
-/// materialized worktree fails in git (non-empty), so a double provisioning
-/// attempt surfaces instead of silently reusing unknown state.
+/// Runs the three-stage provisioning for one dispatch, and is idempotent for
+/// the one case that has to be: a stream that already holds its location.
+///
+/// "Already holds it" is proven, not assumed, and by the same facts the first
+/// claim was: the marker must bind this derived identity, every path
+/// component must still be private, and the location must be the derived one.
+/// What is NOT proven by that is where the content came from, so a location
+/// that holds anything further has to prove itself twice more before a run may
+/// execute in it — git must have a worktree registered at exactly that path,
+/// and that worktree's HEAD must be the stream's derived branch. Content that
+/// fails any of the four is refused, which is what it always did.
+///
+/// The reason this exists at all is that a Task has exactly one Change Stream
+/// for its whole life. `recover_task` is the only way out of a failed or
+/// interrupted run, and its whole purpose is to make the task dispatchable
+/// again — so a contract that refuses to provision a location twice makes the
+/// recovery a trap: the task goes from `failed`, with a readable reason and a
+/// reclaimable checkout, to `ready`, and every run of it from then on refuses
+/// with `Reservation`. The same held location is what a crashed run leaves
+/// behind, and what the operator's second attempt lands on. A Task that can
+/// only ever be run once is not a Task with a recovery operation.
+///
+/// The four states this distinguishes, and what each one is:
+/// - no marker, no directory: the first run. Claim, then materialize.
+/// - marker, empty directory: a run that claimed and then refused to
+///   materialize (a moved base, most often). The operator fixed the cause and
+///   is running again, so this materializes like a first run.
+/// - marker, content, registered on the derived branch: this stream's own
+///   checkout from an earlier run, uncommitted output and all. Reused, because
+///   the alternative is a task that can never run twice, and the content is
+///   the same stream's work in the same stream's directory.
+/// - marker, content, anything else: content this Host cannot attribute to the
+///   stream. Refused.
 pub fn provision(
     git: &mut impl crate::GitExecutor,
     inputs: ProvisionInputs<'_>,
@@ -118,10 +156,25 @@ pub fn provision(
     if derived.branch != inputs.stream.branch {
         return Err(ProvisionError::Reservation);
     }
-    let reservation =
+    // The reservation is addressed by identity, not by whether this call is
+    // the first one to ask for it. `verify_reservation` answers "does this
+    // stream still hold this location" and, unlike `verify`, does not care that
+    // the location has content in it: emptiness is a premise for handing the
+    // directory to git, not a property of holding it.
+    let reservation = symbiote_worktrees::Reservation {
+        derived: derived.clone(),
+        base: inputs.reservation_base.to_path_buf(),
+    };
+    let held = symbiote_worktrees::verify_reservation(&reservation).is_ok();
+    if !held {
+        // Nothing of this stream's is here, so claim it. A base that does not
+        // exist yet is created by this call, and every refusal it can make
+        // (a foreign-owned base, a symlinked component, a marker binding
+        // another identity) is the refusal it made before.
         symbiote_worktrees::reserve(&derived, inputs.reservation_base, wall_clock_now())
             .map_err(|_| ProvisionError::Reservation)?;
-    symbiote_worktrees::verify(&reservation).map_err(|_| ProvisionError::Reservation)?;
+        symbiote_worktrees::verify(&reservation).map_err(|_| ProvisionError::Reservation)?;
+    }
     // Base validation against the source repository's actual HEAD.
     let head = crate::observe_head(git, inputs.source_repository).map_err(|error| match error {
         crate::GitError::GitRefused => ProvisionError::BaseUnresolved,
@@ -140,18 +193,49 @@ pub fn provision(
     {
         return Err(ProvisionError::BaseMoved);
     }
+    let worktree = inputs.derived_worktree_path(inputs.reservation_base);
+    if held {
+        // The location is this stream's, so the only question left is whether
+        // what is in it is too. `verify` is the emptiness test: a held
+        // location with nothing in it is a claim whose materialization never
+        // happened, and the run that needs it gets it.
+        if symbiote_worktrees::verify(&reservation).is_err() {
+            let registered = crate::registered_worktrees(git, inputs.source_repository)
+                .map_err(ProvisionError::Git)?
+                .contains(&worktree);
+            if !registered {
+                // Content in a location git does not know about. Whatever put
+                // it there, this Host cannot show that this stream did.
+                return Err(ProvisionError::Reservation);
+            }
+            let head = crate::observe_head(git, &worktree).map_err(ProvisionError::Git)?;
+            match &head.state {
+                crate::HeadState::Branch { name } if *name == derived.branch => {
+                    return Ok(Provisioned {
+                        worktree,
+                        branch: derived.branch,
+                        head,
+                    });
+                }
+                // A detached HEAD, an unborn branch, or some other branch: a
+                // checkout in the right place on the wrong ref is not this
+                // stream's work either.
+                _ => return Err(ProvisionError::Reservation),
+            }
+        }
+    }
     let observation = crate::materialize(
         git,
         crate::MaterializeRequest {
             repository: inputs.source_repository,
-            worktree: &inputs.derived_worktree_path(inputs.reservation_base),
+            worktree: &worktree,
             branch: &derived.branch,
             start_point: inputs.stream.base().as_str(),
         },
     )
     .map_err(ProvisionError::Git)?;
     Ok(Provisioned {
-        worktree: inputs.derived_worktree_path(inputs.reservation_base),
+        worktree,
         branch: derived.branch,
         head: observation,
     })
@@ -341,22 +425,9 @@ mod tests {
         // source repo's later work.
         assert!(provisioned.worktree.join("base.txt").exists());
         assert!(!provisioned.worktree.join("work.txt").exists());
-        // Re-provisioning: the second attempt fails honestly. The first
-        // attempt's worktree is non-empty, so the reservation layer refuses
-        // to reclaim it — double provisioning never reuses unknown state.
-        let second = provision(
-            &mut git,
-            ProvisionInputs {
-                stream: &stream,
-                root_id: &root,
-                project_id: &project,
-                stream_id: &stream_id,
-                policy_seed: SEED,
-                reservation_base: &reservation_base,
-                source_repository: &repo.dir,
-            },
-        );
-        assert_eq!(second, Err(ProvisionError::Reservation));
+        // Re-provisioning the same stream: this is the retry `recover_task`
+        // exists to enable, and it is the case the reuse branch answers. The
+        // assertion lives in the reuse test below, which is about it in full.
         let _ = std::fs::remove_dir_all(&reservation_base);
     }
 
@@ -451,6 +522,41 @@ mod tests {
                 .map(|mut entries| entries.next().is_none())
                 .unwrap_or(true),
             "refused provisioning must not leave materialized content"
+        );
+        // The operator's answer to a moved base is to put it back, and the
+        // second attempt has to be able to take the location the first one
+        // claimed. Before the reuse branch this refused `AlreadyReserved` —
+        // a location this stream holds, holding nothing, refusing the stream
+        // that holds it, because the first attempt had already been here.
+        let restore = Command::new("git")
+            .arg("-C")
+            .arg(&repo.dir)
+            .args(["reset", "--hard", "HEAD~1"])
+            .output()
+            .unwrap();
+        assert!(restore.status.success());
+        let retried = provision(
+            &mut git,
+            ProvisionInputs {
+                stream: &stream,
+                root_id: &root,
+                project_id: &project,
+                stream_id: &stream_id,
+                policy_seed: SEED,
+                reservation_base: &reservation_base,
+                source_repository: &repo.dir,
+            },
+        );
+        assert_eq!(
+            retried
+                .as_ref()
+                .map(|provisioned| provisioned.branch.clone()),
+            Ok(branch),
+            "a claim whose materialization never happened is a claim to materialize: {retried:?}"
+        );
+        assert!(
+            retried.unwrap().worktree.join("base.txt").exists(),
+            "and the retry hands the run a real checkout"
         );
         let _ = std::fs::remove_dir_all(&reservation_base);
     }
@@ -572,5 +678,235 @@ mod tests {
             Err(ProvisionError::Reservation)
         );
         let _ = std::fs::remove_dir_all(&reservation_base);
+    }
+
+    /// Everything the reuse cases share: a real repository, a stream whose
+    /// recorded identities are the derived ones, and a private base.
+    fn reuse_fixture(
+        tag: &str,
+    ) -> (
+        SourceRepo,
+        ChangeStream,
+        ProjectId,
+        RootId,
+        ChangeStreamId,
+        PathBuf,
+    ) {
+        let repo = SourceRepo::new(tag);
+        let project = ProjectId::new(format!("prov-{tag}-project")).unwrap();
+        let root = RootId::new(format!("prov-{tag}-root")).unwrap();
+        let stream_id = ChangeStreamId::new(format!("prov-{tag}-stream")).unwrap();
+        let branch = derived_branch(&project, &root, &stream_id);
+        let worktree = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
+            project_id: &project,
+            root_id: &root,
+            stream_id: &stream_id,
+            seed: SEED,
+        })
+        .unwrap()
+        .worktree_id;
+        let base_sha = CommitSha::new(repo.base_sha.clone()).unwrap();
+        let stream = ChangeStream::new(symbiote_domain::NewChangeStream {
+            id: stream_id.clone(),
+            project_id: project.clone(),
+            root_id: root.clone(),
+            tasks: std::collections::BTreeSet::from([symbiote_domain::TaskId::new(format!(
+                "prov-{tag}-task"
+            ))
+            .unwrap()]),
+            originating_chat: symbiote_domain::ChatId::new(format!("chat-{tag}")).unwrap(),
+            worktree,
+            branch,
+            lineage: symbiote_domain::StreamLineage::Independent,
+            base: base_sha.clone(),
+            target: base_sha,
+        })
+        .unwrap();
+        let reservation_base =
+            std::env::temp_dir().join(format!("symbiote-prov-{tag}-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&reservation_base);
+        std::fs::create_dir_all(&reservation_base).unwrap();
+        (repo, stream, project, root, stream_id, reservation_base)
+    }
+
+    /// The inputs, as a function: a closure cannot hand back a struct that
+    /// borrows from what it closed over, and every case here calls this twice
+    /// or more.
+    fn inputs<'a>(
+        stream: &'a ChangeStream,
+        root: &'a RootId,
+        project: &'a ProjectId,
+        stream_id: &'a ChangeStreamId,
+        reservation_base: &'a Path,
+        source_repository: &'a Path,
+    ) -> ProvisionInputs<'a> {
+        ProvisionInputs {
+            stream,
+            root_id: root,
+            project_id: project,
+            stream_id,
+            policy_seed: SEED,
+            reservation_base,
+            source_repository,
+        }
+    }
+
+    /// A Task has one Change Stream for its whole life, and `recover_task` is
+    /// the only way out of a failed or interrupted run — so provisioning has to
+    /// be able to answer a second time for the same stream. This is that
+    /// answer, checked against the state a crashed run leaves: a checkout with
+    /// uncommitted output in it.
+    #[test]
+    fn a_stream_that_already_holds_its_location_is_provisioned_again() {
+        let (repo, stream, project, root, stream_id, base) = reuse_fixture("reuse");
+        let mut git = SystemGit::new();
+        let first = provision(
+            &mut git,
+            inputs(&stream, &root, &project, &stream_id, &base, &repo.dir),
+        )
+        .unwrap();
+        let location = first.worktree.clone();
+        std::fs::write(
+            location.join("half-written.txt"),
+            "the first run's last output\n",
+        )
+        .unwrap();
+
+        let second = provision(
+            &mut git,
+            inputs(&stream, &root, &project, &stream_id, &base, &repo.dir),
+        )
+        .unwrap();
+        assert_eq!(
+            second.worktree, location,
+            "the same derived location: a task that can only be run once has no \
+             recovery, and `recover_task` is a recovery"
+        );
+        assert_eq!(second.branch, first.branch);
+        assert_eq!(second.head.commit, first.head.commit);
+        assert!(
+            location.join("half-written.txt").exists(),
+            "the earlier run's uncommitted output is still there, because it is \
+             the same stream's work in the same stream's directory — a run that \
+             inherited it is a run continuing it, and `abandon_change_stream` is \
+             the operation that discards it on purpose"
+        );
+
+        // And after a commit on the stream's branch, the retry starts from the
+        // branch tip rather than the recorded base: that is where the work is,
+        // and reporting the base instead would be a lie the evidence trail
+        // would carry.
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(&location)
+            .args(["add", "-A"])
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(&location)
+            .args([
+                "-c",
+                "user.email=t@symbiote.test",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "the first run's work",
+            ])
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let third = provision(
+            &mut git,
+            inputs(&stream, &root, &project, &stream_id, &base, &repo.dir),
+        )
+        .unwrap();
+        assert_ne!(
+            third.head.commit, first.head.commit,
+            "the observed head is the branch tip, which moved"
+        );
+        assert!(matches!(
+            third.head.state,
+            crate::HeadState::Branch { ref name } if *name == third.branch
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The other side of the same proof, and the reason it is a proof: a
+    /// location this stream holds, holding content, that git does not know
+    /// about. Nothing here shows the content is the stream's, so nothing here
+    /// runs in it — and the refusal removes nothing either.
+    #[test]
+    fn content_in_a_held_location_that_git_never_saw_is_refused() {
+        let (repo, stream, project, root, stream_id, base) = reuse_fixture("stranger");
+        let derived = symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
+            project_id: &project,
+            root_id: &root,
+            stream_id: &stream_id,
+            seed: SEED,
+        })
+        .unwrap();
+        symbiote_worktrees::reserve(
+            &derived,
+            &base,
+            symbiote_domain::Timestamp(1_700_000_000_000),
+        )
+        .unwrap();
+        let location = derived.worktree_path(&base);
+        std::fs::write(location.join("stranger.txt"), "not this stream's work\n").unwrap();
+        let mut git = SystemGit::new();
+        assert_eq!(
+            provision(
+                &mut git,
+                ProvisionInputs {
+                    stream: &stream,
+                    root_id: &root,
+                    project_id: &project,
+                    stream_id: &stream_id,
+                    policy_seed: SEED,
+                    reservation_base: &base,
+                    source_repository: &repo.dir,
+                },
+            ),
+            Err(ProvisionError::Reservation)
+        );
+        assert!(
+            location.join("stranger.txt").exists(),
+            "and the refusal is not a removal: nothing here is this Host's to \
+             delete"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A checkout in the right place on the wrong ref. The marker and the path
+    /// both match, so the first two proofs pass; the third is what a
+    /// mis-provisioned or hand-edited directory looks like, and it is refused.
+    #[test]
+    fn a_held_location_on_another_branch_is_refused() {
+        let (repo, stream, project, root, stream_id, base) = reuse_fixture("wrong-ref");
+        let mut git = SystemGit::new();
+        let first = provision(
+            &mut git,
+            inputs(&stream, &root, &project, &stream_id, &base, &repo.dir),
+        )
+        .unwrap();
+        let elsewhere = Command::new("git")
+            .arg("-C")
+            .arg(&first.worktree)
+            .args(["checkout", "-q", "-b", "not-this-streams-branch"])
+            .output()
+            .unwrap();
+        assert!(elsewhere.status.success());
+        assert_eq!(
+            provision(
+                &mut git,
+                inputs(&stream, &root, &project, &stream_id, &base, &repo.dir)
+            ),
+            Err(ProvisionError::Reservation),
+            "the right path on the wrong ref is not this stream's work"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

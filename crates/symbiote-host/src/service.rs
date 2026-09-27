@@ -1159,6 +1159,22 @@ fn execute(
                 .get(inventory.host_id())
                 .ok_or_else(|| worker_error(crate::runner::RunnerError::NoHostPath))?
                 .clone();
+            // The cancel is journalled and audited like every other stream
+            // transition, under the same access the task's dispatch carried. A
+            // task with no dispatch has no snapshot to record, and a stream
+            // nobody ever dispatched has nothing to abandon.
+            //
+            // Asked HERE, before the removal below, and that ordering is the
+            // point: this arm is the only one that destroys work, so a refusal
+            // it has already acted on would leave the operator with a refused
+            // call and a deleted checkout. The state check above is the same
+            // argument, and it is why both precede the irreversible half.
+            let access = match task_record.current_dispatch() {
+                Some(dispatch) => dispatch.contract().effective_access().clone(),
+                None => {
+                    return Err(dispatch_binding_refused());
+                }
+            };
             let mut git = workers.git();
             reclaim_worktree(
                 &mut git,
@@ -1172,16 +1188,6 @@ fn execute(
                 // landed nowhere.
                 symbiote_repo::RemovalForce::Allow,
             )?;
-            // The cancel is journalled and audited like every other stream
-            // transition, under the same access the task's dispatch carried.
-            // A task with no dispatch has no snapshot to record, and a stream
-            // nobody ever dispatched has nothing to abandon.
-            let access = match task_record.current_dispatch() {
-                Some(dispatch) => dispatch.contract().effective_access().clone(),
-                None => {
-                    return Err(dispatch_binding_refused());
-                }
-            };
             let command = symbiote_domain::StreamCommand {
                 id: request.command_id.clone(),
                 expected_revision: stream.revision(),
@@ -1213,6 +1219,53 @@ fn execute(
             store
                 .apply_task(task_id, command)
                 .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::InterruptTask { task_id, reason } => {
+            // The case no run can file for itself. A refused run observes its
+            // own failure; a Host that died with a task `Running` has no run
+            // left to observe anything, and the task would otherwise sit there
+            // for the life of the store claiming to be executed. The Host
+            // cannot tell a crash from an operator walking away, so the
+            // reason is the caller's — the only party that knows which.
+            //
+            // The lease goes with it, for the same reason a failure releases
+            // one: it is the claim that a live owner holds this task, and
+            // there is no live owner.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let at = start_timestamp(store, request)?;
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(inventory.host_id().clone()),
+                at,
+                action: symbiote_domain::TaskAction::Interrupt {
+                    reason: reason.clone(),
+                },
+            };
+            store.apply_task(task_id, command).map_err(storage_error)?;
+            if let Ok(lease) = store.task_lease(task_id) {
+                let lease_command = symbiote_domain::CommandId::new(format!(
+                    "{}-interrupted-lease",
+                    request.command_id.as_str()
+                ))
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+                store
+                    .release_lease(
+                        lease_command,
+                        task_id.clone(),
+                        lease.dispatch_id.clone(),
+                        lease.fencing_token,
+                        principal.user_id().clone(),
+                        now_timestamp()?,
+                    )
+                    .map_err(storage_error)?;
+            }
+            // A receipt, not a task: the caller asked the run to end, and the
+            // task's new state is what it reads next.
+            store
+                .task(task_id)
+                .map(|task| ResponseBody::Task(Box::new(task)))
                 .map_err(storage_error)
         }
         Operation::GetDispatchPreparation { task_id } => store
@@ -2310,6 +2363,23 @@ fn reclaim_worktree(
     force: symbiote_repo::RemovalForce,
 ) -> Result<(), ProtocolError> {
     let worktree = reservation.derived.worktree_path(&reservation.base);
+    // The reclaim is complete when the marker is gone — that is the
+    // reservation crate's own definition of released, and a directory left
+    // behind without one is an abandoned location it explicitly never
+    // reclaims. Asking again must therefore succeed rather than report
+    // `NotFound`, or a caller whose FIRST attempt reclaimed the location and
+    // then failed to record its stream transition is stuck: the retry would
+    // refuse a filesystem error for work it had already done.
+    //
+    // Only an absent marker counts. A marker that exists and cannot be read
+    // is a tamper signal, and it is not this function's to absorb.
+    let marker = reservation
+        .base
+        .join(reservation.derived.project_id.as_str())
+        .join(format!("{}.json", reservation.derived.worktree_id));
+    if !marker.exists() {
+        return Ok(());
+    }
     let registered = symbiote_repo::registered_worktrees(git, checkout)
         .map_err(|error| {
             storage_error(StoreError::Integrity(format!(
@@ -2457,5 +2527,151 @@ mod storage_error_tests {
                 "the mapping must name this refusal rather than collapse it into internal"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod reclaim_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Answers `git worktree list --porcelain` with a fixed registration and
+    /// accepts every removal, while counting the invocations it was asked for.
+    /// The count is the interesting part: a reclaim of a location that is
+    /// already released must not consult git at all, and a stub that counted
+    /// zero is how that is proven rather than assumed.
+    struct ScriptedGit {
+        registered: Vec<std::path::PathBuf>,
+        calls: Cell<usize>,
+    }
+    impl ScriptedGit {
+        fn new(registered: Vec<std::path::PathBuf>) -> Self {
+            Self {
+                registered,
+                calls: Cell::new(0),
+            }
+        }
+    }
+    impl symbiote_repo::GitExecutor for ScriptedGit {
+        fn run(
+            &mut self,
+            _worktree: &std::path::Path,
+            arguments: &[&str],
+        ) -> Result<Vec<u8>, symbiote_repo::GitError> {
+            self.calls.set(self.calls.get() + 1);
+            if arguments.starts_with(&["worktree", "list"]) {
+                let mut text = String::new();
+                for path in &self.registered {
+                    text.push_str(&format!("worktree {}\n", path.display()));
+                    text.push_str("HEAD 0000000000000000000000000000000000000000\n\n");
+                }
+                return Ok(text.into_bytes());
+            }
+            Ok(Vec::new())
+        }
+    }
+
+    fn base_directory(tag: &str) -> std::path::PathBuf {
+        let base =
+            std::env::temp_dir().join(format!("symbiote-reclaim-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // The reservation crate refuses a base anybody else can write to, and
+        // the mode is the operator's own, not a test convenience.
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        base
+    }
+
+    fn derived(stream: &str) -> symbiote_worktrees::Derived {
+        crate::runner::derived_worktree(
+            &symbiote_domain::ProjectId::new("staffing-demo").unwrap(),
+            &symbiote_domain::RootId::new("staffing-root").unwrap(),
+            &symbiote_domain::ChangeStreamId::new(stream).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// The retry a caller is forced into when the reclaim succeeded and the
+    /// journal write that should have followed it did not: the same stream, the
+    /// same location, asked a second time.
+    ///
+    /// Before the guard this reported
+    ///
+    ///     worktree reservation release refused: NotFound
+    ///
+    /// which is a filesystem complaint about work the caller had already done,
+    /// and it is worse than that: the stream stayed `Active` forever, because
+    /// the only operation that could cancel it refused for a marker it had
+    /// itself deleted one call earlier. This is the exact refusal a crashed
+    /// daemon leaves behind, and the crash path is where an operator meets it.
+    #[test]
+    fn a_reclaim_of_a_location_that_is_already_released_succeeds_again() {
+        let base = base_directory("released");
+        let derived = derived("reclaim-retry");
+        let reservation = symbiote_worktrees::reserve(
+            &derived,
+            &base,
+            symbiote_domain::Timestamp(1_700_000_000_000),
+        )
+        .unwrap();
+        let location = derived.worktree_path(&base);
+        let mut git = ScriptedGit::new(vec![location.clone()]);
+        // The first attempt does the work: git is consulted, the location goes,
+        // and the marker with it.
+        reclaim_worktree(
+            &mut git,
+            std::path::Path::new("/nonexistent-root"),
+            &reservation,
+            symbiote_repo::RemovalForce::Allow,
+        )
+        .unwrap();
+        assert!(!location.exists(), "the first reclaim removed the location");
+        let marker = base
+            .join("staffing-demo")
+            .join(format!("{}.json", derived.worktree_id));
+        assert!(!marker.exists(), "and its reservation");
+        let calls = git.calls.get();
+        assert!(calls > 0, "and it did consult git to do that");
+
+        // The retry. Same reservation, same location, nothing left to do — and
+        // no git call, because there is nothing for git to be asked.
+        reclaim_worktree(
+            &mut git,
+            std::path::Path::new("/nonexistent-root"),
+            &reservation,
+            symbiote_repo::RemovalForce::Allow,
+        )
+        .unwrap();
+        assert_eq!(
+            git.calls.get(),
+            calls,
+            "a location that is already released is answered without consulting git"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The other direction of the same question: a stream nobody ever
+    /// dispatched has a reserved location by identity and no reservation on
+    /// disk, and an operator asking to abandon it is asking about a location
+    /// that does not exist. That is a clean answer, not a `NotFound`.
+    #[test]
+    fn a_reclaim_of_a_location_that_was_never_reserved_succeeds() {
+        let base = base_directory("never");
+        let derived = derived("reclaim-never");
+        let reservation = symbiote_worktrees::Reservation {
+            derived,
+            base: base.clone(),
+        };
+        let mut git = ScriptedGit::new(Vec::new());
+        reclaim_worktree(
+            &mut git,
+            std::path::Path::new("/nonexistent-root"),
+            &reservation,
+            symbiote_repo::RemovalForce::Allow,
+        )
+        .unwrap();
+        assert_eq!(git.calls.get(), 0, "nothing existed to ask git about");
+        std::fs::remove_dir_all(&base).ok();
     }
 }
