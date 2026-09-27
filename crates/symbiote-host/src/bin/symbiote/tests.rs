@@ -73,18 +73,80 @@ fn authorization_follows_the_operation_not_the_command_name() {
     assert!(risk_of_kind("").requires_authorization());
 }
 
-#[test]
-fn every_typed_command_emits_the_kind_it_declares() {
-    let arguments: Vec<String> = (0..6).map(|_| "1".to_string()).collect();
-    for command in commands() {
-        // The two file-taking commands read an operator-supplied file.
-        if matches!(command.name, "create-task" | "raw") {
+/// One required argument as the usage spells it: the name to refuse it by, and
+/// whether the spelling carries a revision after an `@`.
+struct Placeholder {
+    name: String,
+    versioned: bool,
+}
+
+/// Every required argument a command's usage names, in order. The usage is the
+/// command's own statement of its argument shape: `[root_id ...]` and the
+/// bracket that closes it are not required arguments, and
+/// `<contract_id>@<revision>` is one argument spelled as two spans.
+fn placeholders(usage: &str) -> Vec<Placeholder> {
+    let mut names: Vec<Placeholder> = Vec::new();
+    for token in usage.split_whitespace() {
+        if let Some(contract) = token.strip_suffix("@<revision>") {
+            names.push(Placeholder {
+                name: contract
+                    .strip_prefix('<')
+                    .and_then(|name| name.strip_suffix('>'))
+                    .unwrap_or(contract)
+                    .to_owned(),
+                versioned: true,
+            });
             continue;
         }
+        if let Some(name) = token
+            .strip_prefix('<')
+            .and_then(|name| name.strip_suffix('>'))
+        {
+            names.push(Placeholder {
+                name: name.to_owned(),
+                versioned: false,
+            });
+        }
+    }
+    names
+}
+
+/// One synthetic argument per placeholder a command's usage names, so building
+/// from it holds the usage and the builder together: a command whose builder
+/// disagrees with the usage it prints cannot be built at all, and a placeholder
+/// this reading does not know is a placeholder the command would refuse in an
+/// operator's hands.
+fn synthetic_arguments(usage: &str) -> Vec<String> {
+    placeholders(usage)
+        .into_iter()
+        .map(|placeholder| {
+            let value = match placeholder.name.as_str() {
+                "after" | "limit" => "1".to_owned(),
+                "class" => "maintenance".to_owned(),
+                _ => "id".to_owned(),
+            };
+            if placeholder.versioned {
+                format!("{value}@1")
+            } else {
+                value
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn every_typed_command_emits_the_kind_it_declares() {
+    for command in commands() {
+        // `raw` is the one command that reads an operator-supplied file, so it
+        // is the one command with no argument shape to build from.
+        if command.name == "raw" {
+            continue;
+        }
+        let arguments = synthetic_arguments(command.usage);
         let mut operation = serde_json::Map::new();
         if let Err(error) = (command.build)(&arguments, &mut operation) {
             panic!(
-                "{} must build with synthetic arguments: {error}",
+                "{} must build with the arguments its usage names ({arguments:?}): {error}",
                 command.name
             );
         }
@@ -105,6 +167,342 @@ fn every_typed_command_emits_the_kind_it_declares() {
         .map(|command| command.name)
         .collect();
     assert_eq!(undeclared, vec!["raw"]);
+}
+
+/// The operation a command builds for the arguments its usage names, by
+/// invoking the table's own builder.
+fn built(name: &str, arguments: &[&str]) -> serde_json::Value {
+    let command = commands()
+        .into_iter()
+        .find(|command| command.name == name)
+        .expect("the table defines the command");
+    let arguments: Vec<String> = arguments.iter().map(|one| (*one).to_owned()).collect();
+    let mut operation = serde_json::Map::new();
+    (command.build)(&arguments, &mut operation).expect("the command builds these arguments");
+    serde_json::Value::Object(operation)
+}
+
+/// The refusal a command gives an argument list, or the panic that the command
+/// accepted an argument list it should have refused.
+fn refused(name: &str, arguments: &[&str]) -> String {
+    let command = commands()
+        .into_iter()
+        .find(|command| command.name == name)
+        .expect("the table defines the command");
+    let arguments: Vec<String> = arguments.iter().map(|one| (*one).to_owned()).collect();
+    let mut operation = serde_json::Map::new();
+    match (command.build)(&arguments, &mut operation) {
+        Ok(()) => panic!("{name} accepted {arguments:?}"),
+        Err(error) => error.to_string(),
+    }
+}
+
+/// The three write commands build the operation their usage spells, and every
+/// part of that operation the usage does not mention is derived rather than
+/// asked for: a root names no path, a role is named for its own identity, and
+/// a created task's stream names no commit because no work has run. Nothing
+/// here is a value the operator did not type.
+#[test]
+fn the_write_commands_build_the_operations_their_usage_spells() {
+    let project = built(
+        "register-project",
+        &[
+            "symbiote",
+            "Symbiote",
+            "lead",
+            "lead-contract@1",
+            "root-main",
+            "root-tools",
+        ],
+    );
+    assert_eq!(project["kind"], "register_project");
+    assert_eq!(project["project"]["id"], "symbiote");
+    assert_eq!(project["project"]["name"], "Symbiote");
+    assert_eq!(project["project"]["lead"], "lead");
+    // Every root named on the command line, in order, and no placement: an
+    // observed path is a Host's to record, not this command's to invent.
+    assert_eq!(
+        project["project"]["roots"].as_array().map(|r| r.len()),
+        Some(2)
+    );
+    assert_eq!(project["project"]["roots"][0]["id"], "root-main");
+    assert_eq!(project["project"]["roots"][1]["id"], "root-tools");
+    assert_eq!(project["project"]["roots"][0]["project_id"], "symbiote");
+    assert_eq!(project["project"]["roots"][0]["revision"], 0);
+    assert_eq!(
+        project["project"]["roots"][0]["repository"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        project["project"]["roots"][0]["host_paths"],
+        serde_json::json!({})
+    );
+    // The lead is the one role registered, under the contract revision typed.
+    assert_eq!(
+        project["project"]["roles"].as_array().map(|r| r.len()),
+        Some(1)
+    );
+    assert_eq!(
+        project["project"]["roles"][0]["operating_contract"]["id"],
+        "lead-contract"
+    );
+    assert_eq!(
+        project["project"]["roles"][0]["operating_contract"]["revision"],
+        1
+    );
+
+    let work = built(
+        "create-work",
+        &[
+            "symbiote",
+            "lead",
+            "ship-it",
+            "operational",
+            "Ship it",
+            "With a description",
+        ],
+    );
+    assert_eq!(work["kind"], "create_work");
+    assert_eq!(
+        work["work"]["id"],
+        serde_json::json!({"kind": "objective", "id": "ship-it"})
+    );
+    assert_eq!(work["work"]["objective_class"], "operational");
+    assert_eq!(work["work"]["title"], "Ship it");
+    assert_eq!(work["work"]["description"], "With a description");
+    // The description is optional and absent means empty, never a placeholder.
+    let bare = built(
+        "create-work",
+        &["symbiote", "lead", "ship-two", "maintenance", "Title"],
+    );
+    assert_eq!(bare["work"]["description"], "");
+
+    let task = built(
+        "create-task",
+        &[
+            "symbiote",
+            "task-one",
+            "root-main",
+            "lead",
+            "ship-it",
+            "coding@2",
+            "task/one",
+        ],
+    );
+    assert_eq!(task["kind"], "create_task");
+    assert_eq!(task["task"]["id"], "task-one");
+    assert_eq!(
+        task["task"]["task_contract"],
+        serde_json::json!({"id": "coding", "revision": 2})
+    );
+    // The origin names the objective the caller typed, in the work item it must
+    // already be: creating a task does not create the work it originates from.
+    assert_eq!(
+        task["task"]["origin"],
+        serde_json::json!({
+            "kind": "objective",
+            "work": {"project_id": "symbiote", "id": {"kind": "objective", "id": "ship-it"}},
+        })
+    );
+    // The stream, its worktree and its chat are named for the task; the branch
+    // is the one thing about a stream the caller states.
+    assert_eq!(task["task"]["stream"]["branch"], "task/one");
+    assert_eq!(task["task"]["stream"]["id"], "stream-task-one");
+    assert_eq!(task["task"]["stream"]["worktree"], "worktree-task-one");
+    assert_eq!(task["task"]["stream"]["originating_chat"], "chat-task-one");
+    // A task that has done no work has no commit, and the null object id is
+    // the one value that cannot name a commit that exists.
+    for end in ["base", "target"] {
+        assert_eq!(
+            task["task"]["stream"][end], "0000000000000000000000000000000000000000",
+            "stream.{end}"
+        );
+    }
+}
+
+/// Every argument position of every command, driven one position at a time.
+///
+/// A command line that stops before position `i` must be refused naming
+/// position `i` — not by indexing what is not there, which is the panic a
+/// builder writes when it uses an argument it never asked for, and not by
+/// accepting a shorter line than its own usage names. And an argument that is
+/// there and empty is refused by name for the same reason: there is no reading
+/// under which an empty identity, name, title or branch is a value.
+#[test]
+fn every_argument_position_is_asked_for_before_it_is_used() {
+    for command in commands() {
+        // `raw` is the one command with no argument shape: it reads a file
+        // path, which is the one argument it does take.
+        if command.name == "raw" {
+            continue;
+        }
+        let required = placeholders(command.usage);
+        let arguments = synthetic_arguments(command.usage);
+        assert_eq!(
+            required.len(),
+            arguments.len(),
+            "{}: the usage names {} arguments and this reading builds {}",
+            command.name,
+            required.len(),
+            arguments.len()
+        );
+        for (position, placeholder) in required.iter().enumerate() {
+            let name = placeholder.name.as_str();
+            let mut operation = serde_json::Map::new();
+            let prefix = &arguments[..position];
+            match (command.build)(prefix, &mut operation) {
+                Err(error) => {
+                    let message = error.to_string();
+                    assert!(
+                        message.contains(&format!("<{name}>")),
+                        "{} accepted a line stopping before position {position} <{name}> but said \
+                         {message:?}, which names no argument",
+                        command.name
+                    );
+                }
+                Ok(()) => panic!(
+                    "{} accepted {prefix:?}, which is missing <{name}>",
+                    command.name
+                ),
+            }
+            // The same position, present and empty.
+            let mut empty = arguments.clone();
+            empty[position] = String::new();
+            let mut operation = serde_json::Map::new();
+            let built = (command.build)(&empty, &mut operation);
+            assert!(
+                built.is_err(),
+                "{} accepted an empty <{name}> at position {position}: {built:?}",
+                command.name
+            );
+            let message = built.unwrap_err().to_string();
+            assert!(
+                message.contains(&format!("<{name}>")),
+                "{} refused an empty <{name}> with {message:?}, which names no argument",
+                command.name
+            );
+        }
+    }
+}
+
+/// Every way of mistyping an argument to the three write commands is refused
+/// before anything is sent, and the refusal names the argument, the shape it
+/// wanted and the value it got — the way the lock refusal names the lock it
+/// could not take.
+#[test]
+fn the_write_commands_refuse_a_mistyped_argument_by_name() {
+    for (name, arguments, named) in [
+        // A missing argument names the argument that is missing. Every
+        // position is driven, including the last one before the roots, because
+        // a command that indexes its own arguments without asking first panics
+        // on exactly the line an operator mistypes.
+        (
+            "register-project",
+            vec!["symbiote", "Symbiote", "lead"],
+            "missing <lead_contract_id>",
+        ),
+        (
+            "register-project",
+            vec!["symbiote", "Symbiote", "lead", "lead-contract@1"],
+            "missing <root_id>",
+        ),
+        (
+            "create-work",
+            vec!["symbiote", "lead", "ship-it"],
+            "missing <class>",
+        ),
+        (
+            "create-task",
+            vec!["symbiote", "task-one", "root-main"],
+            "missing <role_id>",
+        ),
+        (
+            "create-task",
+            vec![
+                "symbiote",
+                "task-one",
+                "root-main",
+                "lead",
+                "ship-it",
+                "coding@1",
+            ],
+            "missing <branch>",
+        ),
+        // A contract without its revision, and a revision that is not a
+        // number, each name the argument and the value they got.
+        (
+            "register-project",
+            vec!["symbiote", "Symbiote", "lead", "lead-contract", "root"],
+            r#"<lead_contract_id> must be <contract_id>@<revision>; got "lead-contract""#,
+        ),
+        (
+            "register-project",
+            vec!["symbiote", "Symbiote", "lead", "lead-contract@next", "root"],
+            r#"the revision in <lead_contract_id> is not a whole number: "lead-contract@next""#,
+        ),
+        // A class the domain does not declare names the ones it does.
+        (
+            "create-work",
+            vec!["symbiote", "lead", "ship-it", "urgent", "Title"],
+            r#"<class> must be one of maintenance, operational, outcome; got "urgent""#,
+        ),
+        // A surplus argument is named rather than dropped: `description` is the
+        // last argument this command takes, and a mistyped root would be one
+        // too many just the same.
+        (
+            "create-work",
+            vec![
+                "symbiote",
+                "lead",
+                "ship-it",
+                "maintenance",
+                "Title",
+                "Body",
+                "surplus",
+            ],
+            r#"create-work does not take the argument "surplus""#,
+        ),
+        (
+            "create-task",
+            vec![
+                "symbiote",
+                "task-one",
+                "root-main",
+                "lead",
+                "ship-it",
+                "coding",
+                "task/one",
+            ],
+            r#"<contract_id> must be <contract_id>@<revision>; got "coding""#,
+        ),
+        (
+            "create-task",
+            vec![
+                "symbiote",
+                "task-one",
+                "root-main",
+                "lead",
+                "ship-it",
+                "coding@1",
+                "main",
+                "surplus",
+            ],
+            r#"create-task does not take the argument "surplus""#,
+        ),
+    ] {
+        let message = refused(name, &arguments);
+        assert!(
+            message.contains(named),
+            "{name} refused {arguments:?} with {message:?}, which does not name {named:?}"
+        );
+    }
+    // And each refusal names the offending value too, so a script reading the
+    // message knows which argument was wrong rather than only which command.
+    let message = refused(
+        "create-work",
+        &["symbiote", "lead", "ship-it", "urgent", "Title"],
+    );
+    assert!(message.contains("urgent"), "{message}");
 }
 
 /// The first word of every code span in `text`, skipping spans inside parentheses: a
@@ -812,7 +1210,7 @@ fn the_codes_the_documents_state_are_the_ones_this_binary_uses() {
     errors.dedup();
     assert_eq!(
         errors.len(),
-        3,
+        4,
         "the envelope's CLI-origin codes: {errors:?}"
     );
 

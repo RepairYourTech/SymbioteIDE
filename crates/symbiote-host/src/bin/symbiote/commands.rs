@@ -14,6 +14,11 @@ use symbiote_host::cli_schema::{POLICY_SCHEMA, dangerous_kinds, risk_of_kind};
 /// have to reject.
 pub(crate) const POLICY_EXAMPLE_KIND: &str = "shutdown";
 
+/// The help table's usage column. A usage that does not fit it is printed on
+/// its own line with the summary beneath, so no command's arguments are ever
+/// truncated or run into the next column.
+const USAGE_COLUMN: usize = 62;
+
 /// One command: the operation JSON builder plus the kind it emits. `raw`
 /// declares none, because the operator's file decides what it sends.
 pub(crate) struct Command {
@@ -25,10 +30,24 @@ pub(crate) struct Command {
         fn(Args, &mut serde_json::Map<String, serde_json::Value>) -> Result<(), Usage>,
 }
 
+/// One required argument, by position. Two refusals live here rather than in
+/// each builder, because a command line has two ways to be incomplete and both
+/// are the operator's to fix by name: the argument is absent, or it is there
+/// and empty. An empty identity, name, title or branch can never be valid —
+/// the domain refuses every one of them — so answering with the daemon's
+/// `invalid_request` would name a cause and a request the operator did not
+/// recognize, when the position is known here. What an argument may *contain*
+/// (its length, its characters, whether it is only whitespace) stays the
+/// domain's: this checks that an argument is there, not what it says.
 fn field(args: Args, index: usize, name: &str) -> Result<String, Usage> {
-    args.get(index)
+    let value = args
+        .get(index)
         .cloned()
-        .ok_or_else(|| Usage(format!("missing <{name}>")))
+        .ok_or_else(|| Usage(format!("missing <{name}>")))?;
+    if value.is_empty() {
+        return Err(Usage(format!("empty <{name}>")));
+    }
+    Ok(value)
 }
 
 /// Every domain identity (TaskId, HostId, DispatchId, …) serializes as a
@@ -52,6 +71,55 @@ fn plain(
 ) {
     map.insert(key.to_owned(), value);
 }
+
+/// One `<contract_id>@<revision>` argument: the identity a contract is
+/// recorded under, and the revision of it this command records. The domain
+/// owns what an identity may contain; this owns the spelling, so a token that
+/// is not one is refused here — naming the argument, the shape it wanted and
+/// the value it got — rather than sent to be refused as an invalid request.
+fn versioned(token: &str, name: &str) -> Result<(String, u64), Usage> {
+    let shape = || {
+        Usage(format!(
+            "<{name}> must be <contract_id>@<revision>; got {token:?}"
+        ))
+    };
+    let (id, revision) = token
+        .split_once('@')
+        .filter(|(id, revision)| !id.is_empty() && !revision.is_empty() && !revision.contains('@'))
+        .ok_or_else(shape)?;
+    let revision = revision.parse::<u64>().map_err(|_| {
+        Usage(format!(
+            "the revision in <{name}> is not a whole number: {token:?}"
+        ))
+    })?;
+    Ok((id.to_owned(), revision))
+}
+
+/// The arguments a command cannot take. A command with an optional trailing
+/// argument has a way to drop one by mistyping it, and a silently dropped
+/// `<root_id>` or `<description>` is a request the operator did not make: the
+/// surplus is named, never ignored.
+fn no_more(args: Args, taken: usize, command: &str) -> Result<(), Usage> {
+    match args.get(taken..).and_then(|extra| extra.first()) {
+        Some(unexpected) => Err(Usage(format!(
+            "{command} does not take the argument {unexpected:?}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// The classifications an Objective may carry, in the order a refusal lists
+/// them. `maintenance` and `operational` are the two a Task may originate from
+/// and `outcome` is the third the domain declares; which one this Objective is
+/// decides whether `create-task` can name it, so the caller states it rather
+/// than have the CLI invent a classification.
+const OBJECTIVE_CLASSES: [&str; 3] = ["maintenance", "operational", "outcome"];
+
+/// What a created Task's stream records before any work runs: the null Git
+/// object id, which no commit can carry. Creating a task does no work, so its
+/// stream names no commit, and a null id cannot be mistaken for one that
+/// exists. A stream that carries real lineage is created through `raw`.
+const NO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
 fn read_json(path: &str) -> Result<serde_json::Value, Usage> {
     let bytes =
@@ -153,13 +221,150 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "register-project",
+            summary: "register a Project with its lead Role and its Roots",
+            usage: "register-project <project_id> <name> <lead_role_id> <lead_contract_id>@<revision> <root_id> [root_id ...]",
+            kind: Some("register_project"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("register_project"), map);
+                let project = field(args, 0, "project_id")?;
+                let name = field(args, 1, "name")?;
+                let lead = field(args, 2, "lead_role_id")?;
+                let (contract, revision) =
+                    versioned(&field(args, 3, "lead_contract_id")?, "lead_contract_id")?;
+                // A Root is an identity the Project has, not a host placement:
+                // the daemon records those itself, per Host, once one has
+                // observed the checkout, so a root registered here names no
+                // repository and no path. A Project has at least one root, so
+                // the first is required and the rest are named with it.
+                field(args, 4, "root_id")?;
+                let roots: Vec<serde_json::Value> = args[4..]
+                    .iter()
+                    .map(|root| {
+                        serde_json::json!({
+                            "id": root,
+                            "project_id": project,
+                            "revision": 0,
+                            "repository": null,
+                            "host_paths": {},
+                        })
+                    })
+                    .collect();
+                plain(
+                    "project",
+                    serde_json::json!({
+                        "id": project,
+                        "name": name,
+                        "lead": lead,
+                        "roots": roots,
+                        "roles": [{
+                            "id": lead,
+                            "project_id": project,
+                            "revision": 0,
+                            // The Role is named for the identity it is
+                            // registered under. A Project with more than one
+                            // Role, or a Role under another contract, is
+                            // registered through `raw`.
+                            "name": lead,
+                            "operating_contract": {"id": contract, "revision": revision},
+                        }],
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "create-work",
+            summary: "create a classified Objective a Task can originate from",
+            usage: "create-work <project_id> <role_id> <objective_id> <class> <title> [description]",
+            kind: Some("create_work"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("create_work"), map);
+                let project = field(args, 0, "project_id")?;
+                let role = field(args, 1, "role_id")?;
+                let objective = field(args, 2, "objective_id")?;
+                let class = field(args, 3, "class")?;
+                if !OBJECTIVE_CLASSES.contains(&class.as_str()) {
+                    return Err(Usage(format!(
+                        "<class> must be one of {}; got {class:?}",
+                        OBJECTIVE_CLASSES.join(", ")
+                    )));
+                }
+                let title = field(args, 4, "title")?;
+                let description = args.get(5).cloned().unwrap_or_default();
+                no_more(args, 6, "create-work")?;
+                plain(
+                    "work",
+                    serde_json::json!({
+                        "id": {"kind": "objective", "id": objective},
+                        "project_id": project,
+                        "role_id": role,
+                        "title": title,
+                        "description": description,
+                        "utterance": null,
+                        "objective_class": class,
+                        "parent": null,
+                        "dependencies": [],
+                        "requirements": [],
+                        "constraints": [],
+                        "risks": [],
+                        "acceptance": [],
+                        "priority": 0,
+                        "budget": null,
+                        "external_references": [],
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
             name: "create-task",
-            summary: "create a Task from a draft (JSON file)",
-            usage: "create-task <task.json>",
+            summary: "create a Task and its stream under an Objective",
+            usage: "create-task <project_id> <task_id> <root_id> <role_id> <objective_id> <contract_id>@<revision> <branch>",
             kind: Some("create_task"),
             build: |args, map| {
                 plain("kind", serde_json::json!("create_task"), map);
-                plain("task", read_json(&field(args, 0, "task.json")?)?, map);
+                no_more(args, 7, "create-task")?;
+                let project = field(args, 0, "project_id")?;
+                let task = field(args, 1, "task_id")?;
+                let root = field(args, 2, "root_id")?;
+                let role = field(args, 3, "role_id")?;
+                let objective = field(args, 4, "objective_id")?;
+                let (contract, revision) =
+                    versioned(&field(args, 5, "contract_id")?, "contract_id")?;
+                let branch = field(args, 6, "branch")?;
+                plain(
+                    "task",
+                    serde_json::json!({
+                        "id": task,
+                        "project_id": project,
+                        "root_id": root,
+                        "role_id": role,
+                        "origin": {
+                            "kind": "objective",
+                            "work": {
+                                "project_id": project,
+                                "id": {"kind": "objective", "id": objective},
+                            },
+                        },
+                        "task_contract": {"id": contract, "revision": revision},
+                        "stream": {
+                            // The stream, its worktree and its chat are named
+                            // for the task they belong to: one task, one
+                            // stream, and nothing invented about where the work
+                            // will land beyond the branch the caller named.
+                            "id": format!("stream-{task}"),
+                            "originating_chat": format!("chat-{task}"),
+                            "worktree": format!("worktree-{task}"),
+                            "branch": branch,
+                            "base": NO_COMMIT,
+                            "target": NO_COMMIT,
+                        },
+                    }),
+                    map,
+                );
                 Ok(())
             },
         },
@@ -351,6 +556,9 @@ pub(crate) fn print_help() {
     println!("  --help, -h        print this table; connects to nothing, honors no other flag");
     println!("  --json            one machine-readable envelope per invocation on stdout");
     println!("  --yes             explicit authorization for this one dangerous command");
+    println!(
+        "  --                end flag parsing, so an argument that begins with -- is an argument"
+    );
     println!();
     println!("flags are per command: daemon commands honor --state-dir, --command-id,");
     println!("--policy, --json and --yes; `schema` honors --write and --check;");
@@ -385,10 +593,16 @@ pub(crate) fn print_help() {
     println!("commands:");
     let schema_name = "schema";
     let schema_summary = "print the published symbiote.cli and cli-policy JSON Schemas";
-    println!("   {schema_name:<62} {schema_summary}");
+    println!(
+        "   {schema_name:<width$} {schema_summary}",
+        width = USAGE_COLUMN
+    );
     let publish_name = "publish-runtime-inventory";
     let publish_summary = "install a discovery document as this Host's runtime inventory";
-    println!("   {publish_name:<62} {publish_summary}");
+    println!(
+        "   {publish_name:<width$} {publish_summary}",
+        width = USAGE_COLUMN
+    );
     for command in commands() {
         let gated = match command.kind {
             Some(kind) => risk_of_kind(kind).requires_authorization(),
@@ -396,6 +610,20 @@ pub(crate) fn print_help() {
             None => true,
         };
         let marker = if gated { "*" } else { " " };
-        println!(" {marker} {:<62} {}", command.usage, command.summary);
+        // A usage that will not fit beside the summary gets the line to
+        // itself and the summary indented under it, so the table stays
+        // readable whatever a command's arguments spell rather than running
+        // the summary into the usage.
+        if command.usage.chars().count() > USAGE_COLUMN {
+            println!(" {marker} {}", command.usage);
+            println!("   {}", command.summary);
+        } else {
+            println!(
+                " {marker} {:<width$} {}",
+                command.usage,
+                command.summary,
+                width = USAGE_COLUMN
+            );
+        }
     }
 }

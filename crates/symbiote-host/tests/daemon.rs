@@ -1709,22 +1709,16 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
         "create_work: {}",
         String::from_utf8_lossy(&created.stderr)
     );
-    let task_json = host.directory.join("task.json");
-    std::fs::write(
-        &task_json,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "id":"cli-task","project_id":"cli",
-            "root_id":"root-cli","role_id":"lead-cli",
-            "origin":{"kind":"objective","work":{"project_id":"cli",
-                "id":{"kind":"objective","id":"cli-objective"}}},
-            "task_contract":{"id":"coding-contract","revision":1},
-            "stream":{"id":"cli-stream","originating_chat":"chat","worktree":"cli-worktree",
-            "branch":"task/cli","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}))
-        .unwrap(),
-    )
-    .unwrap();
-    let created = run(&["create-task", task_json.to_str().unwrap()]);
+    let created = run(&[
+        "create-task",
+        "cli",
+        "cli-task",
+        "root-cli",
+        "lead-cli",
+        "cli-objective",
+        "coding-contract@1",
+        "task/cli",
+    ]);
     assert!(
         created.status.success(),
         "create-task: {}",
@@ -1846,6 +1840,402 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
         .unwrap();
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("run-started-dispatch"));
+}
+
+/// The three writes a person or a script types, run through the real binary
+/// against a real daemon over its own socket: the receipts they answer with,
+/// what the typed reads then say about what they filed, the retry that
+/// replays its receipt instead of filing a second record, and every way of
+/// mistyping one.
+///
+/// The refusals are held from both sides. A mistyped argument exits 1 naming
+/// the argument, the shape it wanted and the value it got, and files nothing:
+/// the Project's journal stands where it was, which is what a real daemon can
+/// show (that the refusal happens before the socket at all is held in
+/// `cli_authorization`, against a listener that would see a frame). A request
+/// the daemon itself refuses exits 2 with the daemon's own code, and files
+/// nothing either.
+#[test]
+fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_cannot() {
+    let host = Host::new();
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .arg("--state-dir")
+            .arg(&host.directory)
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    // The receipt a write command answered with, or the failure that says why
+    // it did not.
+    let receipt = |output: &std::process::Output| -> Value {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(body["kind"], "receipt", "{body}");
+        body["data"].clone()
+    };
+    // A typed read, or the failure that says why it did not answer.
+    let read = |arguments: &[&str]| -> Value {
+        let output = run(arguments);
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    // How many events the Project's journal holds, which is how much was filed.
+    let journaled = |project: &str| -> usize {
+        read(&["read-journal", project, "0", "100"])["data"]["events"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+
+    // Register, file work, create the task: three receipts, three sequences,
+    // and nothing hand-authored anywhere in the line.
+    let registered = run(&[
+        "register-project",
+        "typed",
+        "Typed project",
+        "lead-typed",
+        "lead-contract@1",
+        "root-main",
+        "root-tools",
+    ]);
+    let first = receipt(&registered);
+    assert_eq!(first["sequence"], 1, "{first}");
+    assert_eq!(first["revision"], 0, "{first}");
+    assert_eq!(first["replayed"], false, "{first}");
+
+    // The typed reads say what the command was asked to file: the name and
+    // lead, and both roots, in the order they were named.
+    let project = read(&["get-project", "typed"]);
+    assert_eq!(project["data"]["name"], "Typed project");
+    assert_eq!(project["data"]["lead"], "lead-typed");
+    assert_eq!(project["data"]["roots"], json!(["root-main", "root-tools"]));
+    let snapshot = read(&["snapshot", "typed"]);
+    let roles = snapshot["data"]["roles"].as_array().unwrap();
+    assert_eq!(
+        roles.len(),
+        1,
+        "the project is registered with its lead role"
+    );
+    assert_eq!(roles[0]["id"], "lead-typed");
+    assert_eq!(roles[0]["name"], "lead-typed");
+    assert_eq!(
+        roles[0]["operating_contract"],
+        json!({"id": "lead-contract", "revision": 1})
+    );
+
+    let work = run(&[
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-it",
+        "operational",
+        "Ship it",
+        "With a description",
+    ]);
+    assert_eq!(receipt(&work)["sequence"], 2);
+
+    let task = run(&[
+        "create-task",
+        "typed",
+        "task-one",
+        "root-main",
+        "lead-typed",
+        "ship-it",
+        "coding@1",
+        "task/one",
+    ]);
+    assert_eq!(receipt(&task)["sequence"], 3);
+
+    // The task is ready under the contract revision that was typed, its stream
+    // is the one the command derived for it, and its origin is the work filed
+    // above — read back through the typed reads, not through the store.
+    let read_task = read(&["get-task", "typed", "task-one"]);
+    assert_eq!(read_task["data"]["state"], "ready");
+    assert_eq!(read_task["data"]["stream_id"], "stream-task-one");
+    assert_eq!(
+        read_task["data"]["task_contract"],
+        json!({"id": "coding", "revision": 1})
+    );
+    let origin = read(&["get-task-origin", "typed", "task-one"]);
+    assert_eq!(
+        origin["data"],
+        json!({
+            "kind": "objective",
+            "work": {"project_id": "typed", "id": {"kind": "objective", "id": "ship-it"}},
+        })
+    );
+
+    // A retry of an already-answered command replays that answer rather than
+    // filing a second Project, which is what `--command-id` is for.
+    let arguments = [
+        "--command-id",
+        "typed-once",
+        "register-project",
+        "replayed",
+        "Replayed project",
+        "lead-replayed",
+        "contract@1",
+        "root-replayed",
+    ];
+    assert_eq!(receipt(&run(&arguments))["replayed"], false);
+    assert_eq!(receipt(&run(&arguments))["replayed"], true);
+    assert_eq!(
+        read(&["get-project", "replayed"])["data"]["name"],
+        "Replayed project"
+    );
+
+    // A mistyped argument is refused where the command line is read: exit 1,
+    // the refusal names the argument and the value it got, and the Project's
+    // journal is where the proof that nothing was filed comes from.
+    let before = journaled("typed");
+    for (arguments, named) in [
+        (
+            vec!["register-project", "typed", "Typed project", "lead-typed"],
+            "missing <lead_contract_id>",
+        ),
+        (
+            vec![
+                "register-project",
+                "typed",
+                "Typed project",
+                "lead-typed",
+                "lead-contract",
+                "root-main",
+            ],
+            "<lead_contract_id> must be <contract_id>@<revision>; got \"lead-contract\"",
+        ),
+        (
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-two",
+                "urgent",
+                "Title",
+            ],
+            "<class> must be one of maintenance, operational, outcome; got \"urgent\"",
+        ),
+        (
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-two",
+                "maintenance",
+                "Title",
+                "Body",
+                "surplus",
+            ],
+            "create-work does not take the argument \"surplus\"",
+        ),
+        (
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-main",
+                "lead-typed",
+                "ship-it",
+                "coding",
+                "task/two",
+            ],
+            "<contract_id> must be <contract_id>@<revision>; got \"coding\"",
+        ),
+        // An argument that is there and empty. No identity, name, title or
+        // branch can be, so the position is named here rather than a daemon
+        // asked to refuse a draft the operator could see was incomplete.
+        (
+            vec!["register-project", "", "Typed", "lead-typed", "c@1", "root"],
+            "empty <project_id>",
+        ),
+        (
+            vec!["register-project", "typed", "", "lead-typed", "c@1", "root"],
+            "empty <name>",
+        ),
+        (
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-two",
+                "",
+                "Title",
+            ],
+            "empty <class>",
+        ),
+        (
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-main",
+                "lead-typed",
+                "ship-it",
+                "coding@1",
+                "",
+            ],
+            "empty <branch>",
+        ),
+    ] {
+        let refused = run(&arguments);
+        assert_eq!(refused.status.code(), Some(1), "{arguments:?}");
+        assert!(refused.stdout.is_empty(), "{arguments:?}");
+        let message = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            message.contains(named),
+            "{arguments:?} refused with {message:?}, which does not name {named:?}"
+        );
+        // The usage the refusal points at is the command's own.
+        assert!(
+            message.contains("usage: symbiote --state-dir DIR"),
+            "{arguments:?} refused with {message:?}"
+        );
+    }
+    assert_eq!(
+        journaled("typed"),
+        before,
+        "a refused command line must file nothing"
+    );
+
+    // A request the daemon itself refuses is exit 2 with the daemon's own code:
+    // the command was well formed, and the state it named does not exist or
+    // already does.
+    for (arguments, code) in [
+        (
+            // The Project is registered already.
+            vec![
+                "register-project",
+                "typed",
+                "Typed project",
+                "lead-other",
+                "contract@1",
+                "root-b",
+            ],
+            "conflict",
+        ),
+        (
+            // The root this Task names is not one the Project has.
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-ghost",
+                "lead-typed",
+                "ship-it",
+                "coding@1",
+                "task/two",
+            ],
+            "invalid_request",
+        ),
+        (
+            // The work this Task originates from does not exist.
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-main",
+                "lead-typed",
+                "no-such-work",
+                "coding@1",
+                "task/two",
+            ],
+            "not_found",
+        ),
+        (
+            // A title longer than the domain's own bound: that is the domain's
+            // rule, answered as its typed refusal rather than as a CLI usage
+            // error, because the CLI does not restate the domain's lengths.
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-long",
+                "maintenance",
+                &"t".repeat(257),
+            ],
+            "invalid_request",
+        ),
+        (
+            // The role this work names is not one the Project has.
+            vec![
+                "create-work",
+                "typed",
+                "lead-ghost",
+                "ship-three",
+                "maintenance",
+                "Title",
+            ],
+            "invalid_request",
+        ),
+    ] {
+        let refused = run(&arguments);
+        assert_eq!(refused.status.code(), Some(2), "{arguments:?}");
+        let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+        assert_eq!(error["code"], code, "{arguments:?} answered {error}");
+    }
+    // None of those refusals filed anything either: the Task that was asked for
+    // four times does not exist, and the journal stands where it did.
+    assert_eq!(journaled("typed"), before);
+    let absent = run(&["get-task", "typed", "task-two"]);
+    assert_eq!(absent.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&absent.stderr).unwrap();
+    assert_eq!(error["code"], "not_found", "{error}");
+
+    // A command line too large to be one bounded frame is refused as the
+    // request it is. The daemon here is running and healthy, so a refusal that
+    // said it could not be reached would name a cause that is not the cause
+    // and offer a remedy for a daemon that needs none: this is the lock
+    // refusal's rule applied to the other way a request never gets sent.
+    let past_the_bound = "t".repeat(65_536);
+    let refused = run(&[
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-huge",
+        "maintenance",
+        &past_the_bound,
+    ]);
+    assert_eq!(refused.status.code(), Some(1), "{:?}", refused.status);
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        message.contains("past the 65536-byte request bound"),
+        "{message}"
+    );
+    assert!(message.contains("nothing was sent"), "{message}");
+    assert!(
+        !message.contains("is symbioted running"),
+        "a request that was never sent must not blame the daemon: {message}"
+    );
+    // The same refusal in the envelope, under its own code rather than
+    // `unreachable`, because a script branches on it.
+    let envelope = run(&[
+        "--json",
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-huge",
+        "maintenance",
+        &past_the_bound,
+    ]);
+    assert_eq!(envelope.status.code(), Some(1));
+    let body: Value = serde_json::from_slice(&envelope.stdout).unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["code"], "request_refused", "{body}");
+    // And nothing was filed by either attempt.
+    assert_eq!(journaled("typed"), before);
+    // The daemon is still serving: a refusal that never asked left it alone.
+    assert!(run(&["health"]).status.success());
 }
 
 /// How `staffing_composition` registers the provider rows the binding's profile
