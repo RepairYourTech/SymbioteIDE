@@ -165,11 +165,230 @@ fn no_more(args: Args, taken: usize, command: &str) -> Result<(), Usage> {
 /// than have the CLI invent a classification.
 const OBJECTIVE_CLASSES: [&str; 3] = ["maintenance", "operational", "outcome"];
 
+/// One value from a closed set the domain declares, named by the caller and
+/// refused here with the whole set in the message. The set is written out per
+/// argument rather than read from the domain, because a refusal that arrives
+/// from the daemon names a code and a request the operator did not recognize,
+/// while the value they typed and the choices they had are the CLI's to answer.
+fn one_of<T: Copy>(token: &str, name: &str, choices: &[(&str, T)]) -> Result<T, Usage> {
+    choices
+        .iter()
+        .find(|(spelling, _)| *spelling == token)
+        .map(|(_, value)| *value)
+        .ok_or_else(|| {
+            Usage(format!(
+                "<{name}> must be one of {}; got {token:?}",
+                choices
+                    .iter()
+                    .map(|(spelling, _)| *spelling)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+}
+
+/// The functions a Role may hold in a Team, in the order a refusal lists them.
+/// `lead_orchestrator` is the one the Project's lead must have and the only
+/// one exactly one member may; the other two are how the remaining members
+/// differ. Which function a Role has decides what it is asked to do, so the
+/// caller states it rather than have the CLI infer it from the lead's identity.
+/// The grants a member may hold, in the order a refusal lists them. `read_root`
+/// is not optional in the domain — a member that cannot read the Root cannot be
+/// reviewed against it — so it is added to every member rather than left for the
+/// caller to remember on each one.
+const ROLE_FUNCTIONS: [(&str, &str); 3] = [
+    ("lead_orchestrator", "lead_orchestrator"),
+    ("general_execution", "general_execution"),
+    ("specialist", "specialist"),
+];
+const MEMBER_GRANTS: [(&str, &str); 5] = [
+    ("read_root", "read_root"),
+    ("mutate_stream", "mutate_stream"),
+    ("execute_process", "execute_process"),
+    ("network", "network"),
+    ("use_credential", "use_credential"),
+];
+
+/// The fields one `<member>` argument carries, in the order they are read. A
+/// member is the one record in a Team with more than one fact in it, so the CLI
+/// owns the spelling rather than making an operator hand-write a policy object:
+/// the field order is this list, and a record that is not this shape is refused
+/// naming the shape it wanted.
+const MEMBER_FIELDS: [&str; 6] = [
+    "role_id",
+    "function",
+    "grant,[grant...]",
+    "root,[root...]",
+    "domain,[domain...]",
+    "reviewer,[reviewer...]",
+];
+
+/// One `<member>` argument: a Role, what it is, what it may reach, what it
+/// works on, and who reviews it.
+///
+/// Every field is a fact the operator holds. The access is the member's own,
+/// not a copy of the team's, because a Team exists precisely so two roles can
+/// reach different places — a command that gave every member the same grants
+/// would be spelling a ceiling and calling it a team.
+fn member(project: &str, token: &str, policies: &[String; 4]) -> Result<serde_json::Value, Usage> {
+    let shape = || {
+        Usage(format!(
+            "<member> must be {} separated by `:`; got {token:?}",
+            MEMBER_FIELDS.join(":")
+        ))
+    };
+    let values: Vec<&str> = token.split(':').collect();
+    if values.len() != MEMBER_FIELDS.len() {
+        return Err(shape());
+    }
+    if let Some(at) = values.iter().position(|value| value.is_empty()) {
+        return Err(Usage(format!(
+            "<member>'s <{}> is empty in {token:?}",
+            MEMBER_FIELDS[at]
+        )));
+    }
+    let role = values[0];
+    let function = one_of(values[1], "function", &ROLE_FUNCTIONS)?;
+
+    let mut grants = list(values[2], "grant")?;
+    for grant in &grants {
+        one_of(grant, "grant", &MEMBER_GRANTS)?;
+    }
+    if !grants.iter().any(|grant| grant == "read_root") {
+        // A member that cannot read the Root cannot be reviewed against it,
+        // so the domain refuses the Team whatever the caller wrote. Adding the
+        // grant the domain requires is stating a fact about what a member is,
+        // not widening one the operator withheld.
+        grants.push("read_root".to_owned());
+    }
+
+    let roots = list(values[3], "root")?;
+    if roots.is_empty() {
+        return Err(Usage(format!(
+            "a <member> must name at least one <root>: {token:?} reaches nothing"
+        )));
+    }
+    let domains = list(values[4], "domain")?;
+    let reviewers = list(values[5], "reviewer")?;
+    if reviewers.is_empty() {
+        return Err(Usage(format!(
+            "a <member> must name at least one <reviewer>: the domain refuses a Team with an \
+             unreviewed role, and {token:?} named none"
+        )));
+    }
+    if reviewers.iter().any(|reviewer| reviewer == role) {
+        return Err(Usage(format!(
+            "a <member> cannot review itself: {token:?} names {role:?} as its own reviewer"
+        )));
+    }
+    Ok(serde_json::json!({
+        "role_id": role,
+        "function": function,
+        // A member's responsibilities ARE the domains it works in. The domain
+        // requires the list to be non-empty and the routing decision reads
+        // the domains, so spelling both separately would let a Team record
+        // say a role is responsible for work it never routes to.
+        "responsibilities": domains,
+        "task_domains": domains,
+        "access": {
+            "project_id": project,
+            "roots": roots,
+            "grants": grants,
+            "policy_revision": 1,
+        },
+        "context_policy_ref": policies[0],
+        "tool_policy_ref": policies[1],
+        "skill_policy_ref": policies[2],
+        "execution_policy_ref": policies[3],
+        "independent_reviewers": reviewers,
+        // A fallback is the role that takes over when this one cannot, and
+        // who that is is a decision about escalation rather than about a
+        // role's shape. A member that names one is `raw`.
+        "fallbacks": [],
+    }))
+}
+
+/// The members of a Team, one `<member>` per argument.
+fn team_members(
+    tokens: &[String],
+    project: &str,
+    policies: &[String; 4],
+) -> Result<Vec<serde_json::Value>, Usage> {
+    let mut members: Vec<serde_json::Value> = Vec::new();
+    for token in tokens {
+        if token.is_empty() {
+            return Err(Usage("empty <member>".into()));
+        }
+        let role = member(project, token, policies)?;
+        // A Role in a Team twice is a Team carrying two policies for one
+        // Role, and the domain refuses it as a duplicate. Naming it here says
+        // which argument repeated, which the store's typed refusal cannot.
+        if members
+            .iter()
+            .any(|held| held["role_id"] == role["role_id"])
+        {
+            return Err(Usage(format!(
+                "<member> names role {:?} twice; a Team holds one policy per Role",
+                role["role_id"].as_str().unwrap_or_default()
+            )));
+        }
+        members.push(role);
+    }
+    Ok(members)
+}
+
+/// One `<a,b,c>` list argument: the comma-separated values of a set the caller
+/// holds. An empty element is a value the caller did not type, and a set with
+/// an empty member is a set nobody declared, so it is refused by position
+/// rather than quietly dropped.
+fn list(token: &str, name: &str) -> Result<Vec<String>, Usage> {
+    let values: Vec<String> = token.split(',').map(|value| value.to_owned()).collect();
+    if values.iter().any(|value| value.is_empty()) {
+        return Err(Usage(format!(
+            "<{name}> is a comma-separated list; an entry of it is empty in {token:?}"
+        )));
+    }
+    Ok(values)
+}
+
+/// One `<whole number>` argument the domain bounds rather than the CLI: a
+/// sequence, a page size, a token count, a revision, a millisecond deadline.
+/// These are the arguments a script computes, so the refusal has to say what
+/// the value was — a bare "not a number" leaves a script with nothing to fix.
+fn number<T: std::str::FromStr>(token: &str, name: &str) -> Result<T, Usage> {
+    token
+        .parse::<T>()
+        .map_err(|_| Usage(format!("<{name}> must be a whole number; got {token:?}")))
+}
+
 /// What a created Task's stream records before any work runs: the null Git
 /// object id, which no commit can carry. Creating a task does no work, so its
 /// stream names no commit, and a null id cannot be mistaken for one that
 /// exists. A stream that carries real lineage is created through `raw`.
 const NO_COMMIT: &str = "0000000000000000000000000000000000000000";
+
+/// One `<policy_ref>@<revision>` argument of a binding's seven policies. They
+/// are named one argument each rather than derived: a policy document is
+/// something the operator publishes, and a reference the CLI invented would
+/// name a document that does not exist.
+fn policy(name: &str, args: Args, index: usize) -> Result<serde_json::Value, Usage> {
+    let (id, revision) = versioned(&field(args, index, name)?, name)?;
+    Ok(serde_json::json!({"id": id, "revision": revision}))
+}
+
+/// The enforcement each required control needs. The domain refuses a required
+/// control this map does not mention, and refuses any strength of
+/// `unsupported`, so every control a binding requires is mapped to the one
+/// strength that is both named and supported: the Host enforces the controls
+/// it composes. A binding that claims a weaker or stronger enforcement for a
+/// control is `raw`, because the claim is the operator's to make.
+fn minimum_enforcement(controls: &[String]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for control in controls {
+        map.insert(control.clone(), serde_json::json!("host_enforced"));
+    }
+    serde_json::Value::Object(map)
+}
 
 fn read_json(path: &str) -> Result<serde_json::Value, Usage> {
     let bytes =
@@ -272,8 +491,9 @@ pub(crate) fn commands() -> Vec<Command> {
         },
         Command {
             name: "register-project",
-            summary: "register a Project with its lead Role and its Roots",
-            usage: "register-project <project_id> <name> <lead_role_id> <lead_contract_id>@<revision> <root_id> [root_id ...]",
+            summary: "register a Project with its Roots and its Roles",
+            usage: "register-project <project_id> <name> <lead_role_id> <lead_contract_id>@<revision> \
+                    <root_id>[,<root_id>...] [role_id:contract_id:revision ...]",
             kind: Some("register_project"),
             build: |args, map| {
                 plain("kind", serde_json::json!("register_project"), map);
@@ -285,10 +505,11 @@ pub(crate) fn commands() -> Vec<Command> {
                 // A Root is an identity the Project has, not a host placement:
                 // the daemon records those itself, per Host, once one has
                 // observed the checkout, so a root registered here names no
-                // repository and no path. A Project has at least one root, so
-                // the first is required and the rest are named with it.
-                field(args, 4, "root_id")?;
-                let roots: Vec<serde_json::Value> = args[4..]
+                // repository and no path. A Project has at least one root, and
+                // they are one comma-separated argument so that the Roles
+                // after them have a position of their own.
+                let root_ids = list(&field(args, 4, "root_id")?, "root_id")?;
+                let roots: Vec<serde_json::Value> = root_ids
                     .iter()
                     .map(|root| {
                         serde_json::json!({
@@ -300,6 +521,60 @@ pub(crate) fn commands() -> Vec<Command> {
                         })
                     })
                     .collect();
+                // A Role is named for the identity it is registered under, and
+                // every Role — the lead's included — is named here rather than
+                // only the lead's. A Project whose Team has an execution role
+                // cannot be registered otherwise: the store refuses a Team that
+                // names a Role the Project does not hold, so a command that
+                // registered the lead alone could never produce a Team the
+                // domain accepts.
+                let mut roles = vec![serde_json::json!({
+                    "id": lead,
+                    "project_id": project,
+                    "revision": 0,
+                    "name": lead,
+                    "operating_contract": {"id": contract, "revision": revision},
+                })];
+                for token in args.get(5..).unwrap_or_default() {
+                    if token.is_empty() {
+                        return Err(Usage("empty <role_id>".into()));
+                    }
+                    let parts: Vec<&str> = token.split(':').collect();
+                    let shape = || {
+                        Usage(format!(
+                            "<role_id> must be <role_id>:<contract_id>:<revision>; got {token:?}"
+                        ))
+                    };
+                    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+                        return Err(shape());
+                    }
+                    if parts[0] == lead {
+                        return Err(Usage(format!(
+                            "<role_id> names the lead {lead:?} a second time: a Project's lead \\
+                             Role is registered from <lead_role_id> and \\
+                             <lead_contract_id>@<revision>"
+                        )));
+                    }
+                    if roles
+                        .iter()
+                        .any(|role| role["id"] == serde_json::json!(parts[0]))
+                    {
+                        return Err(Usage(format!(
+                            "<role_id> names {:?} twice: a Project holds one Role per identity",
+                            parts[0]
+                        )));
+                    }
+                    roles.push(serde_json::json!({
+                        "id": parts[0],
+                        "project_id": project,
+                        "revision": 0,
+                        "name": parts[0],
+                        "operating_contract": {
+                            "id": parts[1],
+                            "revision": number::<u64>(parts[2], "revision")?,
+                        },
+                    }));
+                }
                 plain(
                     "project",
                     serde_json::json!({
@@ -307,17 +582,7 @@ pub(crate) fn commands() -> Vec<Command> {
                         "name": name,
                         "lead": lead,
                         "roots": roots,
-                        "roles": [{
-                            "id": lead,
-                            "project_id": project,
-                            "revision": 0,
-                            // The Role is named for the identity it is
-                            // registered under. A Project with more than one
-                            // Role, or a Role under another contract, is
-                            // registered through `raw`.
-                            "name": lead,
-                            "operating_contract": {"id": contract, "revision": revision},
-                        }],
+                        "roles": roles,
                     }),
                     map,
                 );
@@ -424,6 +689,590 @@ pub(crate) fn commands() -> Vec<Command> {
                             "branch": derived.branch,
                             "base": base,
                             "target": NO_COMMIT,
+                        },
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "observe-root-placement",
+            summary: "record a Root's checkout path on this Host",
+            usage: "observe-root-placement <project_id> <root_id> <host_id> <path> <expected_revision>",
+            kind: Some("observe_root_placement"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("observe_root_placement"), map);
+                plain("project_id", field(args, 0, "project_id")?.into(), map);
+                plain("root_id", field(args, 1, "root_id")?.into(), map);
+                // The Host the caller claims. The daemon refuses a foreign
+                // Host with `permission_denied` rather than recording a
+                // placement it cannot observe, so this is a fact the operator
+                // holds (their own `host-pulse`) and not a derived value.
+                plain("host_id", field(args, 2, "host_id")?.into(), map);
+                // The checkout the Host verifies itself: it canonicalizes this
+                // and refuses unless a real git work tree is there. A root
+                // registered by `register-project` names no path, so this is
+                // where the path a registration left out is observed.
+                plain("path", field(args, 3, "path")?.into(), map);
+                plain(
+                    "expected_revision",
+                    number::<u64>(&field(args, 4, "expected_revision")?, "expected_revision")?
+                        .into(),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "register-provider-connection",
+            summary: "register an inference provider connection",
+            usage: "register-provider-connection <project_id> <connection_id> <adapter> <endpoint_reference> <authentication>",
+            kind: Some("replace_provider_connection"),
+            build: |args, map| {
+                plain(
+                    "kind",
+                    serde_json::json!("replace_provider_connection"),
+                    map,
+                );
+                let project = field(args, 0, "project_id")?;
+                // The connection carries no Project: which Project may name
+                // this connection is the attribution on the operation, so the
+                // same record is shared by every Project entitled to it.
+                plain("attribution", project.clone().into(), map);
+                let connection_id = field(args, 1, "connection_id")?;
+                let adapter = field(args, 2, "adapter")?;
+                // A reference, never a secret: the connection names where to
+                // reach, and the credential lives in the operator's broker,
+                // not in this record.
+                let endpoint = field(args, 3, "endpoint_reference")?;
+                let authentication = one_of(
+                    &field(args, 4, "authentication")?,
+                    "authentication",
+                    &[
+                        ("api_credential", "api_credential"),
+                        ("harness_managed", "harness_managed"),
+                        ("local_unauthenticated", "local_unauthenticated"),
+                    ],
+                )?;
+                plain(
+                    "connection",
+                    serde_json::json!({
+                        "id": connection_id,
+                        "adapter": adapter,
+                        "endpoint_reference": endpoint,
+                        "authentication": authentication,
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "register-billing-entitlement",
+            summary: "register the billing entitlement for a provider",
+            usage: "register-billing-entitlement <project_id> <entitlement_id> <connection_id> <kind> <evidence_id> <expires_at_ms>",
+            kind: Some("replace_billing_entitlement"),
+            build: |args, map| {
+                plain(
+                    "kind",
+                    serde_json::json!("replace_billing_entitlement"),
+                    map,
+                );
+                let project = field(args, 0, "project_id")?;
+                plain("attribution", project.clone().into(), map);
+                // Every argument is read in the order it is typed, so a line
+                // stopping before position `i` is refused naming position `i`.
+                // That only holds if nothing further down the command line has
+                // been read yet, which is why the expiry — the last argument —
+                // is not read first here.
+                let entitlement_id = field(args, 1, "entitlement_id")?;
+                let connection = field(args, 2, "connection_id")?;
+                let billing = one_of(
+                    &field(args, 3, "kind")?,
+                    "kind",
+                    &[
+                        ("metered_api", "metered_api"),
+                        ("harness_subscription", "harness_subscription"),
+                        ("local", "local"),
+                    ],
+                )?;
+                let evidence = field(args, 4, "evidence_id")?;
+                let expires = number::<i64>(&field(args, 5, "expires_at_ms")?, "expires_at_ms")?;
+                if expires < 0 {
+                    return Err(Usage(format!(
+                        "<expires_at_ms> is a Unix millisecond instant and cannot be negative; got \
+                         {expires}"
+                    )));
+                }
+                plain(
+                    "entitlement",
+                    serde_json::json!({
+                        "id": entitlement_id,
+                        // The entitlement belongs to the connection it pays
+                        // for, so a caller cannot register an entitlement
+                        // against a provider that is not the one it names.
+                        "provider": connection,
+                        "kind": billing,
+                        // Evidence, not a proof this record carries: what the
+                        // operator observed to earn the entitlement.
+                        "verification_evidence": evidence,
+                        "expires_at": expires,
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "register-model-descriptor",
+            summary: "register a model's context window and capabilities",
+            usage: "register-model-descriptor <project_id> <model_id> <connection_id> <context_window_tokens> <max_output_tokens> [capability ...]",
+            kind: Some("replace_model_descriptor"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("replace_model_descriptor"), map);
+                let project = field(args, 0, "project_id")?;
+                plain("attribution", project.clone().into(), map);
+                // Read in the order they are typed, like every other command.
+                let model_id = field(args, 1, "model_id")?;
+                let connection_id = field(args, 2, "connection_id")?;
+                let window = number::<u64>(
+                    &field(args, 3, "context_window_tokens")?,
+                    "context_window_tokens",
+                )?;
+                let output =
+                    number::<u64>(&field(args, 4, "max_output_tokens")?, "max_output_tokens")?;
+                // A model that cannot hold its own output is a descriptor no
+                // request could ever satisfy, and the request that discovers
+                // it is a `context_limit` refusal from a provider turn long
+                // after the descriptor was on record. The two figures are
+                // compared here, where both are on the command line.
+                if output == 0 || output > window {
+                    return Err(Usage(format!(
+                        "<max_output_tokens> must be at least 1 and no more than \
+                         <context_window_tokens> ({window}); got {output}"
+                    )));
+                }
+                // The capabilities are a set the model declares, each named by
+                // the caller; `reasoning:<effort>` adds one effort to the set
+                // and the three bare names set their flag. Nothing is inferred
+                // from the connection: a model that cannot stream says so.
+                let mut reasoning: Vec<&str> = Vec::new();
+                let (mut tools, mut images, mut streaming) = (false, false, false);
+                for capability in args.get(5..).unwrap_or_default() {
+                    if capability.is_empty() {
+                        return Err(Usage("empty <capability>".into()));
+                    }
+                    match capability.split_once(':') {
+                        Some(("reasoning", effort)) => {
+                            one_of(
+                                effort,
+                                "capability",
+                                &[
+                                    ("none", "none"),
+                                    ("minimal", "minimal"),
+                                    ("low", "low"),
+                                    ("medium", "medium"),
+                                    ("high", "high"),
+                                    ("x_high", "x_high"),
+                                    ("max", "max"),
+                                    ("ultra", "ultra"),
+                                ],
+                            )?;
+                            reasoning.push(match effort {
+                                "none" => "none",
+                                "minimal" => "minimal",
+                                "low" => "low",
+                                "medium" => "medium",
+                                "high" => "high",
+                                "x_high" => "x_high",
+                                "max" => "max",
+                                _ => "ultra",
+                            });
+                        }
+                        _ => match capability.as_str() {
+                            "tools" => tools = true,
+                            "images" => images = true,
+                            "streaming" => streaming = true,
+                            other => {
+                                return Err(Usage(format!(
+                                    "<capability> must be tools, images, streaming or \
+                                     reasoning:<effort>; got {other:?}"
+                                )));
+                            }
+                        },
+                    }
+                }
+                reasoning.sort_unstable();
+                reasoning.dedup();
+                plain(
+                    "descriptor",
+                    serde_json::json!({
+                        // The contract version this binary speaks, not a
+                        // caller-supplied number that could name a document
+                        // this daemon does not implement.
+                        "schema_version":
+                            symbiote_runtime_sdk::provider::PROVIDER_CONTRACT_VERSION,
+                        "id": model_id,
+                        "provider_id": connection_id,
+                        "context_window_tokens": window,
+                        "max_output_tokens": output,
+                        "capabilities": {
+                            "reasoning_efforts": reasoning,
+                            "tools": tools,
+                            "images": images,
+                            "streaming": streaming,
+                        },
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "record-route",
+            summary: "record which Role a work item routes to",
+            usage: "record-route <project_id> <objective_id> <role_id> [domain ...]",
+            kind: Some("record_route"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("record_route"), map);
+                let project = field(args, 0, "project_id")?;
+                let objective = field(args, 1, "objective_id")?;
+                // An Objective, because `create-work` files Objectives: the
+                // work id is a tagged union, and the kind is derived from the
+                // fact that this is the one kind a typed command files. A
+                // route to another kind of work is recorded through `raw`.
+                let work = serde_json::json!({"kind": "objective", "id": objective});
+                let role = field(args, 2, "role_id")?;
+                let domains = args.get(3..).unwrap_or_default();
+                // A route with neither a named Role nor a domain routes
+                // nothing, which the domain refuses as an invalid request.
+                // Saying so here names the two arguments that could each have
+                // supplied one, rather than sending a request whose only
+                // answer would be a code.
+                if domains.is_empty() && role.is_empty() {
+                    return Err(Usage(
+                        "record-route needs a <role_id> or at least one <domain> to route by"
+                            .into(),
+                    ));
+                }
+                plain(
+                    "request",
+                    serde_json::json!({
+                        "project_id": project,
+                        "work_id": work,
+                        "requested": role,
+                        "domains": domains,
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "replace-team",
+            summary: "register a Project's Team and its members' access",
+            usage: "replace-team <project_id> <lead_role_id> <context_ref> <tool_ref> <skill_ref> \
+                    <execution_ref> <member> [member ...]",
+            kind: Some("replace_team"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("replace_team"), map);
+                let project = field(args, 0, "project_id")?;
+                let lead = field(args, 1, "lead_role_id")?;
+                // The four policy references a member carries are the same for
+                // every member in every document this tree ships, so they are
+                // named once for the team rather than repeated per member,
+                // where one of them could disagree with its own team.
+                let policies = [
+                    field(args, 2, "context_ref")?,
+                    field(args, 3, "tool_ref")?,
+                    field(args, 4, "skill_ref")?,
+                    field(args, 5, "execution_ref")?,
+                ];
+                let members = team_members(args.get(6..).unwrap_or_default(), &project, &policies)?;
+                if members.is_empty() {
+                    return Err(Usage(
+                        "replace-team needs at least one <member>: a Team with no member has no \
+                         lead role"
+                            .into(),
+                    ));
+                }
+                // The ceiling is the union of what the members were granted, so
+                // `access_within` holds by construction: a member can never
+                // reach further than the team does, and the ceiling can never
+                // be narrower than the member it bounds.
+                let mut roots: Vec<String> = Vec::new();
+                let mut grants: Vec<String> = Vec::new();
+                for member in &members {
+                    for (key, into) in [("roots", &mut roots), ("grants", &mut grants)] {
+                        for value in member["access"][key].as_array().into_iter().flatten() {
+                            let value = value.as_str().unwrap_or_default().to_owned();
+                            if !into.contains(&value) {
+                                into.push(value);
+                            }
+                        }
+                    }
+                }
+                roots.sort();
+                grants.sort();
+                // A first replacement, so the expected revision is the absent
+                // one and the store takes it as "create at revision 0". A team
+                // replaced over an existing one is `raw`, which is where the
+                // expected revision is stated.
+                plain("expected_revision", serde_json::Value::Null, map);
+                plain(
+                    "team",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "project_id": project,
+                        "revision": 0,
+                        "lead_role_id": lead,
+                        "members": members,
+                        "access_ceiling": {
+                            "project_id": project,
+                            "roots": roots,
+                            "grants": grants,
+                            "policy_revision": 1,
+                        },
+                    }),
+                    map,
+                );
+                Ok(())
+            },
+        },
+        Command {
+            name: "replace-binding",
+            summary: "register the runtime a Role is staffed with",
+            usage: "replace-binding <project_id> <binding_id> <role_id> <team_revision> <profile_id>@\
+                    <profile_revision> <protocol_id>@<protocol_revision> <connection_id> \
+                    <credential_ref> <entitlement_id> <model_id> <runtime>:<adapter>:<host_id> \
+                    <root>,<root> <grant>,<grant> <control>,<control> <context_bundle>@<revision> \
+                    <max_input_tokens>:<reserved_output_tokens> <tool>,<tool> <environment_ref> \
+                    <worktree_ref> <verification_ref> <documentation_ref> <artifacts_ref> \
+                    <mcp_ref> <escalation_ref>",
+            kind: Some("replace_binding"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("replace_binding"), map);
+                let project = field(args, 0, "project_id")?;
+                let binding_id = field(args, 1, "binding_id")?;
+                let role = field(args, 2, "role_id")?;
+                let team_revision =
+                    number::<u64>(&field(args, 3, "team_revision")?, "team_revision")?;
+                let (profile, profile_revision) =
+                    versioned(&field(args, 4, "profile_id")?, "profile_id")?;
+                let (protocol, protocol_revision) =
+                    versioned(&field(args, 5, "protocol_id")?, "protocol_id")?;
+                let connection = field(args, 6, "connection_id")?;
+                let credential = field(args, 7, "credential_ref")?;
+                let entitlement = field(args, 8, "entitlement_id")?;
+                let model = field(args, 9, "model_id")?;
+                // The runtime lane, the agent adapter that drives it, and the
+                // Host it may run on. Which of the three an external-harness
+                // binding needs is the domain's rule — it refuses a harness
+                // with no installation and an installation with no harness —
+                // so all three are named here rather than one being chosen by
+                // the CLI on the operator's behalf.
+                let lane = field(args, 10, "runtime")?;
+                let parts: Vec<&str> = lane.split(':').collect();
+                let shape = || {
+                    Usage(format!(
+                        "<runtime> must be <runtime>:<adapter>:<host_id>; got {lane:?}"
+                    ))
+                };
+                if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+                    return Err(shape());
+                }
+                let (runtime, adapter, host) = (parts[0], parts[1], parts[2]);
+                one_of(
+                    runtime,
+                    "runtime",
+                    &[
+                        ("NATIVE_SYMBIOTE", "NATIVE_SYMBIOTE"),
+                        ("EXTERNAL_HARNESS", "EXTERNAL_HARNESS"),
+                    ],
+                )?;
+                let roots = list(&field(args, 11, "root")?, "root")?;
+                let grants = list(&field(args, 12, "grant")?, "grant")?;
+                for grant in &grants {
+                    one_of(grant, "grant", &MEMBER_GRANTS)?;
+                }
+                let controls = list(&field(args, 13, "control")?, "control")?;
+                if controls.is_empty() {
+                    return Err(Usage(
+                        "a binding must name at least one <control> it requires enforced".into(),
+                    ));
+                }
+                for control in &controls {
+                    one_of(
+                        control,
+                        "control",
+                        &[
+                            ("filesystem", "filesystem"),
+                            ("process", "process"),
+                            ("network", "network"),
+                            ("credentials", "credentials"),
+                            ("cancellation", "cancellation"),
+                            ("completion_authority", "completion_authority"),
+                        ],
+                    )?;
+                }
+                // The context bundle, its revision, the input budget and the
+                // output reservation, in one record. The two token counts have
+                // to sum to no more than the candidate's total limit, and that
+                // limit is the one number the operator is stating, so the sum
+                // is checked here where both sides are on the command line.
+                let context = field(args, 14, "context_bundle")?;
+                let (bundle, bundle_revision) = versioned(&context, "context_bundle")?;
+                let budgets: Vec<String> = field(args, 15, "max_input_tokens")?
+                    .split(':')
+                    .map(|value| value.to_owned())
+                    .collect();
+                if budgets.len() != 2 {
+                    return Err(Usage(format!(
+                        "<max_input_tokens> must be <max_input_tokens>:<reserved_output_tokens>; \
+                         got {:?}",
+                        budgets.join(":")
+                    )));
+                }
+                let input = number::<u64>(&budgets[0], "max_input_tokens")?;
+                let reserved = number::<u64>(&budgets[1], "reserved_output_tokens")?;
+                if input == 0 || reserved == 0 {
+                    return Err(Usage(format!(
+                        "<max_input_tokens> and <reserved_output_tokens> must both be at least 1; \
+                         got {input} and {reserved}"
+                    )));
+                }
+                let tools = list(&field(args, 16, "tool")?, "tool")?;
+                // The seven policy documents a binding runs under. Each is a
+                // thing the operator publishes, so each is named rather than
+                // derived: a reference this command invented would name a
+                // document that does not exist.
+                let environment = policy("environment_ref", args, 17)?;
+                let worktree = policy("worktree_ref", args, 18)?;
+                let verification = policy("verification_ref", args, 19)?;
+                let documentation = policy("documentation_ref", args, 20)?;
+                let artifacts = policy("artifacts_ref", args, 21)?;
+                let mcp = policy("mcp_ref", args, 22)?;
+                let escalation_policy = policy("escalation_ref", args, 23)?;
+                // The limits a candidate runs under. They are the dispatch's
+                // own bound, so they are stated: a ceiling the CLI invented
+                // would be an execution budget nobody chose. The token total
+                // has to hold the context the binding declares, which is why
+                // it is the one figure this command checks.
+                const MAX_TOTAL_TOKENS: u64 = 100_000;
+                const MAX_WALL_TIME_MS: u64 = 600_000;
+                const MAX_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+                if input + reserved > MAX_TOTAL_TOKENS {
+                    return Err(Usage(format!(
+                        "<max_input_tokens> ({} input) plus <reserved_output_tokens> ({} \
+                         reserved) is {}, which is past the dispatch token limit of \
+                         {MAX_TOTAL_TOKENS} this command states",
+                        input,
+                        reserved,
+                        input + reserved
+                    )));
+                }
+                let access = serde_json::json!({
+                    "project_id": project,
+                    "roots": roots,
+                    "grants": grants,
+                    "policy_revision": 1,
+                });
+                let context_policy = serde_json::json!({
+                    "bundle": bundle,
+                    "revision": bundle_revision,
+                    "max_input_tokens": input,
+                    "reserved_output_tokens": reserved,
+                });
+                // The profile the candidate runs. `installation` is null
+                // because an installation is a fact about a foreign runtime
+                // this command does not take, and the domain refuses a harness
+                // that has none — so a binding for a foreign harness is `raw`.
+                // The candidate's profile. Its identity and revision are the
+                // two the command read, held under their own names: the
+                // `profile` and `profile_revision` the binding names and the
+                // `id`/`revision` the candidate does are the same two facts,
+                // and the domain refuses a configuration where they differ.
+                let profile_id = profile;
+                let profile_revision_number = profile_revision;
+                let profile = serde_json::json!({
+                    "id": profile_id,
+                    "revision": profile_revision_number,
+                    "runtime": runtime,
+                    "adapter": adapter,
+                    "installation": null,
+                    "provider": connection,
+                    "credential": credential,
+                    "billing_entitlement": entitlement,
+                    "model": model,
+                    "eligible_hosts": [host],
+                });
+                // The candidate and the binding it staffs must agree on their
+                // access, context, tools and skills; the domain refuses a
+                // configuration where they differ, and the reason it can
+                // differ at all is that both are separate fields of one
+                // document. They are written from the same values here, so
+                // they cannot.
+                let candidate = serde_json::json!({
+                    "profile": profile,
+                    "config_identity": "cli-default",
+                    "access": access,
+                    "tools": tools,
+                    "skills": [],
+                    "secret_scopes": [],
+                    "context": context_policy,
+                    "limits": {
+                        "max_total_tokens": MAX_TOTAL_TOKENS,
+                        "max_wall_time_ms": MAX_WALL_TIME_MS,
+                        "max_concurrency": 1,
+                        "max_memory_bytes": MAX_MEMORY_BYTES,
+                    },
+                });
+                plain("expected_revision", serde_json::Value::Null, map);
+                plain(
+                    "configuration",
+                    serde_json::json!({
+                        "schema_version": symbiote_workforce::BINDING_VERSION,
+                        "binding": {
+                            "id": binding_id,
+                            "revision": 0,
+                            "project_id": project,
+                            "role_id": role,
+                            "profile_id": profile_id,
+                            "profile_revision": profile_revision_number,
+                            "protocol": {"id": protocol, "revision": protocol_revision},
+                            "access": access,
+                            "required_controls": controls,
+                            "context": context_policy,
+                            "required_tools": tools,
+                            "required_skills": [],
+                            "escalation": "return_to_lead",
+                        },
+                        "team_revision": team_revision,
+                        "primary": candidate,
+                        "fallbacks": [],
+                        "policies": {
+                            // The seven policy references are named after the
+                            // binding they belong to rather than invented: a
+                            // policy document is a thing the operator
+                            // publishes, and a CLI that named one the
+                            // operator never wrote would be recording a
+                            // reference to nothing.
+                            "environment": environment,
+                            "worktree": worktree,
+                            "verification": verification,
+                            "documentation": documentation,
+                            "artifacts": artifacts,
+                            "mcp": mcp,
+                            "escalation": escalation_policy,
+                            "root_effort": "medium",
+                            "local_children": {"kind": "disabled"},
+                            "fallback_consent": "explicit_required",
+                            // Every control the binding requires has to name
+                            // the enforcement it needs, and the domain refuses
+                            // a required control this map does not mention.
+                            "minimum_enforcement": minimum_enforcement(&controls),
+                            "required_capabilities": [],
                         },
                     }),
                     map,

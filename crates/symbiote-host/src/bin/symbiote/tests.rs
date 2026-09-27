@@ -84,29 +84,29 @@ struct Placeholder {
 /// command's own statement of its argument shape: `[root_id ...]` and the
 /// bracket that closes it are not required arguments, and
 /// `<contract_id>@<revision>` is one argument spelled as two spans.
+/// Every argument a usage names, in the order it names them.
+///
+/// A usage argument is a `<name>`, optionally followed by more of the same
+/// argument: `<id>@<revision>` is one versioned argument, and a record like
+/// `<runtime>:<adapter>:<host_id>` or a list like `<root>,<root>` is one
+/// argument whose remaining fields are the record itself rather than
+/// arguments of their own. Reading only the first `<name>` of each token is
+/// what lets one argument carry a shape — and what stops a record's inner
+/// field from being counted as a position the command line must supply.
 fn placeholders(usage: &str) -> Vec<Placeholder> {
     let mut names: Vec<Placeholder> = Vec::new();
     for token in usage.split_whitespace() {
-        if let Some(contract) = token.strip_suffix("@<revision>") {
-            names.push(Placeholder {
-                name: contract
-                    .strip_prefix('<')
-                    .and_then(|name| name.strip_suffix('>'))
-                    .unwrap_or(contract)
-                    .to_owned(),
-                versioned: true,
-            });
+        let Some(open) = token.find('<') else {
             continue;
-        }
-        if let Some(name) = token
-            .strip_prefix('<')
-            .and_then(|name| name.strip_suffix('>'))
-        {
-            names.push(Placeholder {
-                name: name.to_owned(),
-                versioned: false,
-            });
-        }
+        };
+        let rest = &token[open + 1..];
+        let Some(close) = rest.find('>') else {
+            continue;
+        };
+        names.push(Placeholder {
+            name: rest[..close].to_owned(),
+            versioned: rest[close + 1..].starts_with("@<"),
+        });
     }
     names
 }
@@ -121,9 +121,38 @@ fn synthetic_arguments(usage: &str) -> Vec<String> {
         .into_iter()
         .map(|placeholder| {
             let value = match placeholder.name.as_str() {
-                "after" | "limit" => "1".to_owned(),
+                "after" | "limit" | "expected_revision" | "team_revision" => "1".to_owned(),
+                "context_window_tokens" => "32768".to_owned(),
+                "max_output_tokens" => "4096".to_owned(),
+                "capability" => "tools".to_owned(),
                 "class" => "maintenance".to_owned(),
                 "base_commit" => BASE.to_owned(),
+                "expires_at_ms" => "4102444800000".to_owned(),
+                // Closed-set arguments, one per command: the value the domain
+                // declares, so a command that lists its choices is held to a
+                // choice that is in the list.
+                "authentication" => "api_credential".to_owned(),
+                "function" => "general_execution".to_owned(),
+                // `<kind>` is a billing kind here and nothing else; the
+                // Objective class this same spelling carries on `create-work`
+                // is spelled `<class>`, so the two cannot collide.
+                "kind" => "metered_api".to_owned(),
+                // A record argument the command splits on `:`: a shape this
+                // reading has to know, or the command refuses its own usage.
+                "runtime" => "NATIVE_SYMBIOTE:native-agent:host-1".to_owned(),
+                "max_input_tokens" => "1:1".to_owned(),
+                // A list argument the command splits on `,`. The three that
+                // name a closed set of their own carry a member of it.
+                "root" | "grant" => "read_root".to_owned(),
+                "control" => "completion_authority".to_owned(),
+                "tool" => "shell".to_owned(),
+                // One team member: every field of `MEMBER_FIELDS`, in order.
+                "member" => "id:general_execution:read_root:root:backend:other".to_owned(),
+                // A policy reference is the versioned spelling, but the usage
+                // does not carry the `@<revision>` itself, so the whole
+                // argument is spelled here. `credential_ref` is a vault
+                // reference and is not versioned.
+                name if name.ends_with("_ref") && name != "credential_ref" => "id@1".to_owned(),
                 _ => "id".to_owned(),
             };
             if placeholder.versioned {
@@ -212,8 +241,8 @@ fn the_write_commands_build_the_operations_their_usage_spells() {
             "Symbiote",
             "lead",
             "lead-contract@1",
-            "root-main",
-            "root-tools",
+            "root-main,root-tools",
+            "engineer:engineer-contract:1",
         ],
     );
     assert_eq!(project["kind"], "register_project");
@@ -238,10 +267,51 @@ fn the_write_commands_build_the_operations_their_usage_spells() {
         project["project"]["roots"][0]["host_paths"],
         serde_json::json!({})
     );
-    // The lead is the one role registered, under the contract revision typed.
+    // A Role that is the lead again, or one that repeats, is refused by name:
+    // a Project holds one Role per identity, and the lead's is already
+    // registered from <lead_role_id>.
+    for (roles, names) in [
+        (vec!["lead:lead-contract:1"], vec!["lead"]),
+        (vec!["lead:other:1"], vec!["lead"]),
+        (
+            vec!["engineer:contract:1", "engineer:contract:2"],
+            vec!["engineer", "one Role per identity"],
+        ),
+        (vec!["engineer:contract"], vec!["<role_id>", "contract_id"]),
+        (vec!["engineer:contract:next"], vec!["revision", "next"]),
+    ] {
+        let mut arguments = vec![
+            "symbiote",
+            "Symbiote",
+            "lead",
+            "lead-contract@1",
+            "root-main",
+        ];
+        arguments.extend(roles.iter().copied());
+        let message = refused("register-project", &arguments);
+        for name in names {
+            assert!(
+                message.contains(name),
+                "roles {roles:?} were refused with {message:?}, which does not name {name:?}"
+            );
+        }
+    }
+    // Every Role is registered, the lead's first and then the rest, because a
+    // Team cannot name a Role the Project does not hold — so a command that
+    // registered the lead alone could never produce a Team the domain accepts.
     assert_eq!(
         project["project"]["roles"].as_array().map(|r| r.len()),
-        Some(1)
+        Some(2)
+    );
+    assert_eq!(
+        project["project"]["roles"][1],
+        serde_json::json!({
+            "id": "engineer",
+            "project_id": "symbiote",
+            "revision": 0,
+            "name": "engineer",
+            "operating_contract": {"id": "engineer-contract", "revision": 1},
+        })
     );
     assert_eq!(
         project["project"]["roles"][0]["operating_contract"]["id"],
@@ -411,6 +481,464 @@ fn create_task_records_the_worktree_the_host_will_insist_on() {
              nor the value"
         );
     }
+}
+
+/// The six commands that register a Project's runtime, and the rule each one
+/// is held to: every value the operation carries is a fact the operator typed
+/// or a derivation the domain itself requires, and nothing is a name this
+/// binary invented.
+///
+/// That rule is the whole point. `create-task` used to name a worktree after
+/// the Task and accept any branch, and the Host refused both at
+/// `run_started_dispatch` — a Task that could never be dispatched, refused
+/// with nothing to act on. A first-class command that fills a field nobody
+/// asked for reproduces that defect in a new place, so each derivation below
+/// is one the domain would have written itself, and each refusal names an
+/// argument whose value the caller can see and change.
+#[test]
+fn the_runtime_registration_commands_carry_only_facts_and_required_derivations() {
+    // A Root's placement: the Host verifies the path is a real git work tree
+    // and refuses a foreign Host, so the path and the Host are the operator's
+    // facts and nothing is derived.
+    let placement = built(
+        "observe-root-placement",
+        &["symbiote", "root-main", "host-1", "/srv/checkout", "3"],
+    );
+    assert_eq!(placement["kind"], "observe_root_placement");
+    assert_eq!(placement["project_id"], "symbiote");
+    assert_eq!(placement["root_id"], "root-main");
+    assert_eq!(placement["host_id"], "host-1");
+    assert_eq!(placement["path"], "/srv/checkout");
+    assert_eq!(placement["expected_revision"], 3);
+
+    // A provider connection carries no Project of its own — which Project may
+    // name it is the attribution on the operation — and no secret: the
+    // endpoint is a reference, and the credential is in the operator's broker.
+    let connection = built(
+        "register-provider-connection",
+        &[
+            "symbiote",
+            "openai",
+            "openai-responses",
+            "https://api.openai.example/v1",
+            "api_credential",
+        ],
+    );
+    assert_eq!(connection["kind"], "replace_provider_connection");
+    assert_eq!(connection["attribution"], "symbiote");
+    assert_eq!(
+        connection["connection"],
+        serde_json::json!({
+            "id": "openai",
+            "adapter": "openai-responses",
+            "endpoint_reference": "https://api.openai.example/v1",
+            "authentication": "api_credential",
+        })
+    );
+    // A closed set is the domain's, so an authentication it does not declare
+    // is refused by name with the whole set beside it.
+    let message = refused(
+        "register-provider-connection",
+        &[
+            "symbiote",
+            "openai",
+            "openai-responses",
+            "https://api.openai.example/v1",
+            "oauth",
+        ],
+    );
+    assert!(
+        message.contains("api_credential") && message.contains("oauth"),
+        "{message}"
+    );
+
+    // A model descriptor's schema version is the one this binary speaks: a
+    // caller-supplied number could name a document this daemon does not
+    // implement, and the refusal for that arrives from the provider turn.
+    let model = built(
+        "register-model-descriptor",
+        &[
+            "symbiote",
+            "coding",
+            "openai",
+            "32768",
+            "4096",
+            "tools",
+            "streaming",
+            "reasoning:high",
+        ],
+    );
+    assert_eq!(
+        model["descriptor"]["schema_version"],
+        symbiote_runtime_sdk::provider::PROVIDER_CONTRACT_VERSION
+    );
+    assert_eq!(model["descriptor"]["context_window_tokens"], 32768);
+    assert_eq!(model["descriptor"]["max_output_tokens"], 4096);
+    assert_eq!(model["descriptor"]["capabilities"]["tools"], true);
+    assert_eq!(model["descriptor"]["capabilities"]["streaming"], true);
+    assert_eq!(model["descriptor"]["capabilities"]["images"], false);
+    // The reasoning efforts are a set, so the order they were typed in cannot
+    // survive into the record — two orderings of one set are one descriptor.
+    assert_eq!(
+        model["descriptor"]["capabilities"]["reasoning_efforts"],
+        serde_json::json!(["high"])
+    );
+    let reordered = built(
+        "register-model-descriptor",
+        &[
+            "symbiote",
+            "coding",
+            "openai",
+            "32768",
+            "4096",
+            "streaming",
+            "reasoning:high",
+            "tools",
+        ],
+    );
+    assert_eq!(
+        reordered["descriptor"], model["descriptor"],
+        "the same capabilities typed in another order are one descriptor"
+    );
+    // A repeated effort is a set, so typing one twice is typing it once.
+    let repeated = built(
+        "register-model-descriptor",
+        &[
+            "symbiote",
+            "coding",
+            "openai",
+            "32768",
+            "4096",
+            "tools",
+            "streaming",
+            "reasoning:high",
+            "reasoning:high",
+        ],
+    );
+    assert_eq!(
+        repeated["descriptor"], model["descriptor"],
+        "a repeated capability is one capability"
+    );
+    // A model that cannot hold its own output is a descriptor no request could
+    // ever satisfy, and the check is the descriptor's own: both figures are on
+    // this command line, so the incoherence is refused here rather than as a
+    // `context_limit` from a provider turn long after the descriptor was on
+    // record.
+    //
+    // The incoherence this does NOT catch is the one between two documents: a
+    // binding whose `max_input_tokens`, plus this model's `max_output_tokens`,
+    // exceeds this model's window. Neither command holds both figures, so that
+    // pair is the provider's to refuse and the tree's own fixtures to get
+    // right — the tree's example descriptor is one that does not.
+    for (window, output, why) in [
+        ("4096", "8192", "an output wider than the window"),
+        ("32768", "0", "a model that emits nothing"),
+        ("32768", "32769", "an output one token past the window"),
+    ] {
+        let message = refused(
+            "register-model-descriptor",
+            &["symbiote", "coding", "openai", window, output],
+        );
+        assert!(
+            message.contains("<max_output_tokens>")
+                && message.contains("<context_window_tokens>")
+                && message.contains(window)
+                && message.contains(output),
+            "{why} was refused with {message:?}, which names neither argument nor value"
+        );
+    }
+    // And a capability the model descriptor does not declare, named as such.
+    let message = refused(
+        "register-model-descriptor",
+        &["symbiote", "coding", "openai", "32768", "4096", "telepathy"],
+    );
+    assert!(
+        message.contains("<capability>") && message.contains("telepathy"),
+        "{message}"
+    );
+
+    // A route: the work id is a tagged union and this is the one kind a typed
+    // command files, so the kind is derived from `create-work`'s own shape
+    // rather than asked for as a second spelling of the same fact.
+    let route = built(
+        "record-route",
+        &["symbiote", "ship-it", "engineer", "backend"],
+    );
+    assert_eq!(route["kind"], "record_route");
+    assert_eq!(
+        route["request"],
+        serde_json::json!({
+            "project_id": "symbiote",
+            "work_id": {"kind": "objective", "id": "ship-it"},
+            "requested": "engineer",
+            "domains": ["backend"],
+        })
+    );
+
+    // A Team. Every member's access is the member's own — a Team exists so
+    // two roles can reach different places — and the ceiling is the union of
+    // what the members were granted, so no member can reach past it. The two
+    // are read apart here because a command that copied the ceiling into
+    // every member would be spelling one access and calling it a team.
+    let team = built(
+        "replace-team",
+        &[
+            "symbiote",
+            "lead",
+            "ctx",
+            "tools",
+            "skills",
+            "bounded",
+            "lead:lead_orchestrator:read_root:root:coordination:engineer",
+            "engineer:general_execution:read_root,execute_process:root,second:coding:lead",
+        ],
+    );
+    assert_eq!(team["kind"], "replace_team");
+    let members = team["team"]["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0]["role_id"], "lead");
+    assert_eq!(members[0]["function"], "lead_orchestrator");
+    assert_eq!(
+        members[1]["access"]["grants"],
+        serde_json::json!(["read_root", "execute_process"])
+    );
+    assert_eq!(members[1]["task_domains"], serde_json::json!(["coding"]));
+    assert_eq!(
+        members[1]["independent_reviewers"],
+        serde_json::json!(["lead"])
+    );
+    assert_eq!(members[1]["context_policy_ref"], "ctx");
+    // The ceiling holds every root and grant any member holds, and no others.
+    let ceiling = &team["team"]["access_ceiling"];
+    assert_eq!(ceiling["project_id"], "symbiote");
+    assert_eq!(ceiling["roots"], serde_json::json!(["root", "second"]));
+    assert_eq!(
+        ceiling["grants"],
+        serde_json::json!(["execute_process", "read_root"])
+    );
+    // A member that cannot be reviewed is refused by the domain, and a member
+    // that reviews itself is refused twice over. Both are named here, where the
+    // member argument is in the operator's hands.
+    // A closed-set field names itself, because the operator is looking at a
+    // member argument and needs to know WHICH of its six fields to change. A
+    // shape or emptiness refusal names the field of the record instead.
+    for (member, names) in [
+        // A member with no reviewer field at all is refused as a record of
+        // the wrong shape, and the shape it wanted names the reviewer.
+        (
+            "engineer:general_execution:read_root:root:coding",
+            vec!["<member>", "reviewer"],
+        ),
+        // A member whose reviewer field is present and empty is refused as an
+        // empty one, because an unreviewed role is what the domain refuses.
+        (
+            "engineer:general_execution:read_root:root:coding:",
+            vec!["<member>", "reviewer"],
+        ),
+        (
+            "engineer:general_execution:read_root:root:coding:engineer",
+            vec!["<member>", "engineer"],
+        ),
+        (
+            "engineer:general_execution:read_root::coding:lead",
+            vec!["<member>", "root,[root...]"],
+        ),
+        (
+            "engineer:general_execution:read_root:root::lead",
+            vec!["<member>", "domain,[domain...]"],
+        ),
+        (
+            "engineer:captain:read_root:root:coding:lead",
+            vec!["<function>", "captain"],
+        ),
+        (
+            "engineer:general_execution:teleport:root:coding:lead",
+            vec!["<grant>", "teleport"],
+        ),
+    ] {
+        let message = refused(
+            "replace-team",
+            &[
+                "symbiote", "lead", "ctx", "tools", "skills", "bounded", member,
+            ],
+        );
+        for name in names {
+            assert!(
+                message.contains(name),
+                "a member {member:?} was refused with {message:?}, which does not name {name:?}"
+            );
+        }
+    }
+    // A member is a record, so a record of the wrong shape is refused naming
+    // the shape rather than arriving at the domain with no access at all.
+    let message = refused(
+        "replace-team",
+        &[
+            "symbiote",
+            "lead",
+            "ctx",
+            "tools",
+            "skills",
+            "bounded",
+            "engineer:general_execution",
+        ],
+    );
+    assert!(
+        message.contains("<member>") && message.contains("reviewer"),
+        "{message}"
+    );
+
+    // A binding: the candidate and the binding it staffs must agree on their
+    // access, context, tools and skills, which the domain refuses. They are
+    // separate fields of one document, so the only way they can be written
+    // from one set of facts is to write them from one set of facts.
+    let binding = built(
+        "replace-binding",
+        &[
+            "symbiote",
+            "engineer-binding",
+            "engineer",
+            "0",
+            "native-worker@1",
+            "workforce-protocol@1",
+            "openai",
+            "vault-ref",
+            "entitlement",
+            "coding",
+            "NATIVE_SYMBIOTE:native-agent:host-1",
+            "root",
+            "read_root,execute_process",
+            "completion_authority",
+            "coding-context@1",
+            "8000:2000",
+            "shell",
+            "environment@1",
+            "worktree@1",
+            "verification@1",
+            "documentation@1",
+            "artifacts@1",
+            "mcp@1",
+            "escalation@1",
+        ],
+    );
+    assert_eq!(binding["kind"], "replace_binding");
+    let configuration = &binding["configuration"];
+    assert_eq!(
+        configuration["schema_version"],
+        symbiote_workforce::BINDING_VERSION
+    );
+    assert_eq!(
+        configuration["binding"]["access"], configuration["primary"]["access"],
+        "the binding and the candidate it staffs cannot disagree about access"
+    );
+    assert_eq!(
+        configuration["binding"]["context"], configuration["primary"]["context"],
+        "the binding and the candidate it staffs cannot disagree about context"
+    );
+    assert_eq!(
+        configuration["binding"]["required_tools"], configuration["primary"]["tools"],
+        "the binding and the candidate it staffs cannot disagree about tools"
+    );
+    // The seven policies are the operator's documents, named one argument
+    // each: a reference this command invented would name a document that does
+    // not exist.
+    for (policy, reference) in [
+        ("environment", "environment@1"),
+        ("worktree", "worktree@1"),
+        ("verification", "verification@1"),
+        ("documentation", "documentation@1"),
+        ("artifacts", "artifacts@1"),
+        ("mcp", "mcp@1"),
+        ("escalation", "escalation@1"),
+    ] {
+        assert_eq!(
+            configuration["policies"][policy],
+            serde_json::json!({"id": reference.split('@').next().unwrap(), "revision": 1}),
+            "policies.{policy}"
+        );
+    }
+    // Every control the binding requires names the enforcement it needs, and
+    // the domain refuses a required control this map does not mention.
+    assert_eq!(
+        configuration["policies"]["minimum_enforcement"],
+        serde_json::json!({"completion_authority": "host_enforced"})
+    );
+    // A lane of the wrong shape is a runtime, an adapter and a Host, and a
+    // lane of the wrong spelling is refused naming all three.
+    let message = refused(
+        "replace-binding",
+        &[
+            "symbiote",
+            "engineer-binding",
+            "engineer",
+            "0",
+            "native-worker@1",
+            "workforce-protocol@1",
+            "openai",
+            "vault-ref",
+            "entitlement",
+            "coding",
+            "NATIVE_SYMBIOTE:native-agent",
+            "root",
+            "read_root",
+            "completion_authority",
+            "coding-context@1",
+            "8000:2000",
+            "shell",
+            "environment@1",
+            "worktree@1",
+            "verification@1",
+            "documentation@1",
+            "artifacts@1",
+            "mcp@1",
+            "escalation@1",
+        ],
+    );
+    assert!(
+        message.contains("<runtime>")
+            && message.contains("<adapter>")
+            && message.contains("<host_id>"),
+        "{message}"
+    );
+    // A context that cannot fit the binding's own token limit is refused here,
+    // where both figures are on the command line, rather than at the provider
+    // turn that discovers it.
+    let message = refused(
+        "replace-binding",
+        &[
+            "symbiote",
+            "engineer-binding",
+            "engineer",
+            "0",
+            "native-worker@1",
+            "workforce-protocol@1",
+            "openai",
+            "vault-ref",
+            "entitlement",
+            "coding",
+            "NATIVE_SYMBIOTE:native-agent:host-1",
+            "root",
+            "read_root",
+            "completion_authority",
+            "coding-context@1",
+            "99000:2000",
+            "shell",
+            "environment@1",
+            "worktree@1",
+            "verification@1",
+            "documentation@1",
+            "artifacts@1",
+            "mcp@1",
+            "escalation@1",
+        ],
+    );
+    assert!(
+        message.contains("<max_input_tokens>")
+            && message.contains("99000")
+            && message.contains("100000"),
+        "a context past the binding's own token limit was refused with {message:?}, which does \
+         not name the argument, the figure it was given, or the limit it was measured against"
+    );
 }
 
 /// Every argument position of every command, driven one position at a time.

@@ -46,7 +46,10 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
 `scheduling-projection <project_id>`,
-`get-team`,
+`observe-root-placement`,
+`replace-team`, `get-team`, `replace-binding`, `record-route`,
+`register-provider-connection`, `register-billing-entitlement`,
+`register-model-descriptor`,
 `get-task-origin`, and `raw <operation.json>` for anything the typed
 commands do not cover (the daemon still validates and authorizes every
 field). Responses are the daemon's own JSON, pretty-printed. Exit codes
@@ -129,6 +132,60 @@ A created Objective states its title, its optional description and its class,
 and leaves its requirements, constraints, risks, acceptance criteria, budget,
 dependencies and external references unstated at the domain's lowest priority,
 because a work item is filed here and specified through `raw`.
+
+### Registering a Project's runtime
+
+`observe-root-placement`, `replace-team`, `replace-binding`, `record-route`,
+`register-provider-connection`, `register-billing-entitlement` and
+`register-model-descriptor` register what a Project runs on, and every argument
+they take is a fact the operator holds. Two argument shapes carry more than one
+value, and both are owned here rather than left to a document somebody
+assembled: a list is comma-separated, and a record is colon-separated in a
+stated field order.
+
+```sh
+symbiote --state-dir DIR observe-root-placement symbiote root-main "$(symbiote --state-dir DIR host-pulse | jq -r .data.host_id)" /srv/checkout 0
+symbiote --state-dir DIR replace-team symbiote lead ctx tools skills bounded \
+  'lead:lead_orchestrator:read_root:root:coordination:engineer' \
+  'engineer:general_execution:read_root,execute_process,mutate_stream,use_credential:root:coding:lead'
+symbiote --state-dir DIR register-provider-connection symbiote openai openai-responses https://api.openai.example/v1 api_credential
+symbiote --state-dir DIR register-billing-entitlement symbiote ent-1 openai metered_api proof-1 4102444800000
+symbiote --state-dir DIR register-model-descriptor symbiote coding-model openai 32768 4096 tools
+symbiote --state-dir DIR record-route symbiote ship-it engineer
+```
+
+A `<member>` is `<role_id>:<function>:<grant>,<grant>:<root>,<root>:<domain>,<domain>:<reviewer>,<reviewer>`.
+Every member's access is its own rather than a copy of the Team's, because a
+Team exists so two Roles can reach different places; the Team's
+`access_ceiling` is the union of what its members were granted, so no member
+can reach past it. `read_root` is added to every member, because the domain
+refuses a member that cannot read the Root — a member is reviewed against the
+Roots it can see. A member's `responsibilities` are its `task_domains`: the two
+lists are the same words, and spelling them separately would let a Team say a
+Role is responsible for work it never routes to.
+
+`register-project` takes its Roots as one comma-separated argument and any
+further Roles as `<role_id>:<contract_id>:<revision>`, because a Project
+registered with its lead Role alone can never hold a Team: the store refuses a
+Team that names a Role the Project does not hold, and the domain refuses a
+Team with no execution role. A Project registered from the command line can
+therefore be staffed and dispatched from the command line.
+
+A binding's `schema_version`, its candidate's `config_identity`, the
+candidate's limits, `root_effort`, `local_children`, `fallback_consent` and
+the `minimum_enforcement` map are all stated by the command and named in its
+refusals, and the binding and the candidate it staffs are written from the same
+access, context, tools and skills — the domain refuses a configuration where
+they differ, and the only way they cannot is by not being written twice. The
+seven policy references are named one argument each: a policy document is
+something the operator publishes, and a reference this client invented would
+name a document that does not exist.
+
+A model whose `max_output_tokens` exceeds its `context_window_tokens` is refused
+where both figures are on the command line, rather than as a `context_limit`
+from a provider turn long after the descriptor was on record. That check is the
+descriptor's own; the incoherence between a binding's `max_input_tokens` and a
+model's window spans two records, and is the provider's to refuse.
 
 `raw` is not a lesser path and not deprecated. It is how a Project with more
 than one Role, a work item of another kind (a request, a plan, a milestone),

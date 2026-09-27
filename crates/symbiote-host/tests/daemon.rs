@@ -1913,8 +1913,12 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
         "Typed project",
         "lead-typed",
         "lead-contract@1",
-        "root-main",
-        "root-tools",
+        "root-main,root-tools",
+        // A second Role, so the Project this registers can hold a Team with an
+        // execution role. A Project registered with its lead alone can never
+        // have one: the store refuses a Team that names a Role the Project
+        // does not hold.
+        "engineer-typed:engineer-contract:1",
     ]);
     let first = receipt(&registered);
     assert_eq!(first["sequence"], 1, "{first}");
@@ -1928,17 +1932,26 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
     assert_eq!(project["data"]["lead"], "lead-typed");
     assert_eq!(project["data"]["roots"], json!(["root-main", "root-tools"]));
     let snapshot = read(&["snapshot", "typed"]);
+    // Every Role the command named is registered, the lead's first. A Project
+    // registered with its lead alone could never hold a Team with an execution
+    // role, because the store refuses a Team naming a Role the Project lacks.
     let roles = snapshot["data"]["roles"].as_array().unwrap();
     assert_eq!(
         roles.len(),
-        1,
-        "the project is registered with its lead role"
+        2,
+        "the project is registered with every role the command named"
     );
     assert_eq!(roles[0]["id"], "lead-typed");
     assert_eq!(roles[0]["name"], "lead-typed");
     assert_eq!(
         roles[0]["operating_contract"],
         json!({"id": "lead-contract", "revision": 1})
+    );
+    assert_eq!(roles[1]["id"], "engineer-typed");
+    assert_eq!(roles[1]["name"], "engineer-typed");
+    assert_eq!(
+        roles[1]["operating_contract"],
+        json!({"id": "engineer-contract", "revision": 1})
     );
 
     let work = run(&[
