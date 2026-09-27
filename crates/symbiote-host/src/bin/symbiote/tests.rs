@@ -17,6 +17,7 @@ use crate::gate::*;
 use crate::output::*;
 use crate::session::*;
 use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use symbiote_contract_read::region;
@@ -2242,4 +2243,120 @@ fn the_policy_flag_selects_the_file_before_or_after_the_command() {
         );
     }
     assert_eq!(options(&["health"]).policy, None);
+}
+
+/// `init` writes a file the daemon will actually load, at the mode the daemon
+/// will actually accept, and it never replaces one that is already there.
+///
+/// The proof that matters is the first assertion: a generated operator config
+/// that the daemon refuses is worse than no command at all, because the
+/// operator has a file that looks right and a daemon that will not start. So
+/// the file is loaded here by the daemon's own loader — the same function
+/// `symbioted` calls, with the same `deny_unknown_fields` and the same mode
+/// check — and the loaded configuration is asserted to be the one written.
+#[test]
+fn the_init_command_writes_a_configuration_the_daemon_loads() {
+    static NEXT_INIT: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_INIT.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "symbiote-cli-init-unit-{}-{sequence}",
+        std::process::id()
+    ));
+    symbiote_host::transport::private_directory(&directory).unwrap();
+    let base = directory.join("worktrees");
+    let run = |arguments: &[&str]| {
+        run_with(arguments.iter().map(|value| value.to_string()).collect()).unwrap()
+    };
+
+    // Written, and loadable by the loader the daemon itself uses.
+    assert_eq!(
+        run(&["init", directory.to_str().unwrap(), base.to_str().unwrap()]),
+        EXIT_OK
+    );
+    let path = directory.join("operator.json");
+    let config = symbiote_host::operator::load(&path).unwrap();
+    assert_eq!(config.reservation_base, base);
+    assert_eq!(
+        config
+            .native_fixture
+            .as_ref()
+            .map(|fixture| fixture.echo_text.as_str()),
+        Some("The agent ran end to end inside its own worktree.")
+    );
+    // The fixture carries no tool, because none was chosen; and no credential,
+    // executor, harness or dossier, because those are the operator's to make.
+    assert!(config.native_fixture.as_ref().unwrap().tool.is_none());
+    assert!(config.credential_broker.is_empty());
+    assert!(config.external_fixture.is_none());
+    assert!(config.external_harness.is_none());
+    assert!(config.shell_executor.is_none());
+    assert!(config.compatibility_dossiers.is_empty());
+
+    // The mode the daemon demands, checked on the file rather than on the
+    // call: 0600 from the moment it exists, so a concurrent reader — a daemon
+    // starting at the same moment — never sees a wider one.
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "{} is not private", path.display());
+    // And no temporary file is left behind for a later reader to trip over.
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|entry| entry.extension().is_some_and(|ext| ext == "tmp"))
+        .collect();
+    assert_eq!(leftovers, Vec::<PathBuf>::new());
+
+    // An existing configuration is the operator's, and `init` never replaces
+    // one: a second install leaves the first byte-for-byte.
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(
+        run(&["init", directory.to_str().unwrap(), base.to_str().unwrap()]),
+        EXIT_USAGE
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // A reservation base that is not absolute is refused, and nothing is
+    // written: a worktree under the state directory would be inside the store,
+    // and a relative one would be wherever a script happened to be run from.
+    let relative = directory.join("relative");
+    symbiote_host::transport::private_directory(&relative).unwrap();
+    assert_eq!(
+        run(&["init", relative.to_str().unwrap(), "worktrees"]),
+        EXIT_USAGE
+    );
+    assert!(!relative.join("operator.json").exists());
+
+    // The usage refusals, and the flag this command does not honor.
+    for arguments in [
+        vec!["init"],
+        vec!["init", directory.to_str().unwrap()],
+        vec![
+            "init",
+            directory.to_str().unwrap(),
+            base.to_str().unwrap(),
+            "surplus",
+        ],
+        vec!["init", directory.to_str().unwrap(), ""],
+        vec![
+            "--json",
+            "init",
+            directory.to_str().unwrap(),
+            base.to_str().unwrap(),
+        ],
+        vec![
+            "init",
+            directory.to_str().unwrap(),
+            base.to_str().unwrap(),
+            "--yes",
+        ],
+        vec![
+            "init",
+            directory.to_str().unwrap(),
+            base.to_str().unwrap(),
+            "--state-dir",
+            directory.to_str().unwrap(),
+        ],
+    ] {
+        assert_eq!(run(&arguments), EXIT_USAGE, "init accepted {arguments:?}");
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
 }

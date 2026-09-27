@@ -202,7 +202,11 @@ pub(crate) fn honored_flags(command: &str) -> Flags {
             help: true,
             ..Flags::default()
         },
-        "help" => Flags {
+        // `init` is local for the same reason `schema` is: it writes an
+        // operator-owned file, it sends no operation, and it answers before
+        // any state directory or authorization is consulted. It honors no
+        // flag, because a file it writes is not a request it can carry.
+        "init" | "help" => Flags {
             help: true,
             ..Flags::default()
         },

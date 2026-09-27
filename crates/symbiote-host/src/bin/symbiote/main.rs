@@ -135,6 +135,13 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     if name == "publish-runtime-inventory" {
         return run_publish_runtime_inventory(&options);
     }
+    // `init` is local too, and more so: the file it writes is operator
+    // authority, read once at daemon start, so nothing here reaches a
+    // daemon even to ask one to write it. It needs the directory to write
+    // into and nothing else.
+    if name == "init" {
+        return run_init(&options);
+    }
     let Some(command) = commands().into_iter().find(|c| c.name == name) else {
         eprintln!("symbiote: unknown command {name}; try `symbiote help`");
         return Ok(EXIT_USAGE);
@@ -220,6 +227,106 @@ fn run_schema(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
         // `schema --write` would put in its file.
         Some(_) => print!("{}", document_text(selected[0])?),
     }
+    Ok(EXIT_OK)
+}
+
+/// The local `init` command: write an operator configuration the daemon will
+/// accept.
+///
+/// The daemon's operator config is 0600 by construction — it refuses a file
+/// with any group or other permission bit, because it holds credential values
+/// and a sandbox program allowlist — and it is `deny_unknown_fields`, so a
+/// typo in it silently removes a control rather than failing to apply. That
+/// makes it a file worth generating rather than writing: an operator who has
+/// never run this product has no reason to know the field names, and a
+/// hand-written one is refused in prose by a daemon that is not otherwise
+/// running yet.
+///
+/// What it writes is the smallest configuration that turns
+/// `run_started_dispatch` from "always refuses" into a working execution path:
+/// a reservation base for derived worktrees, and the explicitly labeled
+/// fixture transport that demonstrates a native dispatch with no model turn and
+/// no spending. It writes nothing else. A credential registration, a sandbox
+/// shell executor, an external harness and a compatibility dossier are all
+/// operator choices about this machine, and naming them in a generated file
+/// would put a value in the record that nobody chose.
+///
+/// The file is written 0600 through a temporary file in the same directory and
+/// renamed into place, so a reader — a daemon starting at the same moment —
+/// sees the old file or the new one and never a partial write. An existing
+/// file is never overwritten: an operator's configuration is theirs, and this
+/// command is not a way to replace one silently.
+///
+/// It exits 0 on an install and 1 on a usage or refusal, the same distinction
+/// `schema --check` makes, because no daemon is asked to do anything else.
+fn run_init(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let [directory, base] = options.args.as_slice() else {
+        eprintln!(
+            "symbiote: `init` takes an output directory and a worktree reservation base; try \
+             `symbiote help`"
+        );
+        return Ok(EXIT_USAGE);
+    };
+    // Naming the directory is worth the one line: a create that fails inside a
+    // directory that was never there reports the temporary file, which is a
+    // name the operator never typed and cannot act on.
+    if !std::path::Path::new(directory).is_dir() {
+        eprintln!("symbiote: {directory} is not a directory; `init` writes into one");
+        return Ok(EXIT_USAGE);
+    }
+    let path = std::path::Path::new(directory).join("operator.json");
+    if path.exists() {
+        eprintln!(
+            "symbiote: {} already exists; an operator configuration is the operator's, and \
+             `init` never replaces one",
+            path.display()
+        );
+        return Ok(EXIT_USAGE);
+    }
+    // The reservation base is where derived worktrees are materialised, and it
+    // is the one field with no default: a worktree under the state directory
+    // would be inside the store, and one under the current directory would be
+    // wherever a script happened to be run from.
+    if base.is_empty() || !std::path::Path::new(base).is_absolute() {
+        eprintln!("symbiote: the worktree reservation base must be an absolute path; got {base:?}");
+        return Ok(EXIT_USAGE);
+    }
+    let document = serde_json::json!({
+        "reservation_base": base,
+        "native_fixture": {
+            "echo_text": "The agent ran end to end inside its own worktree.",
+        },
+    });
+    let mut bytes = serde_json::to_vec_pretty(&document)?;
+    bytes.push(b'\n');
+    // The temporary file carries the same 0600 from the moment it exists: a
+    // file that was briefly world-readable would have leaked the config
+    // before the rename narrowed it.
+    let temporary = path.with_extension("json.tmp");
+    let written = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temporary);
+        eprintln!("symbiote: cannot write {}: {error}", temporary.display());
+        return Ok(EXIT_USAGE);
+    }
+    if let Err(error) = std::fs::rename(&temporary, &path) {
+        let _ = std::fs::remove_file(&temporary);
+        eprintln!("symbiote: cannot install {}: {error}", path.display());
+        return Ok(EXIT_USAGE);
+    }
+    println!("wrote {}", path.display());
+    println!(
+        "start the Host with: symbioted --state-dir DIR --operator-config {}",
+        path.display()
+    );
     Ok(EXIT_OK)
 }
 

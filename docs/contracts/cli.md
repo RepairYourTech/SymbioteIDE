@@ -38,17 +38,18 @@ error that names it, never a silent no-op. The daemon commands honor the
 daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
 `--yes`), because each of them is answered by a request over the socket; the
 local `schema` command honors `--write` and `--check`, the local
-`publish-runtime-inventory` command honors `--state-dir`, and the local `help`
-command honors none. `--help`/`-h` is the one universal flag — every command
-honors it — but a help request honors no other flag, whatever command (if any)
-accompanied it: it renders the table, not a request, so `--json`, `--state-dir`
-and the rest mean nothing to it. `symbiote --help`, `symbiote -h`, `symbiote
-shutdown --help` and `symbiote schema --help` therefore exit 0 without a daemon
-or a state directory, while `--json --help` is refused exactly as `--json help`
-is. So `symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote
---json help`, `symbiote --state-dir DIR schema`, `symbiote schema --yes` and
-`symbiote --json --help health` each exit 1 printing nothing, while `symbiote
---state-dir DIR shutdown --yes` and `symbiote --json health` are unaffected.
+`publish-runtime-inventory` command honors `--state-dir`, and the local `init`
+and `help` commands honor none. `--help`/`-h` is the one universal flag — every
+command honors it — but a help request honors no other flag, whatever command
+(if any) accompanied it: it renders the table, not a request, so `--json`,
+`--state-dir` and the rest mean nothing to it. `symbiote --help`, `symbiote -h`,
+`symbiote shutdown --help` and `symbiote schema --help` therefore exit 0 without
+a daemon or a state directory, while `--json --help` is refused exactly as
+`--json help` is. So `symbiote --write DIR health`, `symbiote --check DIR
+health`, `symbiote --json help`, `symbiote --state-dir DIR schema`, `symbiote
+schema --yes` and `symbiote --json --help health` each exit 1 printing nothing,
+while `symbiote --state-dir DIR shutdown --yes` and `symbiote --json health` are
+unaffected.
 
 ## The write commands on this contract
 
@@ -65,6 +66,36 @@ policy may only name a kind that is dangerous. A mistyped argument is a usage
 failure, so it prints no envelope and exits 1 exactly like any other, and a
 refusal the daemon answers arrives in `error` as any other daemon refusal
 does.
+
+## Initializing an operator configuration
+
+`symbiote init DIR RESERVATION_BASE` is local, like `schema`, and it writes the
+daemon's operator configuration at `DIR/operator.json` — the file that turns
+`run_started_dispatch` from "always refuses" into a working execution path.
+
+It is a file worth generating rather than writing. The daemon refuses an
+operator config with any group or other permission bit, and the schema is
+`deny_unknown_fields`, so a typo in a hand-written one silently removes a
+control rather than failing to apply — and the operator who has never run this
+product has no reason to know the field names. What is written is the smallest
+configuration that starts a native dispatch: a `reservation_base` for derived
+worktrees and the explicitly labeled `native_fixture` that demonstrates a
+dispatch with no model turn and no spending. A credential registration, a
+sandbox shell executor, an external harness and a compatibility dossier are
+operator choices about one machine, so none of them is written: a generated file
+carrying a value nobody chose would be the same defect this branch has been
+removing from the other commands.
+
+`RESERVATION_BASE` must be an absolute path, and is the one argument with no
+default: a worktree under the state directory would be inside the store, and
+one relative would be wherever a script happened to be run from. The file is
+written 0600 — from the moment the temporary file exists, so it is never briefly
+world-readable — and renamed into place, so a daemon starting at the same moment
+sees the old file or the new one. An existing `operator.json` is never
+overwritten: an operator configuration is the operator's, and `init` is not a
+way to replace one silently. It exits 0 on an install and 1 on a usage failure
+or a refusal, like `schema --check`, because no daemon is asked to do anything
+else and `--json` is not a flag it honors.
 
 ## Publishing a runtime inventory
 
