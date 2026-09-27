@@ -202,11 +202,13 @@ pub(crate) fn honored_flags(command: &str) -> Flags {
             help: true,
             ..Flags::default()
         },
-        // `init` is local for the same reason `schema` is: it writes an
-        // operator-owned file, it sends no operation, and it answers before
-        // any state directory or authorization is consulted. It honors no
-        // flag, because a file it writes is not a request it can carry.
-        "init" | "help" => Flags {
+        // `init` and `add-credential` are local for the same reason `schema`
+        // is: they write an operator-owned file, they send no operation, and
+        // they answer before any state directory or authorization is
+        // consulted. They honor no flag, because a file they write is not a
+        // request they can carry — and a credential value is not a flag's
+        // business to begin with.
+        "init" | "add-credential" | "help" => Flags {
             help: true,
             ..Flags::default()
         },

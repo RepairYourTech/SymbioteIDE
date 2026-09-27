@@ -2360,3 +2360,239 @@ fn the_init_command_writes_a_configuration_the_daemon_loads() {
     }
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// The step between a Host that records dispatches and one that executes
+/// them. Every runtime profile names a credential, and a native run refuses
+/// without one by name, so this is not a convenience: it is why `init`'s
+/// configuration can be written and then not run.
+///
+/// The file is read back with the daemon's own loader, and the mode is read
+/// off the file, because a second parser and a second chmod would each be
+/// able to agree with a broken writer.
+#[test]
+fn a_credential_value_is_registered_only_where_the_daemon_can_hold_it() {
+    static NEXT_CREDENTIAL: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_CREDENTIAL.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "symbiote-cli-credential-unit-{}-{sequence}",
+        std::process::id()
+    ));
+    symbiote_host::transport::private_directory(&directory).unwrap();
+    let base = directory.join("worktrees");
+    let path = directory.join("operator.json");
+    let run = |arguments: &[&str], value: &str| {
+        let mut input = value.as_bytes();
+        run_with_input(
+            arguments.iter().map(|value| value.to_string()).collect(),
+            &mut input,
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        run(
+            &["init", directory.to_str().unwrap(), base.to_str().unwrap()],
+            ""
+        ),
+        EXIT_OK
+    );
+
+    // The value arrives on standard input and nowhere else: not in the
+    // arguments, not in the output, and not in a file the command left.
+    let out = run(
+        &[
+            "add-credential",
+            path.to_str().unwrap(),
+            "native-vault-ref",
+            "demo",
+            "OPENAI_API_KEY",
+        ],
+        "sk-the-value\n",
+    );
+    assert_eq!(out, EXIT_OK);
+    let config = symbiote_host::operator::load(&path).unwrap();
+    assert_eq!(config.credential_broker.len(), 1);
+    let registration = &config.credential_broker[0];
+    assert_eq!(registration.reference, "native-vault-ref");
+    assert_eq!(registration.project, "demo");
+    assert_eq!(registration.environment, "OPENAI_API_KEY");
+    // One trailing newline is a line, not part of the secret: a pipe and a
+    // here document both deliver the value the operator meant.
+    assert_eq!(
+        registration.value, "sk-the-value",
+        "the value is kept byte for byte apart from the trailing newline"
+    );
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "a rewritten configuration stays private");
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|entry| entry.extension().is_some_and(|ext| ext == "tmp"))
+        .collect();
+    assert_eq!(leftovers, Vec::<PathBuf>::new());
+
+    // A registration is never replaced: the broker refuses re-registration by
+    // design, so a command that overwrote one would write a file the daemon
+    // then refuses to load — after reporting success. Rotation is a NEW
+    // reference, and that one is allowed.
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(
+        run(
+            &[
+                "add-credential",
+                path.to_str().unwrap(),
+                "native-vault-ref",
+                "demo",
+                "OPENAI_API_KEY",
+            ],
+            "sk-a-second-value\n",
+        ),
+        EXIT_USAGE
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        run(
+            &[
+                "add-credential",
+                path.to_str().unwrap(),
+                "native-vault-ref-2",
+                "demo",
+                "OPENAI_API_KEY",
+            ],
+            "sk-rotated\n",
+        ),
+        EXIT_OK
+    );
+    assert_eq!(
+        symbiote_host::operator::load(&path)
+            .unwrap()
+            .credential_broker
+            .len(),
+        2,
+        "the rotation is a second registration, not a replaced one"
+    );
+
+    // What the broker itself would refuse, refused here instead — a daemon
+    // that will not start is a worse place to learn that an identity is
+    // unusable.
+    for (arguments, value) in [
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "",
+                "demo",
+                "OPENAI_API_KEY",
+            ],
+            "sk-x\n",
+        ),
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "not a reference",
+                "demo",
+                "OPENAI_API_KEY",
+            ],
+            "sk-x\n",
+        ),
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "another-ref",
+                "",
+                "OPENAI_API_KEY",
+            ],
+            "sk-x\n",
+        ),
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "another-ref",
+                "demo",
+                "",
+            ],
+            "sk-x\n",
+        ),
+        // An empty value registers nothing, and says so rather than writing
+        // a secret-shaped hole.
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "another-ref",
+                "demo",
+                "OPENAI_API_KEY",
+            ],
+            "",
+        ),
+        // A configuration that is not there, and one that is not an object.
+        (
+            vec![
+                "add-credential",
+                directory.join("absent.json").to_str().unwrap(),
+                "another-ref",
+                "demo",
+                "OPENAI_API_KEY",
+            ],
+            "sk-x\n",
+        ),
+    ] {
+        assert_eq!(run(&arguments, value), EXIT_USAGE, "accepted {arguments:?}");
+    }
+    let unchanged = symbiote_host::operator::load(&path).unwrap();
+    assert_eq!(
+        unchanged.credential_broker.len(),
+        2,
+        "no refused registration reached the file"
+    );
+
+    // The usage refusals, and the flag this command does not honor.
+    for (arguments, value) in [
+        (vec!["add-credential"], "sk-x\n"),
+        (vec!["add-credential", path.to_str().unwrap()], "sk-x\n"),
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "another-ref",
+                "demo",
+            ],
+            "sk-x\n",
+        ),
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "another-ref",
+                "demo",
+                "OPENAI_API_KEY",
+                "surplus",
+            ],
+            "sk-x\n",
+        ),
+        (
+            vec!["--json", "add-credential", path.to_str().unwrap()],
+            "sk-x\n",
+        ),
+        (
+            vec![
+                "add-credential",
+                path.to_str().unwrap(),
+                "another-ref",
+                "demo",
+                "OPENAI_API_KEY",
+                "--yes",
+            ],
+            "sk-x\n",
+        ),
+    ] {
+        assert_eq!(
+            run(&arguments, value),
+            EXIT_USAGE,
+            "add-credential accepted {arguments:?}"
+        );
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}

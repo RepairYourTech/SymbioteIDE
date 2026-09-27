@@ -171,6 +171,18 @@ Team that names a Role the Project does not hold, and the domain refuses a
 Team with no execution role. A Project registered from the command line can
 therefore be staffed and dispatched from the command line.
 
+One thing the command line cannot carry is a credential. Every runtime profile
+names one, and a native run refuses without it by name, so the registration is
+operator authority this client cannot hold: `symbiote init` writes the 0600
+configuration and `symbiote add-credential` records one registration in it,
+reading the value from standard input so a secret is never an argument, a
+process-table entry, or a line in the journal. The binding's member and
+candidate both carry `use_credential`, because the broker's gate is what the
+grant is for and a lease cannot issue without it. Both steps are local, and
+both happen before the daemon is started, because the configuration is read
+once (see [cli.md](cli.md) and
+[context-credential-resolution.md](context-credential-resolution.md)).
+
 A binding's `schema_version`, its candidate's `config_identity`, the
 candidate's limits, `root_effort`, `local_children`, `fallback_consent` and
 the `minimum_enforcement` map are all stated by the command and named in its

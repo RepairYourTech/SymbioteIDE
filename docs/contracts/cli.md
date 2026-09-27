@@ -38,17 +38,18 @@ error that names it, never a silent no-op. The daemon commands honor the
 daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
 `--yes`), because each of them is answered by a request over the socket; the
 local `schema` command honors `--write` and `--check`, the local
-`publish-runtime-inventory` command honors `--state-dir`, and the local `init`
-and `help` commands honor none. `--help`/`-h` is the one universal flag — every
-command honors it — but a help request honors no other flag, whatever command
-(if any) accompanied it: it renders the table, not a request, so `--json`,
-`--state-dir` and the rest mean nothing to it. `symbiote --help`, `symbiote -h`,
-`symbiote shutdown --help` and `symbiote schema --help` therefore exit 0 without
-a daemon or a state directory, while `--json --help` is refused exactly as
-`--json help` is. So `symbiote --write DIR health`, `symbiote --check DIR
-health`, `symbiote --json help`, `symbiote --state-dir DIR schema`, `symbiote
-schema --yes` and `symbiote --json --help health` each exit 1 printing nothing,
-while `symbiote --state-dir DIR shutdown --yes` and `symbiote --json health` are
+`publish-runtime-inventory` command honors `--state-dir`, and the local
+`init`, `add-credential` and `help` commands honor none.
+`--help`/`-h` is the one universal flag — every command honors it — but a help
+request honors no other flag, whatever command (if any) accompanied it: it
+renders the table, not a request, so `--json`, `--state-dir` and the rest mean
+nothing to it. `symbiote --help`, `symbiote -h`, `symbiote shutdown --help` and
+`symbiote schema --help` therefore exit 0 without a daemon or a state
+directory, while `--json --help` is refused exactly as `--json help` is. So
+`symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote --json
+help`, `symbiote --state-dir DIR schema`, `symbiote schema --yes` and
+`symbiote --json --help health` each exit 1 printing nothing, while
+`symbiote --state-dir DIR shutdown --yes` and `symbiote --json health` are
 unaffected.
 
 ## The write commands on this contract
@@ -84,7 +85,8 @@ dispatch with no model turn and no spending. A credential registration, a
 sandbox shell executor, an external harness and a compatibility dossier are
 operator choices about one machine, so none of them is written: a generated file
 carrying a value nobody chose would be the same defect this branch has been
-removing from the other commands.
+removing from the other commands. A credential is the one an operator must add
+before the fixture can run, and `symbiote add-credential` is how they add it.
 
 `RESERVATION_BASE` must be an absolute path, and is the one argument with no
 default: a worktree under the state directory would be inside the store, and
@@ -96,6 +98,41 @@ overwritten: an operator configuration is the operator's, and `init` is not a
 way to replace one silently. It exits 0 on an install and 1 on a usage failure
 or a refusal, like `schema --check`, because no daemon is asked to do anything
 else and `--json` is not a flag it honors.
+
+## Registering a credential value
+
+`symbiote add-credential CONFIG REFERENCE PROJECT ENVIRONMENT` records one
+credential registration in an operator configuration, and reads the value from
+standard input. It is local, like `init`, and for a sharper reason: the value
+is a secret. A request would carry it over a socket and into an operation log;
+an argument would put it in a process table where any user on the machine can
+read it. Standard input is the one channel this CLI has that is neither, so
+the value arrives by pipe:
+
+    printf %s "$SECRET" | symbiote add-credential \
+        /etc/symbiote/operator.json native-vault-ref demo OPENAI_API_KEY
+
+Every runtime profile names a credential, and a native run refuses without one
+by name — `no credential broker configured for this dispatch's credential
+reference` — so this is not an optional extra. It is the step between a Host
+that records dispatches and a Host that executes them.
+
+`REFERENCE` and `PROJECT` are the daemon's own identities, validated here with
+the broker's own constructors, because a reference it cannot name or a project
+it cannot match is refused at registration and the operator should learn that
+at the command rather than from a daemon that will not start.
+`ENVIRONMENT` is the materialization name, bounded 1..=128 bytes. The value is
+read to end of input with one trailing newline removed, so a pipe and a here
+document both deliver the value the operator meant, and an empty value is
+refused rather than registered.
+
+A registration is never replaced. The broker refuses re-registration by design
+— a revoked reference can never come back, and rotation uses a NEW reference id
+— so a command that overwrote one would write a file the daemon then refuses
+to load, having already reported success. The file is rewritten 0600 through a
+temporary file that carries the mode from the moment it exists, and the
+daemon reads the configuration once at start, so the command says plainly that
+the Host must be restarted: the broker holds values in process memory only.
 
 ## Publishing a runtime inventory
 

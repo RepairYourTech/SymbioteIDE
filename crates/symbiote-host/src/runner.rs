@@ -3432,25 +3432,29 @@ impl symbiote_native_agent::InferenceTransport for FixtureNativeTransport {
         use symbiote_runtime_sdk::provider::{
             FinishReason, PROVIDER_CONTRACT_VERSION, ProviderResponse,
         };
-        let (text, tool_calls, finish) = if self.proposed {
-            (self.echo_text.clone(), Vec::new(), FinishReason::Stop)
-        } else {
-            self.proposed = true;
-            let mut calls = Vec::new();
-            if let Some(tool) = &self.tool {
+        // A configured tool makes this a two-turn script: propose it, then
+        // complete with the echo text. With no tool there is nothing to
+        // propose, so the run completes on its first turn. Claiming
+        // `ToolCalls` over an empty list would be refused by the envelope
+        // contract — the fixture would refuse to run for the operator who
+        // asked for the simplest thing it can do, and would refuse with a
+        // `LoopFailed` identity that says nothing about a tool.
+        let (text, tool_calls, finish) = match (self.proposed, self.tool.as_ref()) {
+            (false, Some(tool)) => {
+                self.proposed = true;
                 let call_id = symbiote_domain::RequestId::new(&tool.call_id)
                     .map_err(|_| symbiote_runtime_sdk::provider::ProviderError::Unavailable)?;
-                calls.push(symbiote_runtime_sdk::provider::ProviderToolCall {
-                    call_id,
-                    name: "shell".into(),
-                    arguments: tool.arguments.clone(),
-                });
+                (
+                    "proposing the configured tool".into(),
+                    vec![symbiote_runtime_sdk::provider::ProviderToolCall {
+                        call_id,
+                        name: "shell".into(),
+                        arguments: tool.arguments.clone(),
+                    }],
+                    FinishReason::ToolCalls,
+                )
             }
-            (
-                "proposing the configured tool".into(),
-                calls,
-                FinishReason::ToolCalls,
-            )
+            _ => (self.echo_text.clone(), Vec::new(), FinishReason::Stop),
         };
         Ok(ProviderResponse {
             schema_version: PROVIDER_CONTRACT_VERSION,

@@ -2324,6 +2324,27 @@ fn staffing_composition_with_limits(
     max_memory_bytes: Option<u64>,
     max_cpu_millicores: Option<u64>,
 ) -> Value {
+    staffing_composition_with_grants(
+        host,
+        registration,
+        &["mutate_stream"],
+        max_memory_bytes,
+        max_cpu_millicores,
+    )
+}
+
+/// The same composition, with a test's own grants on top of the one every
+/// composition needs. A grant is named here rather than added afterwards,
+/// because the team ceiling, the member's access and the binding's own access
+/// have to agree: a grant on the binding alone is refused at compile time,
+/// and a grant the ceiling does not carry is refused before that.
+fn staffing_composition_with_grants(
+    host: &Host,
+    registration: Registration,
+    grants: &[&str],
+    max_memory_bytes: Option<u64>,
+    max_cpu_millicores: Option<u64>,
+) -> Value {
     ok(&host.call(
         serde_json::from_str(include_str!("../../../fixtures/project-team/register.json")).unwrap(),
     ));
@@ -2336,14 +2357,14 @@ fn staffing_composition_with_limits(
     .unwrap();
     team["command_id"] = json!("activation-team");
     for pointer in ["/access_ceiling/grants", "/members/1/access/grants"] {
-        let mut grants: Vec<Value> = team["operation"]["team"]
+        let mut held: Vec<Value> = team["operation"]["team"]
             .pointer_mut(pointer)
             .unwrap()
             .as_array()
             .unwrap()
             .clone();
-        grants.push(json!("mutate_stream"));
-        *team["operation"]["team"].pointer_mut(pointer).unwrap() = json!(grants);
+        held.extend(grants.iter().map(|grant| json!(grant)));
+        *team["operation"]["team"].pointer_mut(pointer).unwrap() = json!(held);
     }
     ok(&host.call(team));
     // The binding must name the live Host as eligible: resolve the real
@@ -2373,16 +2394,16 @@ fn staffing_composition_with_limits(
         ["operation", "configuration", "primary", "access", "grants"],
         ["operation", "configuration", "binding", "access", "grants"],
     ] {
-        let mut grants: Vec<Value> = binding
+        let mut held: Vec<Value> = binding
             .pointer_mut(&format!("/{}", path.join("/")))
             .unwrap()
             .as_array()
             .unwrap()
             .clone();
-        grants.push(json!("mutate_stream"));
+        held.extend(grants.iter().map(|grant| json!(grant)));
         *binding
             .pointer_mut(&format!("/{}", path.join("/")))
-            .unwrap() = json!(grants);
+            .unwrap() = json!(held);
     }
     ok(&host.call(binding));
     // The registration the profile names, with at most one fact broken.
@@ -2454,20 +2475,13 @@ fn staffing_composition_with_limits(
             "budget":null,"external_references":[]}}),
         )),
     );
-    ok_step(
+    staffing_task(
+        host,
         "activation-task",
-        &host.call(request(
-            "activation-task",
-            json!({"kind":"create_task","task":{"id":"staffing-task","project_id":"staffing-demo",
-            "root_id":"staffing-root","role_id":"engineer",
-            "origin":{"kind":"objective","work":{"project_id":"staffing-demo",
-                "id":{"kind":"objective","id":"staffing-objective"}}},
-            "task_contract":{"id":"coding-contract","revision":1},
-            "stream":{"id":"staffing-stream","originating_chat":"chat","worktree":"staffing-worktree",
-            "branch":"task/staffing","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}),
-        ),
-    ));
+        "staffing-task",
+        "staffing-stream",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
     ok_step(
         "activation-route",
         &host.call(request(
@@ -2480,6 +2494,47 @@ fn staffing_composition_with_limits(
     host_id
 }
 
+/// Files the staffing demo's task. `base` is the commit a run would start
+/// from, so a test that executes a dispatch names a real one and every other
+/// test can name a syntactically real commit it will never provision from.
+fn staffing_task(
+    host: &Host,
+    command_id: &'static str,
+    task_id: &str,
+    stream_id: &str,
+    base: &str,
+) {
+    let derived = staffing_worktree(stream_id);
+    ok_step(
+        command_id,
+        &host.call(request(
+            command_id,
+            json!({"kind":"create_task","task":{"id":task_id,"project_id":"staffing-demo",
+            "root_id":"staffing-root","role_id":"engineer",
+            "origin":{"kind":"objective","work":{"project_id":"staffing-demo",
+                "id":{"kind":"objective","id":"staffing-objective"}}},
+            "task_contract":{"id":"coding-contract","revision":1},
+            "stream":{"id":stream_id,"originating_chat":"chat",
+            "worktree":derived.worktree_id,"branch":derived.branch,"base":base,
+            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}),
+        )),
+    );
+}
+
+/// The worktree identity and branch a stream's task must record, derived the
+/// way a client derives them. A stream that names its own is accepted at
+/// creation and refused at provisioning, with a refusal that names only the
+/// stage — so a test that executes a dispatch has to ask the same question
+/// the CLI asks, and there is one owner for the answer.
+fn staffing_worktree(stream_id: &str) -> symbiote_worktrees::Derived {
+    symbiote_host::runner::derived_worktree(
+        &symbiote_domain::ProjectId::new("staffing-demo").unwrap(),
+        &symbiote_domain::RootId::new("staffing-root").unwrap(),
+        &symbiote_domain::ChangeStreamId::new(stream_id).unwrap(),
+    )
+    .unwrap()
+}
+
 /// Registers the profile's model descriptor against `provider_id`.
 fn registry_model(host: &Host, command_id: &'static str, provider_id: &str) {
     ok_step(
@@ -2488,7 +2543,7 @@ fn registry_model(host: &Host, command_id: &'static str, provider_id: &str) {
             command_id,
             json!({"kind":"replace_model_descriptor","attribution":"staffing-demo",
             "descriptor":{"schema_version":1,"id":"coding-model","provider_id":provider_id,
-            "context_window_tokens":8192,"max_output_tokens":4096,
+            "context_window_tokens":32768,"max_output_tokens":4096,
             "capabilities":{"reasoning_efforts":[],"tools":true,"images":false,"streaming":false}}}),
         )),
     );
@@ -3973,4 +4028,131 @@ fn foreign_runtime_links_persist_survive_restart_and_complete_nothing() {
         "no canonical task transition was written: {kinds:?}"
     );
     ok(&host.call(request("foreign-alive", json!({"kind":"health"}))));
+}
+
+/// A repository this Host can place a Root at: a real git work tree with one
+/// commit, because the only moment a checkout exists is the moment a run
+/// provisions from it.
+fn real_repository(tag: &str) -> (PathBuf, String) {
+    let directory = std::env::temp_dir().join(format!("symbiote-repository-{tag}"));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(&directory).unwrap();
+    let git = |arguments: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&directory)
+            .args(arguments)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {arguments:?} failed");
+    };
+    git(&["init", "-q", "."]);
+    git(&["config", "user.email", "daemon@example.invalid"]);
+    git(&["config", "user.name", "daemon test"]);
+    std::fs::write(directory.join("README.md"), "the root this Host serves\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "root"]);
+    let head = String::from_utf8(
+        Command::new("git")
+            .current_dir(&directory)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    (directory, head)
+}
+
+/// The first daemon test that carries a dispatch to completion: a real
+/// repository placed as a Root, a real worktree provisioned from it, and the
+/// operator's explicitly labeled fixture lane running its scripted turn.
+///
+/// Every step of that is an operator's, and the test walks them in the order
+/// an operator must, because the order is the defect this test exists for.
+/// `run_started_dispatch` refuses with
+///
+///     no credential broker configured for this dispatch's credential
+///     reference
+///
+/// on a Host whose every other step was accepted, and the refusal arrives
+/// after a worktree has already been materialised — so a client that composes
+/// a dispatch the documented way records it, provisions for it, and is then
+/// told the one thing it did not know it had to configure. The registration
+/// here is the fixture's own explicitly labeled value, the same shape the
+/// workflow demo's operator configuration carries, and the binding grants
+/// `UseCredential` because the broker's gate is what the grant is for.
+#[test]
+fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configuration() {
+    let (repository, head) = real_repository("run");
+    let base = std::env::temp_dir().join(format!("symbiote-run-worktrees-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    // The Root's checkout is an observation this Host makes for itself, and
+    // the base is the commit the run starts from: the two facts a real
+    // dispatch needs and a recorded-only one never has to supply.
+    ok_step(
+        "run-placement",
+        &host.call(request(
+            "run-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(&host, "run-task", "run-task", "run-stream", &head);
+    let prepared = host.call(request(
+        "run-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        ok_step("run-prepare", &prepared)["data"]["outcome"],
+        "ready"
+    );
+    let started = host.call(request(
+        "run-start",
+        json!({"kind":"start_prepared_task","task_id":"run-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("run-start", &started)["data"]["dispatch_id"].clone();
+    let run = host.call(request(
+        "run-execute",
+        json!({"kind":"run_started_dispatch","task_id":"run-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        ok_step("run-execute", &run)["data"]["completed"],
+        true,
+        "the run filed completion"
+    );
+    // The worktree is real: the fixture's report landed in the provisioned
+    // checkout, under the branch the task named.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("run-stream").worktree_id.as_str());
+    assert!(
+        worktree.join("README.md").exists(),
+        "the worktree carries the root's tree"
+    );
+    let read = host.call(request(
+        "run-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&read)["data"]["state"], "completion_requested");
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
 }

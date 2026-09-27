@@ -56,6 +56,16 @@ harness-owned and are never harvested into the native broker (the #217
 boundary). Refusals surface as `credential lease refused: <reason>` /
 `no credential broker configured` protocol errors — payload-free.
 
+The registrations themselves are operator authority, not store state: they
+live in the same 0600 configuration file as the reservation base, are read
+once at start, and are written by `symbiote add-credential`, which takes the
+value on standard input so a secret is never an argument, a process-table
+entry, or a line in the journal. A registration is never replaced — the
+broker refuses re-registration by design and rotation uses a new reference id
+— and the binding must carry `UseCredential` for a lease to issue at all, so
+a Host that runs a native dispatch is one with three things an operator
+chose: a registration, a grant, and a profile that names the reference.
+
 ## Honest non-claims (pending #217 scope)
 
 - The broker is **not durable**: values live in process memory only;
@@ -73,10 +83,13 @@ boundary). Refusals surface as `credential lease refused: <reason>` /
   injection according to adapter capability is the next slice. No live
   model turn exists — credential plumbing is exercised with fixture values
   only, and live verification remains gated on explicit user authorization
-  for credentials and billing. The daemon-level positive lease path is
-  proven at the `WorkerTransports` seam with the real fixture contract
-  (the daemon's operator-provisioning surface for brokers does not exist
-  yet, so no `Host::call` test drives it).
+  for credentials and billing. The daemon-level positive lease path is driven
+  end to end: `symbiote init` writes the configuration, `symbiote
+  add-credential` records the registration, and a real dispatch runs to
+  completion against it with the registration live. The broker is not
+  optional, though — every runtime profile names a credential, so a Host with
+  no registration refuses every native run by name, and an operator who has
+  never run this product has to be told how to produce one.
 - Redaction across logs, terminals, artifacts, crash reports and export
   corpora, environment/resource-plan resolution (#176), and the full
   secret-descriptor model (versions, rotation windows, per-role/profile

@@ -68,12 +68,24 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
     run_with(std::env::args().skip(1).collect())
 }
 
+fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
+    run_with_input(arguments, &mut std::io::stdin())
+}
+
 /// The one place the pieces meet: parse, decide applicability, answer a help
 /// request or the local `schema` command, then — for a daemon command — build
 /// the operation and hand it to the gate, which either refuses it outright or
 /// lets the session send it. Everything before the gate is local, so nothing
 /// here can open a socket on behalf of an unauthorized invocation.
-fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
+///
+/// `input` is the standard input exactly one command reads — `add-credential`,
+/// which takes a credential value and has nowhere else to take it from. It is
+/// a parameter so a test can hand that command its value without a value ever
+/// being typed at the test runner's own terminal.
+fn run_with_input(
+    arguments: Vec<String>,
+    input: &mut dyn std::io::Read,
+) -> Result<i32, Box<dyn std::error::Error>> {
     let options = parse_options(&arguments)?;
     // A help request — the `help` command, or `--help`/`-h` with or without a
     // command alongside — prints the table and connects to nothing. It cannot
@@ -141,6 +153,12 @@ fn run_with(arguments: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
     // into and nothing else.
     if name == "init" {
         return run_init(&options);
+    }
+    // `add-credential` is local for the same reason, and more sharply: its
+    // input is a secret, and a request would carry it over a socket, into a
+    // process table and toward a journal that records everything else.
+    if name == "add-credential" {
+        return run_add_credential(&options, input);
     }
     let Some(command) = commands().into_iter().find(|c| c.name == name) else {
         eprintln!("symbiote: unknown command {name}; try `symbiote help`");
@@ -260,9 +278,6 @@ fn run_schema(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
 /// It exits 0 on an install and 1 on a usage or refusal, the same distinction
 /// `schema --check` makes, because no daemon is asked to do anything else.
 fn run_init(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
     let [directory, base] = options.args.as_slice() else {
         eprintln!(
             "symbiote: `init` takes an output directory and a worktree reservation base; try \
@@ -302,24 +317,8 @@ fn run_init(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
     });
     let mut bytes = serde_json::to_vec_pretty(&document)?;
     bytes.push(b'\n');
-    // The temporary file carries the same 0600 from the moment it exists: a
-    // file that was briefly world-readable would have leaked the config
-    // before the rename narrowed it.
-    let temporary = path.with_extension("json.tmp");
-    let written = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&temporary)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        file.write_all(&bytes)?;
-        file.sync_all()
-    })();
-    if let Err(error) = written {
-        let _ = std::fs::remove_file(&temporary);
-        eprintln!("symbiote: cannot write {}: {error}", temporary.display());
-        return Ok(EXIT_USAGE);
-    }
-    if let Err(error) = std::fs::rename(&temporary, &path) {
-        let _ = std::fs::remove_file(&temporary);
-        eprintln!("symbiote: cannot install {}: {error}", path.display());
+    if let Err(error) = install_private_file(&path, &bytes) {
+        eprintln!("symbiote: cannot write {}: {error}", path.display());
         return Ok(EXIT_USAGE);
     }
     println!("wrote {}", path.display());
@@ -327,6 +326,157 @@ fn run_init(options: &Options) -> Result<i32, Box<dyn std::error::Error>> {
         "start the Host with: symbioted --state-dir DIR --operator-config {}",
         path.display()
     );
+    Ok(EXIT_OK)
+}
+
+/// Installs an operator-owned file at 0600, atomically.
+///
+/// The temporary file carries 0600 from the moment it exists: a file that was
+/// briefly world-readable would have leaked the configuration before the
+/// rename narrowed it, and a configuration holds credential values. The
+/// rename means a daemon starting at the same moment sees the old file or the
+/// new one, never a partial write.
+fn install_private_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = path.with_extension("tmp");
+    let written = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// The local `add-credential` command: record one credential registration in
+/// an operator configuration.
+///
+/// Every runtime profile names a credential, and a native run refuses
+/// without one by name —
+///
+///     no credential broker configured for this dispatch's credential
+///     reference
+///
+/// — so a Host that has never run cannot execute a dispatch at all. The
+/// registration is operator authority whose value lives in this one 0600
+/// file and nowhere else, which is why this is a local command: a value must
+/// never be an argument to a request, appear in a process table, or reach the
+/// journal. It is read from standard input for that reason, and `init` writes
+/// the file it goes into.
+///
+/// A registration is never replaced. The broker refuses re-registration by
+/// design — a revoked reference can never come back, and rotation uses a NEW
+/// reference id — so a command that overwrote one would write a file the
+/// daemon then refuses, after telling the operator it succeeded.
+fn run_add_credential(
+    options: &Options,
+    input: &mut dyn std::io::Read,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let [path, reference, project, environment] = options.args.as_slice() else {
+        eprintln!(
+            "symbiote: `add-credential` takes a configuration file, a credential reference, an \
+             owning project and an environment label, then reads the value from stdin; try \
+             `symbiote help`"
+        );
+        return Ok(EXIT_USAGE);
+    };
+    let path = std::path::Path::new(path);
+    // The two identities are the daemon's own: a reference the broker cannot
+    // name and a project it cannot match are refused at registration, and the
+    // operator should learn that here rather than from a daemon that refuses
+    // to start.
+    if symbiote_domain::CredentialReferenceId::new(reference).is_err() {
+        eprintln!("symbiote: {reference:?} is not a credential reference the broker can hold");
+        return Ok(EXIT_USAGE);
+    }
+    if symbiote_domain::ProjectId::new(project).is_err() {
+        eprintln!("symbiote: {project:?} is not a project id");
+        return Ok(EXIT_USAGE);
+    }
+    if environment.is_empty() || environment.len() > 128 {
+        eprintln!("symbiote: the environment label must be 1..=128 bytes; got {environment:?}");
+        return Ok(EXIT_USAGE);
+    }
+    let mut value = String::new();
+    if let Err(error) = input.read_to_string(&mut value) {
+        eprintln!("symbiote: cannot read the credential value from stdin: {error}");
+        return Ok(EXIT_USAGE);
+    }
+    // One trailing newline is the line a shell or an editor adds; anything
+    // else is the operator's value and is kept byte for byte.
+    let value = value.strip_suffix('\n').unwrap_or(&value).to_owned();
+    if value.is_empty() {
+        eprintln!("symbiote: an empty credential value registers nothing; pipe the value in");
+        return Ok(EXIT_USAGE);
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        eprintln!(
+            "symbiote: cannot read {}; `symbiote init` writes one",
+            path.display()
+        );
+        return Ok(EXIT_USAGE);
+    };
+    let mut document = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(serde_json::Value::Object(document)) => document,
+        _ => {
+            eprintln!(
+                "symbiote: {} is not a JSON object; the daemon loads the configuration itself and \
+                 this command will not guess at it",
+                path.display()
+            );
+            return Ok(EXIT_USAGE);
+        }
+    };
+    let mut registrations = match document.remove("credential_broker") {
+        None => Vec::new(),
+        Some(serde_json::Value::Array(registrations)) => registrations,
+        Some(_) => {
+            eprintln!(
+                "symbiote: {} has a `credential_broker` that is not a list",
+                path.display()
+            );
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if registrations
+        .iter()
+        .any(|registration| registration["reference"] == *reference)
+    {
+        eprintln!(
+            "symbiote: {reference} is already registered in {}; a registration is never \
+             replaced, so rotate by registering a NEW reference",
+            path.display()
+        );
+        return Ok(EXIT_USAGE);
+    }
+    registrations.push(serde_json::json!({
+        "reference": reference,
+        "project": project,
+        "environment": environment,
+        "value": value,
+    }));
+    document.insert("credential_broker".into(), registrations.into());
+    let mut written = serde_json::to_vec_pretty(&document)?;
+    written.push(b'\n');
+    if let Err(error) = install_private_file(path, &written) {
+        eprintln!("symbiote: cannot write {}: {error}", path.display());
+        return Ok(EXIT_USAGE);
+    }
+    // The daemon reads the file once at start, so a registration made after
+    // it is running is not live until it is restarted. Saying so is the
+    // difference between an operator who restarts and one who debugs.
+    println!("registered {reference} for {project} in {}", path.display());
+    println!("restart the Host to load it; the broker holds values in process memory only");
     Ok(EXIT_OK)
 }
 
