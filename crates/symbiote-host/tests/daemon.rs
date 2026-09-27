@@ -4317,6 +4317,154 @@ fn a_refused_run_is_recorded_and_what_it_left_can_be_abandoned_and_recovered() {
     std::fs::remove_dir_all(&repository).ok();
 }
 
+/// The other half of the failure path, from a different cause. The refused-run
+/// test above refuses at provisioning, before a worktree exists. This one
+/// halts *inside* the worker loop, after the worktree was materialized and the
+/// lease was held — so it is the case where git knows about the location, and
+/// the abandon has to remove a real registered worktree rather than clear a
+/// stale marker.
+///
+/// The fixture produces an empty report, which is the one thing the domain
+/// refuses a completion for, so the loop halts without finishing.
+#[test]
+fn a_run_that_halts_inside_the_loop_is_recorded_and_its_worktree_is_abandonable() {
+    let (repository, head) = real_repository("silent-run");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-silent-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        // An empty report: the domain refuses a completion without one, so the
+        // loop halts with the worktree already materialized.
+        "native_fixture": {"echo_text": ""},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "silent-placement",
+        &host.call(request(
+            "silent-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "silent-task",
+        "silent-task",
+        "silent-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "silent-prepare",
+        &host.call(request(
+            "silent-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"silent-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "silent-start",
+        json!({"kind":"start_prepared_task","task_id":"silent-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("silent-start", &started)["data"]["dispatch_id"].clone();
+    let halted = host.call(request(
+        "silent-run",
+        json!({"kind":"run_started_dispatch","task_id":"silent-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        halted["result"]["Err"]["message"],
+        "worker loop halted without finishing"
+    );
+    let after = host.call(request(
+        "silent-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"silent-task"}),
+    ));
+    assert_eq!(ok(&after)["data"]["state"], "failed");
+
+    // This time git knows about the location: the worktree was materialized
+    // before the loop ran, so the abandon has a real checkout to remove —
+    // which is the branch the other test cannot reach.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("silent-stream").worktree_id.as_str());
+    assert!(worktree.join("README.md").exists(), "the checkout is real");
+    let listed = Command::new("git")
+        .current_dir(&repository)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains(worktree.to_str().unwrap()),
+        "and git has it registered: {}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+
+    // Uncommitted content, which the release path would refuse and the abandon
+    // is authorized to discard. The commits would survive either way; these
+    // files exist nowhere else, which is exactly why this operation is the
+    // dangerous kind.
+    std::fs::write(worktree.join("half-written.txt"), "the run's last output\n").unwrap();
+    ok_step(
+        "silent-abandon",
+        &host.call(request(
+            "silent-abandon",
+            json!({"kind":"abandon_change_stream","task_id":"silent-task"}),
+        )),
+    );
+    assert!(
+        !worktree.exists(),
+        "the checkout and its uncommitted file are gone"
+    );
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("silent-stream").worktree_id
+    ));
+    assert!(!marker.exists(), "and so is the reservation");
+    // The administrative registration goes with it: a root that kept
+    // referring to a removed worktree is a repository that has to be pruned by
+    // hand.
+    let after_list = Command::new("git")
+        .current_dir(&repository)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&after_list.stdout).contains(worktree.to_str().unwrap()),
+        "no stale registration is left in the root: {}",
+        String::from_utf8_lossy(&after_list.stdout)
+    );
+    // And the branch, which the abandon never deletes.
+    let branch = Command::new("git")
+        .current_dir(&repository)
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}", staffing_worktree("silent-stream").branch),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        branch.status.success(),
+        "the branch survives its checkout: {}",
+        String::from_utf8_lossy(&branch.stderr)
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
 #[test]
 fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configuration() {
     let (repository, head) = real_repository("run");

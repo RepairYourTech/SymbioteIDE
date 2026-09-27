@@ -274,6 +274,23 @@ checked. The step now carries `startable` and the `state` it read, the outcome a
 `validate` refuses a report whose step contradicts its own recorded state — so nothing can hand a
 client a report calling a cancelled stream startable.
 
+**The same path from a second cause, and a probe I had to throw away.** Setting the fixture's
+report to empty looked like it would produce a run that "completed" with nothing to show, which
+would have been a sixth defect. It did not — the domain refuses a completion whose report is empty
+— but the first probe answered `completed: true` anyway, because the daemon had cached the
+operator configuration at startup and I had edited the file without restarting it. The lesson is
+the harness's own: a probe that contradicts the product deserves a check of the probe first.
+Restarted, the run halts with `worker loop halted without finishing` and the task reads `failed`,
+which is the new path working from inside the loop rather than at provisioning. That case is now
+pinned by `a_run_that_halts_inside_the_loop_is_recorded_and_its_worktree_is_abandonable`, which is
+the half the provisioning test cannot reach: git *knows* about the location, so the abandon
+removes a real registered worktree — with uncommitted content in it, which is what the release path
+refuses and only this path may discard — and leaves neither the directory, nor the marker, nor the
+administrative registration in the root's `git worktree list`, while the branch survives. A mutant
+that skips the removal when the location is registered dies on it with
+`worktree reservation release refused: NotEmpty`, which is the second guard doing its own job: a
+populated directory is never deleted just because the marker says it may be.
+
 **Named, not deferred:** the abandoned stream is terminal, so the retry is a *new* task — a
 recovered task cannot be re-dispatched under a cancelled stream. That is the correct answer
 rather than a gap, but it means a failed unit of work costs a new task record, and while the
