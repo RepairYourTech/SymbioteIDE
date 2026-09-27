@@ -295,7 +295,7 @@ impl Store {
         let mut decided = self
             .connection
             .prepare("SELECT body FROM elevations WHERE project_id=?1 ORDER BY json_extract(body, '$.decided_at'), id")?;
-        let leases = decided
+        let leases: Vec<symbiote_domain::DecidedElevation> = decided
             .query_map(params![project_id.as_str()], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?
             .into_iter()
@@ -305,6 +305,13 @@ impl Store {
                     .map_err(Into::into)
             })
             .collect::<Result<Vec<_>>>()?;
+        // The asks are correlated with the decisions AFTER both are read, so
+        // the join sees every decision on this Project rather than only the
+        // ones that happened to be written before it.
+        let requests = requests
+            .into_iter()
+            .map(|request| symbiote_domain::AnsweredRequest::read(request, &leases))
+            .collect();
         Ok(symbiote_domain::ElevationLedger {
             project_id: project_id.clone(),
             read_at: at,

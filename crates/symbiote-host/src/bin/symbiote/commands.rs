@@ -257,6 +257,16 @@ const PERMISSION_SPELLINGS: &[&str] = &[
 /// window closes, and a denial licenses nothing at all.
 const DECISION_SPELLINGS: &[(&str, bool)] = &[("approve", true), ("deny", false)];
 
+/// The spelling list as `one_of` takes it. Both elevation commands name a
+/// permission and both check it here, so the two cannot drift apart into one
+/// accepting what the other refuses.
+fn permission_choices() -> Vec<(&'static str, &'static str)> {
+    PERMISSION_SPELLINGS
+        .iter()
+        .map(|name| (*name, *name))
+        .collect()
+}
+
 /// The functions a Role may hold in a Team, in the order a refusal lists them.
 /// `lead_orchestrator` is the one the Project's lead must have and the only
 /// one exactly one member may; the other two are how the remaining members
@@ -1832,7 +1842,16 @@ pub(crate) fn commands() -> Vec<Command> {
                 plain("kind", serde_json::json!("request_elevation"), map);
                 id_field(args, 0, "task_id", "task_id", map)?;
                 id_field(args, 1, "dispatch_id", "dispatch_id", map)?;
-                plain("permission", field(args, 2, "permission")?.into(), map);
+                // The same check `decide-elevation` makes on the same field:
+                // a typo in a permission is a question nobody can answer, and
+                // the daemon's answer to one is a shape error that names
+                // neither the argument nor the five spellings.
+                let permission = one_of(
+                    &field(args, 2, "permission")?,
+                    "permission",
+                    &permission_choices(),
+                )?;
+                plain("permission", permission.into(), map);
                 plain("reason", field(args, 3, "reason")?.into(), map);
                 Ok(())
             },
@@ -1850,10 +1869,7 @@ pub(crate) fn commands() -> Vec<Command> {
                 let permission = one_of(
                     &field(args, 2, "permission")?,
                     "permission",
-                    &PERMISSION_SPELLINGS
-                        .iter()
-                        .map(|name| (*name, *name))
-                        .collect::<Vec<_>>(),
+                    &permission_choices(),
                 )?;
                 plain("permission", permission.into(), map);
                 let approved = one_of(

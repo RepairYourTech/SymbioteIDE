@@ -7081,9 +7081,18 @@ fn an_elevation_ask_can_be_read_answered_and_taken_back() {
     ));
     let asks = ok(&asked)["data"]["requests"].as_array().unwrap();
     assert_eq!(asks.len(), 1, "the ask is on the ledger: {asked}");
-    assert_eq!(asks[0]["permission"], "execute_process");
-    assert_eq!(asks[0]["reason"], "the run needs the consented build tool");
-    assert_eq!(asks[0]["dispatch_id"], dispatch_id);
+    assert_eq!(asks[0]["request"]["permission"], "execute_process");
+    assert_eq!(
+        asks[0]["request"]["reason"],
+        "the run needs the consented build tool"
+    );
+    assert_eq!(asks[0]["request"]["dispatch_id"], dispatch_id);
+    // Unanswered, and the answer says so rather than leaving a reader to join
+    // two lists to discover it.
+    assert!(
+        asks[0]["decided_by"].is_null(),
+        "an ask nobody has decided is published as unanswered: {asked}"
+    );
     assert!(
         ok(&asked)["data"]["leases"].as_array().unwrap().is_empty(),
         "an ask is evidence and never a grant: {asked}"
@@ -7297,14 +7306,15 @@ fn an_elevation_ask_can_be_read_answered_and_taken_back() {
         leases[2]["lease"]["expires_at"], leases[2]["lease"]["decided_at"],
         "a denial has no window: {final_ledger}"
     );
-    // And the ask it answered is still on the ledger beside it: the ledger is
-    // the record of both halves, not only the grants.
+    // The ask is still on the ledger beside the decision that answered it, and
+    // the two are correlated in the answer: the ledger is the record of both
+    // halves, not only the grants.
+    let asks = ok(&final_ledger)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks.len(), 1, "{final_ledger}");
     assert_eq!(
-        ok(&final_ledger)["data"]["requests"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        asks[0]["decided_by"], "elevation-decision",
+        "the ask names the decision that answered it, which is the id a reader \
+         revokes: {final_ledger}"
     );
 
     // A Project that was never registered has a ledger with nothing on it,

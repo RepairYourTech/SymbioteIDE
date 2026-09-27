@@ -1095,6 +1095,60 @@ fn the_write_commands_refuse_a_mistyped_argument_by_name() {
             vec!["symbiote", "lead", "ship-it", "urgent", "Title"],
             r#"<class> must be one of maintenance, operational, outcome; got "urgent""#,
         ),
+        // Both elevation commands name a permission, so both check it: a
+        // typo in the one field a worker's ask and an authority's answer share
+        // is a question nobody can answer, and the daemon's answer to one is
+        // a shape error that names neither the argument nor the spellings.
+        (
+            "request-elevation",
+            vec!["task", "dispatch", "execute-proces", "the build needs it"],
+            r#"<permission> must be one of read_root, mutate_stream, execute_process, network, use_credential; got "execute-proces""#,
+        ),
+        (
+            "decide-elevation",
+            vec![
+                "task",
+                "dispatch",
+                "execute-proces",
+                "approve",
+                "yes",
+                "300000",
+            ],
+            r#"<permission> must be one of read_root, mutate_stream, execute_process, network, use_credential; got "execute-proces""#,
+        ),
+        // A decision is one of two words, and a third is not a decision.
+        (
+            "decide-elevation",
+            vec![
+                "task",
+                "dispatch",
+                "execute_process",
+                "maybe",
+                "yes",
+                "300000",
+            ],
+            r#"<decision> must be one of approve, deny; got "maybe""#,
+        ),
+        // A window is a number of milliseconds, and a denial's is zero: the
+        // two refusals are separate because a mistyped window and a
+        // contradictory one are different mistakes.
+        (
+            "decide-elevation",
+            vec![
+                "task",
+                "dispatch",
+                "execute_process",
+                "approve",
+                "yes",
+                "five-minutes",
+            ],
+            r#"<window_ms> is a count of milliseconds; got "five-minutes""#,
+        ),
+        (
+            "decide-elevation",
+            vec!["task", "dispatch", "execute_process", "deny", "no", "60000"],
+            r#"<window_ms> is 0 for a denial, which licenses nothing; a denial that carries a 60000ms window is not a decision"#,
+        ),
         // A surplus argument is named rather than dropped: `description` is the
         // last argument this command takes, and a mistyped root would be one
         // too many just the same.

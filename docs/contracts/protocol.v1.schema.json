@@ -3535,6 +3535,30 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
+      "AnsweredRequest": {
+        "additionalProperties": false,
+        "description": "One ask beside the decision that answered it, or the absence of one.\n\nThe correlation is on the three facts an ask and its decision share — the\ntask, the dispatch and the permission — because those are exactly the\nthree a decision is *about*. An ask naming a dispatch that has since\nfinished has no answer by construction rather than by anyone's choice,\nand an ask with `decided_by: null` says so in the answer rather than\nleaving a reader to work it out from two lists and a join.",
+        "properties": {
+          "decided_by": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CommandId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id of the lease that decided this ask, or nothing when no decision\nnames the same task, dispatch and permission. It is a lease's own\nidentity, so a reader can revoke exactly the decision it is looking\nat."
+          },
+          "request": {
+            "$ref": "#/$defs/ElevationRequest"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "type": "object"
+      },
       "ArtifactId": {
         "maxLength": 128,
         "minLength": 1,
@@ -5150,7 +5174,7 @@
           "requests": {
             "description": "The asks, in the order they were filed. An ask licenses nothing at\nany standing; it is here so the decision beside it can be read next\nto the request it answers.",
             "items": {
-              "$ref": "#/$defs/ElevationRequest"
+              "$ref": "#/$defs/AnsweredRequest"
             },
             "type": "array"
           }

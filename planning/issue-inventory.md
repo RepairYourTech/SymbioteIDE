@@ -850,7 +850,30 @@ halting, or a way to re-attach a decision to the next dispatch of the same task 
 #269 scope and is a different component, not a missing command. It is written down here
 rather than left to be discovered as a thirteenth-pass surprise.
 
-Eleven dying mutants hold this pass: the ledger dropping `requests`; the ledger
+**The thirteenth pass was a follow-up to the twelfth, not a new thread.** The ledger the
+twelfth pass added published asks and decisions as two lists, and the correlation
+between them was left to the reader — which is the same defect one layer down, in the
+one read the pass exists to provide. An ask is now published beside the decision that
+answered it, or beside nothing: each ask carries `decided_by`, the lease's own id, and
+the pairing is on the three facts a decision is *about* (the task, the dispatch, the
+permission) so an ask nobody has decided reads as `decided_by: null` in the answer
+rather than as something a reader has to discover by joining two lists. A denial
+counts as an answer, which is the half most easily lost. The same sweep also found
+that `request-elevation` took its permission as a free string while `decide-elevation`
+— added the day before — checked the same field against the same five spellings, so
+the one argument a worker's ask and an authority's answer share was checked on one
+side and not the other. Both check it now, through one shared list so they cannot
+drift apart again.
+
+Five more dying mutants hold this follow-up: the correlation never happening; the
+correlation dropping the permission from the join; the correlation dropping the
+dispatch from the join; the store joining the asks against an empty decision list
+rather than the one it just read; and `request-elevation` ceasing to check its
+permission spelling at all — which survived the first attempt, because the client's
+own pin test only ever builds *valid* command lines, and a check nothing exercises is
+not a check. That one is the reason this paragraph exists.
+
+Eleven dying mutants hold the twelfth pass: the ledger dropping `requests`; the ledger
 dropping `leases`; the standing ceasing to be read at the reading clock; a revocation
 ceasing to outrank a window; a denial ceasing to outrank both; the decision clock
 ceasing to come from the journal on a retry; the lease id ceasing to be the deciding

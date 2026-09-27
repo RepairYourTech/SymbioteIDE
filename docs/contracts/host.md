@@ -665,12 +665,17 @@ operations rather than a file an operator assembles:
   consumer — which is how a Project that asked for something ungrantable ends
   up with an answer that is a refusal.
 - `elevations <project_id>` is the ledger: every ask the Project was sent and
-  every decision made on it, each with `standing` — `live`, `expired`,
-  `revoked` or `denied` — read at the clock the answer publishes, so a
-  reader knows how old it is. It is a Project read and it licenses nothing it
-  lists. A denial is kept even where a grant could never have been legal,
-  because "the authority saw this and said no" is the record that stops an
-  ask looking unanswered.
+  every decision made on it, each decision with `standing` — `live`, `expired`,
+  `revoked` or `denied` — read at the clock the answer publishes, so a reader
+  knows how old it is. Each ask carries the ask whole and `decided_by`: the id
+  of the decision that answered it, or nothing. The pairing is on the three
+  facts a decision is *about* — the task, the dispatch and the permission — so
+  an ask nobody has decided is published as `decided_by: null` rather than
+  left for a reader to discover by joining two lists, and a denial answers an
+  ask exactly as an approval does. It is a Project read and it licenses nothing
+  it lists. A denial is kept even where a grant could never have been legal,
+  because "the authority saw this and said no" is the record that stops an ask
+  looking unanswered.
 - `revoke-elevation <project_id> <elevation_id>` takes a grant back. An
   elevation's id is the command id of the `decide-elevation` that granted it,
   which is what the ledger publishes; an id the Project does not hold is
