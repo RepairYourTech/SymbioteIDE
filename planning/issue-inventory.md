@@ -148,6 +148,33 @@ and empty is now refused by name, like a missing one, because no identity, name,
 can be empty. What an argument may *contain* stays the domain's and still comes back as its own
 typed refusal.
 
+**Found in the third pass — the lifecycle has three unreachable states.**
+
+The end-to-end path now runs to `completion_requested` from an empty directory
+with no `raw` file, and stops there, because nothing on the wire can move it
+further. Over the whole workspace the Host constructs exactly one
+`TaskAction` — `RequestCompletion`, at `service.rs:920` and twice in
+`runner.rs`. `BeginVerification` and `Complete` exist in `symbiote-domain` and
+are exercised by domain and store tests, and `TaskAction::Complete` additionally
+requires the change stream to be `StreamState::Validated` with
+`last_validated_target`/`last_validated_head` equal to the stream's target and
+head — a `StreamAction` in the same file, reachable from no operation either.
+
+So `Verifying` and `Completed` are unreachable through any client, and so is a
+validated stream. A task dispatched end to end therefore stays
+`completion_requested` forever: the worker's report is on record and no owner,
+reviewer or Host has any way to accept it. The daemon reports this honestly —
+`get_task` says `completion_requested`, and nothing else — which is why it read
+as a finished run in the transcript above rather than as a gap.
+
+This is the same shape as the two defects above, one level further out: a
+record that every step that validates it accepts, and an impossibility
+discovered only past the last step a client can take. It is the reason #38
+("a headless Linux Host can be controlled by another desktop client") cannot be
+fully satisfied by client work alone — three operations have to exist before a
+controller has anything to control. Nothing in this branch touches the protocol,
+so it is recorded rather than begun.
+
 **Candidate, not a decision — the reap test's deadline race.** CI failed
 `a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean` once on the 1.85.0 leg with
 `Cancelled { group_signal: Sent }` where the test asserts `Unreaped { error: DeadlineExceeded }`,
