@@ -45,7 +45,8 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
-`validate-change-stream`, `begin-task-verification`, `complete-task`,
+`advance-change-stream`, `validate-change-stream`,
+`begin-task-verification`, `complete-task`,
 `integrate-change-stream`, `release-change-stream`,
 `abandon-change-stream`, `recover-task`, `interrupt-task`,
 `scheduling-projection <project_id>`,
@@ -345,6 +346,26 @@ dropped, so the task is dispatched afresh. The lifecycle reaches `Ready`
 only through this, which is why the two were missing together: a failure
 that can be filed and a failure that can be left are the same gap seen from
 opposite ends.
+
+`advance-change-stream` is the operation the Change Stream contract was
+written around and the workspace did not have. A stream carries a head and a
+target, a run that commits moves the head, and `StreamAction::Advance` — the
+domain's own action for exactly that — was constructed nowhere in the
+workspace. So a stream's head stayed the commit it was cut from, and
+`validate-change-stream`, which compares the checkout's observed head with the
+recorded one, refused with `StaleEvidence` the moment a run had committed
+anything: a task with real work could never be validated, integrated or
+released. The whole lifecycle was walkable end to end only because the
+fixture lane commits nothing, which is exactly the kind of thing a demo proves
+and nobody notices.
+
+It names no commits. The Host reads both out of git — the stream's checkout
+for the work, the Root for where it lands — and refuses a checkout that is not
+built on the stream's recorded head, because those commits were not built on
+this stream. The advance invalidates any earlier evidence by construction
+(`Advance` clears `last_validated_*` and returns the stream to
+`NeedsRevalidation`), so `validate-change-stream` has to run again, and the
+CLI says so where the operator is standing.
 
 `complete-task` is classified dangerous, because it ends a task's execution
 rather than changing it. The refusals name themselves — a claim that does not

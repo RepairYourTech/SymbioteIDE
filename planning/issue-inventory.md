@@ -374,6 +374,54 @@ reason refused by name, `recover-task`, and the same task running to completion 
 stream in the same checkout.
 
 
+**Found in the seventh pass — a change stream that could not carry a change.** The
+sixth pass's second test had to commit work into the stream's own checkout to have something to
+integrate, and it refused with `lifecycle refused the transition (StaleEvidence)` at
+`validate_change_stream`. Reading that from the domain rather than from the symptom:
+`StreamAction::Validate` compares the head the caller observed against `stream.head()`, and
+`stream.head()` is set once — at `create_task`, to the base the work was to start from. So the
+only commits any task could ever validate against were the ones it did not make. And the action
+that would move it, `StreamAction::Advance { head, target }`, had been in the domain since the
+lifecycle was written, with unit tests in `symbiote-domain/tests/contracts.rs` and **no
+constructor anywhere in the workspace**: the protocol had no operation for it, the Host no arm,
+the CLI no command. `grep -rn "StreamAction::Advance" crates/` returns the domain's own match
+arm and its tests, and nothing else.
+
+The consequence is the whole point of the product. Every transcript and every daemon test that
+walked the lifecycle to `integrate` and `release` did so with a run that **committed nothing** —
+the fixture lane reports a string and writes no file — so the lifecycle was walkable end to end
+and no run's work could ever reach a Root. A task that did something sat at
+`completion_requested` with `validate` refusing it forever, and since `complete` needs a
+validated stream and `release` needs an integrated one, there was no way forward. The demo proved
+the shape of the thing and hid the only fact that mattered.
+
+`Operation::AdvanceChangeStream` is that missing operation, and it names **no commits**: the Host
+reads the stream's checkout for the work and the Root for where it lands, and refuses a checkout
+whose history does not contain the stream's recorded head — a stranger's commits wearing this
+stream's path are the one thing the stream's head must never be made of. The advance invalidates
+earlier evidence by construction (`Advance` clears `last_validated_*` and returns the stream to
+`NeedsRevalidation`), so `validate` has to run again, and the CLI says so on stderr. Held by
+`a_stream_only_advances_onto_work_built_on_its_own_head`, which commits in the checkout, advances,
+validates, and then orphans the branch and proves the refusal —
+`the stream's checkout is not built on the stream's recorded head` — is the *only* thing standing
+between an operator and a stream that claims whatever is in its directory. A mutant that drops the
+`is_ancestor` proof dies on that line with an `Ok` receipt where the refusal belongs.
+
+The same test walk found the integrate is not idempotent against its own effect, which is the
+wedge the sixth pass fixed one step earlier. The merge lands on the Root; the journal write that
+turns the stream `Integrated` is a separate step after it; a daemon killed in between leaves the
+work landed and the stream `Validated`, and the retry refused with `root checkout is not at the
+stream's recorded target` — with the release needing an integrated stream and the abandon
+refusing a stream whose work landed. The Root being at the stream's head is the same fact the
+operation exists to prove, so it is now accepted as the state it means. A mutant that restores
+the old comparison dies on `step journal-integrate failed: ... "root checkout is not at the
+stream's recorded target"`.
+
+And the two-project transcript now commits. `two_projects.sh` was landing two streams whose runs
+had written nothing; it now commits in each checkout and advances each stream, and the ending
+reads `repo: HEAD is 697b1d1 the run's work` for both Roots — the promise the product makes, with
+first-class commands and no `raw` file.
+
 **Candidate, not a decision — the reap test's deadline race.** CI failed
 `a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean` once on the 1.85.0 leg with
 `Cancelled { group_signal: Sent }` where the test asserts `Unreaped { error: DeadlineExceeded }`,

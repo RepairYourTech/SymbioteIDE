@@ -452,6 +452,11 @@ pub(crate) fn consequence(name: &str) -> Option<&'static str> {
             "the run's lease is released and the Task is Interrupted; recover-task returns it to \
              Ready, and the same stream carries the next run.",
         ),
+        "advance-change-stream" => Some(
+            "the stream's head is now its checkout's commit and its target is the Root's own \
+             HEAD, so any evidence recorded before this is stale and validate-change-stream has \
+             to run again",
+        ),
         "complete-task" => Some(
             "the gates are filed as evidence and the Task is Completed; the work is not on the \
              Root yet, and integrate-change-stream is what lands it.",
@@ -1442,6 +1447,20 @@ pub(crate) fn commands() -> Vec<Command> {
                 id_field(args, 0, "task_id", "task_id", map)?;
                 id_field(args, 1, "dispatch_id", "dispatch_id", map)?;
                 plain("report", field(args, 2, "report")?.into(), map);
+                Ok(())
+            },
+        },
+        Command {
+            name: "advance-change-stream",
+            summary: "record where the stream's work and the Root's head are",
+            usage: "advance-change-stream <task_id>",
+            kind: Some("advance_change_stream"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("advance_change_stream"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // No commit arguments, which is the whole point: the Host reads
+                // both commits out of the stream's own checkout and the Root's,
+                // so nothing a caller types can become the stream's record.
                 Ok(())
             },
         },

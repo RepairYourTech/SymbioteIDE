@@ -5191,3 +5191,423 @@ fn a_created_task_says_out_loud_what_abandoning_its_stream_will_cost() {
         "nothing was charged, so nothing is announced: {said}"
     );
 }
+
+/// A stream's head is the one record in the lifecycle a caller must never be
+/// able to write, because everything downstream trusts it: `Validate`,
+/// `Integrate` and `Complete` all compare against it. So the operation that
+/// moves it names no commits at all — the Host reads the stream's own checkout
+/// and the Root — and refuses a checkout whose history does not contain the
+/// stream's recorded head, which is what "those commits were not built on this
+/// stream" looks like.
+#[test]
+fn a_stream_only_advances_onto_work_built_on_its_own_head() {
+    let (repository, head) = real_repository("advance-guard");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-advance-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "advance-placement",
+        &host.call(request(
+            "advance-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "advance-task",
+        "advance-task",
+        "advance-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "advance-prepare",
+        &host.call(request(
+            "advance-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"advance-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "advance-start",
+        json!({"kind":"start_prepared_task","task_id":"advance-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("advance-start", &started)["data"]["dispatch_id"].clone();
+    ok_step(
+        "advance-run",
+        &host.call(request(
+            "advance-run",
+            json!({"kind":"run_started_dispatch","task_id":"advance-task",
+            "dispatch_id":dispatch_id}),
+        )),
+    );
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("advance-stream").worktree_id.as_str());
+
+    // The run's own work, on its own branch: the advance accepts this, and
+    // this is the case the lifecycle could not reach before the operation
+    // existed.
+    std::fs::write(worktree.join("the-work.txt"), "what the run did\n").unwrap();
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args(["add", "-A"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "commit",
+            "-qm",
+            "the run's own work",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "the run's work is committed");
+    let committed = String::from_utf8(
+        Command::new("git")
+            .current_dir(&worktree)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    ok_step(
+        "advance-advance",
+        &host.call(request(
+            "advance-advance",
+            json!({"kind":"advance_change_stream","task_id":"advance-task"}),
+        )),
+    );
+    // The stream's head is now the work, and its target is where the work
+    // lands — the Root's own HEAD, which has not moved. So the whole tail of
+    // the lifecycle is reachable from a task that did something.
+    ok_step(
+        "advance-validate",
+        &host.call(request(
+            "advance-validate",
+            json!({"kind":"validate_change_stream","task_id":"advance-task",
+            "verification_run":"advance-verify"}),
+        )),
+    );
+    let stream = host.call(request(
+        "advance-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"advance-task"}),
+    ));
+    assert_eq!(ok(&stream)["data"]["state"], "completion_requested");
+
+    // The refusal. A checkout on a history that does not contain the stream's
+    // recorded head is a stranger's work wearing this stream's path, and the
+    // one operation that could make it the stream's head is exactly the one
+    // that has to refuse.
+    let stranger = Command::new("git")
+        .current_dir(&worktree)
+        .args(["checkout", "-q", "--orphan", "not-this-streams-lineage"])
+        .output()
+        .unwrap();
+    assert!(stranger.status.success());
+    let orphan = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "an unrelated history",
+        ])
+        .output();
+    assert!(
+        orphan.is_ok(),
+        "git refusing an empty orphan commit is not this test's subject"
+    );
+    let refused = host.call(request(
+        "advance-refused",
+        json!({"kind":"advance_change_stream","task_id":"advance-task"}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["message"],
+        "the stream's checkout is not built on the stream's recorded head",
+        "{refused}"
+    );
+    // And the work the stream had already recorded is still recorded: the
+    // refusal took nothing, so the task is still where the accepted advance
+    // left it.
+    let unchanged = host.call(request(
+        "advance-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"advance-task"}),
+    ));
+    assert_eq!(ok(&unchanged)["data"]["state"], "completion_requested");
+    let on_disk = String::from_utf8(
+        Command::new("git")
+            .current_dir(&repository)
+            .args([
+                "rev-parse",
+                &format!("refs/heads/{}", staffing_worktree("advance-stream").branch),
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    assert_eq!(
+        committed, on_disk,
+        "and the branch still holds the commit the stream claimed"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The integrate is the one operation in the lifecycle with a window between
+/// what it does and what it records: the merge lands on the Root, and the
+/// journal write that turns the stream `Integrated` is a separate step after
+/// it. A daemon killed in that window leaves the work on the Root and the
+/// stream still `Validated` — and the retry used to refuse it, because the
+/// Root was no longer at the stream's recorded target.
+///
+/// That refusal closed every way out at once. The integrate refuses because
+/// the Root moved; `release-change-stream` needs an integrated stream; and
+/// `abandon-change-stream` refuses a stream whose work landed, which is
+/// exactly what this one is. So the state was permanent, and the only honest
+/// description of it was a wedge.
+///
+/// The test stands in the crash's part with two lines of git — the merge that
+/// had already run, with the journal write that did not — because that is the
+/// whole of what a crash leaves, and the operation's answer to it is the
+/// product question.
+#[test]
+fn work_that_landed_before_the_record_did_is_integrated_rather_than_refused() {
+    let (repository, head) = real_repository("lost-journal");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-journal-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture landed this work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "journal-placement",
+        &host.call(request(
+            "journal-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "journal-task",
+        "journal-task",
+        "journal-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "journal-prepare",
+        &host.call(request(
+            "journal-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"journal-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "journal-start",
+        json!({"kind":"start_prepared_task","task_id":"journal-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("journal-start", &started)["data"]["dispatch_id"].clone();
+    ok_step(
+        "journal-run",
+        &host.call(request(
+            "journal-run",
+            json!({"kind":"run_started_dispatch","task_id":"journal-task",
+            "dispatch_id":dispatch_id}),
+        )),
+    );
+    // The run's work, committed into its own branch, so there is something to
+    // land. The fixture lane reports rather than writes, so the commit is the
+    // test's — the point is the state a real run leaves, not who typed it.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("journal-stream").worktree_id.as_str());
+    std::fs::write(worktree.join("change.log"), "what the run changed\n").unwrap();
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "add",
+            "-A",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "commit",
+            "-qm",
+            "the work this stream exists to land",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "the run's work is committed");
+    let stream_head = String::from_utf8(
+        Command::new("git")
+            .current_dir(&worktree)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    // The step that was missing from the workspace: the run committed, so the
+    // stream's head has to move before anything may claim it is validated. It
+    // names no commits — the Host reads both out of git — and it invalidates
+    // earlier evidence by construction, so this is where a stream that has
+    // done work returns to needing revalidation.
+    let advanced = host.call(request(
+        "journal-advance",
+        json!({"kind":"advance_change_stream","task_id":"journal-task"}),
+    ));
+    ok_step("journal-advance", &advanced);
+    ok_step(
+        "journal-validate",
+        &host.call(request(
+            "journal-validate",
+            json!({"kind":"validate_change_stream","task_id":"journal-task",
+            "verification_run":"journal-verify"}),
+        )),
+    );
+    ok_step(
+        "journal-begin",
+        &host.call(request(
+            "journal-begin",
+            json!({"kind":"begin_task_verification","task_id":"journal-task"}),
+        )),
+    );
+    ok_step(
+        "journal-complete",
+        &host.call(request(
+            "journal-complete",
+            json!({"kind":"complete_task","task_id":"journal-task",
+            "gates":["tests","security","impact","documentation",
+                     "independent_review","delivery","capability_closure"],
+            "reviewer":"lead"}),
+        )),
+    );
+
+    // The crash's part: the fast-forward that already happened on the Root,
+    // with nothing in the store recording that it did.
+    let landed = Command::new("git")
+        .current_dir(&repository)
+        .args([
+            "merge",
+            "--ff-only",
+            &format!("refs/heads/{}", staffing_worktree("journal-stream").branch),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        landed.status.success(),
+        "the merge the crash interrupted after"
+    );
+    let root_head = String::from_utf8(
+        Command::new("git")
+            .current_dir(&repository)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    assert_eq!(root_head, stream_head, "the work is on the Root");
+    assert_ne!(
+        root_head, head,
+        "and the Root is nowhere near the target the stream recorded"
+    );
+
+    // The operation's answer. It proves the same thing either way — the Root is
+    // at the stream's head — and this time it records it.
+    let integrated = host.call(request(
+        "journal-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"journal-task"}),
+    ));
+    ok_step("journal-integrate", &integrated);
+    // And the lifecycle that was closed behind the refusal opens: the release
+    // is the operation that reclaims the checkout, and it needs the stream to
+    // be integrated.
+    ok_step(
+        "journal-release",
+        &host.call(request(
+            "journal-release",
+            json!({"kind":"release_change_stream","task_id":"journal-task"}),
+        )),
+    );
+    assert!(
+        !worktree.exists(),
+        "and the checkout leaves the operator's disk"
+    );
+    assert!(
+        String::from_utf8(
+            Command::new("git")
+                .current_dir(&repository)
+                .args(["rev-parse", "--verify", &root_head])
+                .output()
+                .unwrap()
+                .stdout
+        )
+        .unwrap()
+        .trim()
+            == root_head,
+        "while the work it landed stays exactly where it landed"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}

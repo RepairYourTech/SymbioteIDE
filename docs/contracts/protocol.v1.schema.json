@@ -1277,6 +1277,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "Record where a stream's work actually is. A Change Stream carries a\nhead and a target; a run that commits moves the head, and nothing else\nin the lifecycle can know that — only the Host can read the stream's\nown checkout. Both commits are observed here and neither is named by\nthe caller: a client that could write the stream's head could claim\nanyone's work as this stream's.\n\n`Validate` refuses any stream whose observed head is not the head it\nrecorded (`StaleEvidence`), so without this operation a task whose run\ncommitted anything could never be validated, never integrated, and\nnever released. A change stream that cannot carry a change.",
+            "properties": {
+              "kind": {
+                "const": "advance_change_stream",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "Declare that a run is not coming back. `Running`,\n`CompletionRequested` and `Verifying` become `Interrupted`, which is\nthe one state a crashed or abandoned run can be moved out of.\n\nA refused run files its own failure, so this is for the case nothing\nelse can file: the Host died with the task `Running`, and no run is\nleft to observe. `reason` is the caller's, because only the caller\nknows which of those it was — the Host cannot distinguish a crash from\nan operator walking away, and both arrive here.",
             "properties": {
               "kind": {

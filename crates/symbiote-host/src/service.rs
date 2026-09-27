@@ -944,14 +944,27 @@ fn execute(
                 .map_err(|_| worker_error(crate::runner::RunnerError::NoHostPath))?;
             let target = symbiote_domain::CommitSha::new(before.commit.as_str())
                 .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
-            if target != *stream.target() {
+            // Two worlds are acceptable, and the difference between them is
+            // whether this operation has already run. The root is either where
+            // the stream recorded it — the merge below has not happened yet —
+            // or where the stream's work says it should end, which is what a
+            // crash between the merge and the journal write below leaves.
+            //
+            // The second case used to be refused, and the refusal was a wedge:
+            // the work was on the Root, the stream still said `Validated`, and
+            // every way out was closed — an integrate that refuses because the
+            // Root moved, a release that needs an integrated stream, and an
+            // abandon that refuses a stream whose work landed. The same
+            // idempotence the reclaim needed, one step later in the lifecycle.
+            if target != *stream.target() && target != *stream.head() {
                 return Err(ProtocolError {
                     code: ErrorCode::FailedPrecondition,
                     message: "root checkout is not at the stream's recorded target".into(),
                 });
             }
             // A fast-forward only: a merge the Host would have to resolve is a
-            // merge the Host has no authority to decide.
+            // merge the Host has no authority to decide. It is a no-op when the
+            // Root is already at the stream's head, which is the case above.
             symbiote_repo::GitExecutor::run(
                 &mut git,
                 std::path::Path::new(checkout),
@@ -1218,6 +1231,114 @@ fn execute(
             };
             store
                 .apply_task(task_id, command)
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::AdvanceChangeStream { task_id } => {
+            // The one thing a Change Stream exists to carry, and the operation
+            // the workspace was missing. The domain has had
+            // `StreamAction::Advance` since the lifecycle was written and
+            // nothing constructed it, so a stream's head was the commit it was
+            // cut from for the whole of its life: `validate_change_stream`
+            // compares the worktree's observed head with the recorded one and
+            // refuses with `StaleEvidence` the moment a run committed
+            // anything, so a task with real work could never be validated,
+            // integrated or released. The lifecycle was walkable end to end
+            // only because the fixture lane commits nothing.
+            //
+            // Both commits are observed, and neither is named by the caller.
+            // The worktree's head is the work; the Root's head is where it
+            // lands, and naming either from a request would be writing the
+            // stream's own record from outside the Host that holds it.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let dispatch = task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            let this_host = inventory.host_id().clone();
+            let root = store.root(task_record.root_id()).map_err(storage_error)?;
+            let checkout = root
+                .host_paths
+                .get(&this_host)
+                .ok_or_else(|| worker_error(crate::runner::RunnerError::NoHostPath))?
+                .clone();
+            let reservation_base = workers.reservation_base().map_err(worker_error)?;
+            let derived = crate::runner::derived_worktree(
+                task_record.project_id(),
+                task_record.root_id(),
+                task_record.stream_id(),
+            )
+            .map_err(worker_error)?;
+            let worktree = derived.worktree_path(&reservation_base);
+            if !worktree.join(".git").exists() {
+                // A stream whose run never provisioned has no work to record,
+                // and a directory that is not a checkout cannot be read for a
+                // head. Said here rather than as a git failure, because the
+                // cause is the run's and the remedy is a run.
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "the stream's checkout does not exist; there is no work to advance"
+                        .into(),
+                });
+            }
+            let mut git = workers.git();
+            let observed = symbiote_repo::observe_head(&mut git, &worktree).map_err(|error| {
+                storage_error(StoreError::Integrity(format!(
+                    "stream worktree head is not observable: {error:?}"
+                )))
+            })?;
+            // The proof that this is the stream's work and not a stranger's: the
+            // recorded head has to be an ancestor of what the worktree is at.
+            // Equality counts — a run that committed nothing advances onto the
+            // same commit, which is honest — and a history that does not
+            // contain the stream's head is refused, because those commits were
+            // not built on this stream.
+            if !symbiote_repo::is_ancestor(
+                &mut git,
+                &worktree,
+                stream.head().as_str(),
+                observed.commit.as_str(),
+            )
+            .map_err(|error| {
+                storage_error(StoreError::Integrity(format!(
+                    "stream head ancestry is not observable: {error:?}"
+                )))
+            })? {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "the stream's checkout is not built on the stream's recorded head"
+                        .into(),
+                });
+            }
+            let head = symbiote_domain::CommitSha::new(observed.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            // The target is where the work lands, so it is the Root's own
+            // current head rather than the base the stream was cut from: after
+            // a rebase or a rebase-shaped reconcile, the Root has moved and the
+            // stream has to say so before anything merges into it.
+            let at_root = symbiote_repo::observe_head(&mut git, std::path::Path::new(&checkout))
+                .map_err(|error| {
+                    storage_error(StoreError::Integrity(format!(
+                        "root checkout head is not observable: {error:?}"
+                    )))
+                })?;
+            let target = symbiote_domain::CommitSha::new(at_root.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            let command = symbiote_domain::StreamCommand {
+                id: request.command_id.clone(),
+                expected_revision: stream.revision(),
+                host_id: this_host,
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::StreamAction::Advance { head, target },
+            };
+            store
+                .apply_stream(
+                    task_record.stream_id(),
+                    command,
+                    dispatch.contract().effective_access(),
+                )
                 .map(receipt)
                 .map_err(storage_error)
         }

@@ -321,6 +321,20 @@ pub enum Operation {
     RecoverTask {
         task_id: TaskId,
     },
+    /// Record where a stream's work actually is. A Change Stream carries a
+    /// head and a target; a run that commits moves the head, and nothing else
+    /// in the lifecycle can know that — only the Host can read the stream's
+    /// own checkout. Both commits are observed here and neither is named by
+    /// the caller: a client that could write the stream's head could claim
+    /// anyone's work as this stream's.
+    ///
+    /// `Validate` refuses any stream whose observed head is not the head it
+    /// recorded (`StaleEvidence`), so without this operation a task whose run
+    /// committed anything could never be validated, never integrated, and
+    /// never released. A change stream that cannot carry a change.
+    AdvanceChangeStream {
+        task_id: TaskId,
+    },
     /// Declare that a run is not coming back. `Running`,
     /// `CompletionRequested` and `Verifying` become `Interrupted`, which is
     /// the one state a crashed or abandoned run can be moved out of.
@@ -495,6 +509,7 @@ impl Operation {
             | Self::IntegrateChangeStream { .. }
             | Self::ReleaseChangeStream { .. }
             | Self::RecoverTask { .. }
+            | Self::AdvanceChangeStream { .. }
             | Self::InterruptTask { .. }
             | Self::AbandonChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
@@ -560,6 +575,7 @@ impl Operation {
                 | Self::IntegrateChangeStream { .. }
                 | Self::ReleaseChangeStream { .. }
                 | Self::RecoverTask { .. }
+                | Self::AdvanceChangeStream { .. }
                 | Self::InterruptTask { .. }
                 | Self::AbandonChangeStream { .. }
         )
@@ -907,6 +923,7 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         | Operation::IntegrateChangeStream { .. }
         | Operation::ReleaseChangeStream { .. }
         | Operation::RecoverTask { .. }
+        | Operation::AdvanceChangeStream { .. }
         | Operation::InterruptTask { .. }
         | Operation::AbandonChangeStream { .. } => {
             // The three steps a dispatched Task could not take at all, so a
