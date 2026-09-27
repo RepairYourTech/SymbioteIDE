@@ -45,6 +45,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
+`decide-elevation`, `revoke-elevation`, `elevations`,
 `advance-change-stream`, `reconcile-change-stream`,
 `validate-change-stream`,
 `begin-task-verification`, `complete-task`,
@@ -638,6 +639,44 @@ everything else is a mutation the daemon still authorizes — filing
 evidence (`register-project`, `create-work`, `create-task`,
 `prepare-dispatch`, `request-task-completion`,
 `request-elevation`) is not starting work.
+
+### An elevation can be answered
+
+A worker that is refused a permission files an ask
+(`request-elevation <task_id> <dispatch_id> <permission> <reason>`, and the
+runner files one by itself when a run is refused), which is evidence and
+licenses nothing. Three commands close the loop, and all three are ordinary
+operations rather than a file an operator assembles:
+
+- `decide-elevation <task_id> <dispatch_id> <permission> <approve|deny>
+  <reason> <window_ms>` is the answer. It is dangerous, because granting
+  capability is the one thing the gate exists for. The lease's identity, its
+  Project, who decided and when are the Host's: the lease's id is the
+  command's own, the Project is the task's, the approver is the authenticated
+  principal, and the clock is the Host's — or the one this command id already
+  answered with, so a lost-response retry replays its receipt instead of
+  colliding with the journal. An approval names how long it licenses the
+  permission; a denial's window is `0`, and a denial carrying any other is
+  refused by name. A window past the domain's bound is refused with the bound
+  in the answer, not shortened, so the grant an operator reads back is the
+  grant they gave. A decision still attaches to one **running** dispatch, may
+  not name a permission its binding already carries, may not elevate past the
+  Team's access ceiling, and may only name a permission with an enforcement
+  consumer — which is how a Project that asked for something ungrantable ends
+  up with an answer that is a refusal.
+- `elevations <project_id>` is the ledger: every ask the Project was sent and
+  every decision made on it, each with `standing` — `live`, `expired`,
+  `revoked` or `denied` — read at the clock the answer publishes, so a
+  reader knows how old it is. It is a Project read and it licenses nothing it
+  lists. A denial is kept even where a grant could never have been legal,
+  because "the authority saw this and said no" is the record that stops an
+  ask looking unanswered.
+- `revoke-elevation <project_id> <elevation_id>` takes a grant back. An
+  elevation's id is the command id of the `decide-elevation` that granted it,
+  which is what the ledger publishes; an id the Project does not hold is
+  refused with that sentence rather than `resource not found`. A revocation
+  names a lease, not a permission, so it cannot disturb another lease for the
+  same permission, and it is sticky.
 
 A dangerous operation is sent only when the invocation is explicitly
 authorized: `--yes` for this one run, a `yes` typed at the prompt when

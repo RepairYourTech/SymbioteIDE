@@ -238,6 +238,25 @@ fn one_of<T: Copy>(token: &str, name: &str, choices: &[(&str, T)]) -> Result<T, 
         })
 }
 
+/// The permissions an elevation may name, in the order a refusal lists them.
+/// Only two of the five have an enforcement consumer today (the credential
+/// broker's gate and the native shell-tool path), and only the Team's access
+/// ceiling can put a permission within reach of a decision at all — but the
+/// list is the domain's, not the Host's current consumers', so a client does
+/// not have to know which two are live to be told a spelling it got wrong.
+const PERMISSION_SPELLINGS: &[&str] = &[
+    "read_root",
+    "mutate_stream",
+    "execute_process",
+    "network",
+    "use_credential",
+];
+
+/// What an authority may answer to an ask. The two answers are not variants
+/// of one grant: an approval licenses a permission for one dispatch until its
+/// window closes, and a denial licenses nothing at all.
+const DECISION_SPELLINGS: &[(&str, bool)] = &[("approve", true), ("deny", false)];
+
 /// The functions a Role may hold in a Team, in the order a refusal lists them.
 /// `lead_orchestrator` is the one the Project's lead must have and the only
 /// one exactly one member may; the other two are how the remaining members
@@ -516,6 +535,16 @@ pub(crate) fn consequence(name: &str) -> Option<&'static str> {
             "the hold is lifted and the Task is ready again, which offers it for scheduling and \
              does not start it; the dependency and stream checks still apply, and a Task whose \
              gates are unmet stays blocked with dependency_unresolved",
+        ),
+        "decide-elevation" => Some(
+            "an approval licenses this ONE dispatch this one permission until the window \
+             closes, and never beyond the Team's ceiling; the expiry is the automatic revocation, \
+             so nothing has to sweep it, and revoke-elevation takes it back before then. A denial \
+             licenses nothing and is kept as the record that the ask was seen and refused",
+        ),
+        "revoke-elevation" => Some(
+            "the grant is dead from now on and cannot be undone; the dispatch it was for gets \
+             nothing further from it, and the record keeps both the grant and its revocation",
         ),
         _ => None,
     }
@@ -1806,6 +1835,85 @@ pub(crate) fn commands() -> Vec<Command> {
                 plain("permission", field(args, 2, "permission")?.into(), map);
                 plain("reason", field(args, 3, "reason")?.into(), map);
                 Ok(())
+            },
+        },
+        Command {
+            name: "decide-elevation",
+            summary: "answer a worker's ask: grant one permission briefly, or refuse it",
+            usage: "decide-elevation <task_id> <dispatch_id> <permission> <approve|deny> \
+                    <reason> <window_ms>",
+            kind: Some("decide_elevation"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("decide_elevation"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                id_field(args, 1, "dispatch_id", "dispatch_id", map)?;
+                let permission = one_of(
+                    &field(args, 2, "permission")?,
+                    "permission",
+                    &PERMISSION_SPELLINGS
+                        .iter()
+                        .map(|name| (*name, *name))
+                        .collect::<Vec<_>>(),
+                )?;
+                plain("permission", permission.into(), map);
+                let approved = one_of(
+                    &field(args, 3, "approve|deny")?,
+                    "decision",
+                    DECISION_SPELLINGS,
+                )?;
+                plain("approved", approved.into(), map);
+                // The reason is the authority's own sentence, carried into the
+                // record beside the ask it answers, so it is required whether
+                // the answer grants or refuses.
+                plain("reason", field(args, 4, "reason")?.into(), map);
+                // The window is the operator's to give, in milliseconds, and
+                // every decision names one: a grant nobody bounded is not a
+                // grant, and a denial's is zero, which is the shape the domain
+                // requires of a lease that refuses. Naming a window on a
+                // denial is refused here rather than becoming a lease the
+                // store rejects with a message naming neither field.
+                // `field` first, so an argument that is ABSENT says missing
+                // and one that is there and empty says empty: the same
+                // distinction every other position makes, and the reason an
+                // operator who forgot the window is not told they typed it
+                // wrong.
+                let window = field(args, 5, "window_ms")?;
+                let window_ms = window.parse::<u64>().map_err(|_| {
+                    Usage(format!(
+                        "<window_ms> is a count of milliseconds; got {window:?}"
+                    ))
+                })?;
+                if !approved && window_ms != 0 {
+                    return Err(Usage(format!(
+                        "<window_ms> is 0 for a denial, which licenses nothing; a denial that \
+                         carries a {window_ms}ms window is not a decision"
+                    )));
+                }
+                plain("window_ms", window_ms.into(), map);
+                no_more(args, 6, "decide-elevation")
+            },
+        },
+        Command {
+            name: "revoke-elevation",
+            summary: "take back a grant before its window closes",
+            usage: "revoke-elevation <project_id> <elevation_id>",
+            kind: Some("revoke_elevation"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("revoke_elevation"), map);
+                plain("project_id", field(args, 0, "project_id")?.into(), map);
+                id_field(args, 1, "elevation_id", "elevation_id", map)?;
+                no_more(args, 2, "revoke-elevation")
+            },
+        },
+        Command {
+            name: "elevations",
+            summary: "read every ask a Project was sent and every decision made on it",
+            usage: "elevations <project_id>",
+            kind: Some("get_elevations"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("get_elevations"), map);
+                plain("project_id", field(args, 0, "project_id")?.into(), map);
+                no_more(args, 1, "elevations")
             },
         },
         Command {

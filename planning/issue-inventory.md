@@ -754,6 +754,113 @@ before dispatch" — so producing them means building the queue that admits them
 not a missing command but a missing component. Worth saying plainly rather than
 discovering it as a twelfth-pass surprise.
 
+**Found in the twelfth pass — the product could ask a human for a permission and then not
+let anybody answer.** The eleventh pass took `Block` and `Unblock`; this one took the
+`raw`-only mutations, and the first of the twelve Host-served ones it swept is the
+sharpest.
+
+Measured, not read. A transcript provisioned a Project through the real client, then asked
+the client what it can say about a permission:
+
+```
+  what the client can say:   request-elevation        (one command)
+  and not:                   decide-elevation         no such command
+                             revoke-elevation         no such command
+                             elevations               no such command
+
+  the only route is `raw`, and the file it wants is 10 keys, 4 of them invented:
+      id           operator-decision
+      project_id   demo
+      decided_at   1790547353807
+      expires_at   1790547653807
+      approved_by  the operator
+```
+
+and then, driving the daemon directly, the three things that file costs an operator:
+
+* `approved_by: "the operator"` is refused — `invalid_request: invalid request shape or
+  field value`. The approver's own name has to be a slug, and the refusal names neither
+  the field nor the bound.
+* the lease's `id` must equal the deciding `command_id`, and the CLI mints that after
+  reading the file, so the operator has to write the same string twice by hand
+  (`--command-id` and the file) for the store's own check to pass.
+* the two timestamps are caller assertions, and the journal compares a request byte for
+  byte, so a retry that retyped the clock is `idempotency_conflict` rather than a replay
+  — while every other stamped mutation in this Host takes its clock from the Host.
+
+And nothing listed any of it. `snapshot` publishes `cursor, project, roles, roots, tasks`;
+`scheduling-projection` publishes `blocked, considered_at, dag, project_id, readiness,
+schedulable`; only `read_journal` carried the payloads, as a whole-Project event stream a
+client has to page through knowing three payload shapes. So there was nothing to answer
+from, and nothing to name when taking an answer back — and the runner files asks on its
+own, under a command id the operator never chose, so this is not a corner.
+
+**A second defect was inside the fix, and the design test caught it.** The decision was
+reshaped from a finished lease to a decision — the task and dispatch, the permission, an
+`approve` or `deny`, a reason, a `window_ms` — and the four facts the wire used to carry
+moved to the Host: the lease's id is the deciding command's own, its Project is the
+task's, its approver is the authenticated principal, and its clock is the Host's or the
+one this command id already answered with (`Store::elevation_decision_timestamp`, the
+fourth of the three-file's sibling clocks). Then the store's decide path was read
+against that new shape and it turned out to refuse a **denial** whenever any grant-side
+rule would fail: the consumer allowlist, the native-only runtime rule, the
+never-re-grant check and the Team's ceiling. All four ask whether a license would be
+meaningful, and a denial licenses nothing. So the record of "the authority saw this ask
+and said no" was refused precisely when it was needed most — which is the whole defect
+this pass exists for, one layer down: an ask on a ledger that nobody ever answered and no
+record of anyone having said so. A denial is now recorded on attribution alone.
+
+Two refusals also moved out of `Operation::validate` and into the Host, because a refusal
+from the protocol's shape guard can only say that a field was wrong, and these are rules
+about what a decision *means*: an overlong window now comes back naming the bound
+(`900000ms`) and a denial carrying a window comes back naming the rule. Both would
+otherwise have been `invalid_request: invalid request shape or field value`, which is the
+answer that found this pass.
+
+One thing was measured and left as a finding rather than fixed. Three of the ways to
+get a decision wrong still arrive as `invalid_request: invalid request shape or field
+value` rather than by name — a permission the binding already carries, a permission
+with no enforcement consumer, and a decision on an `EXTERNAL_HARNESS` dispatch all
+refuse as the same `StoreError::InvalidElevation`, which is one refusal standing in for
+four rules. The two rules this pass *added* (an overlong window, a denial carrying a
+window) are named in the Host, which is where the answer belongs; naming these three
+too means splitting one store error into four, which is a protocol-visible change to
+the vocabulary rather than a client one, and it is written down here instead of being
+quietly left as the same generic string the eleventh pass found the resource
+refusals carrying.
+
+Three things were checked and found *not* to be defects, and are recorded rather than
+fixed. A **second** decision on the same dispatch and permission is not a renewal but a
+second lease with its own window and its own revocation — the enforcement gate is
+satisfied by whichever is live, and the ledger is where an operator sees both, so a test
+asserting a refusal here would be inventing a rule nothing asked for. A revocation names a
+lease rather than a permission, so it cannot disturb another one. And a Project that was
+never registered has a ledger with nothing on it, the same answer a Project with no asks
+gets: "nothing has been asked here" and "this Project does not exist" are the same answer
+to the only question this read answers.
+
+**What is left, and it is the structural half.** A decision attaches to a dispatch that
+is *running*, and the runner files an ask when a run is **refused** — the native
+credential path returns its typed refusal immediately after filing, and the external
+harness's refusals are collected after the session ends. So in the shipped product the
+window in which a lease could attach to the dispatch that asked for it is already shut by
+the time the ask exists. Everything this pass added makes the answer well-typed once a
+human has one; making the human *reachable* — a run that waits for a decision rather than
+halting, or a way to re-attach a decision to the next dispatch of the same task — is
+#269 scope and is a different component, not a missing command. It is written down here
+rather than left to be discovered as a thirteenth-pass surprise.
+
+Eleven dying mutants hold this pass: the ledger dropping `requests`; the ledger
+dropping `leases`; the standing ceasing to be read at the reading clock; a revocation
+ceasing to outrank a window; a denial ceasing to outrank both; the decision clock
+ceasing to come from the journal on a retry; the lease id ceasing to be the deciding
+command's own; the denial losing its attribution-only path; the revocation's naming
+refusal dropped; the overlong-window refusal dropped; and the denial-carrying-a-window
+refusal dropped. One of the eleven needed a second attempt to be a real mutation at
+all: `id: request.command_id.clone(),` occurs in three arms of the same `match`, and
+the first occurrence is not the elevation one — a "SURVIVED" that was really a
+no-op, and the reason the mutator reports what it replaced.
+
 ## Exercised, and what it returned
 
 Two tables, because the two passes measured different things and the difference is not worth
@@ -789,7 +896,7 @@ rather than re-driven, and the client's write rows are the second pass's own.
 | flow | result |
 | --- | --- |
 | `symbioted --state-dir DIR` | `ready (local metadata capabilities only)`, exit 0 |
-| `health` / `hello` | protocol 1.30, 35 capabilities |
+| `health` / `hello` | protocol 1.31, 37 capabilities |
 | `host-pulse` (telemetry default) | `os: linux`, `arch: x86_64`, `logical_cpu_count: 16`, `provenance.source: operating_system`, no probe failures |
 | `host-pulse --no-telemetry` daemon | every fact `unknown` with `provenance.source: telemetry_disabled` — degraded honestly, not silently |
 | `shutdown` without `--yes` | exit 3, names the operation, daemon untouched, `health` still 0 |

@@ -265,71 +265,6 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
-      "ElevationLease": {
-        "additionalProperties": false,
-        "description": "One decided elevation: the request (what was asked and why) plus the\nauthority's decision. `approved: false` records a DENIAL — evidence\nthat the authority saw and refused the ask. Only `approved` leases\nwith no revocation and an unexpired window license anything.",
-        "properties": {
-          "approved": {
-            "description": "False records an explicit denial; the remaining fields still\njournal who decided and when.",
-            "type": "boolean"
-          },
-          "approved_by": {
-            "$ref": "#/$defs/UserId"
-          },
-          "decided_at": {
-            "$ref": "#/$defs/Timestamp"
-          },
-          "dispatch_id": {
-            "$ref": "#/$defs/DispatchId"
-          },
-          "expires_at": {
-            "$ref": "#/$defs/Timestamp",
-            "description": "For an approval: the hard window edge (automatic revocation —\nevery check compares against the reading clock, so an expired\nlease licenses nothing without any sweeper running). For a\ndenial: equals `decided_at`."
-          },
-          "id": {
-            "$ref": "#/$defs/CommandId",
-            "description": "The deciding command's id: the lease's durable identity."
-          },
-          "permission": {
-            "$ref": "#/$defs/Permission"
-          },
-          "project_id": {
-            "$ref": "#/$defs/ProjectId"
-          },
-          "reason": {
-            "description": "Why the worker needs this, supplied with the request and recorded\nwith the decision. Never a secret or an unbounded path.",
-            "type": "string"
-          },
-          "revoked_at": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/Timestamp"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Sticky manual revocation: once set, the lease is dead regardless\nof its window."
-          },
-          "task_id": {
-            "$ref": "#/$defs/TaskId",
-            "description": "The elevated dispatch and its task — every active lease is\nattributable to exactly one dispatch."
-          }
-        },
-        "required": [
-          "id",
-          "project_id",
-          "task_id",
-          "dispatch_id",
-          "permission",
-          "reason",
-          "approved",
-          "approved_by",
-          "decided_at",
-          "expires_at"
-        ],
-        "type": "object"
-      },
       "EnforcementStrength": {
         "enum": [
           "native",
@@ -1844,18 +1779,44 @@
           },
           {
             "additionalProperties": false,
+            "description": "The authority's answer to a worker's ask: a bounded grant for one\ndispatch, or a denial that licenses nothing.\n\nThe wire carries the DECISION and never a finished lease. The lease's\nidentity, the Project it belongs to, who decided and when are four\nfacts the Host holds and no client may assert: a caller that named its\nown lease id, its own clock and its own approver would be able to\nrecord a decision nobody made at a moment nobody chose, and a retry\nthat retyped the clock would collide with the journal instead of\nreplaying.",
             "properties": {
+              "approved": {
+                "description": "False journals an explicit denial: evidence that the authority saw\nthe ask and refused it. It licenses nothing.",
+                "type": "boolean"
+              },
+              "dispatch_id": {
+                "$ref": "#/$defs/DispatchId"
+              },
               "kind": {
                 "const": "decide_elevation",
                 "type": "string"
               },
-              "lease": {
-                "$ref": "#/$defs/ElevationLease"
+              "permission": {
+                "$ref": "#/$defs/Permission"
+              },
+              "reason": {
+                "description": "Why this decision, carried with it as the ask carried its own.",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              },
+              "window_ms": {
+                "description": "How long the grant licenses the permission, in milliseconds from\nthe Host's own clock. Zero for a denial, because a denial has no\nwindow. Bounded by domain law: the Host refuses a longer one by\nname rather than shortening a caller's grant.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
               "kind",
-              "lease"
+              "task_id",
+              "dispatch_id",
+              "permission",
+              "approved",
+              "reason",
+              "window_ms"
             ],
             "type": "object"
           },
@@ -1877,6 +1838,24 @@
               "kind",
               "project_id",
               "elevation_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Everything one Project has been asked for and everything it has been\ngranted. A Project read, because both records are the Project's own\nfacts about work it dispatched.",
+            "properties": {
+              "kind": {
+                "const": "get_elevations",
+                "type": "string"
+              },
+              "project_id": {
+                "$ref": "#/$defs/ProjectId"
+              }
+            },
+            "required": [
+              "kind",
+              "project_id"
             ],
             "type": "object"
           },
@@ -2772,12 +2751,6 @@
         "format": "uint64",
         "minimum": 0,
         "type": "integer"
-      },
-      "UserId": {
-        "maxLength": 128,
-        "minLength": 1,
-        "pattern": "^[A-Za-z0-9_-]+$",
-        "type": "string"
       },
       "VersionedProtocol": {
         "additionalProperties": false,
@@ -3964,44 +3937,58 @@
         "type": "string"
       },
       "Capability2": {
-        "enum": [
-          "dispatch_start",
-          "dispatch_preparation",
-          "provider_registry_write",
-          "provider_registry_read",
-          "task_lease_management",
-          "scheduling_projection",
-          "task_dependency_write",
-          "task_dependency_read",
-          "foreign_link_write",
-          "foreign_link_read",
-          "route_resolution",
-          "route_recording",
-          "route_read",
-          "binding_readiness",
-          "compatibility_dossier",
-          "binding_configuration",
-          "binding_read",
-          "host_pulse_read",
-          "runtime_inventory_read",
-          "team_configuration",
-          "team_read",
-          "work_creation",
-          "work_change",
-          "work_read",
-          "task_origin_assignment",
-          "task_origin_read",
-          "project_registration",
-          "project_read",
-          "task_creation",
-          "task_read",
-          "journal_pagination",
-          "local_shutdown",
-          "resource_consent_record",
-          "resource_consent_read",
-          "resource_consent_revoke"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "dispatch_start",
+              "dispatch_preparation",
+              "provider_registry_write",
+              "provider_registry_read",
+              "task_lease_management",
+              "scheduling_projection",
+              "task_dependency_write",
+              "task_dependency_read",
+              "foreign_link_write",
+              "foreign_link_read",
+              "route_resolution",
+              "route_recording",
+              "route_read",
+              "binding_readiness",
+              "compatibility_dossier",
+              "binding_configuration",
+              "binding_read",
+              "host_pulse_read",
+              "runtime_inventory_read",
+              "team_configuration",
+              "team_read",
+              "work_creation",
+              "work_change",
+              "work_read",
+              "task_origin_assignment",
+              "task_origin_read",
+              "project_registration",
+              "project_read",
+              "task_creation",
+              "task_read",
+              "journal_pagination",
+              "local_shutdown",
+              "resource_consent_record",
+              "resource_consent_read",
+              "resource_consent_revoke"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "elevation_decision",
+            "description": "Answering a worker's elevation ask, and taking an answer back. The\nask itself was never advertised — a worker that had to negotiate\nbefore asking would not ask — but the authority that grants is the\ncapability a client looks for before it grants.",
+            "type": "string"
+          },
+          {
+            "const": "elevation_ledger_read",
+            "description": "The Project's own record of what it was asked for and what it decided.",
+            "type": "string"
+          }
+        ]
       },
       "CapabilityAuthentication": {
         "enum": [
@@ -4821,6 +4808,23 @@
         ],
         "type": "object"
       },
+      "DecidedElevation": {
+        "additionalProperties": false,
+        "description": "One decided elevation as a reader meets it: the whole lease, and what it is\ndoing right now.",
+        "properties": {
+          "lease": {
+            "$ref": "#/$defs/ElevationLease"
+          },
+          "standing": {
+            "$ref": "#/$defs/ElevationStanding"
+          }
+        },
+        "required": [
+          "lease",
+          "standing"
+        ],
+        "type": "object"
+      },
       "DiscoveryFacts": {
         "additionalProperties": false,
         "properties": {
@@ -5126,6 +5130,39 @@
         ],
         "type": "object"
       },
+      "ElevationLedger": {
+        "additionalProperties": false,
+        "description": "Everything one Project has asked for and everything it has been granted:\nthe one read an operator needs before answering an ask, and the one read\nthey need before taking an answer back.\n\nIt publishes evidence and decisions, never authority. A live lease here\nsays a permission is licensed for one dispatch; it does not widen a\nbinding, and it grants nothing to whoever reads it.",
+        "properties": {
+          "leases": {
+            "items": {
+              "$ref": "#/$defs/DecidedElevation"
+            },
+            "type": "array"
+          },
+          "project_id": {
+            "$ref": "#/$defs/ProjectId"
+          },
+          "read_at": {
+            "$ref": "#/$defs/Timestamp",
+            "description": "The clock the standings were judged at, carried so a reader can tell\nhow old this answer is rather than re-deriving it from its own."
+          },
+          "requests": {
+            "description": "The asks, in the order they were filed. An ask licenses nothing at\nany standing; it is here so the decision beside it can be read next\nto the request it answers.",
+            "items": {
+              "$ref": "#/$defs/ElevationRequest"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "read_at",
+          "requests",
+          "leases"
+        ],
+        "type": "object"
+      },
       "ElevationRequest": {
         "additionalProperties": false,
         "description": "A worker's ask for one permission beyond its binding. Observation\nonly: filing this never licenses anything. Only a later\n[`ElevationLease`] decided by the owner can.",
@@ -5164,6 +5201,31 @@
           "requested_at"
         ],
         "type": "object"
+      },
+      "ElevationStanding": {
+        "description": "What one decided elevation is doing at a reading clock. Standing is not\nstored: it is the lease read at the clock the ledger was served, so a\nlease that was live a moment ago and is dead now says so without anyone\nhaving to run a sweeper to discover it.",
+        "oneOf": [
+          {
+            "const": "live",
+            "description": "Approved, unrevoked, and inside its window: this lease licenses its\npermission for its dispatch at the reading clock.",
+            "type": "string"
+          },
+          {
+            "const": "expired",
+            "description": "Approved, and the window has closed. Expiry IS the automatic\nrevocation, and this is the fact that says it happened.",
+            "type": "string"
+          },
+          {
+            "const": "revoked",
+            "description": "Manually revoked. Dead regardless of any window, and never undone.",
+            "type": "string"
+          },
+          {
+            "const": "denied",
+            "description": "A denial: evidence the authority saw the ask and refused it. It never\nlicensed anything and it never will.",
+            "type": "string"
+          }
+        ]
       },
       "EnforcementClaim": {
         "additionalProperties": false,
@@ -8197,6 +8259,24 @@
               },
               "kind": {
                 "const": "resource_consent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "One Project's elevation ledger: every ask it was sent and every\ndecision made on it, each with what it is doing at the clock this\nanswer was read. A read of evidence and decisions — it licenses\nnothing it lists.",
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ElevationLedger"
+              },
+              "kind": {
+                "const": "elevations",
                 "type": "string"
               }
             },

@@ -75,6 +75,11 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("get_billing_entitlement", Risk::ReadOnly),
     ("get_model_descriptor", Risk::ReadOnly),
     ("get_resource_consent", Risk::ReadOnly),
+    // The elevation ledger: what a Project was asked for and what it decided.
+    // A read, because it publishes evidence and grants nothing — a lease it
+    // lists as live licenses exactly the dispatch it names, and reading this
+    // widens nobody's access.
+    ("get_elevations", Risk::ReadOnly),
     // Mutations: they change state, but they neither start or end execution
     // nor widen authority.
     ("create_task", Risk::Mutation),
@@ -143,6 +148,11 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("start_prepared_task", Risk::Dangerous),
     ("run_started_dispatch", Risk::Dangerous),
     ("shutdown", Risk::Dangerous),
+    // Grants one permission to one dispatch for a bounded window, which is
+    // the definition of widening authority and the one operation whose whole
+    // purpose is to make something possible that was not possible before it.
+    // Dangerous, beside the operations that start execution for the same
+    // reason: a caller has to say out loud that it is granting something.
     ("decide_elevation", Risk::Dangerous),
     ("record_resource_consent", Risk::Dangerous),
     // Ending a Task's execution: a claim, bound by the Host, that every gate

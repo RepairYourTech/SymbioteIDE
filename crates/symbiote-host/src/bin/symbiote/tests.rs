@@ -48,6 +48,7 @@ fn authorization_follows_the_operation_not_the_command_name() {
             "abandon-change-stream",
             "cancel-task",
             "complete-task",
+            "decide-elevation",
             "interrupt-task",
             "run-started-dispatch",
             "shutdown",
@@ -135,6 +136,13 @@ fn synthetic_arguments(usage: &str) -> Vec<String> {
                 "max_output_tokens" => "4096".to_owned(),
                 "capability" => "tools".to_owned(),
                 "class" => "maintenance".to_owned(),
+                // The elevation decision's three closed-set arguments: a
+                // permission the domain declares, the decision itself, and a
+                // window inside the domain's bound — so a command that
+                // refuses one of the three is held refusing a real line.
+                "permission" => "execute_process".to_owned(),
+                "approve|deny" => "approve".to_owned(),
+                "window_ms" => "300000".to_owned(),
                 "base_commit" => BASE.to_owned(),
                 "expires_at_ms" => "4102444800000".to_owned(),
                 // Closed-set arguments, one per command: the value the domain

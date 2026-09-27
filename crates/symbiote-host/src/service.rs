@@ -143,6 +143,20 @@ fn placement_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Pr
     now_timestamp()
 }
 
+/// The decision clock, taken from the journal when this command id has
+/// already been answered and from the Host's own clock when it has not —
+/// which is what makes a lost-response retry a replay rather than a second
+/// decision at a second moment.
+fn decision_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
+    if let Some(at) = store
+        .elevation_decision_timestamp(&request.command_id)
+        .map_err(storage_error)?
+    {
+        return Ok(at);
+    }
+    now_timestamp()
+}
+
 fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .route_command_timestamp(&request.command_id)
@@ -2241,14 +2255,66 @@ fn execute(
                 .map(receipt)
                 .map_err(storage_error)
         }
-        Operation::DecideElevation { lease } => {
-            // The deciding authority is the local owner; the store
-            // verifies the lease's attribution (this dispatch, running),
-            // that the permission is not already granted, and the Team
-            // ceiling. The client-supplied decision time keeps retries
-            // byte-identical and the window is bounded by domain law.
+        Operation::DecideElevation {
+            task_id,
+            dispatch_id,
+            permission,
+            approved,
+            reason,
+            window_ms,
+        } => {
+            // The deciding authority is the local owner. Four facts about the
+            // lease are the Host's and no caller's: its identity (this
+            // command's id), its Project (the task's own), who decided (the
+            // authenticated principal) and when (the Host's clock, or the
+            // one this command id already answered with). A client that could
+            // assert any of them could record a decision nobody made.
+            let task = store.task(task_id).map_err(storage_error)?;
+            let decided_at = decision_timestamp(store, request)?;
+            // A denial is evidence, not a grant with a short fuse: it carries
+            // no window, and the store's own law would refuse the lease this
+            // would build. Saying so names the mistake; the typed refusal
+            // names neither the field nor the rule.
+            if !approved && *window_ms != 0 {
+                return Err(ProtocolError {
+                    code: ErrorCode::InvalidRequest,
+                    message: "a denial licenses nothing, so a decision that refuses carries \
+                               no window; approve the ask or deny it with no window at all"
+                        .to_owned(),
+                });
+            }
+            if *window_ms > symbiote_domain::MAX_ELEVATION_WINDOW_MS {
+                return Err(ProtocolError {
+                    code: ErrorCode::InvalidRequest,
+                    message: format!(
+                        "an elevation window is at most {}ms; a longer one is re-requested \
+                         rather than shortened, so the grant an operator reads back is the \
+                         grant they gave",
+                        symbiote_domain::MAX_ELEVATION_WINDOW_MS
+                    ),
+                });
+            }
+            let lease = symbiote_domain::ElevationLease {
+                id: request.command_id.clone(),
+                project_id: task.project_id().clone(),
+                task_id: task_id.clone(),
+                dispatch_id: dispatch_id.clone(),
+                permission: permission.clone(),
+                reason: reason.clone(),
+                approved: *approved,
+                approved_by: principal.user_id().clone(),
+                decided_at,
+                // A denial's window is its decision instant, which is the
+                // shape `ElevationLease::validate` requires of one.
+                expires_at: Timestamp(decided_at.0 + window_ms),
+                revoked_at: None,
+            };
+            // The store still holds the law: that this dispatch is the
+            // running one, that the permission is not already granted, that
+            // the Team's ceiling carries it, and that a consumer exists to
+            // enforce it.
             store
-                .decide_elevation(request.command_id.clone(), lease.as_ref().clone())
+                .decide_elevation(request.command_id.clone(), lease)
                 .map(receipt)
                 .map_err(storage_error)
         }
@@ -2256,6 +2322,24 @@ fn execute(
             project_id,
             elevation_id,
         } => {
+            // A grant nobody can take back is not a grant, it is a leak, so
+            // the revocation names what it found: an id this Project does not
+            // hold is refused with the command that would have minted one,
+            // because "resource not found" tells an operator nothing they
+            // can act on.
+            if store
+                .elevation(project_id, elevation_id)
+                .map_err(storage_error)?
+                .is_none()
+            {
+                return Err(ProtocolError {
+                    code: ErrorCode::NotFound,
+                    message: "this Project holds no elevation with that id; an elevation's id \
+                               is the command id of the decide-elevation that granted it, and \
+                               the elevations read lists every one this Project holds"
+                        .to_owned(),
+                });
+            }
             let at = match store
                 .elevation_revocation_timestamp(&request.command_id)
                 .map_err(storage_error)?
@@ -2273,6 +2357,16 @@ fn execute(
                 )
                 .map(receipt)
                 .map_err(storage_error)
+        }
+        Operation::GetElevations { project_id } => {
+            // The one read an operator needs before answering an ask and
+            // before taking an answer back. It publishes evidence and
+            // decisions, never authority: a lease listed as live licenses
+            // exactly the one dispatch it names, for whoever reads this.
+            let ledger = store
+                .elevations(project_id, now_timestamp()?)
+                .map_err(storage_error)?;
+            Ok(ResponseBody::Elevations(Box::new(ledger)))
         }
         Operation::RecordResourceConsent {
             snapshot,

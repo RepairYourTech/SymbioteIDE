@@ -186,7 +186,7 @@ fn concat_id(tag: &str, suffix: &str) -> &'static str {
 }
 
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 30},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 31},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -6929,6 +6929,406 @@ fn a_gate_that_holds_a_task_back_is_named_by_the_report_the_projection_and_the_b
         )))["data"]["state"],
         "ready",
         "with nothing taken: a refused start leaves the task where it was"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The elevation ledger, end to end: a worker asks for a permission its
+/// binding does not carry, an operator reads the ledger, answers it, reads it
+/// again to see the grant is live, takes it back, and reads it a third time to
+/// see it dead.
+///
+/// The story exists because a worker could ask and the product could not let
+/// anybody answer. `request_elevation` was a first-class command and
+/// `decide_elevation` was not one at all: the only route to a grant was a
+/// hand-written `raw` file carrying a finished lease — ten fields, four of
+/// them facts the operator had to invent (an id kept equal to `--command-id`
+/// by hand, a `decided_at` and `expires_at` in epoch milliseconds that had to
+/// be retyped exactly for a retry to replay rather than collide, and an
+/// `approved_by` slug), and nothing in the product listed what had been asked
+/// or granted, so there was nothing to answer from and nothing to name when
+/// taking an answer back.
+#[test]
+fn an_elevation_ask_can_be_read_answered_and_taken_back() {
+    let (repository, head) = real_repository("elevation");
+    let base = std::env::temp_dir().join(format!("symbiote-elevation-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream"],
+        None,
+        None,
+    );
+    // The binding is narrowed to hold no ExecuteProcess while the Team's
+    // ceiling still carries it. That is the only state in which a decision
+    // is legal at all: the store refuses a permission the binding already
+    // grants (a re-grant needs no lease) and one the ceiling does not (the
+    // ceiling is law), so the test has to sit between the two.
+    // The STORED binding is read rather than the fixture, because the
+    // composition just added the grant this test needs the ceiling to carry
+    // and the fixture does not have it. Its revision is read too, and the new
+    // one is the next: a binding that does not advance its own revision is
+    // not a new configuration, and the refusal for that says nothing about
+    // which of the two were wrong.
+    let stored = host.call(request(
+        "elevation-stored-binding",
+        json!({"kind":"get_binding","project_id":"staffing-demo",
+        "binding_id":"engineer-binding"}),
+    ));
+    let held = ok(&stored)["data"].clone();
+    let revision = held["binding"]["revision"].as_u64().unwrap();
+    let mut configuration = held;
+    configuration["binding"]["revision"] = json!(revision + 1);
+    for path in [
+        ["primary", "access", "grants"],
+        ["binding", "access", "grants"],
+    ] {
+        let grants: Vec<Value> = configuration
+            .pointer(&format!("/{}", path.join("/")))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        *configuration
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap() = json!(
+            grants
+                .into_iter()
+                .filter(|grant| grant != &json!("execute_process"))
+                .collect::<Vec<_>>()
+        );
+    }
+    let narrowed = json!({"kind":"replace_binding","expected_revision":revision,
+        "configuration":configuration});
+    ok_step(
+        "elevation-binding",
+        &host.call(request("elevation-binding", narrowed)),
+    );
+    ok_step(
+        "elevation-placement",
+        &host.call(request(
+            "elevation-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "elevation-task",
+        "elevation-task",
+        "elevation-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "elevation-prepare",
+        &host.call(request(
+            "elevation-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"elevation-task"}),
+        )),
+    );
+    // Started and not run: the task is Running and its dispatch is the
+    // current one, which is the only window a decision may attach to.
+    let started = host.call(request(
+        "elevation-start",
+        json!({"kind":"start_prepared_task","task_id":"elevation-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("elevation-start", &started)["data"]["dispatch_id"].clone();
+    let running = host.call(request(
+        "elevation-running",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"elevation-task"}),
+    ));
+    assert_eq!(ok(&running)["data"]["state"], "running");
+
+    // Nothing is granted before anyone asks, and the ledger says so by
+    // answering with the two empty lists rather than by refusing.
+    let empty = host.call(request(
+        "elevation-ledger-empty",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    assert_eq!(ok(&empty)["kind"], "elevations");
+    assert!(
+        ok(&empty)["data"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(ok(&empty)["data"]["leases"].as_array().unwrap().is_empty());
+    // The worker asks, which licenses nothing and is kept as evidence.
+    ok_step(
+        "elevation-ask",
+        &host.call(request(
+            "elevation-ask",
+            json!({"kind":"request_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"execute_process",
+            "reason":"the run needs the consented build tool"}),
+        )),
+    );
+
+    // The ask is now visible, with the permission and the reason the worker
+    // gave, and the ledger still grants nothing.
+    let asked = host.call(request(
+        "elevation-ledger-asked",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let asks = ok(&asked)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks.len(), 1, "the ask is on the ledger: {asked}");
+    assert_eq!(asks[0]["permission"], "execute_process");
+    assert_eq!(asks[0]["reason"], "the run needs the consented build tool");
+    assert_eq!(asks[0]["dispatch_id"], dispatch_id);
+    assert!(
+        ok(&asked)["data"]["leases"].as_array().unwrap().is_empty(),
+        "an ask is evidence and never a grant: {asked}"
+    );
+
+    // A decision is refused by name for every way of getting it wrong, and
+    // each refusal says which rule it broke rather than only that a shape was
+    // invalid.
+    let decision = |approved: bool, window: u64| {
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"execute_process",
+            "approved":approved,"reason":"the build tool is consented","window_ms":window})
+    };
+    let refusal = |command: &'static str, operation: Value| {
+        let response = host.call(request(command, operation));
+        let error = &response["result"]["Err"];
+        (
+            error["code"].clone(),
+            error["message"].as_str().unwrap_or_default().to_owned(),
+            response,
+        )
+    };
+    // A permission the binding already carries needs no lease at all.
+    let (code, _, _) = refusal(
+        "elevation-regrant",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"mutate_stream","approved":true,
+            "reason":"already carried","window_ms":300_000}),
+    );
+    assert_eq!(code, "invalid_request", "a re-grant is refused");
+    // A permission the ceiling does not carry is law, not preference, and a
+    // decision that would elevate past it is a precondition the record never
+    // met rather than a malformed request.
+    let (code, _, response) = refusal(
+        "elevation-above-ceiling",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"use_credential","approved":true,
+            "reason":"the secret is configured","window_ms":300_000}),
+    );
+    assert_eq!(
+        code, "failed_precondition",
+        "the ceiling is law: {response}"
+    );
+    // A window past the domain's bound is refused with the bound in it.
+    let (code, message, response) = refusal("elevation-long", decision(true, 900_001));
+    assert_eq!(code, "invalid_request", "{response}");
+    assert!(
+        message.contains("900000") && message.contains("re-requested"),
+        "the overlong window is refused by name, not clamped: {message:?}"
+    );
+    // A denial carrying a window says something else, and is told so.
+    let (code, message, response) = refusal("elevation-denial-window", decision(false, 60_000));
+    assert_eq!(code, "invalid_request", "{response}");
+    assert!(
+        message.contains("denial licenses nothing"),
+        "a denial with a window names the rule: {message:?}"
+    );
+
+    // The decision itself. The four facts the caller used to have to invent
+    // are the Host's: the lease's id is the command's own, its Project is the
+    // task's, its approver is the authenticated principal and its clock is
+    // the Host's — none of which a request can carry.
+    let decision = request("elevation-decision", decision(true, 300_000));
+    let granted = host.call(decision.clone());
+    assert_eq!(ok_step("elevation-decision", &granted)["kind"], "receipt");
+    // The same command id replays: the Host rebuilt the same lease from the
+    // journal's own clock, so the journal's byte-for-byte comparison answered
+    // a replay rather than an idempotency conflict.
+    let replay = host.call(decision);
+    assert_eq!(
+        ok(&replay)["data"]["sequence"],
+        ok(&granted)["data"]["sequence"],
+        "a lost-response retry replays the original receipt"
+    );
+    assert_eq!(ok(&replay)["data"]["replayed"], true);
+
+    // The ledger now says what was granted and that it is live.
+    let live = host.call(request(
+        "elevation-ledger-live",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&live)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 1, "the grant is on the ledger: {live}");
+    assert_eq!(leases[0]["standing"], "live");
+    assert_eq!(leases[0]["lease"]["id"], "elevation-decision");
+    assert_eq!(leases[0]["lease"]["task_id"], "elevation-task");
+    assert_eq!(leases[0]["lease"]["dispatch_id"], dispatch_id);
+    assert_eq!(leases[0]["lease"]["approved"], true);
+    assert!(leases[0]["lease"]["revoked_at"].is_null());
+    // The grant is the operator's sentence, not the worker's.
+    assert_eq!(leases[0]["lease"]["reason"], "the build tool is consented");
+    // The two clocks the caller no longer types: the window is the Host's own
+    // decision instant plus the window the operator gave.
+    let decided_at = leases[0]["lease"]["decided_at"].as_u64().unwrap();
+    let expires_at = leases[0]["lease"]["expires_at"].as_u64().unwrap();
+    assert_eq!(
+        expires_at - decided_at,
+        300_000,
+        "the window is the operator's, measured from the Host's clock"
+    );
+    // The reading clock is published, so a reader can tell how old the
+    // standings are rather than re-deriving them from its own — and it is the
+    // Host's, like the decision's.
+    let read_at = ok(&live)["data"]["read_at"].as_u64().unwrap();
+    assert!(
+        decided_at <= read_at && read_at < expires_at,
+        "the ledger is read inside the window it reports the lease to be in: \
+         decided {decided_at}, read {read_at}, expires {expires_at}"
+    );
+
+    // A second decision on the same dispatch and permission is a second
+    // LEASE, not a renewal of the first: each is its own record with its own
+    // window and its own revocation, and the enforcement gate is satisfied by
+    // whichever of them is live. That is a property of the record worth
+    // pinning here rather than a law invented for this test — an operator
+    // re-approving a still-live grant gets an extra row they can see and
+    // revoke, and a test that called that a refusal would be asserting a
+    // rule nothing asked for.
+    ok_step(
+        "elevation-again",
+        &host.call(request(
+            "elevation-again",
+            json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"execute_process","approved":true,
+            "reason":"the build moved and needs the tool again","window_ms":60_000}),
+        )),
+    );
+    let twice = host.call(request(
+        "elevation-ledger-twice",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&twice)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 2, "both grants are on the ledger: {twice}");
+    assert_eq!(leases[0]["lease"]["id"], "elevation-decision");
+    assert_eq!(leases[1]["lease"]["id"], "elevation-again");
+    assert_eq!(leases[1]["standing"], "live");
+
+    // Taking it back, by the id the ledger published.
+    let revoke = host.call(request(
+        "elevation-revoke",
+        json!({"kind":"revoke_elevation","project_id":"staffing-demo",
+        "elevation_id":"elevation-decision"}),
+    ));
+    assert_eq!(ok_step("elevation-revoke", &revoke)["kind"], "receipt");
+    let dead = host.call(request(
+        "elevation-ledger-dead",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&dead)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 2, "{dead}");
+    assert_eq!(leases[0]["standing"], "revoked", "{dead}");
+    assert!(
+        !leases[0]["lease"]["revoked_at"].is_null(),
+        "the revocation is sticky and the ledger says when: {dead}"
+    );
+    // Taking one back leaves the other alone: a revocation names a lease, not
+    // a permission, so the grant made after it keeps licensing.
+    assert_eq!(leases[1]["standing"], "live", "{dead}");
+    assert!(leases[1]["lease"]["revoked_at"].is_null(), "{dead}");
+
+    // A revocation of an id this Project does not hold names what an id IS,
+    // because "resource not found" leaves an operator with nothing to do.
+    let (code, message, response) = refusal(
+        "elevation-revoke-unknown",
+        json!({"kind":"revoke_elevation","project_id":"staffing-demo",
+        "elevation_id":"no-such-lease"}),
+    );
+    assert_eq!(code, "not_found", "{response}");
+    assert!(
+        message.contains("decide-elevation"),
+        "the refusal names the command that mints an id: {message:?}"
+    );
+    // And a revocation cannot be undone: a second one finds the lease already
+    // revoked and refuses rather than moving the clock again.
+    let (code, _, _) = refusal(
+        "elevation-revoke-twice",
+        json!({"kind":"revoke_elevation","project_id":"staffing-demo",
+        "elevation_id":"elevation-decision"}),
+    );
+    assert_eq!(code, "invalid_request", "revocation is sticky");
+
+    // A denial is evidence, not a grant — and it is evidence precisely when a
+    // grant could never have been legal. This one names a permission the
+    // Team's ceiling does not carry, so an approval naming it is refused
+    // (`elevation_above_ceiling` above); the refusal is still recorded, which
+    // is the difference between a ledger that says the authority saw this and
+    // said no and a ledger with an ask nobody ever answered.
+    let denied = host.call(request(
+        "elevation-denial",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+        "dispatch_id":dispatch_id,"permission":"use_credential","approved":false,
+        "reason":"the ceiling does not carry it","window_ms":0}),
+    ));
+    assert_eq!(ok_step("elevation-denial", &denied)["kind"], "receipt");
+    let final_ledger = host.call(request(
+        "elevation-ledger-final",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&final_ledger)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 3, "the denial is kept: {final_ledger}");
+    assert_eq!(leases[0]["standing"], "revoked");
+    assert_eq!(leases[1]["standing"], "live");
+    assert_eq!(leases[2]["standing"], "denied", "{final_ledger}");
+    assert_eq!(
+        leases[2]["lease"]["reason"],
+        "the ceiling does not carry it"
+    );
+    // A denial's window IS its decision instant, so the two clocks agree and
+    // it can never have licensed anything even for a millisecond.
+    assert_eq!(
+        leases[2]["lease"]["expires_at"], leases[2]["lease"]["decided_at"],
+        "a denial has no window: {final_ledger}"
+    );
+    // And the ask it answered is still on the ledger beside it: the ledger is
+    // the record of both halves, not only the grants.
+    assert_eq!(
+        ok(&final_ledger)["data"]["requests"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A Project that was never registered has a ledger with nothing on it,
+    // which is the same answer a Project with no asks and no decisions gets:
+    // "nothing has been asked here" and "this Project does not exist" are the
+    // same answer to the only question this read answers, and refusing the
+    // second would make the read's one job — telling an operator whether there
+    // is anything for them to answer — fail for a reason it cannot express.
+    let unknown = host.call(request(
+        "elevation-ledger-unknown-project",
+        json!({"kind":"get_elevations","project_id":"no-such-project"}),
+    ));
+    assert_eq!(ok(&unknown)["data"]["project_id"], "no-such-project");
+    assert!(
+        ok(&unknown)["data"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        ok(&unknown)["data"]["leases"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();

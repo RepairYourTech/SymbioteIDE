@@ -60,6 +60,39 @@ impl Store {
         if *task.state() != TaskState::Running || dispatch.id() != &lease.dispatch_id {
             return Err(StoreError::RelationshipMismatch);
         }
+        // Everything below this line asks whether a GRANT would license
+        // anything, and a denial licenses nothing at all. So it is recorded
+        // on attribution alone: "the authority saw this ask and refused it"
+        // is evidence worth keeping precisely when the permission could never
+        // have been granted, and refusing to record that refusal is how a
+        // Project ends up with an ask on its ledger that nobody ever answered
+        // and no record of anyone having said so.
+        if !lease.approved {
+            let payload = EventPayload::ElevationDecided {
+                lease: Box::new(lease.clone()),
+            };
+            let request = serde_json::to_string(&payload)?;
+            transaction.execute(
+                "INSERT INTO elevations(id,project_id,dispatch_id,permission,body) VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    lease.id.as_str(),
+                    lease.project_id.as_str(),
+                    lease.dispatch_id.as_str(),
+                    elevation_permission_name(&lease.permission),
+                    serde_json::to_string(&lease)?
+                ],
+            )?;
+            let receipt = append(
+                &transaction,
+                &lease.project_id,
+                &command_id,
+                Revision(0),
+                &request,
+                &payload,
+            )?;
+            transaction.commit()?;
+            return Ok(receipt);
+        }
         // Enforcement consumers so far (#269): the broker's UseCredential
         // gate (#217) and the native shell-tool path's ExecuteProcess gate
         // — both consult `active_elevation` at the run's clock. Deciding a
@@ -190,9 +223,98 @@ impl Store {
         Ok(receipt)
     }
 
-    /// The revocation's durable timestamp, rebuilt for identical retries
-    /// (the decision time lives in the client-built lease itself, so the
-    /// decide path replays byte-identically without this).
+    /// The decision's durable timestamp, rebuilt for identical retries.
+    ///
+    /// The Host stamps the decision clock rather than accepting one on the
+    /// wire, so this is what lets a retry replay: the second call rebuilds
+    /// the same lease the first one wrote, and the journal's byte-for-byte
+    /// comparison answers a replay instead of a conflict. A command id that
+    /// was used for something else is an idempotency conflict, never a
+    /// silent second clock.
+    pub fn elevation_decision_timestamp(
+        &self,
+        command_id: &CommandId,
+    ) -> Result<Option<Timestamp>> {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [command_id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::ElevationDecided { lease } => Ok(Some(lease.decided_at)),
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
+    /// One lease by its own identity, or nothing. The revocation names a
+    /// lease the operator has to be able to find first, and a refusal that
+    /// cannot say which ids exist is a refusal that cannot be acted on.
+    pub fn elevation(
+        &self,
+        project_id: &ProjectId,
+        elevation_id: &CommandId,
+    ) -> Result<Option<ElevationLease>> {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT body FROM elevations WHERE id=?1 AND project_id=?2",
+                params![elevation_id.as_str(), project_id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => Ok(Some(serde_json::from_str(&body)?)),
+        }
+    }
+
+    /// Everything one Project was asked for and everything it decided,
+    /// read at `at`. Both lists are ordered by their own clock and then by
+    /// id, so two reads of the same records answer in the same order and a
+    /// caller paging nothing is still deterministic.
+    pub fn elevations(
+        &self,
+        project_id: &ProjectId,
+        at: Timestamp,
+    ) -> Result<symbiote_domain::ElevationLedger> {
+        let mut asks = self
+            .connection
+            .prepare("SELECT body FROM elevation_requests WHERE project_id=?1 ORDER BY json_extract(body, '$.requested_at'), id")?;
+        let requests = asks
+            .query_map(params![project_id.as_str()], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|body| serde_json::from_str::<ElevationRequest>(&body).map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?;
+        let mut decided = self
+            .connection
+            .prepare("SELECT body FROM elevations WHERE project_id=?1 ORDER BY json_extract(body, '$.decided_at'), id")?;
+        let leases = decided
+            .query_map(params![project_id.as_str()], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|body| {
+                serde_json::from_str::<ElevationLease>(&body)
+                    .map(|lease| symbiote_domain::DecidedElevation::read(lease, at))
+                    .map_err(Into::into)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(symbiote_domain::ElevationLedger {
+            project_id: project_id.clone(),
+            read_at: at,
+            requests,
+            leases,
+        })
+    }
+
+    /// The revocation's durable timestamp, rebuilt for identical retries —
+    /// the third of the three clocks this file stamps on the Host's behalf.
     pub fn elevation_revocation_timestamp(
         &self,
         command_id: &CommandId,

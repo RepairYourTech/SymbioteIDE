@@ -2342,6 +2342,74 @@ mod tests {
         );
     }
 
+    /// A denial is recorded where a grant could never be legal (#269). Every
+    /// grant-side rule — the consumer allowlist, the native-only runtime rule,
+    /// the never-re-grant check, the Team's ceiling — asks whether a license
+    /// would be meaningful, and a denial licenses nothing. Refusing to record
+    /// those refusals is how a Project ends up holding an ask its ledger says
+    /// nobody ever answered.
+    #[test]
+    fn a_denial_is_recorded_where_a_grant_could_never_have_been_legal() {
+        let (mut store, task, dispatch) = store_with_running_task_worker_grants(
+            "elevate-denial",
+            RuntimeKind::NativeSymbiote,
+            &[
+                Permission::ReadRoot,
+                Permission::MutateStream,
+                Permission::UseCredential,
+            ],
+        );
+        let project = store.task(&task).unwrap().project_id().clone();
+        // Network has no enforcement consumer, is not in the binding and is
+        // not in the fixture's ceiling: three separate reasons an APPROVAL
+        // naming it cannot be recorded, and not one of them a reason to
+        // refuse the record that the authority said no.
+        let denial = symbiote_domain::ElevationLease {
+            id: CommandId::new("deny-network").unwrap(),
+            project_id: project.clone(),
+            task_id: task.clone(),
+            dispatch_id: dispatch.id().clone(),
+            permission: Permission::Network,
+            reason: "the run asked for network and was told no".into(),
+            approved: false,
+            approved_by: fixture::user(),
+            decided_at: Timestamp(60),
+            expires_at: Timestamp(60),
+            revoked_at: None,
+        };
+        // The same three facts as an APPROVAL are refused outright, so the
+        // difference is the answer and nothing else.
+        assert!(matches!(
+            store.decide_elevation(
+                CommandId::new("grant-network").unwrap(),
+                symbiote_domain::ElevationLease {
+                    approved: true,
+                    expires_at: Timestamp(60 + 300_000),
+                    ..denial.clone()
+                },
+            ),
+            Err(symbiote_store::StoreError::InvalidElevation)
+        ));
+        store
+            .decide_elevation(CommandId::new("deny-network").unwrap(), denial)
+            .expect("a denial is evidence whatever the permission");
+        // It licenses nothing: `active_elevation` reads only approvals, and a
+        // denial with a zero window could not have licensed anything even if
+        // it were one.
+        for permission in [
+            Permission::Network,
+            Permission::UseCredential,
+            Permission::ExecuteProcess,
+        ] {
+            assert!(
+                !store
+                    .active_elevation(dispatch.id(), &permission, Timestamp(60))
+                    .unwrap(),
+                "{permission:?} is licensed by nothing here"
+            );
+        }
+    }
+
     /// The runtime-aware decide rule (#269): EVERY consumer gate lives on
     /// the native loop, so a decision on an EXTERNAL_HARNESS dispatch
     /// would journal an approval that licenses nothing — the harness

@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 30,
+    minor: 31,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -522,12 +522,40 @@ pub enum Operation {
         project_id: ProjectId,
         task_id: TaskId,
     },
+    /// The authority's answer to a worker's ask: a bounded grant for one
+    /// dispatch, or a denial that licenses nothing.
+    ///
+    /// The wire carries the DECISION and never a finished lease. The lease's
+    /// identity, the Project it belongs to, who decided and when are four
+    /// facts the Host holds and no client may assert: a caller that named its
+    /// own lease id, its own clock and its own approver would be able to
+    /// record a decision nobody made at a moment nobody chose, and a retry
+    /// that retyped the clock would collide with the journal instead of
+    /// replaying.
     DecideElevation {
-        lease: Box<symbiote_domain::ElevationLease>,
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+        permission: Permission,
+        /// False journals an explicit denial: evidence that the authority saw
+        /// the ask and refused it. It licenses nothing.
+        approved: bool,
+        /// Why this decision, carried with it as the ask carried its own.
+        reason: String,
+        /// How long the grant licenses the permission, in milliseconds from
+        /// the Host's own clock. Zero for a denial, because a denial has no
+        /// window. Bounded by domain law: the Host refuses a longer one by
+        /// name rather than shortening a caller's grant.
+        window_ms: u64,
     },
     RevokeElevation {
         project_id: ProjectId,
         elevation_id: CommandId,
+    },
+    /// Everything one Project has been asked for and everything it has been
+    /// granted. A Project read, because both records are the Project's own
+    /// facts about work it dispatched.
+    GetElevations {
+        project_id: ProjectId,
     },
     RecordResourceConsent {
         snapshot: ResourceSnapshot,
@@ -599,7 +627,9 @@ impl Operation {
             Self::RegisterProject { project } => Some(&project.id),
             Self::CreateTask { task } => Some(&task.project_id),
             Self::RecordResourceConsent { snapshot, .. } => Some(&snapshot.project_id),
-            Self::DecideElevation { lease } => Some(&lease.project_id),
+            // The decision names no Project: the Host reads the one the task
+            // belongs to, so a lease can never be filed against another.
+            Self::DecideElevation { .. } => None,
             Self::RevokeElevation { project_id, .. } => Some(project_id),
             Self::GetProject { project_id }
             | Self::ObserveRootPlacement { project_id, .. }
@@ -607,6 +637,7 @@ impl Operation {
             | Self::GetResourceConsent { project_id, .. }
             | Self::GetTask { project_id, .. }
             | Self::Snapshot { project_id }
+            | Self::GetElevations { project_id }
             | Self::ReadJournal { project_id, .. } => Some(project_id),
             Self::Hello { .. }
             | Self::Health {}
@@ -790,7 +821,26 @@ impl Request {
             Operation::RecordResourceConsent { snapshot, .. } => {
                 snapshot.validate().map_err(|_| invalid())
             }
-            Operation::DecideElevation { lease } => lease.validate().map_err(|_| invalid()),
+            Operation::DecideElevation { reason, .. } => {
+                // The reason's own bound is the ask's: nonempty, <=1024, no
+                // control characters. A decision is evidence whether it
+                // grants or refuses, so a denial carries one too.
+                if reason.trim().is_empty()
+                    || reason.len() > 1024
+                    || reason.contains('\0')
+                    || reason.chars().any(char::is_control)
+                {
+                    return Err(invalid());
+                }
+                // What a WINDOW may be — how long, and whether a denial may
+                // carry one at all — is not shape. Those are rules about
+                // what a decision means, they live with the decision, and the
+                // Host is where a rule is named: a refusal from here can only
+                // say that a field was wrong, which leaves an operator who
+                // typed a year-long lease with no idea which field to change.
+                // The Host refuses both, by name, before it builds a lease.
+                Ok(())
+            }
             Operation::RequestElevation { reason, .. } => {
                 // Same reason bound as a decided lease: nonempty, ≤1024,
                 // no control characters. The Host separately attributes the
@@ -1055,10 +1105,16 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         }
         Operation::DecideElevation { .. } | Operation::RevokeElevation { .. } => {
             // The deciding/revoking authority is the authenticated
-            // same-UID owner. The Host separately verifies the lease's
+            // same-UID owner. The Host separately verifies the dispatch's
             // attribution (a Running dispatch), the Team ceiling, and
             // that the permission is not already granted.
             principal.local_owner
+        }
+        Operation::GetElevations { project_id } => {
+            // Evidence and decisions are the Project's own records about
+            // work it dispatched, so a Project read serves them and nothing
+            // more: reading the ledger grants nothing it lists.
+            principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::RegisterProject { project } => {
             principal.permits(&project.id, ProjectPermission::Register)
@@ -1331,6 +1387,13 @@ pub enum Capability {
     TaskDependencyRead,
     ForeignLinkWrite,
     ForeignLinkRead,
+    /// Answering a worker's elevation ask, and taking an answer back. The
+    /// ask itself was never advertised — a worker that had to negotiate
+    /// before asking would not ask — but the authority that grants is the
+    /// capability a client looks for before it grants.
+    ElevationDecision,
+    /// The Project's own record of what it was asked for and what it decided.
+    ElevationLedgerRead,
     RouteResolution,
     RouteRecording,
     RouteRead,
@@ -1386,6 +1449,8 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::TaskDependencyRead,
             Capability::ForeignLinkWrite,
             Capability::ForeignLinkRead,
+            Capability::ElevationDecision,
+            Capability::ElevationLedgerRead,
             Capability::RouteResolution,
             Capability::RouteRecording,
             Capability::RouteRead,
@@ -1917,6 +1982,11 @@ pub enum ResponseBody {
     },
     Task(Box<Task>),
     ResourceConsent(Box<ResourceConsent>),
+    /// One Project's elevation ledger: every ask it was sent and every
+    /// decision made on it, each with what it is doing at the clock this
+    /// answer was read. A read of evidence and decisions — it licenses
+    /// nothing it lists.
+    Elevations(Box<symbiote_domain::ElevationLedger>),
     Receipt(Receipt),
     TaskLease(Box<symbiote_domain::TaskLease>),
     ProviderConnection(Box<symbiote_domain::ProviderConnection>),
