@@ -1,62 +1,88 @@
-"""Hold the census of `docs/contracts/` to the tree it census.
+"""Run: python3 planning/integrity/test_contracts.py.
 
-The record of the passes that measured those documents said the census was complete, and nothing read
-that sentence. This file reads it: every entry under the directory is classified exactly once, every
-classification that names a holding case is a case the crate really carries and one that really reads
-the document, every Markdown document states the figures the census recorded for it, and the reading
-that counts them is the one the census states — proven on the spellings it must read and the shapes it
-must not.
+Hold the census of `docs/` to the tree it census.
+
+The record of the passes that measured those documents said the census was complete, and nothing
+read that sentence. This file reads it: every document the census covers is classified exactly once,
+every classification that names a holding case is a case the crate really carries and one that
+really reads the document, every Markdown document states the figures the census recorded for it,
+and the reading that counts them is the one the census states — proven on the spellings it must read
+and the shapes it must not.
+
+The census covers two sets of documents under one table family, because a bound published outside
+`docs/contracts/` is as unheld as one published inside it: every entry directly under the directory,
+whatever it is, and every Markdown document outside it that states a figure. So each half of the
+classification is stated once over the union of the two rather than twice over the two.
 
 What nothing here decides: whether a held figure is the right one to hold, and whether a sentence's
 meaning is true. The reading counts statements in the shapes `contracts.BOUND` names; a bound written
 in another shape is a figure this census does not see, and a line it does see keeps its count when its
-*value* changes, which the case that holds the document is what refuses.
+*value* changes, which is the case that holds the document refusing — and what that case compares is
+`mutation_probe.py`'s row to measure rather than this file's business.
 """
 from __future__ import annotations
 
 import pathlib
 import re
+import tempfile
 import unittest
 
 import contracts
+import prose
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CRATES = ROOT / "crates"
 
 
+def defines_case(crate: str, case: str) -> bool:
+    """Whether `crate` carries a test function named `case`. The harness prints `test <name> ... ok`,
+    so the name is what the driver `mutation_probe.py` runs and this is the reading of it that needs
+    no build: a case renamed or deleted is a claim the census states about a case that is gone."""
+    folder = CRATES / crate
+    return folder.is_dir() and any(
+        re.search(rf"\bfn {re.escape(case)}\b", source.read_text(errors="replace"))
+        for source in folder.rglob("*.rs"))
+
+
 class TheCensus(unittest.TestCase):
-    def test_every_entry_under_the_contracts_directory_is_classified_once(self):
-        """An entry nothing classifies, a classification the directory no longer holds, and an entry
-        in both tables, each named: a document added to the directory is a surface this census has
-        not decided about, and one removed is a line here that decides about nothing.
+    def test_every_document_the_census_covers_is_classified_once(self):
+        """An entry nothing classifies, a classification no document holds, and a document in both
+        tables, each named: a document added to either set is a surface this census has not decided
+        about, and one removed is a line here that decides about nothing.
         """
-        found = contracts.entries()
+        found = contracts.documents()
         held, unheld = set(contracts.HELD), set(contracts.NOT_HELD)
         both = sorted(held & unheld)
-        self.assertEqual(both, [], f"these entries are both held and not held: {both}")
+        self.assertEqual(both, [], f"these documents are both held and not held: {both}")
         classified = held | unheld
-        missing = sorted(set(found) - classified)
+        inside = sorted(one for one in set(found) - classified if one.startswith("docs/contracts/"))
         self.assertEqual(
-            missing, [],
-            f"{', '.join(missing)} sits under docs/contracts/ and no census entry classifies it: "
-            f"a document a case reads is held by naming its crate and case, and one no case reads is "
-            f"stated with why — a contract added without either is a surface nothing holds")
+            inside, [],
+            f"{', '.join(inside)} sits under docs/contracts/ and no census entry classifies it: a "
+            f"document a case reads is held by naming its cases, and one no case reads is stated "
+            f"with why — a contract added without either is a surface nothing holds")
+        outside = sorted(one for one in set(found) - classified if not one.startswith("docs/contracts/"))
+        self.assertEqual(
+            outside, [],
+            f"{', '.join(outside)} publishes a figure outside docs/contracts/ and no census entry "
+            f"classifies it: a document a case reads is held by naming its cases, and one no case "
+            f"reads is stated with why — a bound published without either is unheld")
         stale = sorted(classified - set(found))
         self.assertEqual(
             stale, [],
-            f"the census classifies {', '.join(stale)}, which docs/contracts/ does not hold: a "
+            f"the census classifies {', '.join(stale)}, which is not a document it covers: a "
             f"classification of a document that is gone decides about nothing")
 
-    def test_every_classified_document_states_the_figures_the_census_records(self):
+    def test_every_markdown_document_states_the_figures_the_census_records(self):
         """Every Markdown document against the count `contracts.FIGURES` records: a document that
         gains a statement in one of the shapes `BOUND` reads fails here naming the document and both
-        numbers, so a new bound cannot enter a contract without the census moving in that change.
+        numbers, so a new bound cannot enter a document without the census moving in that change.
         """
-        documents = sorted(one.name for one in contracts.CONTRACTS.glob("*.md"))
+        documents = contracts.markdown()
         self.assertEqual(
             sorted(contracts.FIGURES), documents,
             "the figure table names " + ", ".join(sorted(set(contracts.FIGURES) - set(documents)))
-            or "the figure table names no document the directory does not hold")
+            or "the figure table names no document the census covers")
         moved = []
         for name in documents:
             derived = contracts.figures(name)
@@ -68,41 +94,51 @@ class TheCensus(unittest.TestCase):
             "the census and the documents disagree about the figures they state: " + "; ".join(moved))
 
     def test_every_held_document_is_read_by_the_case_that_holds_it(self):
-        """Every held document against the crate and case the census names: the case must exist in
-        that crate, and that crate must be one that reads the document. A holding case renamed or
-        deleted fails here naming both, so the census cannot keep claiming a hold nothing makes.
+        """Every case every held document names: the crate must be one in this tree, the case must
+        exist in it, and that crate must read the document. A holding case renamed or deleted fails
+        here naming both, so the census cannot keep claiming a hold nothing makes.
 
         The tie is at the crate rather than the case's own file because a crate may reach its
         contract through a path constant instead of a literal — `symbiote-constitution` reads
         `constitution.md` through `claims::CONTRACT_PATH`, which a reading of literals cannot
         follow. What is held here is therefore that the case exists and the crate reads the
-        document; that the case is what reads it is the case's own text, which no reading decides.
+        document; that the case is what reads it is the case's own text, which no reading decides
+        and which `mutation_probe.py`'s row is what measures.
+
+        Two holders of one document are named by the crate, not by their case alone, because two
+        crates declare a case of the same name — and two holders of one document sharing a case
+        name would leave `contracts.holder` unable to say which crate a row is proved against, so
+        that is refused here rather than resolved by table order.
         """
         broken = []
-        for name, (crate, case) in sorted(contracts.HELD.items()):
-            folder = CRATES / crate
-            if not folder.is_dir():
-                broken.append(f"{name} is held by {crate}, which is not a crate in this tree")
-                continue
-            defining = [source for source in sorted(folder.rglob("*.rs"))
-                        if re.search(rf"\bfn {re.escape(case)}\b", source.read_text(errors="replace"))]
-            if not defining:
-                broken.append(f"{name} is held by {case} in {crate}, and no case in that crate "
-                              f"is named that")
-            reading = [one for one in contracts.readers(name)
-                       if one.startswith(f"crates/{crate}/")]
-            if not reading:
-                broken.append(
-                    f"{name} is held by {case} in {crate}, and nothing in that crate reads the "
-                    f"document: the files that read it are "
-                    f"{', '.join(contracts.readers(name)) or 'none'}")
+        for name, holders in sorted(contracts.HELD.items()):
+            named = [case for _crate, case in holders]
+            if len(set(named)) != len(named):
+                broken.append(f"{name} is held by {', '.join(sorted(set(n for n in named if named.count(n) > 1)))}, "
+                              f"which names one case twice, so a row naming it cannot say which "
+                              f"crate to prove it against")
+            for crate, case in holders:
+                folder = CRATES / crate
+                if not folder.is_dir():
+                    broken.append(f"{name} is held by {crate}, which is not a crate in this tree")
+                elif not defines_case(crate, case):
+                    broken.append(f"{name} is held by {case} in {crate}, and no case in that "
+                                  f"crate is named that")
+                reading = [one for one in contracts.readers(name)
+                           if one.startswith(f"crates/{crate}/")]
+                if not reading:
+                    broken.append(
+                        f"{name} is held by {case} in {crate}, and nothing in that crate reads the "
+                        f"document: the files that read it are "
+                        f"{', '.join(contracts.readers(name)) or 'none'}")
         self.assertEqual(
             broken, [],
             "the census claims holds the tree does not make: " + "; ".join(broken))
 
-    def test_every_entry_no_case_reads_states_why(self):
-        """The other half of the classification: an entry with no reason, and one whose reason is
-        the empty string, each refused — an unexplained entry reads as a decision nobody made.
+    def test_every_document_no_case_reads_states_why(self):
+        """The other half of the classification: a document with no reason, and one whose reason is
+        the empty string, each refused — an unexplained entry reads as a decision nobody made, and
+        in a security or proof document the shape of that decision is the whole point.
         """
         unexplained = sorted(name for name, why in contracts.NOT_HELD.items() if not why.strip())
         self.assertEqual(
@@ -111,10 +147,21 @@ class TheCensus(unittest.TestCase):
             f"the census decides about it without saying why")
 
     def test_the_figure_reading_is_the_one_this_census_states(self):
-        """`BOUND` proven on the spellings it must read and the shapes it must not, so the count in
-        `FIGURES` cannot move because the reading narrowed: each spelling below is a statement the
-        census reads, and each shape after it a line that is not one — a version, a mode, a plain
-        numeral, a worded count.
+        """`BOUND` proven on the spellings it must read and the shapes it must not, and the lines it
+        is offered proven on both sides, so the count in `FIGURES` cannot move because the reading
+        narrowed or widened: each spelling below is a statement the census reads, each shape after it
+        a line that is not one — a version, a mode, a plain numeral, a worded count — and a fenced
+        block is a quotation rather than a claim, so the figures inside one are the quoted program's.
+        Every name the table records resolves to a document on its own as well, so the count cannot
+        move because the census changed where it reads its own keys from.
+
+        The three parts of the second half are here together because each alone is a reading that
+        would pass. A reading that skipped prose to quieten a quoted example would leave every count
+        here satisfied and let a contract publish a bound nothing in this directory ever saw; a
+        reading that counted fences would put `cli.md` one figure higher over an envelope the CLI
+        writes, which is how the `request_refused` example was lost in the first place; and a census
+        that read its names from the wrong root would fail on a path no document has — every count
+        here satisfied, and every count in `FIGURES` a number nobody took.
         """
         reads = (
             "This limits input to 1 MiB.",
@@ -142,6 +189,111 @@ class TheCensus(unittest.TestCase):
         self.assertEqual(
             wrongly, [],
             "the census reads these as figures and states that it does not: " + "; ".join(wrongly))
+
+        stated = "Configuration is bounded to 32 KiB and validates identity."
+        quoted = '{"message": "' + stated + '"}'
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "stated.md").write_text(
+                "# A contract\n\n" + stated + "\n\nIt also allows at most 16 files.\n")
+            (root / "quoted.md").write_text(
+                "# A contract\n\nIt states nothing numeric.\n\n```json\n" + quoted + "\n```\n")
+            (root / "both.md").write_text(
+                stated + "\n\n```json\n" + quoted + "\n```\n")
+            (root / "unclosed.md").write_text(stated + "\n\n```json\n" + quoted + "\n")
+            self.assertEqual(
+                contracts.figures("stated.md", root=root), 2,
+                "a bound this document states is no longer a figure, so a contract can publish one "
+                "the census never sees and the count moves when the count is the only thing wrong")
+            self.assertEqual(
+                contracts.figures("quoted.md", root=root), 0,
+                "a bound inside a fenced block is counted, so every transcript, shell example and "
+                "message a document quotes moves the figure the census records")
+            self.assertEqual(
+                contracts.figures("both.md", root=root), 1,
+                "a document stating a bound and quoting the same bound counts it twice, so quoting "
+                "a figure is indistinguishable from claiming it")
+            self.assertEqual(
+                contracts.figures("unclosed.md", root=root), 1,
+                "a fence that never closes does not run to the end of the document, so a long "
+                "example's remaining lines are counted as claims the document makes")
+
+            # The one shape this reading cannot absorb: a fence left open makes every line after it
+            # a quotation, so a bound the document states below one stops being counted, the figure
+            # recorded for it is smaller than what it publishes, and every check that compares
+            # counts alone passes. So the documents this census records are asked whether they are
+            # well formed, and the refusal names each one and the fence it left open.
+            self.assertIsNone(
+                prose.unclosed(root / "both.md"),
+                "a document whose fence it closes is called malformed: the reading closes a fence "
+                "itself, so refusing one that is well formed is the rule refusing the document")
+            self.assertIn(
+                "line 3", prose.unclosed(root / "unclosed.md") or "",
+                "the refusal does not say which line the fence opened on, so an author is left "
+                "looking for it")
+
+            def path_of(name: str) -> pathlib.Path:
+                """Where a name this census records lives, stated here and not read from
+                `contracts.figures`, which reads it the same way on purpose: an assertion that
+                called the function it is checking would be the rule agreeing with itself. The
+                two are written out separately so a census whose count disagrees with this is
+                something the reading case can catch, and `FIGURES` has been spelled two ways in
+                this tree's life — a bare filename under `docs/contracts/` and a repo-relative
+                path — so the name is what says which.
+                """
+                return contracts.CONTRACTS / name if "/" not in name else contracts.ROOT / name
+
+            # The key space the tables are written in and the root they are read from are one
+            # decision, and this holds `figures` to it: every recorded name is counted by naming
+            # it and nothing else, so a resolver that reads one spelling from the other's root is
+            # named here rather than raised as `docs/contracts/docs/contracts/cli.md` — which is
+            # how one branch's spelling and the other branch's default met in a merged tree and
+            # every count in `FIGURES` became a number nobody took. It asks before the sweep below
+            # reads the same names, so the answer is the thirty-seven names and not the first path.
+            uncounted = []
+            for name in sorted(contracts.FIGURES):
+                try:
+                    contracts.figures(name)
+                except FileNotFoundError:
+                    uncounted.append(name)
+            self.assertEqual(
+                uncounted, [],
+                "a name the figure table records cannot be counted without naming a root, so what "
+                "this census writes its names in and where it reads them from are two decisions "
+                "rather than one, and every count below would have to name a root to be taken at "
+                "all: " + ", ".join(uncounted))
+
+            malformed = []
+            for name in sorted(contracts.FIGURES):
+                why = prose.unclosed(path_of(name))
+                if why:
+                    malformed.append(f"{name} is not well formed: {why}")
+            self.assertEqual(
+                malformed, [],
+                "a document the census records leaves a fence open, so the figures below it read as "
+                "quotations and the count it carries stops describing what the document states — a "
+                "bound it publishes would go unheld and every count-only check would stay green: "
+                + "; ".join(malformed))
+
+            # The case that was actually broken, against the document it happened in: `cli.md` as
+            # this tree publishes it, and the same document with every figure it quotes quoted
+            # again. Where `cli.md` quotes the frame bound — the envelope the CLI writes for a
+            # request too large to send — this is the end-to-end half; where it does not, the three
+            # fixtures above are what hold the rule and this compares a document to itself.
+            published_name = next(one for one in sorted(contracts.FIGURES)
+                                  if one.endswith("cli.md"))
+            published = path_of(published_name).read_text()
+            example = [line for line in published.splitlines() if contracts.BOUND.search(line)]
+            (root / "quoted-twice.md").write_text(
+                published + "\n```json\n" + "\n".join(example) + "\n```\n")
+            # The document is named, not its spelling: `path_of` reads either, so this half
+            # compares a count with the count the census records for the document itself.
+            self.assertEqual(
+                contracts.figures("quoted-twice.md", root=root),
+                contracts.figures(published_name),
+                "quoting cli.md's own figures a second time moves its figure count, so a document "
+                "cannot publish the envelope its refusals are written in without the census moving "
+                "with it — which is the collision that cost the request_refused example")
 
 
 if __name__ == "__main__":
