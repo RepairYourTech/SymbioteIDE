@@ -14,6 +14,11 @@ beginning with that same marker.** A block that opens and never closes runs to t
 document, because a document that opens a fence and stops has still published a block. An indented
 code block is a shape this reading does not see, and says so here rather than leaving it to a
 reader of the diff to discover: the documents in this tree fence what they quote.
+
+**One walk answers both questions, because they are asked of the same fence.** `statements` and
+`unclosed` were two copies of the same six lines of state machine, and a copy is changed on its
+own: the one that never refused still reported a document's statements correctly while a fence it
+left open swallowed every claim below it. `_read` owns the walk; the two names below read it.
 """
 from __future__ import annotations
 
@@ -22,40 +27,21 @@ import pathlib
 FENCE = ("```", "~~~")
 
 
-def statements(document: pathlib.Path) -> list[str]:
-    """Every line of `document` outside a fenced code block, in the order written.
+def _read(document: pathlib.Path) -> tuple[list[str], str | None]:
+    """The lines `document` states, and why it is not well formed, or None when it is.
 
-    The lines kept are returned whole and unaltered, so whatever reads figures out of a line reads
-    the document's own text and not a rewriting of it: a statement is counted because the document
+    The lines are returned whole and unaltered, so whatever reads figures out of a line reads the
+    document's own text and not a rewriting of it: a statement is counted because the document
     states it, and a quotation is left out because the document is showing rather than claiming.
 
-    A fence left open runs to the end of the document, and `unclosed` is what says so by name: a
-    count taken over a document that leaves one open describes a document nobody wrote.
+    The refusal names the line the fence opened on, because that is the line an author completes or
+    deletes, and it is returned rather than raised so one run can name every document that is wrong
+    instead of the first. An unclosed fence is the one shape this reading cannot absorb: it makes
+    every line after it a quotation, so a bound the document states below it stops being counted,
+    the figure a census records is smaller than what the document publishes, and a document in that
+    state passes every check that only compares counts.
     """
-    kept: list[str] = []
-    fence: str | None = None
-    for line in document.read_text().splitlines():
-        stripped = line.lstrip()
-        if fence is None:
-            if stripped.startswith(FENCE):
-                fence = stripped[:3]
-            else:
-                kept.append(line)
-        elif stripped.startswith(fence):
-            fence = None
-    return kept
-
-
-def unclosed(document: pathlib.Path) -> str | None:
-    """Why this document is not well formed, or None when every fence it opens it also closes.
-
-    An unclosed fence is the one shape this reading cannot absorb. It makes every line after it a
-    quotation, so a bound the document states below it stops being counted, the figure a census
-    records is smaller than the document publishes, and nothing says why — a document in that state
-    passes every check that only compares counts. The refusal names the line the fence opened on,
-    because that is the line an author completes or deletes, and it is returned rather than raised
-    so one run can name every document that is wrong instead of the first.
-    """
+    stated: list[str] = []
     fence: str | None = None
     opened = 0
     for number, line in enumerate(document.read_text().splitlines(), 1):
@@ -63,8 +49,23 @@ def unclosed(document: pathlib.Path) -> str | None:
         if fence is None:
             if stripped.startswith(FENCE):
                 fence, opened = stripped[:3], number
+            else:
+                stated.append(line)
         elif stripped.startswith(fence):
             fence = None
     if fence is None:
-        return None
-    return f"a `{fence}` fence opened on line {opened} is never closed"
+        return stated, None
+    return stated, f"a `{fence}` fence opened on line {opened} is never closed"
+
+
+def statements(document: pathlib.Path) -> list[str]:
+    """Every line of `document` outside a fenced code block, in the order written."""
+    return _read(document)[0]
+
+
+def unclosed(document: pathlib.Path) -> str | None:
+    """Why this document is not well formed, or None when every fence it opens it also closes.
+
+    Read from the same walk `statements` counts through, so the two cannot disagree about a fence.
+    """
+    return _read(document)[1]
