@@ -2481,6 +2481,7 @@ fn staffing_composition_with_grants(
         "staffing-task",
         "staffing-stream",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     );
     ok_step(
         "activation-route",
@@ -2503,6 +2504,7 @@ fn staffing_task(
     task_id: &str,
     stream_id: &str,
     base: &str,
+    target: &str,
 ) {
     let derived = staffing_worktree(stream_id);
     ok_step(
@@ -2516,7 +2518,7 @@ fn staffing_task(
             "task_contract":{"id":"coding-contract","revision":1},
             "stream":{"id":stream_id,"originating_chat":"chat",
             "worktree":derived.worktree_id,"branch":derived.branch,"base":base,
-            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}),
+            "target":target}}}),
         )),
     );
 }
@@ -4115,7 +4117,11 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
             "path":repository.to_str().unwrap(),"expected_revision":0}),
         )),
     );
-    staffing_task(&host, "run-task", "run-task", "run-stream", &head);
+    // The stream's target is where the Root is expected to be when the work
+    // lands. A test that never integrates can leave the sentinel; a test that
+    // does must name a commit the Root can actually be at, and with a fixture
+    // that commits nothing that is the base it started from.
+    staffing_task(&host, "run-task", "run-task", "run-stream", &head, &head);
     let prepared = host.call(request(
         "run-prepare",
         json!({"kind":"prepare_dispatch","task_id":"run-task"}),
@@ -4190,6 +4196,26 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
     ));
     assert_eq!(ok(&done)["data"]["state"], "completed");
+
+    // And the work has to land. A completed task whose work is still on a
+    // branch in a worktree is a task the canonical state calls done and the
+    // repository calls unfinished — the same disagreement one level down,
+    // with no operation to reconcile it.
+    let integrated = host.call(request(
+        "run-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"run-task"}),
+    ));
+    ok_step("run-integrate", &integrated);
+    let branch = Command::new("git")
+        .current_dir(&repository)
+        .args(["branch", "--contains", head.as_str()])
+        .output()
+        .unwrap();
+    let branches = String::from_utf8_lossy(&branch.stdout).to_string();
+    assert!(
+        !branches.is_empty(),
+        "the worktree branch exists in the root's ref store: {branches:?}"
+    );
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();
 }

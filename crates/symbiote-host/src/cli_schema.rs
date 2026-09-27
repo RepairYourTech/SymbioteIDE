@@ -82,6 +82,7 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("request_task_completion", Risk::Mutation),
     ("validate_change_stream", Risk::Mutation),
     ("begin_task_verification", Risk::Mutation),
+    ("integrate_change_stream", Risk::Mutation),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),

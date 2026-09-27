@@ -46,6 +46,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
 `validate-change-stream`, `begin-task-verification`, `complete-task`,
+`integrate-change-stream`,
 `scheduling-projection <project_id>`,
 `observe-root-placement`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
@@ -209,6 +210,24 @@ point: a Host that invented the gate set would be filing a runtime-local
 success flag as evidence, and a caller that supplied whole evidence rows would
 be filing claims the Host never checked. The `independent_review` gate carries
 the caller's reviewer, and the domain refuses one that is the Task's own Role.
+
+`integrate-change-stream` is the step after that. A completed task's work is on
+a branch in a worktree, and nothing else moves it: without this the canonical
+state says the work is done and the repository says otherwise, and the two
+disagree for the life of the store. The Host merges, because "the branch is
+the stream's" and "the Root is where it lands" are both facts only the Host
+holds. The Root must be at the stream's recorded target before the merge and
+at its recorded head after, and the merge is `--ff-only` — a merge the Host
+would have to resolve is a merge it has no authority to decide.
+
+That last step is what makes the stream's `target` a fact rather than a
+placeholder. `create-task` used to record the null Git object id there, on the
+reasoning that a task which has done no work has reached nothing — which made
+a task created from the command line dispatchable, runnable, completable and
+then permanently un-integratable, because a Root can never be "at" a commit
+that does not exist. It records the base instead: that is where the Root is
+until work lands, and a Task that cannot finish should not be creatable. A
+stream that aims somewhere other than its base is created through `raw`.
 
 `complete-task` is classified dangerous, because it ends a task's execution
 rather than changing it. The refusals name themselves — a claim that does not

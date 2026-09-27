@@ -393,13 +393,15 @@ fn the_write_commands_build_the_operations_their_usage_spells() {
     assert_eq!(task["task"]["stream"]["id"], "stream-task-one");
     assert_eq!(task["task"]["stream"]["originating_chat"], "chat-task-one");
     // The base is the commit the caller typed — a Task starts from a real
-    // commit or not at all — and the target is null, because a task that has
-    // done no work has reached nothing.
+    // commit or not at all — and the target is the same commit, because that
+    // is where the Root is until work lands. It used to be the null Git object
+    // id, on the reasoning that a task that has done no work has reached
+    // nothing: which made a task this command creates dispatchable, runnable,
+    // completable and then permanently un-integratable, because a Root can
+    // never be "at" a commit that does not exist. A Task that cannot finish
+    // should not be creatable.
     assert_eq!(task["task"]["stream"]["base"], BASE);
-    assert_eq!(
-        task["task"]["stream"]["target"],
-        "0000000000000000000000000000000000000000"
-    );
+    assert_eq!(task["task"]["stream"]["target"], BASE);
 }
 
 /// A commit id the tests can type: forty hex characters that are not the null

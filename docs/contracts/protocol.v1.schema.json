@@ -1205,6 +1205,24 @@
           },
           {
             "additionalProperties": false,
+            "description": "Merge a validated stream's branch into the Root's checkout and record\nthe stream as integrated. Without it a completed Task's work sat on a\nbranch in a worktree that nothing ever moved: the canonical state said\nthe work was done and the repository said otherwise, and no client had\nthe operation that would have reconciled them.",
+            "properties": {
+              "kind": {
+                "const": "integrate_change_stream",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "description": "File the evidence a dispatch contract's gates require and complete the\nTask. `gates` is the claim: which gates the caller says passed. The\nHost binds each claim to the dispatch, the stream's head and target\nand this Host's identity, and refuses a claim that does not cover the\ncontract — so the caller asserts and the Host binds, and neither side\ngets to do the other's half.",
             "properties": {
               "gates": {

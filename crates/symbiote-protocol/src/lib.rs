@@ -284,6 +284,14 @@ pub enum Operation {
     BeginTaskVerification {
         task_id: TaskId,
     },
+    /// Merge a validated stream's branch into the Root's checkout and record
+    /// the stream as integrated. Without it a completed Task's work sat on a
+    /// branch in a worktree that nothing ever moved: the canonical state said
+    /// the work was done and the repository said otherwise, and no client had
+    /// the operation that would have reconciled them.
+    IntegrateChangeStream {
+        task_id: TaskId,
+    },
     /// File the evidence a dispatch contract's gates require and complete the
     /// Task. `gates` is the claim: which gates the caller says passed. The
     /// Host binds each claim to the dispatch, the stream's head and target
@@ -441,7 +449,8 @@ impl Operation {
             Self::RequestTaskCompletion { .. } | Self::RequestElevation { .. } => None,
             Self::ValidateChangeStream { .. }
             | Self::BeginTaskVerification { .. }
-            | Self::CompleteTask { .. } => None,
+            | Self::CompleteTask { .. }
+            | Self::IntegrateChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -502,6 +511,7 @@ impl Operation {
                 | Self::ValidateChangeStream { .. }
                 | Self::BeginTaskVerification { .. }
                 | Self::CompleteTask { .. }
+                | Self::IntegrateChangeStream { .. }
         )
     }
 }
@@ -843,7 +853,8 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         }
         Operation::ValidateChangeStream { .. }
         | Operation::BeginTaskVerification { .. }
-        | Operation::CompleteTask { .. } => {
+        | Operation::CompleteTask { .. }
+        | Operation::IntegrateChangeStream { .. } => {
             // The three steps a dispatched Task could not take at all, so a
             // run stayed `completion_requested` for the life of the store.
             // They are the same authority `start_prepared_task` holds: the

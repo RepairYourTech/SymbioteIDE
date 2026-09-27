@@ -1088,6 +1088,81 @@ fn execute(
                 .map(receipt)
                 .map_err(storage_error)
         }
+        Operation::IntegrateChangeStream { task_id } => {
+            // A completed Task's work is on a branch in a worktree. Nothing
+            // else moves it: without this the canonical state says the work
+            // is done and the repository says otherwise, and the two
+            // disagree for the life of the store. The Host merges rather than
+            // the caller, because "the branch is the stream's" and "the root
+            // is where it lands" are both facts only the Host can hold.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let dispatch = task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            let this_host = inventory.host_id().clone();
+            let root = store.root(task_record.root_id()).map_err(storage_error)?;
+            let checkout = root
+                .host_paths
+                .get(&this_host)
+                .ok_or_else(|| worker_error(crate::runner::RunnerError::NoHostPath))?;
+            let mut git = workers.git();
+            // The Root must be where the stream recorded it, before and
+            // after. A root that moved under the stream is not a merge this
+            // Host should attempt, and refusing before the merge leaves both
+            // sides where they were rather than half-applied.
+            let before = symbiote_repo::observe_head(&mut git, std::path::Path::new(checkout))
+                .map_err(|_| worker_error(crate::runner::RunnerError::NoHostPath))?;
+            let target = symbiote_domain::CommitSha::new(before.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            if target != *stream.target() {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "root checkout is not at the stream's recorded target".into(),
+                });
+            }
+            // A fast-forward only: a merge the Host would have to resolve is a
+            // merge the Host has no authority to decide.
+            symbiote_repo::GitExecutor::run(
+                &mut git,
+                std::path::Path::new(checkout),
+                &["merge", "--ff-only", stream.branch.as_str()],
+            )
+            .map_err(|error| ProtocolError {
+                code: ErrorCode::FailedPrecondition,
+                message: format!("fast-forward integration refused: {error:?}"),
+            })?;
+            let after = symbiote_repo::observe_head(&mut git, std::path::Path::new(checkout))
+                .map_err(|_| worker_error(crate::runner::RunnerError::NoHostPath))?;
+            let head = symbiote_domain::CommitSha::new(after.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            if head != *stream.head() {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message: "integrated checkout is not at the stream's recorded head".into(),
+                });
+            }
+            let command = symbiote_domain::StreamCommand {
+                id: request.command_id.clone(),
+                expected_revision: stream.revision(),
+                host_id: this_host,
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::StreamAction::Integrate {
+                    head: stream.head().clone(),
+                    target: stream.target().clone(),
+                },
+            };
+            store
+                .apply_stream(
+                    task_record.stream_id(),
+                    command,
+                    dispatch.contract().effective_access(),
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::GetDispatchPreparation { task_id } => store
             .dispatch_preparation(task_id)
             .map(|preparation| ResponseBody::DispatchPreparation(Box::new(preparation)))

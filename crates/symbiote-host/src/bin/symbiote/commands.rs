@@ -380,12 +380,6 @@ fn number<T: std::str::FromStr>(token: &str, name: &str) -> Result<T, Usage> {
         .map_err(|_| Usage(format!("<{name}> must be a whole number; got {token:?}")))
 }
 
-/// What a created Task's stream records before any work runs: the null Git
-/// object id, which no commit can carry. Creating a task does no work, so its
-/// stream names no commit, and a null id cannot be mistaken for one that
-/// exists. A stream that carries real lineage is created through `raw`.
-const NO_COMMIT: &str = "0000000000000000000000000000000000000000";
-
 /// One `<policy_ref>@<revision>` argument of a binding's seven policies. They
 /// are named one argument each rather than derived: a policy document is
 /// something the operator publishes, and a reference the CLI invented would
@@ -707,7 +701,10 @@ pub(crate) fn commands() -> Vec<Command> {
                             "worktree": derived.worktree_id.to_string(),
                             "branch": derived.branch,
                             "base": base,
-                            "target": NO_COMMIT,
+                            // Where the Root is until work lands, which is
+                            // the base: the Host has just checked the
+                            // repository is at it.
+                            "target": base,
                         },
                     }),
                     map,
@@ -1420,6 +1417,17 @@ pub(crate) fn commands() -> Vec<Command> {
             kind: Some("begin_task_verification"),
             build: |args, map| {
                 plain("kind", serde_json::json!("begin_task_verification"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                Ok(())
+            },
+        },
+        Command {
+            name: "integrate-change-stream",
+            summary: "fast-forward a validated stream into its root's checkout",
+            usage: "integrate-change-stream <task_id>",
+            kind: Some("integrate_change_stream"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("integrate_change_stream"), map);
                 id_field(args, 0, "task_id", "task_id", map)?;
                 Ok(())
             },
