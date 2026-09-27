@@ -18,7 +18,13 @@ fn storage_error(error: StoreError) -> ProtocolError {
         | StoreError::InvalidDependency
         | StoreError::InvalidForeignLink
         | StoreError::InvalidLease => ErrorCode::InvalidRequest,
-        StoreError::DependenciesUnresolved => ErrorCode::Conflict,
+        // "A prerequisite has not finished" is a precondition the caller has
+        // not met, not two writers racing for the same row. It is `Conflict`
+        // only in the sense that `AlreadyExists` is — and an operator reading
+        // a conflict would go looking for a second writer instead of for the
+        // task they are waiting on, so the code is the wrong word here even
+        // before the message is.
+        StoreError::DependenciesUnresolved(_) => ErrorCode::FailedPrecondition,
         StoreError::InvalidProvider | StoreError::InvalidPreparation => ErrorCode::InvalidRequest,
         StoreError::DispatchRefused(_) | StoreError::ElevationCeiling => {
             ErrorCode::FailedPrecondition
@@ -50,6 +56,31 @@ fn storage_error(error: StoreError) -> ProtocolError {
     // precondition message and lose the answer the operator asked for.
     if let StoreError::DispatchRefused(refusal) = &error {
         protocol_error.message = format!("dispatch refused by recorded state ({})", refusal.name());
+    }
+    // An unsatisfied gate names itself for the same reason. The gates are
+    // bounded (the graph answer caps them), each is a recorded edge, and each
+    // names a task and the state it is in, so this is a fact about the store
+    // rather than an input value or a path — and the alternative is the one
+    // answer a caller cannot act on: told that dependencies are unresolved,
+    // with no idea which, and three different remedies depending on which.
+    if let StoreError::DependenciesUnresolved(gates) = &error {
+        let named = gates
+            .iter()
+            .map(|gate| {
+                format!(
+                    "{}/{} is {}",
+                    gate.target.project_id.as_str(),
+                    gate.target.task_id.as_str(),
+                    serde_json::to_value(&gate.target_state)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "unknown".to_owned())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        protocol_error.message =
+            format!("a recorded gate is not satisfied: {named}; nothing runs until it is");
     }
     // A lifecycle refusal is a closed vocabulary too, and it is the answer to
     // the question the caller asked — "why will my completion not file?" —
@@ -2711,7 +2742,10 @@ mod storage_error_tests {
             (StoreError::InvalidInitialState, ErrorCode::InvalidRequest),
             (StoreError::InvalidConsent, ErrorCode::InvalidRequest),
             (StoreError::RelationshipMismatch, ErrorCode::InvalidRequest),
-            (StoreError::DependenciesUnresolved, ErrorCode::Conflict),
+            (
+                StoreError::DependenciesUnresolved(Vec::new()),
+                ErrorCode::FailedPrecondition,
+            ),
             (StoreError::ResourceExhausted, ErrorCode::ResourceExhausted),
             (
                 StoreError::IdempotencyConflict,

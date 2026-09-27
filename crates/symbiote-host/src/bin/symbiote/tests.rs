@@ -162,6 +162,10 @@ fn synthetic_arguments(usage: &str) -> Vec<String> {
                 // refused a partial list here would be refusing the claim
                 // before the caller could make it.
                 "gate" => "tests".to_owned(),
+                // A dependency edge is one `<kind>:<task_id>` token, and the
+                // usage spells the whole argument rather than its parts so the
+                // placeholder is the argument a caller actually types.
+                "dependency" => "requires:other-task".to_owned(),
                 // A policy reference is the versioned spelling, but the usage
                 // does not carry the `@<revision>` itself, so the whole
                 // argument is spelled here. `credential_ref` is a vault
@@ -2167,6 +2171,76 @@ fn every_terminal_step_says_what_it_costs_and_where_it_will_appear() {
     // would be noise. This is the other half: the table stays small.
     assert!(super::commands::consequence("get-task").is_none());
     assert!(super::commands::consequence("health").is_none());
+}
+
+/// A dependency edge is a gate, and only two of the eight relations are
+/// enforced at a boundary. The typed command narrows to those two and refuses
+/// the rest by name, because the alternative is a silent no-op: an edge
+/// recorded where nothing reads it, which reads back to an operator as a gate
+/// that was accepted. The first draft of this check mapped over a lookup's
+/// error, which asks "is this *none* of them?" — and the five provenance kinds
+/// are in the list, so `reviews` was stored. Only the positive form works.
+#[test]
+fn a_typed_dependency_command_refuses_a_relation_no_boundary_enforces() {
+    let mut operation = serde_json::Map::new();
+    let table = commands();
+    let set = table
+        .iter()
+        .find(|command| command.name == "set-task-dependencies")
+        .expect("the command exists");
+    for kind in ["requires", "blocks"] {
+        let mut operation = serde_json::Map::new();
+        (set.build)(
+            &[
+                "demo".to_owned(),
+                "dependent".to_owned(),
+                format!("{kind}:prereq"),
+            ],
+            &mut operation,
+        )
+        .unwrap_or_else(|error| panic!("{kind} is enforced and must be accepted: {error}"));
+        assert_eq!(operation["kind"], "set_task_dependencies");
+    }
+    for kind in [
+        "reviews",
+        "verifies",
+        "supersedes",
+        "conflicts_with",
+        "follow_up_to",
+        "consumes_contract_from",
+    ] {
+        let error = (set.build)(
+            &[
+                "demo".to_owned(),
+                "dependent".to_owned(),
+                format!("{kind}:prereq"),
+            ],
+            &mut operation,
+        )
+        .expect_err("a relation no boundary reads must not be storable by a typed command");
+        let said = error.to_string();
+        assert!(
+            said.contains("provenance no boundary enforces") && said.contains("requires"),
+            "the refusal names the relation and the ones that are real: {said}"
+        );
+    }
+    // And the shape of a token is checked before it is looked up, so a
+    // malformed line says which argument is wrong rather than which kind.
+    let error = (set.build)(
+        &[
+            "demo".to_owned(),
+            "dependent".to_owned(),
+            "prereq".to_owned(),
+        ],
+        &mut operation,
+    )
+    .expect_err("a bare task id is not an edge");
+    assert!(
+        error
+            .to_string()
+            .contains("<dependency> is <kind>:<task_id>"),
+        "{error}"
+    );
 }
 
 #[test]

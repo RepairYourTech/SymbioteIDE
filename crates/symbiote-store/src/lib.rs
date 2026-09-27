@@ -64,7 +64,13 @@ pub enum StoreError {
     /// the stated bound, or one item named twice with two observations. The
     /// set is refused whole; no link is repaired, trimmed or stored.
     InvalidForeignLink,
-    DependenciesUnresolved,
+    /// A gate recorded against the task is not satisfied. The gates travel
+    /// with the refusal because this is the one error a caller could act on
+    /// and not act: "your dependencies are unresolved" names the condition
+    /// and not the prerequisite, and the three remedies — wait for it, drop
+    /// the edge, run it anyway on a stream you no longer hold — are not
+    /// interchangeable.
+    DependenciesUnresolved(Vec<TaskGate>),
     InvalidLease,
     LeaseConflict(symbiote_domain::LeaseError),
     InvalidProvider,

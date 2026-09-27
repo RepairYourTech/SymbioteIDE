@@ -5850,3 +5850,315 @@ fn a_task_is_closed_only_after_its_stream_gave_up_its_checkout() {
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();
 }
+
+/// A `requires` edge is the gate that holds a task back from starting, and the
+/// domain says so in the kind's own doc: "This task cannot start until the
+/// target completes." The boundary has always enforced that — and it refused
+/// with `{"code": "conflict", "message": "resource conflict"}`, a unit error
+/// with no name in it and the code this product uses for two writers racing
+/// for the same row.
+///
+/// Worse, the report lied in the same place. `prepare-dispatch` returned
+/// `outcome: ready` with `{"kind": "scheduling", "schedulable": true}` for
+/// the very task the boundary was about to refuse, because the composition
+/// read the task's own state and not what was holding it. The report is the
+/// thing an operator reads immediately before dispatching, so a report that
+/// says `ready` is worse than no report at all.
+///
+/// Three surfaces answer this question and all three must say the same thing:
+/// the scheduling projection, the composition report, and the boundary. The
+/// projection already said `dependency_unresolved`; the other two said
+/// nothing useful.
+#[test]
+fn a_gate_that_holds_a_task_back_is_named_by_the_report_the_projection_and_the_boundary() {
+    let (repository, head) = real_repository("gate");
+    let base = std::env::temp_dir().join(format!("symbiote-gate-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the prerequisite did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "gate-placement",
+        &host.call(request(
+            "gate-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "gate-first",
+        "gate-first",
+        "gate-first-stream",
+        &head,
+        &head,
+    );
+    staffing_task(
+        &host,
+        "gate-second",
+        "gate-second",
+        "gate-second-stream",
+        &head,
+        &head,
+    );
+    // The edge, recorded through the same operation the CLI now names.
+    ok_step(
+        "gate-edge",
+        &host.call(request(
+            "gate-edge",
+            json!({"kind":"set_task_dependencies","project_id":"staffing-demo",
+            "task_id":"gate-second","dependencies":[{"kind":"requires",
+            "target":{"project_id":"staffing-demo","task_id":"gate-first"}}]}),
+        )),
+    );
+
+    // One, the projection, which was the only surface already right: the
+    // dependent is blocked, and the reason is the word the others will use.
+    let projection = host.call(request(
+        "gate-projection",
+        json!({"kind":"get_scheduling_projection","project_id":"staffing-demo"}),
+    ));
+    let blocked = ok(&projection)["data"]["blocked"]
+        .as_array()
+        .expect("a blocked list")
+        .clone();
+    let held = blocked
+        .iter()
+        .find(|entry| entry["task_id"] == "gate-second")
+        .expect("the dependent is listed, or the projection is not doing its job");
+    assert_eq!(held["reason"], "dependency_unresolved", "{held}");
+    assert!(
+        !ok(&projection)["data"]["schedulable"]
+            .as_array()
+            .expect("a schedulable list")
+            .iter()
+            .any(|entry| entry["task_id"] == "gate-second"),
+        "and it is not also offered for scheduling: the two lists answer different questions"
+    );
+
+    // Two, the report. This is the one that said `ready`, and the assertion is
+    // deliberately about the outcome and not only the step: a report that
+    // records the gate and still calls itself ready has fixed nothing.
+    let prepared = host.call(request(
+        "gate-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"gate-second"}),
+    ));
+    assert_eq!(
+        ok(&prepared)["data"]["outcome"],
+        "refused",
+        "the report may not promise a dispatch the boundary is about to refuse: {prepared}"
+    );
+    let steps = ok(&prepared)["data"]["steps"].to_string();
+    assert!(
+        steps.contains("\"kind\":\"dependencies\"")
+            && steps.contains("gate-first")
+            && steps.contains("ready"),
+        "and it names the gate and the state it is in, so the operator is not sent to look: {steps}"
+    );
+
+    // Three, the boundary, which is the only one that was actually enforced.
+    let refused = host.call(request(
+        "gate-start",
+        json!({"kind":"start_prepared_task","task_id":"gate-second","host_id":host_id}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["code"], "failed_precondition",
+        "a prerequisite that has not finished is a precondition, not a conflict: {refused}"
+    );
+    assert_eq!(
+        refused["result"]["Err"]["message"],
+        "dispatch refused by recorded state (dependency_unresolved)",
+        "and it names itself with the same word the projection used: {refused}"
+    );
+
+    // The control, because a refusal proves nothing until you know what it is
+    // refusing *instead of*. The prerequisite has no edges of its own and is
+    // started the same way, in the same daemon, while the dependent is held.
+    ok_step(
+        "gate-first-prepare",
+        &host.call(request(
+            "gate-first-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"gate-first"}),
+        )),
+    );
+    let first = host.call(request(
+        "gate-first-start",
+        json!({"kind":"start_prepared_task","task_id":"gate-first","host_id":host_id}),
+    ));
+    let first_dispatch = ok_step("gate-first-start", &first)["data"]["dispatch_id"].clone();
+    ok_step(
+        "gate-first-run",
+        &host.call(request(
+            "gate-first-run",
+            json!({"kind":"run_started_dispatch","task_id":"gate-first",
+            "dispatch_id":first_dispatch}),
+        )),
+    );
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-second-read",
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"gate-second"}),
+        )))["data"]["state"],
+        "ready",
+        "and the dependent is untouched: refusing a start takes nothing"
+    );
+
+    // A cancelled prerequisite does not open the gate, and this is the rule
+    // that makes `cancelled` different from `completed`: a cancelled task is
+    // closed but produced nothing, so the dependent still waits. The report
+    // has to be able to say which, because "waiting" and "waiting forever"
+    // are different problems with different answers.
+    let second = host.call(request(
+        "gate-second-prepare-2",
+        json!({"kind":"prepare_dispatch","task_id":"gate-second"}),
+    ));
+    let steps = ok(&second)["data"]["steps"].to_string();
+    assert!(
+        steps.contains("completion_requested") || steps.contains("cancelled"),
+        "the step reports the state the gate is actually in: {steps}"
+    );
+
+    // And the gate does open. The prerequisite runs to completion and the
+    // dependent starts, which is the whole point of a gate: it is a wait, not
+    // a wall.
+    ok_step(
+        "gate-first-advance",
+        &host.call(request(
+            "gate-first-advance",
+            json!({"kind":"advance_change_stream","task_id":"gate-first"}),
+        )),
+    );
+    ok_step(
+        "gate-first-validate",
+        &host.call(request(
+            "gate-first-validate",
+            json!({"kind":"validate_change_stream","task_id":"gate-first",
+            "verification_run":"gate-first-verify"}),
+        )),
+    );
+    ok_step(
+        "gate-first-begin",
+        &host.call(request(
+            "gate-first-begin",
+            json!({"kind":"begin_task_verification","task_id":"gate-first"}),
+        )),
+    );
+    ok_step(
+        "gate-first-complete",
+        &host.call(request(
+            "gate-first-complete",
+            json!({"kind":"complete_task","task_id":"gate-first","reviewer":"lead",
+            "gates":["tests","security","impact","documentation",
+            "independent_review","delivery","capability_closure"]}),
+        )),
+    );
+    let reopened = host.call(request(
+        "gate-second-prepare-3",
+        json!({"kind":"prepare_dispatch","task_id":"gate-second"}),
+    ));
+    assert_eq!(
+        ok(&reopened)["data"]["outcome"],
+        "ready",
+        "a completed prerequisite opens the gate: {reopened}"
+    );
+    ok_step(
+        "gate-second-start",
+        &host.call(request(
+            "gate-second-start",
+            json!({"kind":"start_prepared_task","task_id":"gate-second","host_id":host_id}),
+        )),
+    );
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-second-read-2",
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"gate-second"}),
+        )))["data"]["state"],
+        "running",
+        "and the dependent runs, which is what a gate is for"
+    );
+
+    // The re-check, which is the half a preparation cannot do for itself. A
+    // `Ready` preparation is a record, and a record can go stale: this task is
+    // prepared while it is genuinely free, and an edge arrives afterwards. The
+    // boundary has to re-ask the question rather than trust the record, for
+    // the same reason it re-reads the stream, the route and the registration
+    // instead of believing what the preparation said about them.
+    // The target has to still be unfinished: `gate-first` is completed by
+    // now, and a completed prerequisite satisfies everything, so pointing at
+    // it would make this half of the test measure nothing at all.
+    staffing_task(
+        &host,
+        "gate-idle",
+        "gate-idle",
+        "gate-idle-stream",
+        &head,
+        &head,
+    );
+    staffing_task(
+        &host,
+        "gate-late",
+        "gate-late",
+        "gate-late-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "gate-late-prepare",
+        &host.call(request(
+            "gate-late-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"gate-late"}),
+        )),
+    );
+    ok_step(
+        "gate-late-edge",
+        &host.call(request(
+            "gate-late-edge",
+            json!({"kind":"set_task_dependencies","project_id":"staffing-demo",
+            "task_id":"gate-late","dependencies":[{"kind":"requires",
+            "target":{"project_id":"staffing-demo","task_id":"gate-idle"}}]}),
+        )),
+    );
+    // The record still says ready, and the read the operator would do says
+    // ready too — which is the whole reason the boundary cannot be the report.
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-late-preparation-read",
+            json!({"kind":"get_dispatch_preparation","task_id":"gate-late"}),
+        )))["data"]["outcome"],
+        "ready",
+        "the stale record is served as itself: it is a record, not a live answer"
+    );
+    let stale = host.call(request(
+        "gate-late-start",
+        json!({"kind":"start_prepared_task","task_id":"gate-late","host_id":host_id}),
+    ));
+    assert_eq!(
+        stale["result"]["Err"]["message"],
+        "dispatch refused by recorded state (dependency_unresolved)",
+        "and the boundary re-asks rather than believing it: {stale}"
+    );
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-late-read",
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"gate-late"}),
+        )))["data"]["state"],
+        "ready",
+        "with nothing taken: a refused start leaves the task where it was"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}

@@ -4324,6 +4324,27 @@
           },
           {
             "additionalProperties": false,
+            "description": "The gates recorded against this task that are not satisfied yet, in\ncanonical order, each naming the other side and the state it is in.\nEmpty when nothing holds the task, which is why the step is recorded\neither way: \"nothing is in the way\" is an answer, not an absence.\n\nThis step exists for the same reason the stream step does. The start\nboundary refuses a task whose gates are unresolved with\n`dependency_unresolved`, so a report that said only \"schedulable\"\nwould promise a dispatch the start is about to refuse — and this is\nthe report an operator reads immediately before dispatching. The\nscheduling projection already answers the same question over the same\nrows, and this step reads that same answer, so the projection, the\nreport and the boundary cannot disagree about what is holding a task.",
+            "properties": {
+              "kind": {
+                "const": "dependencies",
+                "type": "string"
+              },
+              "waiting_on": {
+                "items": {
+                  "$ref": "#/$defs/TaskGate"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "waiting_on"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "kind": {
                 "const": "routing",

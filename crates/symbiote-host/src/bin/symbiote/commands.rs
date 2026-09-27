@@ -173,6 +173,38 @@ const OBJECTIVE_CLASSES: [&str; 3] = ["maintenance", "operational", "outcome"];
 /// The verification gates a dispatch contract can require, by the spelling
 /// the wire uses. One table, because a gate spelled two ways in two commands
 /// is a gate a caller can pass under one name and have refused under another.
+/// The dependency kinds an operator can name. Three of the eight relations are
+/// enforced at a boundary — `requires` holds a task back from starting,
+/// `blocks` holds its target back from completing — and the other five are
+/// recorded provenance that nothing reads yet. The spellings are the whole
+/// domain enum, not a subset, so the command refuses an unenforced kind by name
+/// rather than quietly storing a relation no boundary will ever honour.
+const DEPENDENCY_SPELLINGS: &[(&str, symbiote_domain::TaskDependencyKind)] = &[
+    ("requires", symbiote_domain::TaskDependencyKind::Requires),
+    (
+        "consumes_contract_from",
+        symbiote_domain::TaskDependencyKind::ConsumesContractFrom,
+    ),
+    ("blocks", symbiote_domain::TaskDependencyKind::Blocks),
+    ("reviews", symbiote_domain::TaskDependencyKind::Reviews),
+    ("verifies", symbiote_domain::TaskDependencyKind::Verifies),
+    (
+        "supersedes",
+        symbiote_domain::TaskDependencyKind::Supersedes,
+    ),
+    (
+        "conflicts_with",
+        symbiote_domain::TaskDependencyKind::ConflictsWith,
+    ),
+    (
+        "follow_up_to",
+        symbiote_domain::TaskDependencyKind::FollowUpTo,
+    ),
+];
+/// The relations a boundary actually refuses on, with the sentence that says so
+/// before the operator finds out by being refused.
+const ENFORCED_DEPENDENCY_SPELLINGS: &[&str] = &["requires", "blocks"];
+
 const GATE_SPELLINGS: &[(&str, symbiote_domain::Gate)] = &[
     ("tests", symbiote_domain::Gate::Tests),
     ("security", symbiote_domain::Gate::Security),
@@ -1558,6 +1590,81 @@ pub(crate) fn commands() -> Vec<Command> {
                     return Err(Usage("<reason> must not be empty".into()));
                 }
                 plain("reason", serde_json::json!(reason), map);
+                Ok(())
+            },
+        },
+        Command {
+            name: "set-task-dependencies",
+            summary: "replace a task's dependency edges (whole set, not a delta)",
+            usage: "set-task-dependencies <project_id> <task_id> <dependency>[,...]",
+            kind: Some("set_task_dependencies"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("set_task_dependencies"), map);
+                let project = field(args, 0, "project_id")?;
+                let task = field(args, 1, "task_id")?;
+                // The whole set, never a delta. An append would be two ways to
+                // say the same thing and one of them would have to know what is
+                // already recorded, and the store's own contract is
+                // replacement semantics — a caller that thinks it is adding an
+                // edge would be silently dropping the others.
+                let edges: Vec<serde_json::Value> =
+                    list(&field(args, 2, "dependency")?, "dependency")?
+                        .iter()
+                        .map(|token| {
+                            let (kind, target) = token.split_once(':').ok_or_else(|| {
+                                Usage(format!(
+                                    "<dependency> is <kind>:<task_id>, e.g. \
+                                     requires:other-task; got {token:?}"
+                                ))
+                            })?;
+                            // Every spelling the domain knows is accepted, and
+                            // then narrowed to the two a boundary enforces.
+                            // Narrowing by asking "is this one of them?" is the
+                            // only form of this check that works: mapping over
+                            // a lookup's error asks "is this none of them?",
+                            // and the five provenance kinds are in the list,
+                            // so a `reviews` edge was stored as a silent no-op
+                            // — a gate recorded where nothing reads it, which
+                            // is the same defect as a report that promises a
+                            // dispatch the boundary refuses. Provenance is
+                            // still recordable, through `raw`.
+                            if !ENFORCED_DEPENDENCY_SPELLINGS.contains(&kind) {
+                                return Err(Usage(format!(
+                                    "{kind:?} is recorded provenance no boundary enforces; the \
+                                     enforced relations are {}, and a typed command that stored \
+                                     it would record a gate nothing reads",
+                                    ENFORCED_DEPENDENCY_SPELLINGS.join(" and "),
+                                )));
+                            }
+                            let kind = one_of(kind, "dependency kind", DEPENDENCY_SPELLINGS)?;
+                            Ok(serde_json::json!({
+                                "kind": kind,
+                                "target": {"project_id": project, "task_id": target},
+                            }))
+                        })
+                        .collect::<Result<Vec<serde_json::Value>, Usage>>()?;
+                if edges.is_empty() {
+                    return Err(Usage(
+                        "a set with no edges is a delete, and this command does not delete; \
+                         pass an empty set through raw if that is what you mean"
+                            .into(),
+                    ));
+                }
+                plain("project_id", serde_json::json!(project), map);
+                plain("task_id", serde_json::json!(task), map);
+                map.insert("dependencies".to_owned(), serde_json::Value::Array(edges));
+                Ok(())
+            },
+        },
+        Command {
+            name: "get-task-dependencies",
+            summary: "read a task's recorded dependency edges",
+            usage: "get-task-dependencies <project_id> <task_id>",
+            kind: Some("get_task_dependencies"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("get_task_dependencies"), map);
+                id_field(args, 0, "project_id", "project_id", map)?;
+                id_field(args, 1, "task_id", "task_id", map)?;
                 Ok(())
             },
         },

@@ -484,6 +484,93 @@ read them — and nothing moves a task into one, so a task is either run or not 
 actions are the Root moving under an active stream, which is a real operator event with no
 operation at all.
 
+**Found in the ninth pass — a gate the report did not know about, and a refusal that
+named nothing.** `TaskDependencyKind::Requires` says in its own doc "This task cannot
+start until the target completes", and the boundary enforced it. So the orphan sweep's
+next question was not whether the gate exists but what an operator is told when it fires,
+and the answer was measured rather than guessed: `{"code": "conflict", "message":
+"resource conflict"}`.
+
+Two controls established that the refusal was the edge and not the environment, because a
+refusal proves nothing until you know what it is refusing *instead of*. A task with no edges
+started. A second task with no edges started while the first was running. The task whose
+`requires` target was not `completed` was refused. So the enforcement was real and the
+answer was useless.
+
+`StoreError::DependenciesUnresolved` was a **unit variant**. It could not say which
+prerequisite, and it mapped to `ErrorCode::Conflict` — the code this product uses for two
+writers racing for the same row. Three gates reach that check, from either direction: a
+`requires` target that has not completed, a `blocks` edge another task has put on this one,
+and a task whose prerequisite is *cancelled* rather than running. The three have three
+different remedies — wait, drop the edge, or give up on the task — and the refusal named
+none of them. The line above it in the same function got it right: the stream check raised
+`DispatchRefused(StreamInactive)` three lines below. The dependency check was the one hole
+in an otherwise careful design, and the fix is the mechanism already there.
+
+The report was wrong in the same place, and that half mattered more. `prepare-dispatch`
+returned `outcome: ready` with `{"kind": "scheduling", "schedulable": true}` for the very
+task the boundary was about to refuse, because the composition read the task's own state
+and not what was holding it. `CompositionStep::Worktree { startable, state }` exists
+precisely to stop that class of defect, and states the rule in its own doc comment: the
+boundary "refuses every state but `Active` with `stream_inactive`, so the report has to be
+able to say the same thing — otherwise it reports a dispatch the start is about to refuse."
+The same argument had never been applied to the dependency gate.
+
+So there is now a `dependencies` step naming every unsatisfied gate and the state it is
+in, and `DispatchRefusal::DependencyUnresolved` whose wire name is the
+`dependency_unresolved` the scheduling projection **already published** for the same fact —
+so one word answers in the projection, the report and the boundary. The composition reads
+`unsatisfied_gates`, the same function the boundary refuses on; two reads would be two
+chances to answer different questions, which is what the store's own
+`scheduling_projection` doc says about the dependency verdict it does not re-derive.
+
+The error itself now carries `Vec<TaskGate>` rather than nothing, so the *completion* path
+names the gates too (`a recorded gate is not satisfied: demo/prereq is ready; nothing runs
+until it is`) and uses `failed_precondition` — a condition the caller has not met, not a
+conflict it lost.
+
+**And the gate was unrecordable from the client.** `set_task_dependencies` and
+`get_task_dependencies` were in the protocol with no typed command at all, so the one
+relation that holds a task back from starting could only be set through a `raw` operation
+file — on a branch whose whole subject is first-class commands. That is why the first probe
+of this finding needed one. `set-task-dependencies <project> <task> <kind>:<task>[,...]`
+and `get-task-dependencies` are the commands now, taking the whole edge set rather than a
+delta, because the store's contract is replacement semantics and a caller that thought it
+was adding an edge would silently be dropping the others.
+
+That command then shipped a defect of its own, caught by the transcript rather than by a
+test. It narrowed to the two enforced relations by mapping over a lookup's `Err`, which
+asks "is this **none** of them?" — and the five provenance kinds *are* in the spelling
+list, so `reviews` was accepted and stored. An edge recorded where nothing reads it reads
+back to an operator as a gate that was accepted: the same defect as a report promising a
+dispatch the boundary refuses, one layer down and in a command that did not exist an hour
+earlier. Only the positive form works, and
+`a_typed_dependency_command_refuses_a_relation_no_boundary_enforced` holds all eight
+spellings: two accepted, six refused by name with the enforced set in the sentence.
+
+The stale-record half was found by a mutant that *survived*. Disabling the boundary's
+in-transaction re-check changed nothing, because `start_prepared_task` refuses from the
+preparation's own recorded reason first — so the re-check was untested and its job was
+unclear. The job is a `Ready` preparation going stale between the prepare and the start:
+an edge arrives after the report says ready. The check is now pinned by preparing a task
+while it is genuinely free, recording an edge, reading the record back (still `ready`,
+because a record is a record), and asserting the boundary re-asks anyway. That is the same
+reason the boundary re-reads the stream, the route and the registration instead of
+believing the preparation, and it is the one guarantee a report cannot give.
+
+That half also caught a mistake in the test itself, twice: a prerequisite that had
+*completed* satisfies every gate, so both the late edge and the first attempt at it
+measured nothing. A gate is only a gate while the thing it names is unfinished.
+
+Four mutants die on `a_gate_that_holds_a_task_back_is_named_by_the_report_the_projection_
+and_the_boundary`: dropping `waiting_on.is_empty()` from `ready`; passing `Vec::new()`
+where the store reads the gates; disabling the boundary's re-check; and reverting its
+refusal to the old unit error. `depends_run.sh` walks the whole thing with first-class
+commands and **no `raw` file**: the edge recorded, a provenance relation refused by name, a
+malformed token refused by name, the projection, the report naming `demo/prereq` and the
+state it is in, the boundary naming the same word, two controls, the gate opening when the
+prerequisite lands, and the stale record refused at the boundary.
+
 **Candidate, not a decision — the reap test's deadline race.** CI failed
 `a_child_the_owner_cannot_reap_in_time_is_unreaped_and_not_clean` once on the 1.85.0 leg with
 `Cancelled { group_signal: Sent }` where the test asserts `Unreaped { error: DeadlineExceeded }`,

@@ -936,6 +936,7 @@ fn a_stream_a_start_would_refuse_is_refused_by_the_report_too() {
                 model: id!(ModelId, "model"),
                 refusal: None,
             }),
+            Vec::new(),
             Timestamp(30),
         )
     };

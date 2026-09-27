@@ -55,7 +55,8 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
 `register-provider-connection`, `register-billing-entitlement`,
 `register-model-descriptor`,
-`get-task-origin`, and `raw <operation.json>` for anything the typed
+`get-task-origin`, `set-task-dependencies`, `get-task-dependencies`,
+and `raw <operation.json>` for anything the typed
 commands do not cover (the daemon still validates and authorizes every
 field). Responses are the daemon's own JSON, pretty-printed. Exit codes
 are distinct: 0 success, 1 usage/connection failure, 2 a daemon-refused
@@ -393,6 +394,42 @@ reason is required, as on `interrupt-task`: a Task closed as "cancelled"
 with no record of why is the least useful entry in the journal. A lease
 left on a cancelled task is released, for the same reason a failure
 releases one.
+
+A `requires` edge is the other gate a start is refused on, and it is the
+one the client could not even record. `set_task_dependencies` and
+`get_task_dependencies` existed in the protocol and had no typed command at
+all, so the one relation that holds a task back from starting could only be
+set through a `raw` operation file — on a branch whose whole subject is
+first-class commands. The command takes the whole edge set rather than a
+delta, because the store's contract is replacement semantics and a caller
+that thought it was adding an edge would silently be dropping the others. It
+refuses a kind no boundary enforces, by name, rather than storing a gate
+nothing will ever read: of the eight relations only `requires` and `blocks`
+are enforced today, and the other six are recorded provenance.
+
+The start boundary already refused an unsatisfied gate, but it refused with
+`{"code": "conflict", "message": "resource conflict"}` — a unit error with
+no name in it, and the code this product uses for two writers racing for the
+same row. Three gates reach that check, from either direction: a `requires`
+target that has not completed, a `blocks` edge another task has put on this
+one, and a task whose own dependencies are fine but whose prerequisite is
+cancelled. The three have three different remedies — wait, drop the edge, or
+give up on the task — and the refusal named none of them. It is now
+`dispatch refused by recorded state (dependency_unresolved)`, the one
+dispatch-refusal vocabulary, with `failed_precondition` for a condition the
+caller has not met rather than a conflict it lost.
+
+The report was wrong in the same place, and that is the half that mattered
+more. `prepare-dispatch` returned `outcome: ready` with
+`{"kind": "scheduling", "schedulable": true}` for a task the boundary was
+about to refuse, because the composition read the task's own state and not
+what was holding it. The report exists to be read immediately before
+dispatching, so a report that says `ready` is worse than no report. The
+composition now records a `dependencies` step naming every unsatisfied gate
+and the state it is in, and it reads the same function the boundary refuses
+on, so the projection, the report and the boundary cannot disagree. The
+scheduling projection already said `dependency_unresolved` for the same fact,
+so one word now answers in all three places.
 
 `advance-change-stream` is the operation the Change Stream contract was
 written around and the workspace did not have. A stream carries a head and a
