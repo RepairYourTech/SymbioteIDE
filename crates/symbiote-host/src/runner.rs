@@ -787,6 +787,33 @@ fn provision_error(error: symbiote_repo::provision::ProvisionError) -> RunnerErr
     RunnerError::Provisioning(error)
 }
 
+/// The worktree identity and branch the Host will require for one stream.
+///
+/// This is the ONE owner of that derivation, and it is public because a
+/// client has to be able to record what the Host will later insist on. The
+/// Host re-derives it at provisioning and refuses a stream whose recorded
+/// names differ, so a client that invents its own — which is what naming a
+/// worktree after the Task does — produces a Task that can never be
+/// dispatched, and the refusal arrives at `run_started_dispatch` with nothing
+/// to act on. Deriving it here means the same rule answers "what will you
+/// require?" and "is this acceptable?".
+///
+/// The policy seed is Host-owned configuration, not client JSON.
+pub fn derived_worktree(
+    project_id: &symbiote_domain::ProjectId,
+    root_id: &symbiote_domain::RootId,
+    stream_id: &symbiote_domain::ChangeStreamId,
+) -> Result<symbiote_worktrees::Derived, RunnerError> {
+    let policy_seed = symbiote_worktrees_policy_seed(stream_id)?;
+    symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
+        project_id,
+        root_id,
+        stream_id,
+        seed: &policy_seed,
+    })
+    .map_err(|_| RunnerError::InvalidSeed)
+}
+
 /// The Host's worktree policy seed: stable Host-owned configuration that
 /// binds the derived naming namespace. One seed per store; it is derived
 /// from the stream's id namespace rather than client input, so a client

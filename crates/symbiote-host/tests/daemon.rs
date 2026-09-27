@@ -9,6 +9,13 @@ use std::time::{Duration, Instant};
 use symbiote_host::transport::{exchange, private_directory};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// A commit id a typed `create-task` can start from: forty hex characters that
+/// are not the null object id. `create_task` records the base the caller named
+/// without opening a repository — the HEAD check belongs to provisioning, which
+/// is the only moment a real checkout exists — so a syntactically real commit
+/// is what these flows need, and the shape is what the CLI checks.
+const BASE: &str = "5117b5736e2e5cc2ff537a3852f8e1e37c6b0a12";
 struct Host {
     directory: PathBuf,
     child: Option<Child>,
@@ -1717,7 +1724,7 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
         "lead-cli",
         "cli-objective",
         "coding-contract@1",
-        "task/cli",
+        BASE,
     ]);
     assert!(
         created.status.success(),
@@ -1953,7 +1960,7 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
         "lead-typed",
         "ship-it",
         "coding@1",
-        "task/one",
+        BASE,
     ]);
     assert_eq!(receipt(&task)["sequence"], 3);
 
@@ -2048,13 +2055,14 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
                 "lead-typed",
                 "ship-it",
                 "coding",
-                "task/two",
+                BASE,
             ],
             "<contract_id> must be <contract_id>@<revision>; got \"coding\"",
         ),
         // An argument that is there and empty. No identity, name, title or
-        // branch can be, so the position is named here rather than a daemon
-        // asked to refuse a draft the operator could see was incomplete.
+        // base commit can be, so the position is named here rather than a
+        // daemon asked to refuse a draft the operator could see was
+        // incomplete.
         (
             vec!["register-project", "", "Typed", "lead-typed", "c@1", "root"],
             "empty <project_id>",
@@ -2085,7 +2093,7 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
                 "coding@1",
                 "",
             ],
-            "empty <branch>",
+            "empty <base_commit>",
         ),
     ] {
         let refused = run(&arguments);
@@ -2134,7 +2142,7 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
                 "lead-typed",
                 "ship-it",
                 "coding@1",
-                "task/two",
+                BASE,
             ],
             "invalid_request",
         ),
@@ -2148,7 +2156,7 @@ fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_ca
                 "lead-typed",
                 "no-such-work",
                 "coding@1",
-                "task/two",
+                BASE,
             ],
             "not_found",
         ),

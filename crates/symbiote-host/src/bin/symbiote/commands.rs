@@ -95,6 +95,56 @@ fn versioned(token: &str, name: &str) -> Result<(String, u64), Usage> {
     Ok((id.to_owned(), revision))
 }
 
+/// One `<base_commit>` argument: the commit the work starts from. A stream
+/// records the base it was opened at, and the Host checks it against the
+/// repository's real HEAD before it provisions anything, so the spelling is
+/// owned here rather than left to a typed refusal that arrives only after the
+/// Task is on record. A null object id is refused for the same reason it is
+/// never written: no commit can carry it, so naming it would ask for a base
+/// that cannot exist.
+fn commit(token: &str) -> Result<String, Usage> {
+    let valid = token.len() == 40
+        && token.bytes().all(|b| b.is_ascii_hexdigit())
+        && !token.bytes().all(|b| b == b'0');
+    if valid {
+        return Ok(token.to_ascii_lowercase());
+    }
+    Err(Usage(format!(
+        "<base_commit> must be a full 40-character commit id that is not the null id; got {token:?}"
+    )))
+}
+
+/// The worktree identity and branch the Host will require for this stream,
+/// derived by the Host's own rule rather than invented here. The three
+/// identities are the ones the derivation is bound to, so a caller that got
+/// them wrong is refused here instead of at `run-started-dispatch`.
+fn derived_for(
+    project: &str,
+    root: &str,
+    stream: &str,
+) -> Result<symbiote_worktrees::Derived, Usage> {
+    let project = symbiote_domain::ProjectId::new(project).map_err(|_| {
+        Usage(format!(
+            "<project_id> is not a usable identity: {project:?}"
+        ))
+    })?;
+    let root = symbiote_domain::RootId::new(root)
+        .map_err(|_| Usage(format!("<root_id> is not a usable identity: {root:?}")))?;
+    let stream = symbiote_domain::ChangeStreamId::new(stream).map_err(|_| {
+        Usage(format!(
+            "<task_id> does not yield a usable stream id: {stream:?}"
+        ))
+    })?;
+    symbiote_host::runner::derived_worktree(&project, &root, &stream).map_err(|_| {
+        Usage(
+            "this Project, Root and stream identity do not derive a worktree; a worktree \
+             branch is reserved under `symbiote/<project>/<stream>` and every component must \
+             be a valid Git ref component"
+                .into(),
+        )
+    })
+}
+
 /// The arguments a command cannot take. A command with an optional trailing
 /// argument has a way to drop one by mistyping it, and a silently dropped
 /// `<root_id>` or `<description>` is a request the operator did not make: the
@@ -322,7 +372,7 @@ pub(crate) fn commands() -> Vec<Command> {
         Command {
             name: "create-task",
             summary: "create a Task and its stream under an Objective",
-            usage: "create-task <project_id> <task_id> <root_id> <role_id> <objective_id> <contract_id>@<revision> <branch>",
+            usage: "create-task <project_id> <task_id> <root_id> <role_id> <objective_id> <contract_id>@<revision> <base_commit>",
             kind: Some("create_task"),
             build: |args, map| {
                 plain("kind", serde_json::json!("create_task"), map);
@@ -334,7 +384,16 @@ pub(crate) fn commands() -> Vec<Command> {
                 let objective = field(args, 4, "objective_id")?;
                 let (contract, revision) =
                     versioned(&field(args, 5, "contract_id")?, "contract_id")?;
-                let branch = field(args, 6, "branch")?;
+                let base = commit(&field(args, 6, "base_commit")?)?;
+                // The worktree identity and the branch are the Host's, not the
+                // caller's: the Host re-derives both from its own policy seed
+                // at provisioning and refuses a stream whose recorded names
+                // differ. A branch argument here was accepted, recorded, and
+                // then always refused at `run-started-dispatch` — so the
+                // caller could name a branch and never get it. There is one
+                // derivation, and `symbiote_host::runner::derived_worktree` is
+                // it, so this command records exactly what the Host requires.
+                let derived = derived_for(&project, &root, &format!("stream-{task}"))?;
                 plain(
                     "task",
                     serde_json::json!({
@@ -351,15 +410,19 @@ pub(crate) fn commands() -> Vec<Command> {
                         },
                         "task_contract": {"id": contract, "revision": revision},
                         "stream": {
-                            // The stream, its worktree and its chat are named
-                            // for the task they belong to: one task, one
-                            // stream, and nothing invented about where the work
-                            // will land beyond the branch the caller named.
+                            // One task, one stream, one chat. The worktree and
+                            // branch come from the Host's derivation above;
+                            // the base is the commit the work starts from, and
+                            // the Host checks it against the repository's real
+                            // HEAD before it provisions anything, so a caller
+                            // that names a commit the repository does not have
+                            // is refused here rather than after a Task is on
+                            // record as dispatchable.
                             "id": format!("stream-{task}"),
                             "originating_chat": format!("chat-{task}"),
-                            "worktree": format!("worktree-{task}"),
-                            "branch": branch,
-                            "base": NO_COMMIT,
+                            "worktree": derived.worktree_id.to_string(),
+                            "branch": derived.branch,
+                            "base": base,
                             "target": NO_COMMIT,
                         },
                     }),

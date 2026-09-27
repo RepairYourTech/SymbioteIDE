@@ -55,8 +55,8 @@ is. So `symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote
 `register-project`, `create-work` and `create-task` are daemon commands like
 any other: they map onto operations the protocol already had, so they change
 no envelope, no schema and no exit code. What they change is the argument
-shape — identities, names, contract revisions and a branch, rather than a JSON
-document the caller assembled — and that shape is stated in
+shape — identities, names, contract revisions and a base commit, rather than a
+JSON document the caller assembled — and that shape is stated in
 [host.md](host.md) beside the other commands. Their operations are
 `register_project`, `create_work` and `create_task`, which the operation-risk
 table classifies as mutations, so they are sent without `--yes` and appear

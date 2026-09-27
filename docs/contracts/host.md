@@ -93,7 +93,7 @@ revision, a branch — rather than a JSON document somebody assembled by hand:
 ```sh
 symbiote --state-dir DIR register-project symbiote "Symbiote" lead lead-contract@1 root-main
 symbiote --state-dir DIR create-work symbiote lead ship-it operational "Ship the beta" "and say what done is"
-symbiote --state-dir DIR create-task symbiote task-one root-main lead ship-it coding@1 task/one
+symbiote --state-dir DIR create-task symbiote task-one root-main lead ship-it coding@1 5117b5736e2e5cc2ff537a3852f8e1e37c6b0a12
 ```
 
 Each returns the daemon's own receipt, and each is read back by the typed
@@ -113,11 +113,18 @@ each derivation is stated here so that nothing in the record is a surprise. A
 registered Root names neither a repository nor a host path: placement is a
 Host's to record, per Host, once it has observed a checkout. A registered
 Project carries its lead Role, named for the identity it is registered under.
-A created Task's stream is named for the Task it belongs to —
-`stream-<task_id>`, `worktree-<task_id>`, `chat-<task_id>` — and carries the
-branch the caller named with the null Git object id as both its base and its
-target, because creating a Task does no work: its stream names no commit, and
-the null id is the one value that cannot be mistaken for a commit that exists.
+A created Task's stream and its chat are named for the Task it belongs to —
+`stream-<task_id>` and `chat-<task_id>` — and its worktree and branch are the
+Host's own derivation, not the caller's: the Host re-derives both from its
+policy seed before it provisions anything and refuses a stream whose recorded
+names disagree, so a caller that names its own gets a Task that can never be
+dispatched, refused at `run_started_dispatch` with nothing to act on. The
+`symbiote` binary asks the Host for that derivation and records exactly what it
+returns, so the pair a Task carries is the pair the Host will insist on. The
+stream's base is the `<base_commit>` the caller named, which must be a full
+commit id that is not the null object id, because the Host checks it against
+the repository's real HEAD before it provisions anything; its target is the
+null object id, because a Task that has done no work has reached nothing.
 A created Objective states its title, its optional description and its class,
 and leaves its requirements, constraints, risks, acceptance criteria, budget,
 dependencies and external references unstated at the domain's lowest priority,

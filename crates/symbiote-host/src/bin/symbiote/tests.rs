@@ -123,6 +123,7 @@ fn synthetic_arguments(usage: &str) -> Vec<String> {
             let value = match placeholder.name.as_str() {
                 "after" | "limit" => "1".to_owned(),
                 "class" => "maintenance".to_owned(),
+                "base_commit" => BASE.to_owned(),
                 _ => "id".to_owned(),
             };
             if placeholder.versioned {
@@ -286,7 +287,7 @@ fn the_write_commands_build_the_operations_their_usage_spells() {
             "lead",
             "ship-it",
             "coding@2",
-            "task/one",
+            BASE,
         ],
     );
     assert_eq!(task["kind"], "create_task");
@@ -304,18 +305,110 @@ fn the_write_commands_build_the_operations_their_usage_spells() {
             "work": {"project_id": "symbiote", "id": {"kind": "objective", "id": "ship-it"}},
         })
     );
-    // The stream, its worktree and its chat are named for the task; the branch
-    // is the one thing about a stream the caller states.
-    assert_eq!(task["task"]["stream"]["branch"], "task/one");
+    // The stream and its chat are named for the task. The worktree and the
+    // branch are not the caller's to state: the Host re-derives both and
+    // refuses a stream whose recorded names differ, so a branch argument here
+    // could only ever have been recorded and then refused.
     assert_eq!(task["task"]["stream"]["id"], "stream-task-one");
-    assert_eq!(task["task"]["stream"]["worktree"], "worktree-task-one");
     assert_eq!(task["task"]["stream"]["originating_chat"], "chat-task-one");
-    // A task that has done no work has no commit, and the null object id is
-    // the one value that cannot name a commit that exists.
-    for end in ["base", "target"] {
-        assert_eq!(
-            task["task"]["stream"][end], "0000000000000000000000000000000000000000",
-            "stream.{end}"
+    // The base is the commit the caller typed — a Task starts from a real
+    // commit or not at all — and the target is null, because a task that has
+    // done no work has reached nothing.
+    assert_eq!(task["task"]["stream"]["base"], BASE);
+    assert_eq!(
+        task["task"]["stream"]["target"],
+        "0000000000000000000000000000000000000000"
+    );
+}
+
+/// A commit id the tests can type: forty hex characters that are not the null
+/// object id, which no commit can carry.
+const BASE: &str = "5117b5736e2e5cc2ff537a3852f8e1e37c6b0a12";
+
+/// `create-task` records the worktree identity and branch the Host will insist
+/// on, derived by the Host's own rule, and refuses a base commit that is not a
+/// commit.
+///
+/// Before this, `create-task` named a worktree after the Task and accepted any
+/// branch the operator liked. Both were accepted, written to the Task's stream,
+/// and then refused at `run_started_dispatch` — `worktree provisioning refused:
+/// Reservation` — because the Host re-derives the pair from its own policy seed
+/// and a stream that disagrees is a stream it will not provision. The command
+/// could name a branch and never get it, and the refusal arrived with nothing
+/// to act on. So the derivation has one owner, `derived_worktree`, and this
+/// holds the command to it: whatever the command writes, the Host's own
+/// derivation is what wrote it.
+#[test]
+fn create_task_records_the_worktree_the_host_will_insist_on() {
+    let project = symbiote_domain::ProjectId::new("symbiote").unwrap();
+    let root = symbiote_domain::RootId::new("root-main").unwrap();
+    let stream = symbiote_domain::ChangeStreamId::new("stream-task-one").unwrap();
+    let derived = symbiote_host::runner::derived_worktree(&project, &root, &stream).unwrap();
+
+    let task = built(
+        "create-task",
+        &[
+            "symbiote",
+            "task-one",
+            "root-main",
+            "lead",
+            "ship-it",
+            "coding@2",
+            BASE,
+        ],
+    );
+    assert_eq!(
+        task["task"]["stream"]["worktree"],
+        derived.worktree_id.to_string(),
+        "the worktree the command records must be the worktree the Host derives"
+    );
+    assert_eq!(
+        task["task"]["stream"]["branch"], derived.branch,
+        "the branch the command records must be the branch the Host derives"
+    );
+    // The derivation is bound to the three identities, so a different stream
+    // is a different worktree: a command that recorded one pair for every Task
+    // would collide, and the Host would refuse the second one it saw.
+    let other = symbiote_domain::ChangeStreamId::new("stream-task-two").unwrap();
+    assert_ne!(
+        derived.branch,
+        symbiote_host::runner::derived_worktree(&project, &root, &other)
+            .unwrap()
+            .branch
+    );
+
+    // A base that is not a commit is refused by name, here, before the Task is
+    // on record — the Host checks the recorded base against the repository's
+    // real HEAD before it provisions, so a base the repository does not have is
+    // a Task that would be dispatchable and then unprovisionable.
+    for (base, why) in [
+        ("task/one", "not a commit id at all"),
+        ("5117b573", "abbreviated"),
+        (
+            "0000000000000000000000000000000000000000",
+            "the null object id",
+        ),
+        (
+            "g117b5736e2e5cc2ff537a3852f8e1e37c6b0a12",
+            "not hexadecimal",
+        ),
+    ] {
+        let message = refused(
+            "create-task",
+            &[
+                "symbiote",
+                "task-one",
+                "root-main",
+                "lead",
+                "ship-it",
+                "coding@2",
+                base,
+            ],
+        );
+        assert!(
+            message.contains("<base_commit>") && message.contains(base),
+            "a base that is {why} was refused with {message:?}, which names neither the argument \
+             nor the value"
         );
     }
 }
@@ -426,7 +519,7 @@ fn the_write_commands_refuse_a_mistyped_argument_by_name() {
                 "ship-it",
                 "coding@1",
             ],
-            "missing <branch>",
+            "missing <base_commit>",
         ),
         // A contract without its revision, and a revision that is not a
         // number, each name the argument and the value they got.
@@ -471,7 +564,7 @@ fn the_write_commands_refuse_a_mistyped_argument_by_name() {
                 "lead",
                 "ship-it",
                 "coding",
-                "task/one",
+                BASE,
             ],
             r#"<contract_id> must be <contract_id>@<revision>; got "coding""#,
         ),
@@ -484,7 +577,7 @@ fn the_write_commands_refuse_a_mistyped_argument_by_name() {
                 "lead",
                 "ship-it",
                 "coding@1",
-                "main",
+                BASE,
                 "surplus",
             ],
             r#"create-task does not take the argument "surplus""#,

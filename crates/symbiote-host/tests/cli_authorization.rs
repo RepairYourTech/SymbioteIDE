@@ -531,7 +531,7 @@ fn an_empty_argument_to_a_write_command_is_refused_by_name() {
                 "lead",
                 "objective",
                 "coding@1",
-                "task/t",
+                "5117b5736e2e5cc2ff537a3852f8e1e37c6b0a12",
             ],
             "empty <task_id>",
         ),
@@ -546,7 +546,7 @@ fn an_empty_argument_to_a_write_command_is_refused_by_name() {
                 "coding@1",
                 "",
             ],
-            "empty <branch>",
+            "empty <base_commit>",
         ),
     ] {
         let (output, frame) = run_cli(&arguments);
