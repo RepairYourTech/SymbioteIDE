@@ -51,7 +51,10 @@ use symbiote_trust::ResourceConsent;
 /// lists) and MUST return a consent whose snapshot fingerprint covers the
 /// exact wrapped command — the sandbox independently verifies that equality
 /// at launch, so a loose or mismatched consent cannot execute.
-pub trait ShellConsentAuthority {
+/// `Send` for the same reason as `ShellToolExecutor`: a prepared run may be
+/// moved to the thread that executes it, and the consent authority travels
+/// inside the executor it authorizes.
+pub trait ShellConsentAuthority: Send {
     /// Returns the operator's consent for exactly this descriptor, or a
     /// stable refusal reason. `access` is the dispatch binding's access
     /// snapshot (the current policy at run time); a consent whose snapshot

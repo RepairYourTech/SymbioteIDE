@@ -857,65 +857,6 @@ pub fn run_native(
     run_native_boxed(store, task_id, dispatch, task_prompt, transport, None, at)
 }
 
-/// Object-safe entry for the service: same checks, dyn-dispatched transport.
-/// `tool_execution` attaches the operator's sandbox shell executor to the
-/// reserved worktree; `None` leaves declared shell tools propose-only.
-pub fn run_native_boxed(
-    store: &mut Store,
-    task_id: &TaskId,
-    dispatch: &Dispatch,
-    task_prompt: &str,
-    transport: &mut dyn symbiote_native_agent::InferenceTransport,
-    tool_execution: Option<ToolExecution>,
-    at: Timestamp,
-) -> Result<WorkerOutcome, RunnerError> {
-    check_runnable(store, task_id, dispatch, RuntimeKind::NativeSymbiote)?;
-    // The model envelope comes from the Host's provider registry (#464),
-    // keyed by the contract's profile model — never from loop input.
-    let model = store
-        .model_descriptor(&dispatch.contract().profile().model)
-        .map_err(|error| RunnerError::Store(error.to_string()))?;
-    let session = NativeSession::new(dispatch, model, at).map_err(native_error)?;
-    let mut session = match tool_execution {
-        Some(execution) => session.with_tool_execution(execution.executor, execution.worktree),
-        None => session,
-    };
-    let summary = session.run(task_prompt, transport).map_err(native_error)?;
-    // Only a model-finished turn is a clean stop. The native loop maps
-    // FinishReason::Cancelled to the same HaltReason::Stop as a normal
-    // finish, so a cancelled turn is recognized by its terminal event: it
-    // records CancelAcknowledged, not Exit(0). Filing a cancelled turn
-    // would make an unfinished turn look worker-complete.
-    let cancelled = session
-        .events()
-        .iter()
-        .any(|event| matches!(event.payload(), RuntimeEventKind::CancelAcknowledged {}));
-    if cancelled || summary.halted != Some(symbiote_native_agent::HaltReason::Stop) {
-        let reason = match summary.halted {
-            Some(halt) => halt_name(halt),
-            None => "none",
-        };
-        return Err(RunnerError::LoopFailed(reason));
-    }
-    // The final assistant message is the worker's report; it is recorded in
-    // the event stream as the last Message before Exit.
-    let report = session
-        .events()
-        .iter()
-        .rev()
-        .find_map(|event| match event.payload() {
-            RuntimeEventKind::Message { text } => Some(text.as_str().to_owned()),
-            _ => None,
-        })
-        .ok_or(RunnerError::NoReport)?;
-    file_completion(store, task_id, dispatch, &report, at)?;
-    Ok(WorkerOutcome {
-        dispatch_id: dispatch.id().clone(),
-        task_id: task_id.clone(),
-        completion_filed: true,
-    })
-}
-
 fn native_error(error: LoopError) -> RunnerError {
     match error {
         LoopError::InvalidContract => RunnerError::InvalidContract,
@@ -976,7 +917,401 @@ pub fn run_external(
     )
 }
 
-/// Object-safe entry for the service: same checks, dyn-dispatched transport.
+/// One wired worker run that has been PREPARED but not yet executed.
+///
+/// A prepared run owns everything its turn needs — the task record (and so the
+/// pinned dispatch), the rendered prompt, and the lane's session — and
+/// borrows only the transport it talks to. That is the point: the agent turn
+/// is the one part of activation that can take minutes, and it must not be
+/// executed while the Host's store lock is held, or every other client on the
+/// Host blocks for the turn's duration (#38: a headless Host serving several
+/// clients at once, one of which is running work).
+///
+/// The split is safe because it never relied on exclusive access for
+/// correctness. Every precondition is checked in `prepare_*` under the lock,
+/// and the evidence is filed in `file` with the store re-taken, against the
+/// task's CURRENT revision: if the turn ran long enough for state to move
+/// underneath it — a lease expiring, a concurrent edit, a superseded
+/// entitlement — the apply refuses and the run reports the refusal rather
+/// than filing a report against state that no longer exists. Holding the lock
+/// across the turn bought no property this loses.
+/// The fencing token the task's lease holds right now, or `None` when it
+/// holds none. Read by both halves of a run — once under the lock at prepare,
+/// once under it again at filing — so the two readings name one generation or
+/// the second one refuses.
+fn held_fencing_token(store: &Store, task_id: &TaskId) -> Option<u64> {
+    store
+        .task_lease(task_id)
+        .ok()
+        .map(|lease| lease.fencing_token)
+}
+
+pub struct PreparedRun<'a> {
+    /// The task as it was read under the lock, which owns the pinned
+    /// `Dispatch` the session was built from.
+    task: symbiote_domain::Task,
+    /// The lease fencing token the task held when this run was prepared, or
+    /// `None` when it held no lease. The one fact that names this run's
+    /// GENERATION of the task: dispatch ids are stable across a task's
+    /// generations by design (the lease audit requires it), so identity alone
+    /// cannot tell a stale turn from the current one — but every new
+    /// generation of the task acquires a new, strictly greater token. A turn
+    /// that files against a generation other than its own is a turn filing
+    /// another run's outcome, and `file` refuses it by name.
+    fencing_token: Option<u64>,
+    prompt: String,
+    lane: PreparedLane<'a>,
+    at: Timestamp,
+    /// The turn's own error, kept so the caller can still file harness
+    /// elevation asks after a failed turn — a refused approval is evidence
+    /// even when the turn it came from did not finish.
+    turn_error: Option<RunnerError>,
+    /// Drained from the external session by `execute`, filed by `file`.
+    refusals: Vec<ApprovalRefusal>,
+    /// The report the finished turn produced, filed by `file`.
+    report: Option<String>,
+}
+
+enum PreparedLane<'a> {
+    Native {
+        session: NativeSession,
+        /// OWNED, not borrowed: a prepared run outlives the `execute` frame it
+        /// was built in, so it has to own what it talks to. The lifetime is
+        /// the transport's, not the store's — the Host's factories build
+        /// `'static` transports, and only the single-threaded test wrappers
+        /// hand in a borrow.
+        transport: Box<dyn symbiote_native_agent::InferenceTransport + 'a>,
+    },
+    External {
+        session: ExternalSession,
+        transport: Box<dyn symbiote_external_agent::CodexTransport + 'a>,
+        worktree_cwd: String,
+    },
+}
+
+impl PreparedRun<'_> {
+    /// The runtime kind this run's loop was selected by. The dispatch
+    /// contract, not the caller, decides it.
+    pub fn runtime(&self) -> RuntimeKind {
+        self.task
+            .current_dispatch()
+            .map(|dispatch| dispatch.contract().profile().runtime)
+            .unwrap_or(RuntimeKind::NativeSymbiote)
+    }
+
+    pub fn dispatch_id(&self) -> &symbiote_domain::DispatchId {
+        // A prepared run is only ever built from a Running task under a
+        // matched dispatch, and the owned record keeps the dispatch alive
+        // past the lock the preparation read it under.
+        self.task
+            .current_dispatch()
+            .map(|dispatch| dispatch.id())
+            .expect("a prepared run is built from a task holding its dispatch")
+    }
+
+    pub fn task_id(&self) -> &TaskId {
+        self.task.id()
+    }
+
+    /// Runs the turn. Holds no store borrow, and returns the turn's outcome;
+    /// the evidence is filed separately by `file` so the caller decides when
+    /// to take the store back.
+    pub fn execute(&mut self) -> Result<(), RunnerError> {
+        let result = self.run_turn();
+        self.turn_error = result.as_ref().err().cloned();
+        result
+    }
+
+    /// The last `Message` event, which is the worker's report: the native loop
+    /// and the external driver both record the agent's final text as the last
+    /// message before their exit.
+    fn last_report(
+        session_events: &[symbiote_runtime_sdk::events::RuntimeEvent],
+    ) -> Option<String> {
+        session_events
+            .iter()
+            .rev()
+            .find_map(|event| match event.payload() {
+                RuntimeEventKind::Message { text } => Some(text.as_str().to_owned()),
+                _ => None,
+            })
+    }
+
+    fn run_turn(&mut self) -> Result<(), RunnerError> {
+        // The lane is taken apart rather than matched through `&mut self`:
+        // reading the report out of the session and writing it into `self` is
+        // one borrow, and the two cannot overlap.
+        let Self {
+            task: _,
+            fencing_token: _,
+            prompt,
+            lane,
+            at: _,
+            turn_error: _,
+            refusals,
+            report,
+        } = self;
+        match lane {
+            PreparedLane::Native { session, transport } => {
+                let summary = session
+                    .run(prompt, transport.as_mut())
+                    .map_err(native_error)?;
+                // Only a model-finished turn is a clean stop. The native loop
+                // maps FinishReason::Cancelled to the same HaltReason::Stop as
+                // a normal finish, so a cancelled turn is recognized by its
+                // terminal event: it records CancelAcknowledged, not Exit(0).
+                // Filing a cancelled turn would make an unfinished turn look
+                // worker-complete.
+                let cancelled = session.events().iter().any(|event| {
+                    matches!(event.payload(), RuntimeEventKind::CancelAcknowledged {})
+                });
+                if cancelled || summary.halted != Some(symbiote_native_agent::HaltReason::Stop) {
+                    let reason = match summary.halted {
+                        Some(halt) => halt_name(halt),
+                        None => "none",
+                    };
+                    return Err(RunnerError::LoopFailed(reason));
+                }
+                *report = Self::last_report(session.events());
+                if report.is_none() {
+                    return Err(RunnerError::NoReport);
+                }
+                Ok(())
+            }
+            PreparedLane::External {
+                session,
+                transport,
+                worktree_cwd,
+            } => {
+                // `begin_thread` is the harness handshake and belongs to the
+                // turn, not to the preparation: it is the first thing that
+                // speaks to the outside world.
+                session
+                    .begin_thread(worktree_cwd, transport.as_mut())
+                    .map_err(external_error)?;
+                // The refusals are drained AFTER the turn, not before: a
+                // driver refuses a command execution DURING the turn, and
+                // draining earlier would file an empty ask list and lose the
+                // evidence. The turn's own error is kept so `file` can still
+                // journal what the driver refused before reporting it.
+                let turn_result = session
+                    .turn(prompt, transport.as_mut())
+                    .map_err(external_error);
+                *refusals = session.refused_approvals();
+                turn_result?;
+                let stopped = session.run_summary().stopped;
+                if stopped != Some(StopKind::Completed) {
+                    let name = match stopped {
+                        Some(StopKind::Completed) => "completed",
+                        Some(StopKind::Failed) => "failed",
+                        Some(StopKind::Interrupted) => "interrupted",
+                        Some(StopKind::TransportLost) => "transport_lost",
+                        None => "none",
+                    };
+                    return Err(RunnerError::LoopFailed(name));
+                }
+                *report = Self::last_report(session.events());
+                if report.is_none() {
+                    return Err(RunnerError::NoReport);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Whether the task's current lease generation is the one this run was
+    /// prepared under — the question `file` refuses on, asked by the failure
+    /// path before it files, so a stale turn fails the caller's request
+    /// without failing the newer generation's task.
+    pub fn generation_is_current(&self, store: &Store) -> bool {
+        held_fencing_token(store, self.task.id()) == self.fencing_token
+    }
+
+    /// Files the turn's evidence with the store re-taken. Called after
+    /// `execute` whether the turn finished or not, because a refused harness
+    /// approval is journaled even when the turn that produced it failed. The
+    /// turn's own error outranks a filing failure, so the operator sees why
+    /// the run actually failed.
+    pub fn file(&self, store: &mut Store) -> Result<WorkerOutcome, RunnerError> {
+        // The generation check, before anything is filed: a task whose turn
+        // was interrupted, recovered and re-started while this one ran is a
+        // task whose CURRENT generation is not this run's, and no evidence of
+        // this turn — asks, completion, or a failure — belongs to it.
+        if held_fencing_token(store, self.task.id()) != self.fencing_token {
+            return Err(RunnerError::NotRunning);
+        }
+        let Some(dispatch) = self.task.current_dispatch() else {
+            return Err(RunnerError::NotRunning);
+        };
+        // The asks are filed first because a turn that failed still owns its
+        // evidence — but a filing failure does not replace why the turn
+        // failed: the turn's error outranks it, and the asks are then best
+        // effort with the failure left to the operator's stderr.
+        let unfiled_asks = if matches!(self.lane, PreparedLane::External { .. }) {
+            file_harness_elevation_asks(store, self.task.id(), dispatch, &self.refusals, self.at)
+                .err()
+        } else {
+            None
+        };
+        if let Some(error) = self.turn_error.clone() {
+            if let Some(ask_failure) = unfiled_asks {
+                eprintln!("symbioted: harness asks could not be filed: {ask_failure:?}");
+            }
+            return Err(error);
+        }
+        if let Some(error) = unfiled_asks {
+            return Err(error);
+        }
+        let report = self.report.as_deref().ok_or(RunnerError::NoReport)?;
+        file_completion(store, self.task.id(), dispatch, report, self.at)?;
+        Ok(WorkerOutcome {
+            dispatch_id: dispatch.id().clone(),
+            task_id: self.task.id().clone(),
+            completion_filed: true,
+        })
+    }
+}
+
+/// The store-reading half of a native activation: the runnable precondition,
+/// the pinned model descriptor, and a session bound to both. Everything this
+/// touches is read under the caller's lock; the turn it returns borrows
+/// nothing from them.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_native_run(
+    store: &Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    prompt: String,
+    transport: Box<dyn symbiote_native_agent::InferenceTransport>,
+    tool_execution: Option<ToolExecution>,
+    at: Timestamp,
+) -> Result<PreparedRun<'static>, RunnerError> {
+    prepare_native_run_borrowed(
+        store,
+        task_id,
+        dispatch,
+        prompt,
+        transport,
+        tool_execution,
+        at,
+    )
+}
+
+fn prepare_native_run_borrowed<'a>(
+    store: &Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    prompt: String,
+    transport: Box<dyn symbiote_native_agent::InferenceTransport + 'a>,
+    tool_execution: Option<ToolExecution>,
+    at: Timestamp,
+) -> Result<PreparedRun<'a>, RunnerError> {
+    check_runnable(store, task_id, dispatch, RuntimeKind::NativeSymbiote)?;
+    // The model envelope comes from the Host's provider registry (#464),
+    // keyed by the contract's profile model — never from loop input.
+    let model = store
+        .model_descriptor(&dispatch.contract().profile().model)
+        .map_err(|error| RunnerError::Store(error.to_string()))?;
+    let task = store
+        .task(task_id)
+        .map_err(|error| RunnerError::Store(error.to_string()))?;
+    let session = NativeSession::new(dispatch, model, at).map_err(native_error)?;
+    let session = match tool_execution {
+        Some(execution) => session.with_tool_execution(execution.executor, execution.worktree),
+        None => session,
+    };
+    Ok(PreparedRun {
+        task,
+        fencing_token: held_fencing_token(store, task_id),
+        prompt,
+        lane: PreparedLane::Native { session, transport },
+        at,
+        turn_error: None,
+        refusals: Vec::new(),
+        report: None,
+    })
+}
+
+/// The store-reading half of an external activation: the runnable
+/// precondition and a session bound to the dispatch.
+pub fn prepare_external_run(
+    store: &Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    prompt: String,
+    worktree_cwd: String,
+    transport: Box<dyn symbiote_external_agent::CodexTransport>,
+    at: Timestamp,
+) -> Result<PreparedRun<'static>, RunnerError> {
+    prepare_external_run_borrowed(
+        store,
+        task_id,
+        dispatch,
+        prompt,
+        worktree_cwd,
+        transport,
+        at,
+    )
+}
+
+fn prepare_external_run_borrowed<'a>(
+    store: &Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    prompt: String,
+    worktree_cwd: String,
+    transport: Box<dyn symbiote_external_agent::CodexTransport + 'a>,
+    at: Timestamp,
+) -> Result<PreparedRun<'a>, RunnerError> {
+    check_runnable(store, task_id, dispatch, RuntimeKind::ExternalHarness)?;
+    let session = ExternalSession::new(dispatch, at).map_err(external_error)?;
+    let task = store
+        .task(task_id)
+        .map_err(|error| RunnerError::Store(error.to_string()))?;
+    Ok(PreparedRun {
+        task,
+        fencing_token: held_fencing_token(store, task_id),
+        prompt,
+        lane: PreparedLane::External {
+            session,
+            transport,
+            worktree_cwd,
+        },
+        at,
+        turn_error: None,
+        refusals: Vec::new(),
+        report: None,
+    })
+}
+
+/// Prepare, execute and file one native run with the store held throughout.
+/// The Host's own activation path uses [`prepare_native_run`] instead, so the
+/// turn runs with the store released; this entry point is the same three
+/// steps composed back-to-back, kept for the runner's own tests and for any
+/// caller that genuinely has no other client to serve.
+pub fn run_native_boxed(
+    store: &mut Store,
+    task_id: &TaskId,
+    dispatch: &Dispatch,
+    task_prompt: &str,
+    transport: &mut dyn symbiote_native_agent::InferenceTransport,
+    tool_execution: Option<ToolExecution>,
+    at: Timestamp,
+) -> Result<WorkerOutcome, RunnerError> {
+    let mut prepared = prepare_native_run_borrowed(
+        store,
+        task_id,
+        dispatch,
+        task_prompt.to_owned(),
+        Box::new(transport),
+        tool_execution,
+        at,
+    )?;
+    let _ = prepared.execute();
+    prepared.file(store)
+}
+
+/// The same three steps for the external lane, composed back-to-back.
 pub fn run_external_boxed(
     store: &mut Store,
     task_id: &TaskId,
@@ -986,46 +1321,17 @@ pub fn run_external_boxed(
     transport: &mut dyn symbiote_external_agent::CodexTransport,
     at: Timestamp,
 ) -> Result<WorkerOutcome, RunnerError> {
-    check_runnable(store, task_id, dispatch, RuntimeKind::ExternalHarness)?;
-    let mut session = ExternalSession::new(dispatch, at).map_err(external_error)?;
-    session
-        .begin_thread(worktree_cwd, transport)
-        .map_err(external_error)?;
-    let turn_result = session.turn(task_prompt, transport).map_err(external_error);
-    // File harness escalation asks even when the turn later fails: the
-    // driver already refused, and the journaled ask never licenses. The
-    // turn error outranks a filing failure so the operator sees why the
-    // run actually failed.
-    let refusals = session.refused_approvals();
-    let filing = file_harness_elevation_asks(store, task_id, dispatch, &refusals, at);
-    turn_result?;
-    filing?;
-    let stopped = session.run_summary().stopped;
-    if stopped != Some(StopKind::Completed) {
-        let name = match stopped {
-            Some(StopKind::Completed) => "completed",
-            Some(StopKind::Failed) => "failed",
-            Some(StopKind::Interrupted) => "interrupted",
-            Some(StopKind::TransportLost) => "transport_lost",
-            None => "none",
-        };
-        return Err(RunnerError::LoopFailed(name));
-    }
-    let report = session
-        .events()
-        .iter()
-        .rev()
-        .find_map(|event| match event.payload() {
-            RuntimeEventKind::Message { text } => Some(text.as_str().to_owned()),
-            _ => None,
-        })
-        .ok_or(RunnerError::NoReport)?;
-    file_completion(store, task_id, dispatch, &report, at)?;
-    Ok(WorkerOutcome {
-        dispatch_id: dispatch.id().clone(),
-        task_id: task_id.clone(),
-        completion_filed: true,
-    })
+    let mut prepared = prepare_external_run_borrowed(
+        store,
+        task_id,
+        dispatch,
+        task_prompt.to_owned(),
+        worktree_cwd.to_owned(),
+        Box::new(transport),
+        at,
+    )?;
+    let _ = prepared.execute();
+    prepared.file(store)
 }
 
 fn external_error(error: symbiote_external_agent::DriverError) -> RunnerError {
@@ -1260,8 +1566,7 @@ mod tests {
             &mut self,
             _inputs: ExternalHarnessInputs<'_>,
         ) -> Result<Box<dyn symbiote_external_agent::CodexTransport>, &'static str> {
-            self.built
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.built.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(Box::new(fixture::ScriptedCodex::new(
                 Vec::new(),
                 Vec::new(),
@@ -2000,11 +2305,9 @@ mod tests {
             Err(RunnerError::NoCredentialBroker)
         ));
         // Broker without a registration: UnknownReference.
-        let bare_broker = WorkerTransports::default().with_credential_broker(
-            std::sync::Arc::new(std::sync::Mutex::new(
-                symbiote_context::CredentialBroker::new(),
-            )),
-        );
+        let bare_broker = WorkerTransports::default().with_credential_broker(std::sync::Arc::new(
+            std::sync::Mutex::new(symbiote_context::CredentialBroker::new()),
+        ));
         assert!(matches!(
             bare_broker.resolve_leases(
                 &credential,
@@ -2711,6 +3014,209 @@ mod tests {
                 .active_elevation(dispatch.id(), &Permission::ExecuteProcess, Timestamp(60))
                 .unwrap()
         );
+    }
+
+    /// A native transport whose model turn takes a fixed, observable time, so
+    /// a test can be certain a turn is genuinely in flight rather than
+    /// assuming it. The scripted fixture answers instantly, which makes
+    /// "was the store free DURING the turn?" untestable.
+    struct SlowNativeTransport {
+        inner: fixture::EchoTransport,
+        delay: std::time::Duration,
+        entered: std::sync::Arc<std::sync::Barrier>,
+    }
+    impl symbiote_native_agent::InferenceTransport for SlowNativeTransport {
+        fn request(
+            &mut self,
+            request: &symbiote_runtime_sdk::provider::ProviderRequest,
+            model: &symbiote_runtime_sdk::provider::ModelDescriptor,
+        ) -> Result<
+            symbiote_runtime_sdk::provider::ProviderResponse,
+            symbiote_runtime_sdk::provider::ProviderError,
+        > {
+            self.entered.wait();
+            std::thread::sleep(self.delay);
+            self.inner.request(request, model)
+        }
+    }
+
+    struct SlowNativeFactory {
+        delay: std::time::Duration,
+        entered: std::sync::Arc<std::sync::Barrier>,
+    }
+    impl NativeTransportFactory for SlowNativeFactory {
+        fn build(
+            &mut self,
+        ) -> Result<Box<dyn symbiote_native_agent::InferenceTransport>, &'static str> {
+            Ok(Box::new(SlowNativeTransport {
+                inner: fixture::EchoTransport {
+                    text: "the report".into(),
+                },
+                delay: self.delay,
+                entered: std::sync::Arc::clone(&self.entered),
+            }))
+        }
+    }
+
+    /// A turn that outlives its task's generation files NOTHING. The store
+    /// being free while a turn runs is what makes the sequence reachable: a
+    /// second client interrupts the task, recovers it and starts it again
+    /// while the first client's turn is still executing, and the re-start
+    /// mints a new lease generation — while the dispatch id, stable across a
+    /// task's generations by design (the lease audit requires it), stays the
+    /// same. Without the fencing check the stale turn's `file` would complete
+    /// the NEW generation with the OLD run's report, and the newer
+    /// generation's own activation would then answer `completed` for a run
+    /// that never executed.
+    #[test]
+    fn a_turn_from_a_superseded_generation_files_nothing() {
+        let (mut store, task, dispatch) =
+            store_with_running_task("stale-generation", RuntimeKind::NativeSymbiote);
+        let mut prepared = super::prepare_native_run(
+            &store,
+            &task,
+            &dispatch,
+            "do the work".into(),
+            Box::new(FixtureNativeTransport::new(
+                "the stale turn's report".into(),
+                None,
+            )),
+            None,
+            Timestamp(60),
+        )
+        .unwrap_or_else(|error| panic!("the fixture must prepare: {error:?}"));
+        let _ = prepared.execute();
+        // The new generation, exactly as the reachable sequence mints it: the
+        // lease is released (an interrupt, a recovery), then re-acquired (the
+        // re-start) — and a re-acquisition after a release mints a strictly
+        // greater fencing token than the one the stale turn prepared under.
+        if let Ok(lease) = store.task_lease(&task) {
+            store
+                .release_lease(
+                    symbiote_domain::CommandId::new("stale-generation-release")
+                        .expect("a valid command id"),
+                    task.clone(),
+                    lease.dispatch_id.clone(),
+                    lease.fencing_token,
+                    symbiote_domain::UserId::new("user-a").expect("a valid user id"),
+                    Timestamp(70),
+                )
+                .unwrap_or_else(|error| panic!("the release must apply: {error:?}"));
+        }
+        let contract_host = dispatch.contract().host_id().clone();
+        store
+            .acquire_lease(
+                symbiote_domain::CommandId::new("stale-generation-new-lease")
+                    .expect("a valid command id"),
+                task.clone(),
+                dispatch.id().clone(),
+                contract_host,
+                60_000,
+                symbiote_domain::UserId::new("user-a").expect("a valid user id"),
+                Timestamp(80),
+            )
+            .unwrap_or_else(|error| panic!("the new generation must lease: {error:?}"));
+        let refused = prepared
+            .file(&mut store)
+            .expect_err("a stale generation must not file");
+        assert!(
+            matches!(refused, RunnerError::NotRunning),
+            "the refusal must name the generation, not another failure: {refused:?}"
+        );
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::Running,
+            "the stale turn completed the newer generation with the superseded run's report"
+        );
+    }
+
+    /// The store must be FREE while an agent turn runs. This is the whole
+    /// reason [`PreparedRun`] exists, and the property #38's "a headless
+    /// Linux Host can be controlled by another desktop client" rests on: one
+    /// client running a dispatch must not stop another client being answered.
+    ///
+    /// It is held here on the real runner, with a real transport and a real
+    /// turn, over a store behind the same `Mutex` the daemon serves from. The
+    /// turn announces that it has started, holds for a fixed interval, and the
+    /// test reads the store in that window. Before the split — when
+    /// `run_native_boxed` held `&mut Store` across the turn — the read could
+    /// not be taken at all, and the failure said so with the old behaviour in
+    /// it.
+    #[test]
+    fn the_store_is_free_while_an_agent_turn_runs() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        let (store, task, dispatch) =
+            store_with_running_task("free-store-during-turn", RuntimeKind::NativeSymbiote);
+        // Two parties: the transport signals when the turn is under way, and
+        // the main thread waits for that signal before it reads.
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let mut transports = WorkerTransports::default().with_native(Box::new(SlowNativeFactory {
+            delay: Duration::from_millis(400),
+            entered: Arc::clone(&entered),
+        }));
+        let store = Arc::new(Mutex::new(store));
+        let turn_finished = Arc::new(AtomicBool::new(false));
+
+        // The preparation happens under the lock, exactly as the daemon does.
+        let mut prepared = {
+            let guard = store.lock().unwrap();
+            super::prepare_native_run(
+                &guard,
+                &task,
+                &dispatch,
+                "do the work".to_owned(),
+                transports.native_build().unwrap(),
+                None,
+                Timestamp(60),
+            )
+            .unwrap()
+        };
+
+        let worker = {
+            let store = Arc::clone(&store);
+            let turn_finished = Arc::clone(&turn_finished);
+            std::thread::spawn(move || {
+                let _ = prepared.execute();
+                // Evidence is filed with the store re-taken, after the turn.
+                let mut guard = store.lock().unwrap();
+                let outcome = prepared.file(&mut guard);
+                turn_finished.store(true, Ordering::SeqCst);
+                outcome
+            })
+        };
+
+        // Wait until the turn is provably in flight, not merely started.
+        entered.wait();
+        assert!(
+            !turn_finished.load(Ordering::SeqCst),
+            "the turn must still be running when the store is read"
+        );
+        let started = Instant::now();
+        let observed = {
+            let guard = store.lock().unwrap();
+            guard.task(&task).unwrap().state().clone()
+        };
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_millis(400),
+            "reading the store waited {waited:?} for a turn that had not finished; \
+             the turn is holding the store lock, so every other client on the Host \
+             is blocked for the turn's duration"
+        );
+        assert!(
+            !turn_finished.load(Ordering::SeqCst),
+            "the store was only free because the turn had already ended"
+        );
+        assert_eq!(observed, TaskState::Running);
+
+        // The turn still completes and files its evidence afterwards.
+        let outcome = worker.join().unwrap().unwrap();
+        assert!(outcome.completion_filed);
+        let final_state = store.lock().unwrap().task(&task).unwrap().state().clone();
+        assert_eq!(final_state, TaskState::CompletionRequested);
     }
 
     /// Test fixtures for the store wiring. Mirrors the store's own

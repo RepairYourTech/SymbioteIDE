@@ -104,7 +104,9 @@ pub struct ServerRequest {
 /// an error; notifications are surfaced separately. The production
 /// implementation wraps the sandboxed `JsonlTransport` process (see the
 /// `process` module); tests provide deterministic fixture servers.
-pub trait CodexTransport {
+/// `Send` for the same reason as `symbiote_native_agent::InferenceTransport`:
+/// a prepared run may be moved to the thread that executes it.
+pub trait CodexTransport: Send {
     /// Send a request envelope (no `jsonrpc` field, number ids assigned by
     /// the transport) and return the matching response's `result` object.
     /// Interleaved server notifications and requests are buffered and
