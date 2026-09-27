@@ -3373,7 +3373,15 @@ fn worker_error(error: crate::runner::RunnerError) -> ProtocolError {
         crate::runner::RunnerError::RuntimeMismatch => "runtime kind does not match loop".into(),
         crate::runner::RunnerError::NotRunning => "task is not running under this dispatch".into(),
         crate::runner::RunnerError::InvalidContract => "dispatch contract no longer valid".into(),
-        crate::runner::RunnerError::LoopFailed(_) => "worker loop halted without finishing".into(),
+        // The halt's own identity, which `native_error_name` / `halt_name` /
+        // `external_error_name` already make a stable payload-free string.
+        // Naming it is the difference between an operator who can act on a
+        // halt and one who is told only that one happened: `envelope_mismatch`
+        // is a provider-contract problem, `budget_exhausted` is the dispatch's
+        // declared limits, and `cancelled` is a turn that must not be filed.
+        crate::runner::RunnerError::LoopFailed(reason) => {
+            format!("worker loop halted without finishing: {reason}")
+        }
         crate::runner::RunnerError::NoReport => "worker loop finished without a report".into(),
         crate::runner::RunnerError::Store(payload) => {
             // Stage-honest by payload: activation-time store failures

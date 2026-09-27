@@ -4533,7 +4533,7 @@ fn a_run_that_halts_inside_the_loop_is_recorded_and_its_worktree_is_abandonable(
     ));
     assert_eq!(
         halted["result"]["Err"]["message"],
-        "worker loop halted without finishing"
+        "worker loop halted without finishing: envelope_mismatch"
     );
     let after = host.call(request(
         "silent-task-read",
@@ -5092,7 +5092,7 @@ fn a_run_a_crash_took_is_interrupted_and_runs_again_on_the_same_stream() {
     ));
     assert_eq!(
         halted["result"]["Err"]["message"],
-        "worker loop halted without finishing"
+        "worker loop halted without finishing: envelope_mismatch"
     );
     assert!(
         worktree.join("README.md").exists(),
@@ -5327,7 +5327,7 @@ fn an_abandon_that_cannot_journal_its_decision_removes_nothing() {
     ));
     assert_eq!(
         halted["result"]["Err"]["message"],
-        "worker loop halted without finishing"
+        "worker loop halted without finishing: envelope_mismatch"
     );
     let worktree = base
         .join("staffing-demo")

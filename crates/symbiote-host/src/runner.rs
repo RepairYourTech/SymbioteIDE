@@ -1471,6 +1471,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&reservation_base);
     }
 
+    /// The operator's fixture transport with NO tool configured must still
+    /// complete a run. This is the shape `symbioted --operator-config` builds
+    /// from a `native_fixture` that sets only `echo_text`, and it is the one
+    /// way the tree offers to demonstrate a native dispatch without a model
+    /// turn or any spending.
+    ///
+    /// It used not to: the fixture's first turn answered
+    /// `FinishReason::ToolCalls` with an empty call list, which the native
+    /// loop's own envelope validation refuses as incoherent, so every run
+    /// halted with `envelope_mismatch`, filed nothing, and left the Task
+    /// Running. The operator sees a daemon that provisions, starts, and then
+    /// never completes anything.
+    #[test]
+    fn the_operator_fixture_completes_a_native_run_with_no_tool_configured() {
+        let (mut store, task, dispatch) =
+            store_with_running_task("operator-fixture-no-tool", RuntimeKind::NativeSymbiote);
+        let mut transport = FixtureNativeTransport::new("the fixture's report".into(), None);
+        let outcome = run_native(
+            &mut store,
+            &task,
+            &dispatch,
+            "do the work",
+            &mut transport,
+            Timestamp(60),
+        )
+        .unwrap_or_else(|error| panic!("the operator fixture must complete a run: {error:?}"));
+        assert!(outcome.completion_filed);
+        assert_eq!(
+            store.task(&task).unwrap().state(),
+            &TaskState::CompletionRequested
+        );
+        // The report filed is the configured text, not the turn-one
+        // "proposing the configured tool" preamble.
+        let events = store
+            .events(store.task(&task).unwrap().project_id(), 0, 256)
+            .unwrap();
+        assert!(
+            events.events.iter().any(|event| matches!(
+                &event.payload,
+                symbiote_store::EventPayload::TaskChanged { command, .. }
+                    if matches!(
+                        &command.action,
+                        symbiote_domain::TaskAction::RequestCompletion { report, .. }
+                            if report == "the fixture's report"
+                    )
+            )),
+            "the report the run filed is not the configured echo text"
+        );
+    }
+
     #[test]
     fn native_runner_files_completion_evidence() {
         let (mut store, task, dispatch) =
