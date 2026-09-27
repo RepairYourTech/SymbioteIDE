@@ -291,11 +291,35 @@ that skips the removal when the location is registered dies on it with
 `worktree reservation release refused: NotEmpty`, which is the second guard doing its own job: a
 populated directory is never deleted just because the marker says it may be.
 
-**Named, not deferred:** the abandoned stream is terminal, so the retry is a *new* task — a
-recovered task cannot be re-dispatched under a cancelled stream. That is the correct answer
-rather than a gap, but it means a failed unit of work costs a new task record, and while the
-preparation now says `stream_inactive` up front, nothing tells an operator that up front *at
-create* time.
+**The note the fifth pass said was missing, and the sixth pass's last change.** The abandoned
+stream is terminal, so the retry is a *new* task — a recovered task cannot be re-dispatched
+under a cancelled stream. That is the correct answer rather than a gap, but it means a failed
+unit of work costs a new task record, and while the preparation now says `stream_inactive` up
+front, nothing told an operator that up front *at create* time. The CLI now says it, on stderr,
+from the six commands where a step ends a task, a run or a stream: `create-task` names the cost
+before it is incurred, and `abandon-change-stream`, `release-change-stream`, `complete-task`,
+`interrupt-task` and `recover-task` each name theirs when they charge it. It is stderr rather
+than a field because `--json` prints one envelope per invocation and that envelope is a
+published contract; it is printed only on success, because nothing was charged when a command
+was refused, and not on reads, because a note on every command is a note nobody reads. A
+mutant that moves the note into the envelope fails
+`a_created_task_says_out_loud_what_abandoning_its_stream_will_cost`, and one that prints it on a
+refusal fails on the same line — the refusal half of that test is an undispatched task, which
+cannot abandon its stream at all.
+
+**The fourth transcript: two Projects on ONE daemon, first-class commands only.**
+`/mnt/data/tmp/ship/two_projects.sh` registers `alpha` and `beta`, each with its own Root, team,
+binding, credential reference, worktree and branch, on one daemon, and runs both to completion.
+What it shows, in the order the boundary matters: each dispatch compiled its own project's
+`effective_access` — project, root and credential reference all from its own Project, which is
+where the isolation actually lives rather than in a convention; `get-task beta task-alpha` is
+`permission_denied` and a run naming another task's dispatch is `failed_precondition`; a binding
+registered against a Project that does not exist is `not_found`. Two facts the daemon will not
+absorb, both `conflict` with the terse message the protocol's vocabulary owns: **role ids and
+work ids are global**, so the second Project's Objective and its Roles carry their own names. And
+landing one Project's work left the other's alone — both released, the reservation base empty,
+both branches surviving their checkouts, and neither Root keeping a stale `git worktree`
+registration. The transcripts are first-class commands end to end, with no `raw` file anywhere.
 
 **Found in the sixth pass — the crash, which is the one failure nothing can file for itself.**
 The two transcripts above are runs that lived long enough to see their own refusal. A `kill -9`

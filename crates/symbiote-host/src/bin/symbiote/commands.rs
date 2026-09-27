@@ -413,6 +413,57 @@ fn read_json(path: &str) -> Result<serde_json::Value, Usage> {
         .map_err(|error| Usage(format!("{path} is not valid JSON: {error}")))
 }
 
+/// What a command's success does that its receipt cannot say, for the operator
+/// reading the terminal.
+///
+/// A receipt is a fact about the store, and the fact that decides how an
+/// operator reads one of these commands is not in it. A Task owns exactly one
+/// Change Stream for its whole life: the worktree and the branch derive from
+/// that stream, and the stream is what `abandon_change_stream` cancels. Every
+/// other failure in this product is retryable — a refused run, a lost lease, a
+/// daemon that was killed mid-flight — and the abandon is the one that is
+/// terminal. An operator who learns that from the refusal of the retry they
+/// already paid for has learned it too late, so the commands that create the
+/// cost and the ones that charge it say so here.
+///
+/// The note goes to stderr and never into the envelope. `--json` output is a
+/// published contract of one object per invocation, and this is a sentence for
+/// a person rather than a field for a parser — which is also why it is a table
+/// beside the commands rather than something the daemon returns: the daemon
+/// cannot know what an operator is about to do next, and a note the operator
+/// cannot miss at the moment of the decision is worth more than one they can
+/// query afterwards.
+pub(crate) fn consequence(name: &str) -> Option<&'static str> {
+    match name {
+        "create-task" => Some(
+            "this Task owns one Change Stream for its whole life: its worktree and branch derive \
+             from that stream, and abandoning the stream is terminal, so the retry after an \
+             abandon is a new Task.",
+        ),
+        "abandon-change-stream" => Some(
+            "the stream is cancelled and its checkout is gone, with whatever was uncommitted in \
+             it; every commit on the branch survives, and the retry is a new Task.",
+        ),
+        "release-change-stream" => Some(
+            "the checkout is reclaimed and the work has landed; the branch and its commits stay \
+             on the Root as the stream's record.",
+        ),
+        "interrupt-task" => Some(
+            "the run's lease is released and the Task is Interrupted; recover-task returns it to \
+             Ready, and the same stream carries the next run.",
+        ),
+        "complete-task" => Some(
+            "the gates are filed as evidence and the Task is Completed; the work is not on the \
+             Root yet, and integrate-change-stream is what lands it.",
+        ),
+        "recover-task" => Some(
+            "the Task is Ready again and its dispatch binding is dropped; the next run provisions \
+             the same stream's own checkout again, so a run that failed there is not lost.",
+        ),
+        _ => None,
+    }
+}
+
 pub(crate) fn commands() -> Vec<Command> {
     vec![
         Command {

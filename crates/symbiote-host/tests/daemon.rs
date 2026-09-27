@@ -5069,3 +5069,125 @@ fn an_abandon_that_cannot_journal_its_decision_removes_nothing() {
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();
 }
+
+/// A receipt is a fact about the store, and the fact that decides how an
+/// operator reads a command is not in it. The cost of abandoning a stream is
+/// that the retry is a *new task*, and until this note existed the only place
+/// an operator could learn it was the refusal of the retry they had already
+/// paid for: `start-prepared-task` answering `stream_inactive` on a task whose
+/// stream their own abandon cancelled.
+///
+/// So the note is where the operator is standing, on stderr — the `--json`
+/// envelope is a published contract of one object per invocation, and a
+/// sentence for a person does not belong in a field for a parser.
+#[test]
+fn a_created_task_says_out_loud_what_abandoning_its_stream_will_cost() {
+    let host = Host::new();
+    staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .arg("--state-dir")
+            .arg(&host.directory)
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    let create = |task: &str| {
+        let created = run(&[
+            "create-task",
+            "staffing-demo",
+            task,
+            "staffing-root",
+            "engineer",
+            "staffing-objective",
+            "coding-contract@1",
+            BASE,
+        ]);
+        assert!(
+            created.status.success(),
+            "create-task: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        created
+    };
+
+    let created = create("costly-task");
+    let receipt: Value = serde_json::from_slice(&created.stdout).unwrap();
+    assert_eq!(
+        receipt["kind"], "receipt",
+        "stdout is the daemon's own body and nothing else"
+    );
+    let said = String::from_utf8_lossy(&created.stderr);
+    assert!(
+        said.contains("abandoning the stream is terminal") && said.contains("a new Task"),
+        "the note has to name the cost, not gesture at it: {said}"
+    );
+
+    // The same command under `--json`: the note moves to stderr and the
+    // envelope is untouched, because a parser reading stdout must not find a
+    // sentence where it expects a schema.
+    let json = run(&[
+        "--json",
+        "create-task",
+        "staffing-demo",
+        "costly-task-json",
+        "staffing-root",
+        "engineer",
+        "staffing-objective",
+        "coding-contract@1",
+        BASE,
+    ]);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(envelope["command"], "create-task");
+    assert_eq!(envelope["result"]["kind"], "receipt");
+    assert!(
+        !serde_json::to_string(&envelope)
+            .unwrap()
+            .contains("abandoning the stream"),
+        "the envelope is a published contract and carries no prose: {envelope}"
+    );
+    assert!(
+        String::from_utf8_lossy(&json.stderr).contains("abandoning the stream is terminal"),
+        "but the operator running the scripted form still reads it"
+    );
+
+    // And the table stays a table: a read has no consequence to report, and a
+    // note on everything is a note nobody reads.
+    let read = run(&["get-task", "staffing-demo", "costly-task"]);
+    assert!(read.status.success());
+    assert!(
+        String::from_utf8_lossy(&read.stderr).is_empty(),
+        "a read says nothing: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    // And a refusal says nothing, because the cost was not paid: this task was
+    // never dispatched, so it has no dispatch binding to journal a cancellation
+    // under, and the abandon refuses before it touches the checkout — which is
+    // the ordering the crash commit's second test pins. Exit 2, and no note.
+    let refused = run(&["abandon-change-stream", "costly-task", "--yes"]);
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "an undispatched task cannot abandon its stream: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !said.contains("a new Task"),
+        "nothing was charged, so nothing is announced: {said}"
+    );
+}

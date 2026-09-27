@@ -2133,6 +2133,40 @@ fn a_policy_lapses_after_its_expiry_rather_than_erroring() {
     remove(&path);
 }
 
+/// The invariant behind [`super::commands::consequence`], stated as one: an
+/// operator must not learn what a terminal step costs by attempting the next
+/// one. Every step that ends a task, a run or a stream says so where the
+/// operator is standing, and every note is keyed to a command that exists.
+#[test]
+fn every_terminal_step_says_what_it_costs_and_where_it_will_appear() {
+    for command in [
+        // The step that creates the cost...
+        "create-task",
+        // ...and the ones that charge it.
+        "abandon-change-stream",
+        "release-change-stream",
+        "complete-task",
+        "interrupt-task",
+        "recover-task",
+    ] {
+        let note = super::commands::consequence(command).unwrap_or_else(|| {
+            panic!("{command} is a step an operator cannot undo, and it says nothing")
+        });
+        assert!(
+            note.ends_with('.'),
+            "{command}: a sentence, not a fragment: {note}"
+        );
+        assert!(
+            commands().iter().any(|entry| entry.name == command),
+            "{command} has a consequence note and no command: nobody will ever read it"
+        );
+    }
+    // A read has no consequence to report, and saying so for every command
+    // would be noise. This is the other half: the table stays small.
+    assert!(super::commands::consequence("get-task").is_none());
+    assert!(super::commands::consequence("health").is_none());
+}
+
 #[test]
 fn every_dangerous_kind_in_the_table_can_be_named_by_a_policy() {
     let dangerous = dangerous_kinds();

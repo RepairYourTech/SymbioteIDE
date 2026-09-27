@@ -106,6 +106,20 @@ Each returns the daemon's own receipt, and each is read back by the typed
 reads: `get-project`, `snapshot` and `read-journal` after a registration,
 `get-task`, `get-task-origin` and `prepare-dispatch` after a Task.
 
+A receipt is a fact about the store, and the fact that decides how an operator
+reads a command is not in it. `create-task` therefore also says, on stderr,
+what the Task it just created is committed to: the Task owns one Change Stream
+for its whole life, its worktree and branch derive from that stream, and
+abandoning the stream is terminal — so the retry after an abandon is a new
+Task. The commands that charge that cost say the same thing when they charge
+it, and so do the two that end a run (`interrupt-task`) or a task
+(`complete-task`, which is not the same as landing the work). The note is
+stderr and never part of the response: `--json` prints one envelope per
+invocation, and that envelope is a published contract
+(`symbiote.cli.v1.schema.json`). A refusal prints no note, because nothing was
+charged, and a read prints none either — a note on every command is a note
+nobody reads.
+
 Two spellings recur because two facts do. A contract is written
 `<contract_id>@<revision>`: a contract is recorded under an identity *and* the
 revision of it, and only the caller knows which revision this Project or Task

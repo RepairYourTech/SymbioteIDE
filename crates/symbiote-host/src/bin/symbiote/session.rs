@@ -138,6 +138,12 @@ pub(crate) fn send(
                     serde_json::to_string_pretty(body).unwrap_or_else(|_| format!("{body:?}"))
                 );
             }
+            // What the receipt cannot say, said once the operator can act on it.
+            // stderr, so a `--json` invocation still prints exactly one envelope
+            // on stdout and a parser sees nothing new.
+            if let Some(consequence) = crate::commands::consequence(name) {
+                eprintln!("symbiote: {consequence}");
+            }
             Ok(EXIT_OK)
         }
         Err(error) => {
