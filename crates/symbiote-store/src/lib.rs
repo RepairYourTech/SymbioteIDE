@@ -219,6 +219,18 @@ pub enum EventPayload {
         command: Box<TaskCommand>,
         task: Box<Task>,
     },
+    StreamChanged {
+        stream_id: ChangeStreamId,
+        command: Box<symbiote_domain::StreamCommand>,
+        // The authority the transition was accepted under. A stream's
+        // transition is gated on an access snapshot rather than on the
+        // actor alone, so the journal has to carry the snapshot it was
+        // accepted under — otherwise the audit would have to invent one,
+        // and an audit that invents the authority it is auditing is not an
+        // audit.
+        access: Box<AccessSnapshot>,
+        stream: Box<ChangeStream>,
+    },
     WorkRouted {
         decision: Box<RouteDecision>,
         actor: UserId,
@@ -784,6 +796,69 @@ impl Store {
         Ok(receipt)
     }
 
+    /// The change stream as it stands. A stream is written by
+    /// [`Store::apply_stream`] and by nothing else, so reading it back is
+    /// how a caller checks what it wrote: without this the only way to learn
+    /// a stream's state was to watch the task refuse to complete.
+    pub fn change_stream(&self, id: &ChangeStreamId) -> Result<ChangeStream> {
+        read_stream(&self.connection, id)
+    }
+
+    /// Internal trusted Host boundary for a change stream, exactly as
+    /// [`Store::apply_task`] is for a task: the caller authenticates and
+    /// constructs the command, this method does not.
+    ///
+    /// It is the only way a stream's state advances, which is why
+    /// `StreamState::Validated` existed in the domain and in no store: a
+    /// stream is created with its task and then could not move, so the one
+    /// state `TaskAction::Complete` requires was a state no client could
+    /// reach and no code could write.
+    pub fn apply_stream(
+        &mut self,
+        stream_id: &ChangeStreamId,
+        command: symbiote_domain::StreamCommand,
+        access: &AccessSnapshot,
+    ) -> Result<Receipt> {
+        let request = stream_mutation_request(stream_id, &command)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(receipt) = replay(&transaction, &command.id, &request)? {
+            return Ok(receipt);
+        }
+        let mut stream = read_stream(&transaction, stream_id)?;
+        // A stream carries no indexed revision column — unlike a task, whose
+        // revision is a column the update can guard on. The body itself is
+        // the record, so the guard compares the body this command read: one
+        // that no longer matches is a record that moved under us, and the
+        // domain's `expected_revision` is the check that names why.
+        let before = serde_json::to_string(&stream)?;
+        stream.apply(command.clone(), access)?;
+        let updated = transaction.execute(
+            "UPDATE streams SET body=?1 WHERE id=?2 AND body=?3",
+            params![serde_json::to_string(&stream)?, stream_id.as_str(), before],
+        )?;
+        if updated != 1 {
+            return Err(StoreError::Domain(DomainError::RevisionConflict));
+        }
+        let payload = EventPayload::StreamChanged {
+            stream_id: stream_id.clone(),
+            command: Box::new(command.clone()),
+            access: Box::new(access.clone()),
+            stream: Box::new(stream.clone()),
+        };
+        let receipt = append(
+            &transaction,
+            stream.project_id(),
+            &command.id,
+            stream.revision(),
+            &request,
+            &payload,
+        )?;
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
     /// Rebuild server-assigned timestamps for identical command retries.
     pub fn consent_command_timestamp(&self, command_id: &CommandId) -> Result<Option<Timestamp>> {
         let body: Option<String> = self
@@ -1249,6 +1324,23 @@ fn placement_request(
         actor,
         at,
     ))?)
+}
+
+fn stream_mutation_request(
+    stream_id: &ChangeStreamId,
+    command: &symbiote_domain::StreamCommand,
+) -> Result<String> {
+    #[derive(Serialize)]
+    struct Mutation<'a> {
+        operation: &'static str,
+        stream_id: &'a ChangeStreamId,
+        command: &'a symbiote_domain::StreamCommand,
+    }
+    Ok(serde_json::to_string(&Mutation {
+        operation: "apply_stream",
+        stream_id,
+        command,
+    })?)
 }
 
 fn mutation_request(task_id: &TaskId, command: &TaskCommand) -> Result<String> {
@@ -1841,6 +1933,27 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                 {
                     return Err(StoreError::Integrity(
                         "task journal does not replay to recorded state".into(),
+                    ));
+                }
+            }
+            EventPayload::StreamChanged {
+                stream_id,
+                command,
+                access,
+                stream,
+            } => {
+                let previous = streams.get_mut(stream_id).ok_or_else(|| {
+                    StoreError::Integrity("transition precedes stream creation".into())
+                })?;
+                previous.apply(*command.clone(), access)?;
+                if previous != stream.as_ref()
+                    || stream.project_id().as_str() != project_key
+                    || stream.revision() != symbiote_domain::Revision(revision)
+                    || command.id.as_str() != command_key
+                    || request != stream_mutation_request(stream_id, command)?
+                {
+                    return Err(StoreError::Integrity(
+                        "stream journal does not replay to recorded state".into(),
                     ));
                 }
             }

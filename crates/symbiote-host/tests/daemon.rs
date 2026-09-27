@@ -4153,6 +4153,43 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
     ));
     assert_eq!(ok(&read)["data"]["state"], "completion_requested");
+
+    // The three steps that had no operation at all. A task that reaches
+    // `completion_requested` here used to stop for the life of the store:
+    // there was no operation for any of them, and the daemon reported that
+    // honestly enough that the transcript above read as a finished run.
+    let validated = host.call(request(
+        "run-validate",
+        json!({"kind":"validate_change_stream","task_id":"run-task",
+        "verification_run":"run-verify"}),
+    ));
+    ok_step("run-validate", &validated);
+    let verifying = host.call(request(
+        "run-begin",
+        json!({"kind":"begin_task_verification","task_id":"run-task"}),
+    ));
+    ok_step("run-begin", &verifying);
+    let begun = host.call(request(
+        "run-task-read-verifying",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&begun)["data"]["state"], "verifying");
+    // The caller's half is which gates passed; the Host binds each claim to
+    // this dispatch, this stream's head and target and its own identity, and
+    // the domain refuses a claim that does not cover the contract.
+    let completed = host.call(request(
+        "run-complete",
+        json!({"kind":"complete_task","task_id":"run-task",
+        "gates":["tests","security","impact","documentation",
+                 "independent_review","delivery","capability_closure"],
+        "reviewer":"lead"}),
+    ));
+    ok_step("run-complete", &completed);
+    let done = host.call(request(
+        "run-task-read-completed",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&done)["data"]["state"], "completed");
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();
 }

@@ -170,6 +170,25 @@ const OBJECTIVE_CLASSES: [&str; 3] = ["maintenance", "operational", "outcome"];
 /// argument rather than read from the domain, because a refusal that arrives
 /// from the daemon names a code and a request the operator did not recognize,
 /// while the value they typed and the choices they had are the CLI's to answer.
+/// The verification gates a dispatch contract can require, by the spelling
+/// the wire uses. One table, because a gate spelled two ways in two commands
+/// is a gate a caller can pass under one name and have refused under another.
+const GATE_SPELLINGS: &[(&str, symbiote_domain::Gate)] = &[
+    ("tests", symbiote_domain::Gate::Tests),
+    ("security", symbiote_domain::Gate::Security),
+    ("impact", symbiote_domain::Gate::Impact),
+    ("documentation", symbiote_domain::Gate::Documentation),
+    (
+        "independent_review",
+        symbiote_domain::Gate::IndependentReview,
+    ),
+    ("delivery", symbiote_domain::Gate::Delivery),
+    (
+        "capability_closure",
+        symbiote_domain::Gate::CapabilityClosure,
+    ),
+];
+
 fn one_of<T: Copy>(token: &str, name: &str, choices: &[(&str, T)]) -> Result<T, Usage> {
     choices
         .iter()
@@ -1375,6 +1394,63 @@ pub(crate) fn commands() -> Vec<Command> {
                 id_field(args, 0, "task_id", "task_id", map)?;
                 id_field(args, 1, "dispatch_id", "dispatch_id", map)?;
                 plain("report", field(args, 2, "report")?.into(), map);
+                Ok(())
+            },
+        },
+        Command {
+            name: "validate-change-stream",
+            summary: "record that a dispatched stream's work is where it says it is",
+            usage: "validate-change-stream <task_id> <verification_run>",
+            kind: Some("validate_change_stream"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("validate_change_stream"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // The run is a fact the operator holds and names. The commit
+                // it validated is not theirs to state: the Host observes the
+                // worktree, because a validation of a commit nobody looked at
+                // is a validation of nothing.
+                id_field(args, 1, "verification_run", "verification_run", map)?;
+                Ok(())
+            },
+        },
+        Command {
+            name: "begin-task-verification",
+            summary: "move a completion-requested task into verification",
+            usage: "begin-task-verification <task_id>",
+            kind: Some("begin_task_verification"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("begin_task_verification"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                Ok(())
+            },
+        },
+        Command {
+            name: "complete-task",
+            summary: "file the gates that passed and complete the task",
+            usage: "complete-task <task_id> <reviewer> <gate>[,<gate>...]",
+            kind: Some("complete_task"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("complete_task"), map);
+                id_field(args, 0, "task_id", "task_id", map)?;
+                // The reviewer's own Role, never the Task's: the domain
+                // refuses an independent review by the Role whose work it
+                // reviews, and a client that could not name one would be
+                // asking the Host to review itself.
+                let reviewer = field(args, 1, "reviewer")?;
+                map.insert("reviewer".to_owned(), serde_json::json!(reviewer));
+                // Which gates passed is the caller's claim and the Host's to
+                // bind. Naming them here rather than letting the Host fill the
+                // contract's set is the difference between a claim and a
+                // runtime-local success flag dressed as evidence.
+                let gates: Vec<serde_json::Value> = list(&field(args, 2, "gate")?, "gate")?
+                    .iter()
+                    .map(|token| {
+                        one_of(token, "gate", GATE_SPELLINGS).map(|gate| {
+                            serde_json::to_value(gate).unwrap_or(serde_json::Value::Null)
+                        })
+                    })
+                    .collect::<Result<Vec<serde_json::Value>, Usage>>()?;
+                map.insert("gates".to_owned(), serde_json::Value::Array(gates));
                 Ok(())
             },
         },

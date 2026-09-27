@@ -266,6 +266,38 @@ pub enum Operation {
         permission: Permission,
         reason: String,
     },
+    /// Record that the dispatched stream's work is where the stream says it
+    /// is. The head is the Host's own observation of the provisioned
+    /// worktree and the target is the stream's; neither is a claim the
+    /// caller may make, because a validation of a commit nobody observed is
+    /// a validation of nothing.
+    ValidateChangeStream {
+        task_id: TaskId,
+        /// Which verification run this validation belongs to. A run is a
+        /// fact the operator holds and names; the outcome is not theirs to
+        /// assert here.
+        verification_run: String,
+    },
+    /// Move a Task whose completion was requested into verification. No
+    /// client could take this step, so a dispatched Task stayed
+    /// `completion_requested` for the life of the store.
+    BeginTaskVerification {
+        task_id: TaskId,
+    },
+    /// File the evidence a dispatch contract's gates require and complete the
+    /// Task. `gates` is the claim: which gates the caller says passed. The
+    /// Host binds each claim to the dispatch, the stream's head and target
+    /// and this Host's identity, and refuses a claim that does not cover the
+    /// contract — so the caller asserts and the Host binds, and neither side
+    /// gets to do the other's half.
+    CompleteTask {
+        task_id: TaskId,
+        gates: Vec<Gate>,
+        /// The independent reviewer, required by the contract's
+        /// `independent_review` gate and refused when it is the Task's own
+        /// Role.
+        reviewer: Option<RoleId>,
+    },
     GetDispatchPreparation {
         task_id: TaskId,
     },
@@ -407,6 +439,9 @@ impl Operation {
             Self::StartPreparedTask { .. } => None,
             Self::RunStartedDispatch { .. } => None,
             Self::RequestTaskCompletion { .. } | Self::RequestElevation { .. } => None,
+            Self::ValidateChangeStream { .. }
+            | Self::BeginTaskVerification { .. }
+            | Self::CompleteTask { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -464,6 +499,9 @@ impl Operation {
                 | Self::DecideElevation { .. }
                 | Self::RevokeElevation { .. }
                 | Self::RequestElevation { .. }
+                | Self::ValidateChangeStream { .. }
+                | Self::BeginTaskVerification { .. }
+                | Self::CompleteTask { .. }
         )
     }
 }
@@ -801,6 +839,16 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // proxy submission is the current path; the Host attributes the
             // ask to a Running dispatch and journals it. Only decide_elevation
             // can license anything.
+            principal.local_owner
+        }
+        Operation::ValidateChangeStream { .. }
+        | Operation::BeginTaskVerification { .. }
+        | Operation::CompleteTask { .. } => {
+            // The three steps a dispatched Task could not take at all, so a
+            // run stayed `completion_requested` for the life of the store.
+            // They are the same authority `start_prepared_task` holds: the
+            // Host owns execution and verification, and a Project Read grant
+            // is not authority over whether work is real.
             principal.local_owner
         }
         Operation::GetRoute { project_id, .. } => {
@@ -1341,6 +1389,11 @@ pub enum EventPayload {
         command: TaskCommand,
         task: Box<Task>,
     },
+    StreamChanged {
+        stream_id: ChangeStreamId,
+        command: symbiote_domain::StreamCommand,
+        stream: Box<ChangeStream>,
+    },
 }
 impl EventPayload {
     fn project_id(&self) -> &ProjectId {
@@ -1360,6 +1413,7 @@ impl EventPayload {
             Self::ProjectRegistered { project, .. } => &project.id,
             Self::RootPlacementObserved { root, .. } => &root.project_id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
+            Self::StreamChanged { stream, .. } => stream.project_id(),
             Self::WorkRouted { decision, .. } => &decision.project_id,
             Self::TaskDependenciesSet { project_id, .. } => project_id,
             Self::TaskForeignLinksSet { project_id, .. } => project_id,
@@ -1520,6 +1574,9 @@ impl EventPayload {
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }
+            Self::StreamChanged {
+                stream_id, stream, ..
+            } => stream.project_id() == project_id && stream_id == stream.id(),
             Self::DispatchPrepared {
                 preparation, at, ..
             } => {

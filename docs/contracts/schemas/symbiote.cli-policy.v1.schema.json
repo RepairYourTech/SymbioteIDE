@@ -9,6 +9,7 @@
       "items": {
         "description": "A kind this CLI classifies as dangerous.",
         "enum": [
+          "complete_task",
           "decide_elevation",
           "record_resource_consent",
           "run_started_dispatch",

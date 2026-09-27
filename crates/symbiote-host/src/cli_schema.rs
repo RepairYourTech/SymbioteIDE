@@ -80,6 +80,8 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("create_task", Risk::Mutation),
     ("prepare_dispatch", Risk::Mutation),
     ("request_task_completion", Risk::Mutation),
+    ("validate_change_stream", Risk::Mutation),
+    ("begin_task_verification", Risk::Mutation),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),
@@ -105,6 +107,11 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("shutdown", Risk::Dangerous),
     ("decide_elevation", Risk::Dangerous),
     ("record_resource_consent", Risk::Dangerous),
+    // Ending a Task's execution: a claim, bound by the Host, that every gate
+    // its dispatch contract required has passed. A mutation changes state;
+    // this one decides that the work is done, so it is gated like the
+    // operations that start execution.
+    ("complete_task", Risk::Dangerous),
 ];
 
 /// `None` for a kind this build does not know: the caller must fail closed

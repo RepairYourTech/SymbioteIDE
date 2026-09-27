@@ -2193,3 +2193,92 @@ fn process_kill_at_migration_state_journal_and_commit_boundaries_is_atomic() {
         }
     }
 }
+
+/// A change stream moves, journals once per command, replays an identical
+/// retry, and refuses a transition its access does not cover — and the whole
+/// record survives the journal audit, which is the only reason a stream may
+/// be written at all.
+#[test]
+fn a_stream_transition_is_written_journalled_and_audited() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(temporary.database()).unwrap();
+    let project = register(&mut store, "one").0;
+    let (task, stream) = task_records("validated");
+    store
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
+        .unwrap();
+    let access = AccessSnapshot {
+        project_id: id!(ProjectId, "project-one"),
+        roots: BTreeSet::from([id!(RootId, "root-one")]),
+        grants: BTreeSet::from([Permission::MutateStream]),
+        policy_revision: Revision(1),
+    };
+    let validate = StreamCommand {
+        id: id!(CommandId, "validate"),
+        expected_revision: Revision(0),
+        host_id: id!(HostId, "host-one"),
+        at: Timestamp(30),
+        action: StreamAction::Validate {
+            head: sha('a'),
+            target: sha('b'),
+            run: id!(VerificationRunId, "run-one"),
+        },
+    };
+    let stream_id = task.stream_id();
+    let first = store
+        .apply_stream(stream_id, validate.clone(), &access)
+        .unwrap();
+    let retry = store.apply_stream(stream_id, validate, &access).unwrap();
+    assert_eq!(first.sequence, retry.sequence);
+    assert!(
+        retry.replayed,
+        "an identical retry replays the first receipt"
+    );
+    let events = store.events(&project.id, 0, 16).unwrap().events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::StreamChanged { .. }))
+            .count(),
+        1,
+        "one accepted transition, no refusal journaled: {events:?}"
+    );
+    store.integrity_check().unwrap();
+
+    // The authority is the transition's, not the caller's: a snapshot that
+    // does not reach the stream's root is refused, and a mutation the
+    // command id claims a different intent for cannot ride a replay.
+    let outside = AccessSnapshot {
+        roots: BTreeSet::from([id!(RootId, "root-elsewhere")]),
+        ..access.clone()
+    };
+    assert!(matches!(
+        store.apply_stream(
+            stream_id,
+            StreamCommand {
+                id: id!(CommandId, "outside"),
+                expected_revision: Revision(1),
+                host_id: id!(HostId, "host-one"),
+                at: Timestamp(31),
+                action: StreamAction::Cancel,
+            },
+            &outside,
+        ),
+        Err(StoreError::Domain(DomainError::PermissionDenied))
+    ));
+    assert!(matches!(
+        store.apply_stream(
+            stream_id,
+            StreamCommand {
+                id: id!(CommandId, "validate"),
+                expected_revision: Revision(1),
+                host_id: id!(HostId, "host-one"),
+                at: Timestamp(32),
+                action: StreamAction::Cancel,
+            },
+            &access,
+        ),
+        Err(StoreError::IdempotencyConflict)
+    ));
+    store.integrity_check().unwrap();
+}

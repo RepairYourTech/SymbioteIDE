@@ -51,6 +51,15 @@ fn storage_error(error: StoreError) -> ProtocolError {
     if let StoreError::DispatchRefused(refusal) = &error {
         protocol_error.message = format!("dispatch refused by recorded state ({})", refusal.name());
     }
+    // A lifecycle refusal is a closed vocabulary too, and it is the answer to
+    // the question the caller asked — "why will my completion not file?" —
+    // so it is named rather than collapsed into the generic `invalid_request`
+    // sentence. Without this, a claim that does not cover the contract, a
+    // review by the Task's own Role and a stream that is not validated all
+    // arrive as the same words, and a caller can act on none of them.
+    if let StoreError::Domain(refusal) = &error {
+        protocol_error.message = format!("lifecycle refused the transition ({refusal:?})");
+    }
     protocol_error
 }
 
@@ -927,6 +936,158 @@ fn execute(
                 .map(receipt)
                 .map_err(storage_error)
         }
+        Operation::ValidateChangeStream {
+            task_id,
+            verification_run,
+        } => {
+            // The head is observed, not accepted. A validation of a commit
+            // nobody looked at is a validation of nothing, so the caller
+            // names the run and the Host reads the provisioned worktree
+            // itself — and if the work is not there, or is somewhere else,
+            // the stream stays where it was and the refusal says which.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            let run = symbiote_domain::VerificationRunId::new(verification_run.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))?;
+            let dispatch = task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            let reservation_base = workers.reservation_base().map_err(worker_error)?;
+            // The Host's own derivation, not a second spelling of it: the
+            // worktree a run provisioned is the worktree validation reads.
+            let derived = crate::runner::derived_worktree(
+                task_record.project_id(),
+                task_record.root_id(),
+                task_record.stream_id(),
+            )
+            .map_err(worker_error)?;
+            let worktree = derived.worktree_path(&reservation_base);
+            let mut git = workers.git();
+            let head = symbiote_repo::observe_head(&mut git, &worktree).map_err(|error| {
+                storage_error(StoreError::Integrity(format!(
+                    "stream worktree head is not observable: {error:?}"
+                )))
+            })?;
+            let observed = symbiote_domain::CommitSha::new(head.commit.as_str())
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            let at = start_timestamp(store, request)?;
+            let command = symbiote_domain::StreamCommand {
+                id: request.command_id.clone(),
+                expected_revision: stream.revision(),
+                host_id: inventory.host_id().clone(),
+                at,
+                action: symbiote_domain::StreamAction::Validate {
+                    head: observed,
+                    target: stream.target().clone(),
+                    run,
+                },
+            };
+            store
+                .apply_stream(
+                    task_record.stream_id(),
+                    command,
+                    dispatch.contract().effective_access(),
+                )
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::BeginTaskVerification { task_id } => {
+            // There is a dispatch to verify: the same refusal a run gives for
+            // a task that is not running under one, because a task with no
+            // dispatch has no contract whose gates could be covered.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(inventory.host_id().clone()),
+                at: start_timestamp(store, request)?,
+                action: symbiote_domain::TaskAction::BeginVerification,
+            };
+            store
+                .apply_task(task_id, command)
+                .map(receipt)
+                .map_err(storage_error)
+        }
+        Operation::CompleteTask {
+            task_id,
+            gates,
+            reviewer,
+        } => {
+            // The caller claims which gates passed; the Host binds each claim
+            // to this dispatch, this stream's head and target and this Host's
+            // identity, and the domain refuses a claim that does not cover
+            // the contract. Neither side gets the other's half: a Host that
+            // invented the gates would be filing a runtime-local success
+            // flag as evidence, and a caller that supplied the whole row
+            // would be filing a claim the Host never checked.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            let dispatch = task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            let stream = store
+                .change_stream(task_record.stream_id())
+                .map_err(storage_error)?;
+            let at = start_timestamp(store, request)?;
+            let this_host = inventory.host_id().clone();
+            let run =
+                symbiote_domain::VerificationRunId::new(format!("verify-{}", task_id.as_str()))
+                    .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            let artifact = symbiote_domain::ArtifactId::new(format!(
+                "artifact-{}",
+                task_record.stream_id().as_str()
+            ))
+            .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            let mut evidence = Vec::new();
+            for gate in gates {
+                let id = symbiote_domain::EvidenceId::new(format!(
+                    "evidence-{}-{}",
+                    task_id.as_str(),
+                    serde_json::to_string(gate)
+                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
+                        .replace('"', "")
+                ))
+                .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+                evidence.push(symbiote_domain::VerificationEvidence {
+                    id,
+                    run_id: run.clone(),
+                    artifact_id: artifact.clone(),
+                    project_id: task_record.project_id().clone(),
+                    task_id: task_id.clone(),
+                    dispatch_id: dispatch.id().clone(),
+                    stream_id: task_record.stream_id().clone(),
+                    gate: *gate,
+                    outcome: symbiote_domain::VerificationOutcome::Passed,
+                    head: stream.head().clone(),
+                    target: stream.target().clone(),
+                    verified_by: this_host.clone(),
+                    reviewer: if *gate == symbiote_domain::Gate::IndependentReview {
+                        reviewer.clone()
+                    } else {
+                        None
+                    },
+                    recorded_at: at,
+                });
+            }
+            let command = symbiote_domain::TaskCommand {
+                id: request.command_id.clone(),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(this_host.clone()),
+                at,
+                action: symbiote_domain::TaskAction::Complete {
+                    stream: Box::new(stream),
+                    evidence,
+                },
+            };
+            store
+                .apply_task(task_id, command)
+                .map(receipt)
+                .map_err(storage_error)
+        }
         Operation::GetDispatchPreparation { task_id } => store
             .dispatch_preparation(task_id)
             .map(|preparation| ResponseBody::DispatchPreparation(Box::new(preparation)))
@@ -1588,6 +1749,20 @@ fn execute(
                                 task,
                                 stream,
                                 origin,
+                            },
+                            // The access snapshot the transition was accepted
+                            // under stays in the store: it is the audit's
+                            // evidence, not a fact a client can act on, and
+                            // putting it on the wire would make it one.
+                            symbiote_store::EventPayload::StreamChanged {
+                                stream_id,
+                                command,
+                                stream,
+                                ..
+                            } => EventPayload::StreamChanged {
+                                stream_id,
+                                command: *command,
+                                stream,
                             },
                             symbiote_store::EventPayload::TaskChanged {
                                 task_id,

@@ -451,6 +451,18 @@
         ],
         "type": "string"
       },
+      "Gate": {
+        "enum": [
+          "tests",
+          "security",
+          "impact",
+          "documentation",
+          "independent_review",
+          "delivery",
+          "capability_closure"
+        ],
+        "type": "string"
+      },
       "HostId": {
         "maxLength": 128,
         "minLength": 1,
@@ -1147,6 +1159,83 @@
               "dispatch_id",
               "permission",
               "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Record that the dispatched stream's work is where the stream says it\nis. The head is the Host's own observation of the provisioned\nworktree and the target is the stream's; neither is a claim the\ncaller may make, because a validation of a commit nobody observed is\na validation of nothing.",
+            "properties": {
+              "kind": {
+                "const": "validate_change_stream",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              },
+              "verification_run": {
+                "description": "Which verification run this validation belongs to. A run is a\nfact the operator holds and names; the outcome is not theirs to\nassert here.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id",
+              "verification_run"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Move a Task whose completion was requested into verification. No\nclient could take this step, so a dispatched Task stayed\n`completion_requested` for the life of the store.",
+            "properties": {
+              "kind": {
+                "const": "begin_task_verification",
+                "type": "string"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "File the evidence a dispatch contract's gates require and complete the\nTask. `gates` is the claim: which gates the caller says passed. The\nHost binds each claim to the dispatch, the stream's head and target\nand this Host's identity, and refuses a claim that does not cover the\ncontract — so the caller asserts and the Host binds, and neither side\ngets to do the other's half.",
+            "properties": {
+              "gates": {
+                "items": {
+                  "$ref": "#/$defs/Gate"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "complete_task",
+                "type": "string"
+              },
+              "reviewer": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RoleId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The independent reviewer, required by the contract's\n`independent_review` gate and refused when it is the Task's own\nRole."
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "task_id",
+              "gates"
             ],
             "type": "object"
           },
@@ -5667,6 +5756,40 @@
               },
               "kind": {
                 "const": "task_changed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "data": {
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "$ref": "#/$defs/StreamCommand"
+                  },
+                  "stream": {
+                    "$ref": "#/$defs/ChangeStream"
+                  },
+                  "stream_id": {
+                    "$ref": "#/$defs/ChangeStreamId"
+                  }
+                },
+                "required": [
+                  "stream_id",
+                  "command",
+                  "stream"
+                ],
+                "type": "object"
+              },
+              "kind": {
+                "const": "stream_changed",
                 "type": "string"
               }
             },

@@ -45,6 +45,7 @@ operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
+`validate-change-stream`, `begin-task-verification`, `complete-task`,
 `scheduling-projection <project_id>`,
 `observe-root-placement`,
 `replace-team`, `get-team`, `replace-binding`, `record-route`,
@@ -171,6 +172,50 @@ Team that names a Role the Project does not hold, and the domain refuses a
 Team with no execution role. A Project registered from the command line can
 therefore be staffed and dispatched from the command line.
 
+### Completing a dispatched task
+
+Three operations close the lifecycle, and a dispatched task could not take any
+of them: over the whole workspace the Host constructed exactly one
+`TaskAction` — `RequestCompletion` — so a run that finished left its task at
+`completion_requested` for the life of the store, with the worker's report on
+record and no way for any client to accept it. `validate-change-stream`,
+`begin-task-verification` and `complete-task` are those three steps.
+
+```sh
+symbiote --state-dir DIR validate-change-stream task1 run-verify
+symbiote --state-dir DIR begin-task-verification task1
+symbiote --state-dir DIR complete-task task1 lead \
+  tests,security,impact,documentation,independent_review,delivery,capability_closure --yes
+```
+
+Each is the same authority `start-prepared-task` holds, and each takes only
+what its caller actually knows.
+
+`validate-change-stream` names the verification run; it does **not** name the
+commit. The Host observes the provisioned worktree itself and validates what it
+reads, because a validation of a commit nobody looked at is a validation of
+nothing. A stream whose recorded head and target are not what the worktree
+holds stays where it was.
+
+`begin-task-verification` takes a task and nothing else. A task with no current
+dispatch has no contract whose gates could be covered, and is refused with the
+same refusal a run gives for a task not running under its dispatch.
+
+`complete-task` splits the claim in two. The caller says **which gates
+passed**; the Host binds each claim to this dispatch, this stream's recorded
+head and target, and its own inventory identity, and the domain refuses a
+claim that does not cover the contract's required set. That split is the whole
+point: a Host that invented the gate set would be filing a runtime-local
+success flag as evidence, and a caller that supplied whole evidence rows would
+be filing claims the Host never checked. The `independent_review` gate carries
+the caller's reviewer, and the domain refuses one that is the Task's own Role.
+
+`complete-task` is classified dangerous, because it ends a task's execution
+rather than changing it. The refusals name themselves — a claim that does not
+cover the contract arrives as `lifecycle refused the transition
+(EvidenceMissing)` and a self-review as `(IndependentReviewRequired)`, not as
+the generic `invalid_request` sentence that says neither.
+
 One thing the command line cannot carry is a credential. Every runtime profile
 names one, and a native run refuses without it by name, so the registration is
 operator authority this client cannot hold: `symbiote init` writes the 0600
@@ -227,7 +272,9 @@ decided by it — so `raw shutdown.json` cannot bypass the gate on
 the ones that start or end execution or grant capability:
 `shutdown`, `start_prepared_task`, `run_started_dispatch`,
 `decide_elevation` (the grant; `revoke_elevation` narrows and is not
-gated) and `record_resource_consent`. A kind the table does not know
+gated), `record_resource_consent` and `complete_task` — which ends a task's
+execution rather than changing it, so it is gated like the operations that
+start it. A kind the table does not know
 cannot be proven safe, so it fails closed as dangerous. Reads are free;
 everything else is a mutation the daemon still authorizes — filing
 evidence (`register-project`, `create-work`, `create-task`,

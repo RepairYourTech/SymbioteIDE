@@ -44,7 +44,12 @@ fn authorization_follows_the_operation_not_the_command_name() {
     dangerous.sort_unstable();
     assert_eq!(
         dangerous,
-        vec!["run-started-dispatch", "shutdown", "start-prepared-task"]
+        vec![
+            "complete-task",
+            "run-started-dispatch",
+            "shutdown",
+            "start-prepared-task",
+        ]
     );
 
     // One table classifies `raw` too: a dangerous operation is gated
@@ -149,6 +154,11 @@ fn synthetic_arguments(usage: &str) -> Vec<String> {
                 "tool" => "shell".to_owned(),
                 // One team member: every field of `MEMBER_FIELDS`, in order.
                 "member" => "id:general_execution:read_root:root:backend:other".to_owned(),
+                // One gate is enough to build the request; the contract's
+                // full set is the daemon's to demand, and a command that
+                // refused a partial list here would be refusing the claim
+                // before the caller could make it.
+                "gate" => "tests".to_owned(),
                 // A policy reference is the versioned spelling, but the usage
                 // does not carry the `@<revision>` itself, so the whole
                 // argument is spelled here. `credential_ref` is a vault
@@ -2131,6 +2141,7 @@ fn every_dangerous_kind_in_the_table_can_be_named_by_a_policy() {
             "shutdown",
             "decide_elevation",
             "record_resource_consent",
+            "complete_task",
         ]
     );
     let contents = format!(

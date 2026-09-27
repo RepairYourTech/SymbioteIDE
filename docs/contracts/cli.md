@@ -247,9 +247,9 @@ when the flag is absent, names a document with three keys:
 ```
 
 `authorize` may name **only** the kinds this CLI classifies as dangerous, and
-the schema's `enum` is exactly that list — `decide_elevation`,
-`record_resource_consent`, `run_started_dispatch`, `shutdown`,
-`start_prepared_task`. A read or a mutation is already ungated, so listing one
+the schema's `enum` is exactly that list — `complete_task`,
+`decide_elevation`, `record_resource_consent`, `run_started_dispatch`,
+`shutdown`, `start_prepared_task`. A read or a mutation is already ungated, so listing one
 would be a no-op an operator could mistake for coverage; an unknown kind cannot
 be classified; and a wildcard is deliberately not a syntax. Because the grants
 are a set, repeating a kind is accepted and collapses rather than being an
