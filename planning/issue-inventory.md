@@ -1052,3 +1052,67 @@ the store's attribution law has now been named twice (state by the Host,
 grant-side by the store) — the remaining un-named store refusal in this file
 is the payload-free `InvalidElevation` (validate/id-mismatch), which is
 corruption-shaped and arguably should stay unnamed.
+
+## The sixteenth pass: the worker's report, replayed and named
+
+The carry said `request_task_completion` was "the next `raw`-only mutation".
+Measured, it was worse and better than that: a first-class command
+(`request-task-completion <task_id> <dispatch_id> <report>`, protocol v1.12,
+`Risk::Mutation`) has existed in the table all along — untested, undocumented,
+and answering every state refusal through the store's generic shape error —
+while its arm broke the retry contract the CLI publishes in its own help
+("same id + same intent replays a lost response instead of re-executing"). The
+arm stamped `SystemTime::now()` into the command it journaled, so the bytes a
+retry rebuilt never matched the bytes the first attempt wrote: a lost response
+came back as `idempotency_conflict` over a record that already carried the
+report, and any later attempt under a new id was refused by
+`invalid_request: invalid request shape or field value` — the task's state
+speaking through a code that means "your typing was wrong".
+
+The store gained one honest answer for arms in that shape:
+`journaled_task_command(&CommandId)` reads the command a journal row already
+recorded back whole — clock and `expected_revision` included — because the
+Host cannot rebuild those bytes and does not have to. The Host gained
+`journaled_task_replay`, which answers a same-intent retry with the original
+receipt, returns `idempotency_conflict` for a used id under a different
+intent *before* any state check can name a different refusal, and falls
+through when the id is unused. Seven arms took it: the worker's completion
+report and the six task mutations that share its shape (`cancel-task`,
+`interrupt-task`, `begin-task-verification`, `recover-task`, `block-task`,
+`unblock-task`). `complete-task` carries: its evidence is derived from live
+observations and its success runs stream surgery, so a replay answer there is
+a design question, not a patch.
+
+The report's refusals are named now, one sentence per state with the move
+that answers it: the pre-dispatch family points at `start-prepared-task`;
+`completion_requested` points at `begin-task-verification` with the report
+already on the record; `failed`/`interrupted` point at `recover-task`; a
+running task answers on identity, because a foreign dispatch id never speaks
+for the task; a closed task says so; and a report that says nothing is
+refused as the shape it is. Two old pins that asserted the shape error
+(`worker_completion_request_is_evidence_not_completion`, the CLI flow's
+unstarted-task row) were corrected, not deleted: they had pinned the defect.
+
+Held by twelve dying mutants, all verified: the replay arm replaced by the
+conflict arm and the conflict arm replaced by fall-through (each wire pin
+dies); the begin-verification asserted action swapped (its replay pin dies);
+the conflict code retyped to `internal` (the wire pin dies); the store helper
+returning `None` for the journaled command and `Ok(None)` for a foreign
+payload kind (the store unit test and the lib suite die); and four sentences
+truncated or swapped — the ready remedy, the already-reported remedy, the
+empty-report sentence, the foreign-identity sentence — each dying on its own
+daemon wire assertion.
+
+Transcript (`comp2_run.sh`, against the real daemon through the real CLI): the
+report filed as `rep-1` (sequence 14), the same command id replaying
+`replayed: True` on sequence 14, a retyped report under that id answering
+`idempotency_conflict`, a second filing answered by name with
+`begin-task-verification` as the way out, `begin-task-verification` itself
+replaying under `verify-1` (sequence 15), and a never-started task naming
+`start-prepared-task` as the move that answers.
+
+Carried: `complete-task`'s replay design; the payload-free `InvalidElevation`
+(validate/id-mismatch) stays unnamed, corruption-shaped; and the six sibling
+arms now replay their own transitions but have no dedicated wire tests of
+their own beyond the begin-verification pin — their refusals were already
+named in the passes that built them.

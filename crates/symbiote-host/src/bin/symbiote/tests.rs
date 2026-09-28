@@ -1095,6 +1095,14 @@ fn the_write_commands_refuse_a_mistyped_argument_by_name() {
             vec!["symbiote", "lead", "ship-it", "urgent", "Title"],
             r#"<class> must be one of maintenance, operational, outcome; got "urgent""#,
         ),
+        // The worker's completion report takes three arguments, and a line
+        // missing one names it: the report is the evidence a verification
+        // gate reads, so the shape it arrives in is checked before the wire.
+        (
+            "request-task-completion",
+            vec!["symbiote", "task-one"],
+            "missing <report>",
+        ),
         // Both elevation commands name a permission, so both check it: a
         // typo in the one field a worker's ask and an authority's answer share
         // is a question nobody can answer, and the daemon's answer to one is

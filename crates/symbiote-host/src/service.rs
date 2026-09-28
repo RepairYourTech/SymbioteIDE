@@ -220,6 +220,108 @@ fn elevation_state_refusal(task: &symbiote_domain::Task) -> Option<String> {
     })
 }
 
+/// The receipt a same-intent retry replays, taken from the command this
+/// command id already journaled. A task arm that stamps its own clock and
+/// reads `expected_revision` off the live record cannot rebuild the bytes a
+/// first attempt wrote — both move the moment the attempt lands — so the
+/// journaled command IS the retry: re-applying it is byte-identical, and the
+/// journal's own comparison answers a replay instead of an idempotency
+/// conflict the record contradicts. The caller's asserted action has to
+/// match what the id recorded: a different intent under a used id falls
+/// through, is rebuilt with a fresh clock, and is refused by the journal
+/// exactly as a typed-over file always was — only here the answer is typed
+/// before any state check can name a different refusal. `None` means the id
+/// is unused — the arm proceeds to its own checks.
+fn journaled_task_replay(
+    store: &mut Store,
+    request: &Request,
+    task_id: &symbiote_domain::TaskId,
+    asserted: &symbiote_domain::TaskAction,
+) -> Result<Option<ResponseBody>, ProtocolError> {
+    match store
+        .journaled_task_command(&request.command_id)
+        .map_err(storage_error)?
+    {
+        Some(command) if &command.action == asserted => store
+            .apply_task(task_id, command)
+            .map(receipt)
+            .map(Some)
+            .map_err(storage_error),
+        // The id is used and the intent is not what it recorded: the conflict
+        // is with the journal, and saying so here beats letting a moved state
+        // name a refusal that is not the one that answered.
+        Some(_) => Err(ProtocolError::new(ErrorCode::IdempotencyConflict)),
+        None => Ok(None),
+    }
+}
+
+/// Whether this task's state accepts a worker's completion report, read at
+/// the Host so the refusal can name the state and the move that answers it.
+/// `None` means the report can be filed. The domain holds the same law one
+/// layer down; this read exists because the store maps every domain refusal
+/// to the generic shape error, which sends an operator hunting for a typo
+/// when the task's state is what answered. A same-command-id retry never
+/// reaches this read with a moved state — the journaled command replays
+/// before the record is consulted again — so naming the state here cannot
+/// bury a replay.
+fn completion_refusal(
+    task: &symbiote_domain::Task,
+    dispatch_id: &symbiote_domain::DispatchId,
+) -> Option<ProtocolError> {
+    // One exhaustive match, every state its own sentence: a state someone
+    // adds to the enum cannot silently fall into a wildcard's wording.
+    let remedy = match task.state() {
+        symbiote_domain::TaskState::Running => {
+            // A Running task answers on identity, not state: the report
+            // names a dispatch, and a foreign one never speaks for this
+            // task — the dispatch a run activated is the one that can
+            // report on it.
+            if !task
+                .current_dispatch()
+                .is_some_and(|d| d.id() == dispatch_id)
+            {
+                let mut error = ProtocolError::new(ErrorCode::FailedPrecondition);
+                error.message = "the report names a dispatch this task is not \
+                                 running under; the dispatch a run activated is \
+                                 the one that can report on it"
+                    .into();
+                return Some(error);
+            }
+            return None;
+        }
+        symbiote_domain::TaskState::CompletionRequested => {
+            let mut error = ProtocolError::new(ErrorCode::FailedPrecondition);
+            error.message = "this task's run already reported completion, so the report is on the record; begin-task-verification moves it to verifying when the Host is ready".into();
+            return Some(error);
+        }
+        symbiote_domain::TaskState::Ready
+        | symbiote_domain::TaskState::Queued
+        | symbiote_domain::TaskState::Assigned
+        | symbiote_domain::TaskState::Blocked => {
+            "start-prepared-task activates a dispatch for it, and the run \
+             reports when it finishes"
+        }
+        symbiote_domain::TaskState::Verifying | symbiote_domain::TaskState::Completed => {
+            "the report that moved it was accepted; verification and the \
+             gates decide what it becomes"
+        }
+        symbiote_domain::TaskState::Failed | symbiote_domain::TaskState::Interrupted => {
+            "recover-task returns it to ready and the next run reports when \
+             it finishes"
+        }
+        symbiote_domain::TaskState::Cancelled => {
+            "the task was closed and nothing reports on it now"
+        }
+    };
+    let mut error = ProtocolError::new(ErrorCode::FailedPrecondition);
+    error.message = format!(
+        "a completion report cannot be filed on a task that is {}; {}",
+        task.state().name(),
+        remedy
+    );
+    Some(error)
+}
+
 fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .route_command_timestamp(&request.command_id)
@@ -997,19 +1099,45 @@ fn execute(
             // that actor to the task's actual current dispatch. The task can
             // only reach CompletionRequested; verification and independent
             // review remain Host gates after this.
+            //
+            // The replay comes first and unconditionally: this arm stamps
+            // its own clock and reads `expected_revision` off the live
+            // record, so it cannot rebuild the bytes a first attempt
+            // journaled — the journaled command is the retry. Without this,
+            // a lost response turns into `idempotency_conflict` while the
+            // record already carries the report, and a later attempt under a
+            // new id is refused by a state the first attempt moved.
+            let asserted = symbiote_domain::TaskAction::RequestCompletion {
+                dispatch_id: dispatch_id.clone(),
+                report: report.clone(),
+            };
+            if let Some(replayed) = journaled_task_replay(store, request, task_id, &asserted)? {
+                return Ok(replayed);
+            }
             let task_record = store.task(task_id).map_err(storage_error)?;
+            // The report's clock and revision are read before the state is
+            // named, so the command a refusal would have carried is exactly
+            // the command the next attempt after a recovery would carry.
+            if let Some(refusal) = completion_refusal(&task_record, dispatch_id) {
+                return Err(refusal);
+            }
+            // An empty report is a report nobody can later read — the same
+            // sentence a hold's empty reason gets — named here rather than
+            // left to arrive as `(EmptyReport)`.
+            if report.trim().is_empty() {
+                return Err(ProtocolError {
+                    code: ErrorCode::InvalidRequest,
+                    message: "a completion report has to say what the run did; \
+                              an empty one is evidence of nothing and the task \
+                              would carry it for the life of the record"
+                        .into(),
+                });
+            }
             let command = symbiote_domain::TaskCommand {
                 id: request.command_id.clone(),
                 expected_revision: task_record.revision(),
                 actor: Actor::Worker(dispatch_id.clone()),
-                at: Timestamp(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?
-                        .as_millis()
-                        .try_into()
-                        .map_err(|_| ProtocolError::new(ErrorCode::Internal))?,
-                ),
+                at: now_timestamp()?,
                 action: symbiote_domain::TaskAction::RequestCompletion {
                     dispatch_id: dispatch_id.clone(),
                     report: report.clone(),
@@ -1081,6 +1209,15 @@ fn execute(
             // There is a dispatch to verify: the same refusal a run gives for
             // a task that is not running under one, because a task with no
             // dispatch has no contract whose gates could be covered.
+            // The retry comes first: the journaled command is the
+            // retry this arm could never rebuild (its clock and
+            // revision moved with the first attempt), and it replays
+            // before any pre-check can name a state the first attempt
+            // itself moved.
+            let asserted = symbiote_domain::TaskAction::BeginVerification;
+            if let Some(replayed) = journaled_task_replay(store, request, task_id, &asserted)? {
+                return Ok(replayed);
+            }
             let task_record = store.task(task_id).map_err(storage_error)?;
             task_record
                 .current_dispatch()
@@ -1484,6 +1621,15 @@ fn execute(
             // binding is dropped by the domain, so the recovered task is
             // dispatched afresh rather than resuming a run that is not
             // running.
+            // The retry comes first: the journaled command is the
+            // retry this arm could never rebuild (its clock and
+            // revision moved with the first attempt), and it replays
+            // before any pre-check can name a state the first attempt
+            // itself moved.
+            let asserted = symbiote_domain::TaskAction::Recover;
+            if let Some(replayed) = journaled_task_replay(store, request, task_id, &asserted)? {
+                return Ok(replayed);
+            }
             let task_record = store.task(task_id).map_err(storage_error)?;
             let at = start_timestamp(store, request)?;
             let command = symbiote_domain::TaskCommand {
@@ -1516,6 +1662,17 @@ fn execute(
             // this arm of the lifecycle whose argument is a judgement rather
             // than a fact. The domain refuses an empty one, and the refusal is
             // named here rather than left to arrive as `(EmptyReport)`.
+            // The retry comes first: the journaled command is the
+            // retry this arm could never rebuild (its clock and
+            // revision moved with the first attempt), and it replays
+            // before any pre-check can name a state the first attempt
+            // itself moved.
+            let asserted = symbiote_domain::TaskAction::Block {
+                reason: reason.clone(),
+            };
+            if let Some(replayed) = journaled_task_replay(store, request, task_id, &asserted)? {
+                return Ok(replayed);
+            }
             let task_record = store.task(task_id).map_err(storage_error)?;
             if task_record.state() == &symbiote_domain::TaskState::Blocked {
                 // Asked again about a held task, the answer is the hold: a
@@ -1591,6 +1748,17 @@ fn execute(
             // lifting a hold offers the task for scheduling and does not start
             // it — which is the same boundary `start_prepared_task` holds, and
             // the same reason this operation does not call it.
+            // The retry comes first: the journaled command is the
+            // retry this arm could never rebuild (its clock and
+            // revision moved with the first attempt), and it replays
+            // before any pre-check can name a state the first attempt
+            // itself moved.
+            let asserted = symbiote_domain::TaskAction::Unblock {
+                reason: reason.clone(),
+            };
+            if let Some(replayed) = journaled_task_replay(store, request, task_id, &asserted)? {
+                return Ok(replayed);
+            }
             let task_record = store.task(task_id).map_err(storage_error)?;
             if task_record.state() != &symbiote_domain::TaskState::Blocked {
                 return Err(ProtocolError {
@@ -1958,6 +2126,17 @@ fn execute(
             // The marker is the record of the hold: `abandon_change_stream`
             // and `release_change_stream` are the two that clear it, and
             // either one makes this a one-call close.
+            // The retry comes first: the journaled command is the
+            // retry this arm could never rebuild (its clock and
+            // revision moved with the first attempt), and it replays
+            // before any pre-check can name a state the first attempt
+            // itself moved.
+            let asserted = symbiote_domain::TaskAction::Cancel {
+                reason: reason.clone(),
+            };
+            if let Some(replayed) = journaled_task_replay(store, request, task_id, &asserted)? {
+                return Ok(replayed);
+            }
             let task_record = store.task(task_id).map_err(storage_error)?;
             let stream = store
                 .change_stream(task_record.stream_id())
@@ -2038,6 +2217,17 @@ fn execute(
             // The lease goes with it, for the same reason a failure releases
             // one: it is the claim that a live owner holds this task, and
             // there is no live owner.
+            // The retry comes first: the journaled command is the
+            // retry this arm could never rebuild (its clock and
+            // revision moved with the first attempt), and it replays
+            // before any pre-check can name a state the first attempt
+            // itself moved.
+            let asserted = symbiote_domain::TaskAction::Interrupt {
+                reason: reason.clone(),
+            };
+            if let Some(replayed) = journaled_task_replay(store, request, task_id, &asserted)? {
+                return Ok(replayed);
+            }
             let task_record = store.task(task_id).map_err(storage_error)?;
             let at = start_timestamp(store, request)?;
             let command = symbiote_domain::TaskCommand {

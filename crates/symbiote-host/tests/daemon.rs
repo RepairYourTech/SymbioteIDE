@@ -1538,15 +1538,20 @@ fn worker_completion_request_is_evidence_not_completion() {
     ok(&host.call(request("register-comp", project("comp"))));
     ok(&host.call(request("comp-maintenance", maintenance("comp"))));
     ok(&host.call(request("comp-task", task("comp-task", "comp"))));
-    // A completion request against a task that was never started is an
-    // illegal transition, and the Host keeps serving.
+    // A completion request against a task that was never started is named by
+    // the state that refused it — with the move that answers — rather than
+    // arriving as the shape error the store's mapping would give it.
     let request_completion = request(
         "comp-request",
         json!({"kind":"request_task_completion","task_id":"comp-task",
                "dispatch_id":"ghost-dispatch","report":"done"}),
     );
     let response = host.call(request_completion);
-    assert_eq!(response["result"]["Err"]["code"], "invalid_request");
+    assert_eq!(response["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        response["result"]["Err"]["message"],
+        "a completion report cannot be filed on a task that is ready; start-prepared-task activates a dispatch for it, and the run reports when it finishes"
+    );
     ok(&host.call(request("comp-alive", json!({"kind":"health"}))));
     // The task remains Ready: worker evidence never bypasses verification.
     let task_response = host.call(request(
@@ -1554,6 +1559,139 @@ fn worker_completion_request_is_evidence_not_completion() {
         json!({"kind":"get_task","project_id":"comp","task_id":"comp-task"}),
     ));
     assert_eq!(ok(&task_response)["data"]["state"], "ready");
+}
+
+#[test]
+fn a_workers_report_replays_is_named_by_state_and_never_completes() {
+    // The worker-completion command end to end on the wire: filed as
+    // evidence, replayed from the journal on a lost response, refused by
+    // name in every state that cannot take it, and never mistaken for
+    // completion.
+    let host = Host::new();
+    let host_id = staffing_composition(&host, Registration::Complete);
+    ok(&host.call(request(
+        "report-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )));
+    let started = host.call(request(
+        "report-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("report-start", &started)["data"]["dispatch_id"].clone();
+    // A report that says nothing is evidence of nothing, and is refused as
+    // the shape it is while the task is still Running.
+    let empty = host.call(request(
+        "report-empty",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,"report":"   "}),
+    ));
+    assert_eq!(empty["result"]["Err"]["code"], "invalid_request");
+    assert_eq!(
+        empty["result"]["Err"]["message"],
+        "a completion report has to say what the run did; an empty one is \
+         evidence of nothing and the task would carry it for the life of the \
+         record"
+    );
+    let running = host.call(request(
+        "report-read-running",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    ));
+    assert_eq!(ok(&running)["data"]["state"], "running");
+    // A Running task answers on identity, not state: a report naming a
+    // dispatch the task is not running under never speaks for it.
+    let foreign = host.call(request(
+        "report-foreign",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":"dispatch-not-this-one",
+               "report":"a foreign dispatch reports"}),
+    ));
+    assert_eq!(foreign["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        foreign["result"]["Err"]["message"],
+        "the report names a dispatch this task is not running under; the \
+         dispatch a run activated is the one that can report on it"
+    );
+    // The worker files its report as evidence.
+    let report = request(
+        "report-file",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,
+               "report":"the change is ready for verification"}),
+    );
+    let filed = host.call(report.clone());
+    assert_eq!(ok_step("report-file", &filed)["kind"], "receipt");
+    // The same command id replays: the journaled command IS the retry, so a
+    // lost response reads the record instead of fighting a clock the first
+    // attempt already moved.
+    let replayed = host.call(report);
+    assert_eq!(
+        ok_step("report-replay", &replayed)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("report-replay", &replayed)["data"]["sequence"],
+        ok_step("report-file", &filed)["data"]["sequence"],
+        "the replay lands on the original receipt"
+    );
+    assert_eq!(
+        ok_step("report-replay", &replayed)["data"]["sequence"],
+        ok_step("report-file", &filed)["data"]["sequence"],
+        "a lost-response retry replays the original receipt"
+    );
+    // A different report under the same id is still an idempotency conflict:
+    // the replay answers the recorded intent, never a second one.
+    let conflict = host.call(request(
+        "report-file",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,
+               "report":"a different report is not the recorded one"}),
+    ));
+    assert_eq!(conflict["result"]["Err"]["code"], "idempotency_conflict");
+    // A second filing under a new id is answered by the state the first
+    // attempt moved — by name, with the move that answers it.
+    let again = host.call(request(
+        "report-again",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,
+               "report":"the change is ready for verification"}),
+    ));
+    assert_eq!(again["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        again["result"]["Err"]["message"],
+        "this task's run already reported completion, so the report is on the record; begin-task-verification moves it to verifying when the Host is ready"
+    );
+    // The task reads completion_requested: evidence, never completion.
+    let read = host.call(request(
+        "report-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    ));
+    assert_eq!(ok(&read)["data"]["state"], "completion_requested");
+    // The Host's own gate takes the task to verifying — and its command id
+    // replays the same way, the journaled command answering for the clock
+    // and revision the first attempt consumed.
+    let begun = host.call(request(
+        "report-verify",
+        json!({"kind":"begin_task_verification","task_id":"staffing-task"}),
+    ));
+    ok_step("report-verify", &begun);
+    let begun_again = host.call(request(
+        "report-verify",
+        json!({"kind":"begin_task_verification","task_id":"staffing-task"}),
+    ));
+    assert_eq!(
+        ok_step("report-verify-again", &begun_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("report-verify-again", &begun_again)["data"]["sequence"],
+        ok_step("report-verify", &begun)["data"]["sequence"],
+        "the begin-verification replay lands on its own original receipt"
+    );
+    let verifying = host.call(request(
+        "report-read-verifying",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    ));
+    assert_eq!(ok(&verifying)["data"]["state"], "verifying");
 }
 
 #[test]
@@ -1796,11 +1934,10 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
     // start-prepared-task against this not-started task: typed refusals
     // with exit 2 (the commands are on the wire and authorized; the state
     // machine refuses the transition).
-    // run-started-dispatch and start-prepared-task refuse with the
-    // precondition code; request-task-completion against an unstarted task
-    // maps the domain's illegal transition to invalid_request. All are exit
-    // 2 with typed errors — the commands are on the wire and authorized,
-    // the state machine refuses the transition. The dangerous operations
+    // All refuse with the precondition code, each sentence naming the state
+    // that answered: exit 2 with typed errors — the commands are on the wire
+    // and authorized, the state machine refuses the transition. The
+    // dangerous operations
     // carry their explicit `--yes` so what is observed here is the daemon's
     // refusal, not the CLI's own authorization gate (exit 3).
     for (arguments, code) in [
@@ -1815,7 +1952,7 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
                 "disp_ghost",
                 "report",
             ],
-            "invalid_request",
+            "failed_precondition",
         ),
         (
             vec![

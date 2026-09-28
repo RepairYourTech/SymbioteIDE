@@ -1505,6 +1505,48 @@ fn lifecycle_updates_journal_once_and_denied_worker_does_not_mutate() {
 }
 
 #[test]
+fn journaled_task_command_reads_back_whole_and_replays_byte_identically() {
+    // A Host arm that stamps its own clock or reads `expected_revision` off
+    // the live record cannot rebuild the bytes `apply_task` journaled, so the
+    // replay it needs is the journaled command itself: read back whole, clock
+    // and revision included, re-applying it must be a replay.
+    let mut store = Store::memory().unwrap();
+    let (_, _, roles) = register(&mut store, "one");
+    let (task, stream) = task_records("one");
+    store
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
+        .unwrap();
+    store
+        .apply_task(task.id(), start_command(&task, &roles[0]))
+        .unwrap();
+    let command = TaskCommand {
+        id: id!(CommandId, "unit-clock"),
+        expected_revision: Revision(1),
+        actor: Actor::Worker(id!(DispatchId, "dispatch")),
+        at: Timestamp(1_724_800_000_000),
+        action: TaskAction::RequestCompletion {
+            dispatch_id: id!(DispatchId, "dispatch"),
+            report: "the change is ready for verification".into(),
+        },
+    };
+    assert!(store.journaled_task_command(&command.id).unwrap().is_none());
+    let first = store.apply_task(task.id(), command.clone()).unwrap();
+    let read = store
+        .journaled_task_command(&command.id)
+        .unwrap()
+        .expect("the applied command is journaled");
+    assert_eq!(
+        read, command,
+        "the command reads back whole, clock included"
+    );
+    // The read-back re-applies exactly what was journaled: a replay of the
+    // recorded intent, landing on the row the first attempt owns.
+    let receipt = store.apply_task(task.id(), read).unwrap();
+    assert_eq!(receipt.sequence, first.sequence);
+    assert!(receipt.replayed);
+}
+
+#[test]
 fn pre_dispatch_states_are_durable_and_refusals_write_nothing() {
     let temporary = Temporary::new();
     let mut store = Store::open(temporary.database()).unwrap();

@@ -77,6 +77,41 @@ model turn is still gated on user authorization for credentials and billing.
 Nothing schedules runs automatically. Durable session resume/reconnect and
 multi-turn tool-result round trips remain pending (#465/#464 stay open).
 
+## A worker's report as a first-class command
+
+The same transition the runner files (`TaskAction::RequestCompletion` under
+`Actor::Worker(dispatch)`) is reachable as the CLI command
+`request-task-completion <task_id> <dispatch_id> <report>` — operation
+`request_task_completion` (protocol v1.12), classified `Risk::Mutation`.
+It is the worker-side proxy: the Host constructs the actor from the caller's
+dispatch id and the domain binds that actor to the task's actual current
+dispatch, so a report never bypasses verification, independent review, or
+any Host gate past `CompletionRequested`.
+
+Three properties are pinned on the wire (daemon test
+`a_workers_report_replays_is_named_by_state_and_never_completes`):
+
+- **A lost response replays.** The arm stamps its own clock and reads
+  `expected_revision` off the live record, so it cannot rebuild the bytes a
+  first attempt journaled. The store's `journaled_task_command` hands the
+  recorded command back and the arm re-applies it byte-identically: the same
+  command id answers `replayed: true` on the original receipt's sequence, a
+  different report under a used id is `idempotency_conflict`, and a second
+  filing under a new id is refused by the state the first attempt moved —
+  by name. `cancel-task`, `interrupt-task`, `begin-task-verification`,
+  `recover-task`, `block-task` and `unblock-task` share the same
+  journaled-replay answer, because they share the same rebuilt-bytes shape.
+- **A state refusal names the state and the move that answers it.** Ready
+  and its pre-dispatch family point at `start-prepared-task`;
+  `completion_requested` points at `begin-task-verification` with the
+  report already on the record; `failed`/`interrupted` point at
+  `recover-task`; a Running task answers on identity (a foreign dispatch
+  id never speaks for the task); a closed task says so. A report that says
+  nothing is refused as the shape it is.
+- **The report is evidence, never completion.** The task reads
+  `completion_requested` after the report and `verifying` only through the
+  Host's own `begin-task-verification`.
+
 ## A lost activation response
 
 A disconnected client does not roll back a committed command, so the

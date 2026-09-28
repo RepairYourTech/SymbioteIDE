@@ -819,6 +819,39 @@ impl Store {
         Ok(receipt)
     }
 
+    /// The task command this journal already recorded under one command id,
+    /// read back whole. `apply_task` replays by comparing the request a
+    /// caller sends against the bytes it journaled, which only matches when
+    /// the caller can rebuild those bytes — and a Host arm that stamps its
+    /// own clock or reads `expected_revision` off the live record cannot,
+    /// because both move the moment the first attempt lands. Handing the
+    /// journaled command back is what makes a lost-response retry a replay
+    /// of the recorded intent rather than a fight with a clock: the caller
+    /// re-applies exactly what it applied, the byte comparison sees the
+    /// identical request, and the receipt says `replayed`.
+    ///
+    /// `None` when this command id has no journal row yet — the command has
+    /// never been applied, so there is nothing to replay. A row under this
+    /// id whose payload is not a task transition is an idempotency
+    /// conflict by construction: the id names some other operation.
+    pub fn journaled_task_command(&self, id: &CommandId) -> Result<Option<TaskCommand>> {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::TaskChanged { command, .. } => Ok(Some(*command)),
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
     /// The change stream as it stands. A stream is written by
     /// [`Store::apply_stream`] and by nothing else, so reading it back is
     /// how a caller checks what it wrote: without this the only way to learn
