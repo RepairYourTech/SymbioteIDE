@@ -130,6 +130,23 @@ impl Store {
             transaction.commit()?;
             return Ok(receipt);
         }
+        // Elevation, not re-grant: a permission the dispatch's binding
+        // access already carries needs no lease — answered before the
+        // consumer rules, because "nothing to elevate" is more specific
+        // than "no consumer for it" and true whichever consumer set exists.
+        let binding_body: String = transaction
+            .query_row(
+                "SELECT body FROM workforce_bindings WHERE project_id=?1 AND role_id=?2",
+                params![lease.project_id.as_str(), task.role_id().as_str()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::RelationshipMismatch)?;
+        let binding: symbiote_workforce::BindingConfiguration =
+            serde_json::from_str(&binding_body).map_err(|_| StoreError::InvalidBinding)?;
+        if binding.binding.access.grants.contains(&lease.permission) {
+            return Err(StoreError::ElevationRegrant);
+        }
         // Enforcement consumers so far (#269): the broker's UseCredential
         // gate (#217) and the native shell-tool path's ExecuteProcess gate
         // — both consult `active_elevation` at the run's clock. Deciding a
@@ -140,7 +157,7 @@ impl Store {
             lease.permission,
             Permission::UseCredential | Permission::ExecuteProcess
         ) {
-            return Err(StoreError::InvalidElevation);
+            return Err(StoreError::ElevationUnconsumed);
         }
         // Runtime-aware consumer rule: every consumer gate lives on the
         // NATIVE loop. The external harness never consults
@@ -152,22 +169,7 @@ impl Store {
         // ExternalHarness rejection) so a future third runtime kind
         // fails closed, exactly like the permission allowlist above.
         if dispatch.contract().profile().runtime != symbiote_domain::RuntimeKind::NativeSymbiote {
-            return Err(StoreError::InvalidElevation);
-        }
-        // Elevation, not re-grant: a permission the dispatch's binding
-        // access already carries needs no lease.
-        let binding_body: String = transaction
-            .query_row(
-                "SELECT body FROM workforce_bindings WHERE project_id=?1 AND role_id=?2",
-                params![lease.project_id.as_str(), task.role_id().as_str()],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or(StoreError::RelationshipMismatch)?;
-        let binding: symbiote_workforce::BindingConfiguration =
-            serde_json::from_str(&binding_body).map_err(|_| StoreError::InvalidElevation)?;
-        if binding.binding.access.grants.contains(&lease.permission) {
-            return Err(StoreError::InvalidElevation);
+            return Err(StoreError::ElevationUnenforceableRuntime);
         }
         // The Team's access ceiling is law: no decision elevates beyond it.
         let team =

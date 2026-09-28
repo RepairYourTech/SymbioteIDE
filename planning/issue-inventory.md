@@ -1003,3 +1003,52 @@ splitting them is a protocol-visible vocabulary change and is the same shape of
 work as the state-naming refusal this pass built, applied one layer down.
 `request_task_completion` remains the next `raw`-only mutation after the
 elevation pair.
+
+## The fifteenth pass: a refusal that names the rule it refused
+
+The fourteenth pass named the state refusal and recorded, rather than fixed,
+the carry: the three grant-side refusals — a re-grant of a permission the
+binding already carries, a permission with no enforcement consumer, a decision
+on a dispatch whose runtime has no consumer gate — all collapsed into one
+`StoreError::InvalidElevation` and surfaced as `invalid_request: invalid
+request shape or field value`. The re-measurement (`elev2_run.sh` against the
+committed build) reproduced exactly that: two of the six "every way of getting
+it wrong" rows read the generic shape sentence, and an operator reading it
+goes looking for a typo that does not exist.
+
+The fix splits the collapsed variant into three named ones —
+`ElevationRegrant`, `ElevationUnconsumed`, `ElevationUnenforceableRuntime` —
+each payload-free, each mapped to `failed_precondition` (the family the
+ceiling refusal was already in), each named at the Host with its remedy in
+the sentence. The naming lives in `storage_error`, the one place a store
+refusal becomes a protocol error, beside the dispatch-refusal and gate
+naming that already existed; the sentences are constants of a closed
+vocabulary, never input.
+
+The split exposed and fixed an ordering defect of its own: the re-grant check
+ran *after* the consumer allowlist, so a MutateStream re-grant was answered
+"no enforcement consumer" — true but not the point — and the re-grant check's
+binding parse was masked by the same collapsed variant. The re-grant check now
+runs first ("nothing to elevate" is more specific than "no consumer for it"
+and true whichever consumer set exists), and a binding parse failure maps to
+`InvalidBinding`, the corruption it actually is, instead of an elevation
+refusal it never was.
+
+The daemon test's refusal table now pins both sentences through the wire (the
+re-grant row asserts `failed_precondition` plus "nothing to elevate"; a new
+no-consumer row asserts the rule and names the two consumers), the store and
+runner pins assert the named variants, and the
+`every_named_store_refusal_maps_to_a_typed_client_error` vocabulary test
+carries all three.
+
+Held by five dying mutants, all verified: the re-grant and unconsumed
+variants swapped (each store pin dies on the other's name); the runtime
+variant swapped to a wrong one (the runner's external-dispatch pin dies); and
+each of the two new sentences truncated (each daemon wire pin dies on its own
+assertion).
+
+Carried: `request_task_completion` remains the next `raw`-only mutation; and
+the store's attribution law has now been named twice (state by the Host,
+grant-side by the store) — the remaining un-named store refusal in this file
+is the payload-free `InvalidElevation` (validate/id-mismatch), which is
+corruption-shaped and arguably should stay unnamed.

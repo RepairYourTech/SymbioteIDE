@@ -668,13 +668,19 @@ operator assembles:
   task's next run re-mints the identical id and the answer licenses exactly
   the run that comes back. An ask a refused run filed is therefore
   answerable after the refusal, which is the only way it could be answered
-  at all. A decision may not name a permission its binding already carries,
-  may not elevate past the Team's access ceiling, and may only name a
-  permission with an enforcement consumer — which is how a Project that
-  asked for something ungrantable ends up with an answer that is a refusal.
-  A decision on a task that is neither running nor failed-with-its-dispatch
-  is refused with the state named (`ready`, `queued`, …) and the way back —
-  recover-task — beside it, never as a shape error.
+  at all. A decision may not name a permission its binding already carries
+  (refused as `failed_precondition`: there is nothing to elevate, no lease
+  is needed and none can be granted), may not elevate past the Team's
+  access ceiling (refused the same way: the ceiling is law), and may only
+  name a permission with an enforcement consumer (refused with the
+  consumers there are named — `use_credential` and `execute_process` so
+  far); a decision on a dispatch whose runtime has no consumer gate is
+  refused the same way. Each is a rule about what a license WOULD mean,
+  refused by name rather than as a shape error, because an operator
+  reading `invalid request shape or field value` goes looking for a typo
+  that does not exist. A decision on a task that is neither running nor
+  failed-with-its-dispatch is refused with the state named (`ready`,
+  `queued`, …) and the way back — recover-task — beside it.
 - `elevations <project_id>` is the ledger: every ask the Project was sent and
   every decision made on it, each decision with `standing` — `live`, `expired`,
   `revoked` or `denied` — read at the clock the answer publishes, so a reader

@@ -2315,17 +2315,17 @@ mod tests {
                 CommandId::new("elevate-allowlist-network").unwrap(),
                 lease("elevate-allowlist-network", Permission::Network),
             ),
-            Err(symbiote_store::StoreError::InvalidElevation)
+            Err(symbiote_store::StoreError::ElevationUnconsumed)
         ));
         // MutateStream is refused too; for a Running dispatch its binding
-        // always carries MutateStream, so the never-re-grant check shadows
-        // the allowlist here — either way deciding it refuses.
+        // always carries MutateStream, so the never-re-grant check answers
+        // first — now with its own name, and still a refusal either way.
         assert!(matches!(
             store.decide_elevation(
                 CommandId::new("elevate-allowlist-mutate").unwrap(),
                 lease("elevate-allowlist-mutate", Permission::MutateStream),
             ),
-            Err(symbiote_store::StoreError::InvalidElevation)
+            Err(symbiote_store::StoreError::ElevationRegrant)
         ));
         // ExecuteProcess has the native shell-tool consumer (#269): the
         // decision licenses, the ask alone never did.
@@ -2388,6 +2388,10 @@ mod tests {
                     ..denial.clone()
                 },
             ),
+            // approved stays false through the struct update, so this is the
+            // invalid-lease law refusing a "grant" whose window is a
+            // denial's — a shape the caller cannot send over the wire
+            // anyway, and evidence that the store's law fires first.
             Err(symbiote_store::StoreError::InvalidElevation)
         ));
         store
@@ -2641,7 +2645,7 @@ mod tests {
             assert!(
                 matches!(
                     store.decide_elevation(CommandId::new(id).unwrap(), lease(id, permission)),
-                    Err(symbiote_store::StoreError::InvalidElevation)
+                    Err(symbiote_store::StoreError::ElevationUnenforceableRuntime)
                 ),
                 "a decision on an EXTERNAL_HARNESS dispatch must refuse: {id}"
             );

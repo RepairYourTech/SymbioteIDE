@@ -30,6 +30,12 @@ fn storage_error(error: StoreError) -> ProtocolError {
             ErrorCode::FailedPrecondition
         }
         StoreError::InvalidElevation => ErrorCode::InvalidRequest,
+        // The three grant-side rules are preconditions the record never met
+        // — the same family as the ceiling, which is `failed_precondition`
+        // already — not malformed requests.
+        StoreError::ElevationRegrant
+        | StoreError::ElevationUnconsumed
+        | StoreError::ElevationUnenforceableRuntime => ErrorCode::FailedPrecondition,
         StoreError::LeaseConflict(_) => ErrorCode::Conflict,
         StoreError::ResourceExhausted => ErrorCode::ResourceExhausted,
         StoreError::InvalidTeam => ErrorCode::InvalidRequest,
@@ -56,6 +62,31 @@ fn storage_error(error: StoreError) -> ProtocolError {
     // precondition message and lose the answer the operator asked for.
     if let StoreError::DispatchRefused(refusal) = &error {
         protocol_error.message = format!("dispatch refused by recorded state ({})", refusal.name());
+    }
+    // The three grant-side elevation refusals are a closed vocabulary of
+    // rules about what a license WOULD mean, and each names its own remedy —
+    // the same reason a dispatch refusal is named. Without this an approval
+    // that cannot license anything arrives as the generic shape sentence,
+    // and an operator reading it goes looking for a typo that does not
+    // exist. Nothing here echoes input: the variants are payload-free and
+    // the sentences are constants.
+    if let StoreError::ElevationRegrant = &error {
+        protocol_error.message = "this dispatch's binding already carries that permission, so \
+            there is nothing to elevate; no lease is needed and none can be granted"
+            .to_owned();
+    }
+    if let StoreError::ElevationUnconsumed = &error {
+        protocol_error.message = "no enforcement consumer consults that permission yet, so an \
+            approval would license nothing and only look like it did; the consumers so far \
+            are use_credential (the broker's lease gate) and execute_process (the native \
+            shell-tool path)"
+            .to_owned();
+    }
+    if let StoreError::ElevationUnenforceableRuntime = &error {
+        protocol_error.message = "every enforcement consumer lives on the native loop, so a \
+            grant on this dispatch's runtime would license nothing; its refusals are the \
+            driver's own and no lease reaches them"
+            .to_owned();
     }
     // An unsatisfied gate names itself for the same reason. The gates are
     // bounded (the graph answer caps them), each is a recorded edge, and each
@@ -3376,6 +3407,15 @@ mod storage_error_tests {
             (StoreError::InvalidPreparation, ErrorCode::InvalidRequest),
             (StoreError::InvalidProvider, ErrorCode::InvalidRequest),
             (StoreError::InvalidElevation, ErrorCode::InvalidRequest),
+            (StoreError::ElevationRegrant, ErrorCode::FailedPrecondition),
+            (
+                StoreError::ElevationUnconsumed,
+                ErrorCode::FailedPrecondition,
+            ),
+            (
+                StoreError::ElevationUnenforceableRuntime,
+                ErrorCode::FailedPrecondition,
+            ),
             (StoreError::InvalidBinding, ErrorCode::InvalidRequest),
             (StoreError::InvalidRoute, ErrorCode::InvalidRequest),
             (StoreError::InvalidTeam, ErrorCode::InvalidRequest),

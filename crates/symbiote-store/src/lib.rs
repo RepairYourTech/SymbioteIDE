@@ -79,7 +79,24 @@ pub enum StoreError {
     /// travels in the one dispatch-refusal vocabulary, so it is never
     /// collapsed into a generic precondition message.
     DispatchRefused(DispatchRefusal),
+    /// A grant-shaped decision that would license nothing: the three rules
+    /// that refuse an APPROVAL each name their own variant, because the
+    /// remedy differs — a re-grant needs no lease at all, a permission with
+    /// no enforcement consumer is ungrantable until its consumer lands, and
+    /// an external-harness dispatch never consults a lease. A denial skips
+    /// all three (it licenses nothing by definition) and a state refusal is
+    /// the Host's named answer, not a store variant.
     InvalidElevation,
+    /// The permission is already carried by the dispatch's binding access:
+    /// there is nothing to elevate.
+    ElevationRegrant,
+    /// No enforcement consumer consults this permission, so an approval
+    /// would license nothing and could mislead an auditor.
+    ElevationUnconsumed,
+    /// The dispatch's runtime has no consumer gate: every consumer lives on
+    /// the native loop, so a decision on any other runtime licenses
+    /// nothing regardless of the permission.
+    ElevationUnenforceableRuntime,
     ElevationCeiling,
     ResourceExhausted,
 }

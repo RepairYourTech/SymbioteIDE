@@ -1171,7 +1171,7 @@ fn elevation_leases_are_attributable_bounded_and_sticky() {
     unconsumed.permission = Permission::Network;
     assert!(matches!(
         store.decide_elevation(id!(CommandId, "elevate-beyond"), unconsumed),
-        Err(StoreError::InvalidElevation)
+        Err(StoreError::ElevationUnconsumed)
     ));
     // Raise the ceiling to admit UseCredential (the binding grants stay
     // without it — that is what makes this an ELEVATION).
@@ -1195,7 +1195,7 @@ fn elevation_leases_are_attributable_bounded_and_sticky() {
     regrant.permission = Permission::MutateStream;
     assert!(matches!(
         store.decide_elevation(id!(CommandId, "elevate-regrant"), regrant),
-        Err(StoreError::InvalidElevation)
+        Err(StoreError::ElevationRegrant)
     ));
     // The approval licenses exactly this dispatch, until it does not:
     // expiry is the automatic revocation, checked at every read.

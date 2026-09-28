@@ -7381,14 +7381,35 @@ fn an_elevation_ask_can_be_read_answered_and_taken_back() {
             response,
         )
     };
-    // A permission the binding already carries needs no lease at all.
-    let (code, _, _) = refusal(
+    // A permission the binding already carries needs no lease at all, and
+    // the answer names THAT — not the generic shape sentence that used to
+    // send an operator looking for a typo.
+    let (code, message, _) = refusal(
         "elevation-regrant",
         json!({"kind":"decide_elevation","task_id":"elevation-task",
             "dispatch_id":dispatch_id,"permission":"mutate_stream","approved":true,
             "reason":"already carried","window_ms":300_000}),
     );
-    assert_eq!(code, "invalid_request", "a re-grant is refused");
+    assert_eq!(code, "failed_precondition", "a re-grant is refused");
+    assert!(
+        message.contains("nothing to elevate"),
+        "the re-grant refusal names the rule: {message:?}"
+    );
+    // A permission no consumer consults is ungrantable until its consumer
+    // lands, and the answer names the consumers there are.
+    let (code, message, _) = refusal(
+        "elevation-unconsumed",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"network","approved":true,
+            "reason":"wants the network","window_ms":300_000}),
+    );
+    assert_eq!(code, "failed_precondition", "{message:?}");
+    assert!(
+        message.contains("no enforcement consumer")
+            && message.contains("use_credential")
+            && message.contains("execute_process"),
+        "the no-consumer refusal names the rule and the consumers: {message:?}"
+    );
     // A permission the ceiling does not carry is law, not preference, and a
     // decision that would elevate past it is a precondition the record never
     // met rather than a malformed request.
