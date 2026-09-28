@@ -264,6 +264,34 @@ fn journaled_task_replay(
 /// reaches this read with a moved state — the journaled command replays
 /// before the record is consulted again — so naming the state here cannot
 /// bury a replay.
+/// The stream twin of [`journaled_task_replay`]. A stream arm rebuilds its
+/// command from live observations — a worktree head, a Root head, a revision
+/// that moved — so the bytes a retry produces never match what the first
+/// attempt journaled. The journaled command and the access snapshot it was
+/// accepted under are the retry: re-applied byte-identically, they answer
+/// with the original receipt; a used id under a different intent is a
+/// conflict with the journal before any state check names another refusal;
+/// an unused id falls through.
+fn journaled_stream_replay(
+    store: &mut Store,
+    request: &Request,
+    stream_id: &symbiote_domain::ChangeStreamId,
+    asserted: &symbiote_domain::StreamAction,
+) -> Result<Option<ResponseBody>, ProtocolError> {
+    match store
+        .journaled_stream_command(&request.command_id)
+        .map_err(storage_error)?
+    {
+        Some((command, access)) if &command.action == asserted => store
+            .apply_stream(stream_id, command, &access)
+            .map(receipt)
+            .map(Some)
+            .map_err(storage_error),
+        Some(_) => Err(ProtocolError::new(ErrorCode::IdempotencyConflict)),
+        None => Ok(None),
+    }
+}
+
 fn completion_refusal(
     task: &symbiote_domain::Task,
     dispatch_id: &symbiote_domain::DispatchId,
@@ -1184,6 +1212,24 @@ fn execute(
             })?;
             let observed = symbiote_domain::CommitSha::new(head.commit.as_str())
                 .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            // The journaled command and the access it was accepted under
+            // are the retry: this arm rebuilt every observation fresh, so
+            // the bytes it produces never match what the first attempt
+            // journaled once the first attempt landed. The replay comes
+            // BEFORE any rebuilt clock, because a clock helper that reads
+            // this command id's journal row would refuse the retry it is
+            // supposed to serve; a different intent under the used id still
+            // conflicts by name.
+            let asserted = symbiote_domain::StreamAction::Validate {
+                head: observed.clone(),
+                target: stream.target().clone(),
+                run: run.clone(),
+            };
+            if let Some(replayed) =
+                journaled_stream_replay(store, request, task_record.stream_id(), &asserted)?
+            {
+                return Ok(replayed);
+            }
             let at = start_timestamp(store, request)?;
             let command = symbiote_domain::StreamCommand {
                 id: request.command_id.clone(),
@@ -1385,6 +1431,22 @@ fn execute(
                     message: "integrated checkout is not at the stream's recorded head".into(),
                 });
             }
+            // The journaled command and the access it was accepted under
+            // are the retry: this arm rebuilt every observation fresh, so
+            // the bytes it produces never match what the first attempt
+            // journaled once the first attempt landed. Replaying before the
+            // journal can compare answers a lost response instead of
+            // fighting it; a different intent under the used id still
+            // conflicts by name.
+            let asserted = symbiote_domain::StreamAction::Integrate {
+                head: stream.head().clone(),
+                target: stream.target().clone(),
+            };
+            if let Some(replayed) =
+                journaled_stream_replay(store, request, task_record.stream_id(), &asserted)?
+            {
+                return Ok(replayed);
+            }
             let command = symbiote_domain::StreamCommand {
                 id: request.command_id.clone(),
                 expected_revision: stream.revision(),
@@ -1411,6 +1473,17 @@ fn execute(
             // `symbiote_worktrees::release` — a policy the crate designed and
             // documented — had no production caller at all.
             let task_record = store.task(task_id).map_err(storage_error)?;
+            // The retry comes first and carries no observation to rebuild: a
+            // release whose first attempt succeeded leaves the stream
+            // `Released`, which the state check below would refuse — so the
+            // journaled command answers before that check can misread the
+            // replay as a second removal.
+            let asserted = symbiote_domain::StreamAction::Release;
+            if let Some(replayed) =
+                journaled_stream_replay(store, request, task_record.stream_id(), &asserted)?
+            {
+                return Ok(replayed);
+            }
             let dispatch = task_record
                 .current_dispatch()
                 .ok_or_else(dispatch_binding_refused)?;
@@ -1522,6 +1595,16 @@ fn execute(
             // never deleted, so every commit survives this. Only the checkout
             // goes, and only with it uncommitted files.
             let task_record = store.task(task_id).map_err(storage_error)?;
+            // The retry comes first, for the same reason the state checks
+            // below precede the removal: a replay must answer the journal,
+            // never run the destructive half again nor refuse itself for a
+            // state the first attempt already moved.
+            let asserted = symbiote_domain::StreamAction::Cancel;
+            if let Some(replayed) =
+                journaled_stream_replay(store, request, task_record.stream_id(), &asserted)?
+            {
+                return Ok(replayed);
+            }
             let stream = store
                 .change_stream(task_record.stream_id())
                 .map_err(storage_error)?;
@@ -1883,6 +1966,22 @@ fn execute(
                 })?;
             let target = symbiote_domain::CommitSha::new(at_root.commit.as_str())
                 .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
+            // The journaled command and the access it was accepted under
+            // are the retry: this arm rebuilt every observation fresh, so
+            // the bytes it produces never match what the first attempt
+            // journaled once the first attempt landed. Replaying before the
+            // journal can compare answers a lost response instead of
+            // fighting it; a different intent under the used id still
+            // conflicts by name.
+            let asserted = symbiote_domain::StreamAction::Advance {
+                head: head.clone(),
+                target: target.clone(),
+            };
+            if let Some(replayed) =
+                journaled_stream_replay(store, request, task_record.stream_id(), &asserted)?
+            {
+                return Ok(replayed);
+            }
             let command = symbiote_domain::StreamCommand {
                 id: request.command_id.clone(),
                 expected_revision: stream.revision(),
@@ -2092,6 +2191,22 @@ fn execute(
                         onto.as_str()
                     ),
                 });
+            }
+            // The journaled command and the access it was accepted under
+            // are the retry: this arm rebuilt every observation fresh, so
+            // the bytes it produces never match what the first attempt
+            // journaled once the first attempt landed. Replaying before the
+            // journal can compare answers a lost response instead of
+            // fighting it; a different intent under the used id still
+            // conflicts by name.
+            let asserted = symbiote_domain::StreamAction::Reconcile {
+                head: head.clone(),
+                target: onto.clone(),
+            };
+            if let Some(replayed) =
+                journaled_stream_replay(store, request, task_record.stream_id(), &asserted)?
+            {
+                return Ok(replayed);
             }
             let command = symbiote_domain::StreamCommand {
                 id: request.command_id.clone(),

@@ -2373,6 +2373,25 @@ fn a_stream_transition_is_written_journalled_and_audited() {
         retry.replayed,
         "an identical retry replays the first receipt"
     );
+    // The journaled command reads back whole — head, target, run, clock,
+    // revision — with the access snapshot it was accepted under, and the
+    // read-back re-applies byte-identically: a replay of the recorded
+    // intent, landing on the row the first attempt owns. This is what a
+    // Host arm that rebuilds its command from live observations needs,
+    // because it can never reproduce those bytes itself.
+    let journaled = store
+        .journaled_stream_command(&id!(CommandId, "validate"))
+        .unwrap()
+        .expect("the applied command is journaled")
+        .0;
+    let replay_back = store.apply_stream(stream_id, journaled, &access).unwrap();
+    assert!(replay_back.replayed);
+    assert!(
+        store
+            .journaled_stream_command(&id!(CommandId, "never-sent"))
+            .unwrap()
+            .is_none()
+    );
     let events = store.events(&project.id, 0, 16).unwrap().events;
     assert_eq!(
         events

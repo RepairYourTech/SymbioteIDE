@@ -4733,6 +4733,39 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
         json!({"kind":"integrate_change_stream","task_id":"run-task"}),
     ));
     ok_step("run-integrate", &integrated);
+    // A lost integrate response replays: the retry re-observes the Root (now
+    // at the stream's head) and rebuilds different bytes, so the answer it
+    // needs is the journaled command. The replay must also be a no-op on the
+    // filesystem half — the merge has already landed.
+    let integrated_again = host.call(request(
+        "run-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        ok_step("run-integrate-replay", &integrated_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("run-integrate-replay", &integrated_again)["data"]["sequence"],
+        ok(&integrated)["data"]["sequence"],
+    );
+    // A different intent under the used id conflicts with the journal — the
+    // stream's own state would answer something else, and the conflict is
+    // the truer refusal: the id is spent, whatever the stream is.
+    let released_under_used_id = host.call(request(
+        "run-integrate",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        released_under_used_id["result"]["Err"]["code"],
+        "idempotency_conflict"
+    );
+    // ...and the conflict was named by the Host, before the release's own
+    // evidence checks and removal ran: the checkout is still on disk.
+    assert!(
+        worktree.exists(),
+        "a conflict under a used id removes nothing"
+    );
     let branch = Command::new("git")
         .current_dir(&repository)
         .args(["branch", "--contains", head.as_str()])
@@ -4793,6 +4826,23 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
     assert!(
         !worktree.exists(),
         "the worktree directory is gone after the release"
+    );
+    // A lost release response replays too — and this is the sharp one: the
+    // first attempt left the stream `Released`, which the arm's own state
+    // check refuses, so a retry without the journaled answer would read a
+    // successful removal as a second, refused removal. The replay answers
+    // from the journal and removes nothing twice.
+    let released_again = host.call(request(
+        "run-release",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        ok_step("run-release-replay", &released_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("run-release-replay", &released_again)["data"]["sequence"],
+        ok(&released)["data"]["sequence"],
     );
     let marker = base.join("staffing-demo").join(format!(
         "{}.json",
@@ -5946,13 +5996,11 @@ fn a_stream_only_advances_onto_work_built_on_its_own_head() {
     .unwrap()
     .trim()
     .to_owned();
-    ok_step(
+    let advance = host.call(request(
         "advance-advance",
-        &host.call(request(
-            "advance-advance",
-            json!({"kind":"advance_change_stream","task_id":"advance-task"}),
-        )),
-    );
+        json!({"kind":"advance_change_stream","task_id":"advance-task"}),
+    ));
+    ok_step("advance-advance", &advance);
     // The stream's head is now the work, and its target is where the work
     // lands — the Root's own HEAD, which has not moved. So the whole tail of
     // the lifecycle is reachable from a task that did something.
@@ -5963,6 +6011,32 @@ fn a_stream_only_advances_onto_work_built_on_its_own_head() {
             json!({"kind":"validate_change_stream","task_id":"advance-task",
             "verification_run":"advance-verify"}),
         )),
+    );
+    // A lost response replays, on both of the observation-bearing commands
+    // above: the retry rebuilds different bytes (the worktree head, the
+    // Root's head, the revision all moved), so the answer it needs is the
+    // journaled command, not a byte comparison it can never win.
+    let advance_again = host.call(request(
+        "advance-advance",
+        json!({"kind":"advance_change_stream","task_id":"advance-task"}),
+    ));
+    assert_eq!(
+        ok_step("advance-advance-replay", &advance_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("advance-advance-replay", &advance_again)["data"]["sequence"],
+        ok(&advance)["data"]["sequence"],
+        "the replay lands on the original receipt"
+    );
+    let validate_again = host.call(request(
+        "advance-validate",
+        json!({"kind":"validate_change_stream","task_id":"advance-task",
+            "verification_run":"advance-verify"}),
+    ));
+    assert_eq!(
+        ok_step("advance-validate-replay", &validate_again)["data"]["replayed"],
+        true
     );
     let stream = host.call(request(
         "advance-read",

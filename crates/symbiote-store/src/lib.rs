@@ -928,6 +928,47 @@ impl Store {
         Ok(receipt)
     }
 
+    /// The stream command this journal already recorded under one command
+    /// id, read back whole with the access snapshot it was accepted under.
+    /// The twin of [`Store::journaled_task_command`], for the same reason:
+    /// `apply_stream` replays by comparing the request a caller sends
+    /// against the bytes it journaled, and a Host arm that rebuilds its
+    /// command from live observations — a worktree head, a Root head, a
+    /// revision that moved — cannot reproduce those bytes on a retry. The
+    /// access comes back with the command because a stream's authority is
+    /// part of its record: the replay re-applies under the snapshot that
+    /// answered the first time, not under whatever the caller presents now.
+    ///
+    /// `None` when the id has no journal row yet; a row whose payload is not
+    /// a stream transition is an idempotency conflict by construction.
+    pub fn journaled_stream_command(
+        &self,
+        id: &CommandId,
+    ) -> Result<
+        Option<(
+            symbiote_domain::StreamCommand,
+            symbiote_domain::AccessSnapshot,
+        )>,
+    > {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::StreamChanged { command, access, .. } => {
+                    Ok(Some((*command, *access)))
+                }
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
     /// Rebuild server-assigned timestamps for identical command retries.
     pub fn consent_command_timestamp(&self, command_id: &CommandId) -> Result<Option<Timestamp>> {
         let body: Option<String> = self
