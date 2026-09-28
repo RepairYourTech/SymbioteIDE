@@ -23,13 +23,42 @@ pub(super) const MIGRATION_V12: &str = "CREATE TABLE elevation_requests (
 ) STRICT;
 PRAGMA user_version = 12;";
 
+/// Whether an elevation record may attach to `task`'s dispatch. Two states
+/// qualify, and the second is what keeps an answered ask from dying with the
+/// run that filed it:
+///
+/// - `Running` under the named dispatch — the original rule. A live run is
+///   the attribution every lease was first written against.
+/// - `Failed` with the SAME dispatch still attached — the run refused and
+///   `file_run_failure` filed the failure without dropping the binding, so
+///   the dispatch the ask names is still the task's own. Its id is minted
+///   deterministically per task (`disp_{task_id}`), so a recovered task's
+///   next run re-mints the identical id: a decision recorded here attaches
+///   to the dispatch that comes back, which is the only way an ask a run
+///   filed can ever be answered by anything but a hand-written file. The
+///   dispatch ids that do NOT come back — after an abandon, a recover of a
+///   task whose binding is gone, a foreign id — name no attachable work
+///   and are refused exactly as before.
+///
+/// Every other state refuses: `Ready`/`Queued`/`Assigned`/`Blocked` have no
+/// dispatch at all, and the post-completion states are closed.
+pub(crate) fn elevation_attaches(task: &Task, dispatch_id: &DispatchId) -> bool {
+    match (task.state(), task.current_dispatch()) {
+        (TaskState::Running, Some(dispatch)) => dispatch.id() == dispatch_id,
+        (TaskState::Failed, Some(dispatch)) => dispatch.id() == dispatch_id,
+        _ => false,
+    }
+}
+
 impl Store {
     /// Records the authority's decision: an approval that licenses the
     /// permission for exactly one dispatch until its window closes, or an
     /// explicit denial (journaled evidence, licenses nothing). The lease
-    /// must attribute a Running dispatch, must not re-grant a permission
-    /// the dispatch's binding access already carries, and must stay within
-    /// the Team's access ceiling.
+    /// must attribute a dispatch that can come back — the Running one, or
+    /// a Failed task whose dispatch binding still names it, because the
+    /// dispatch id is deterministic and the recovered run re-mints it —
+    /// must not re-grant a permission the dispatch's binding access
+    /// already carries, and must stay within the Team's access ceiling.
     pub fn decide_elevation(
         &mut self,
         command_id: CommandId,
@@ -49,17 +78,25 @@ impl Store {
         if let Some(receipt) = replay(&transaction, &command_id, &request)? {
             return Ok(receipt);
         }
-        // Attribution: the elevated dispatch must be the running dispatch
-        // of the named task. Elevation attaches to live work, never to a
-        // hypothetical dispatch identity.
+        // Attribution: the elevated dispatch must be one that can run — the
+        // task's Running dispatch, or the dispatch a Failed task still
+        // carries (whose id the recovered run re-mints). Elevation attaches
+        // to work that exists, never to a hypothetical dispatch identity.
         let task = read_task(&transaction, &lease.task_id)?;
         if task.project_id() != &lease.project_id {
             return Err(StoreError::RelationshipMismatch);
         }
         let dispatch = task.current_dispatch().ok_or(StoreError::NotFound)?.clone();
-        if *task.state() != TaskState::Running || dispatch.id() != &lease.dispatch_id {
+        if !elevation_attaches(&task, &lease.dispatch_id) {
             return Err(StoreError::RelationshipMismatch);
         }
+        // An approval licenses nothing when its dispatch will never run
+        // again, and the checks below ask exactly that: the consumer
+        // allowlist and the runtime rule want a NATIVE dispatch, and both
+        // are satisfied identically whether the run is live now or comes
+        // back after a recover. A Failed task whose stream was abandoned,
+        // or whose dispatch binding was dropped, is refused here by the
+        // same predicate — there is no run for the license to attach to.
         // Everything below this line asks whether a GRANT would license
         // anything, and a denial licenses nothing at all. So it is recorded
         // on attribution alone: "the authority saw this ask and refused it"
@@ -371,8 +408,11 @@ impl Store {
         if task.project_id() != &ask.project_id {
             return Err(StoreError::RelationshipMismatch);
         }
-        let dispatch = task.current_dispatch().ok_or(StoreError::NotFound)?.clone();
-        if *task.state() != TaskState::Running || dispatch.id() != &ask.dispatch_id {
+        // The same predicate a decision reads: a run that refused and failed
+        // its task still names its dispatch, and evidence filed for that
+        // dispatch must stay answerable after the failure — otherwise the
+        // ask's own record would outlive the only state that could answer it.
+        if !elevation_attaches(&task, &ask.dispatch_id) {
             return Err(StoreError::RelationshipMismatch);
         }
         transaction.execute(

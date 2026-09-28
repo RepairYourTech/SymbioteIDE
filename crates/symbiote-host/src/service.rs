@@ -157,6 +157,38 @@ fn decision_timestamp(store: &Store, request: &Request) -> Result<Timestamp, Pro
     now_timestamp()
 }
 
+/// Whether this task's recorded state lets an elevation attach to its
+/// dispatch — the store's own attribution law, read here so the refusal can
+/// name the state instead of arriving as the generic shape error the store's
+/// mapping would give it. `None` means the store will take the record: the
+/// task is Running, or it Failed with the dispatch still attached — the run
+/// refused and filed its failure without dropping the binding, the dispatch
+/// id is minted deterministically per task, and the recovered run re-mints
+/// the identical id, so a decision recorded now licenses exactly the run
+/// that comes back. Every other state is refused by name, because nothing
+/// the operator can do re-mints a dispatch into it.
+fn elevation_state_refusal(task: &symbiote_domain::Task) -> Option<String> {
+    if *task.state() == symbiote_domain::TaskState::Running {
+        return None;
+    }
+    if *task.state() == symbiote_domain::TaskState::Failed && task.current_dispatch().is_some() {
+        return None;
+    }
+    Some(match task.state() {
+        symbiote_domain::TaskState::Failed => {
+            "this task failed and no longer carries a dispatch, so no decision can attach; \
+             recover-task returns it to ready and the next run can be asked afresh"
+                .to_owned()
+        }
+        state => format!(
+            "this task is {} and carries no running dispatch, so a decision has nothing to \
+             attach to; a decision names a dispatch that is running or one a failed task \
+             will re-mint after recover-task",
+            state.name()
+        ),
+    })
+}
+
 fn route_timestamp(store: &Store, request: &Request) -> Result<Timestamp, ProtocolError> {
     if let Some(at) = store
         .route_command_timestamp(&request.command_id)
@@ -2234,6 +2266,17 @@ fn execute(
             // decide_elevation can grant a lease. The durable timestamp
             // keeps retries byte-identical.
             let task_record = store.task(task_id).map_err(storage_error)?;
+            // The same named refusal a decision gives: the store refuses an
+            // ask whose dispatch cannot run and reports it as a shape error,
+            // so the state is named here instead — with the same
+            // failed-but-attached exception, because an ask a refused run
+            // filed is exactly the evidence worth keeping.
+            if let Some(message) = elevation_state_refusal(&task_record) {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message,
+                });
+            }
             let at = match store
                 .elevation_request_timestamp(&request.command_id)
                 .map_err(storage_error)?
@@ -2271,6 +2314,18 @@ fn execute(
             // assert any of them could record a decision nobody made.
             let task = store.task(task_id).map_err(storage_error)?;
             let decided_at = decision_timestamp(store, request)?;
+            // The store's attribution law refuses a decision whose dispatch
+            // cannot run, and its storage mapping reports every such refusal
+            // as the generic shape error — which tells an operator their
+            // typing was wrong when the task's state is what refused. The
+            // same law is consulted here, where the answer can name the
+            // state and the way back.
+            if let Some(message) = elevation_state_refusal(&task) {
+                return Err(ProtocolError {
+                    code: ErrorCode::FailedPrecondition,
+                    message,
+                });
+            }
             // A denial is evidence, not a grant with a short fuse: it carries
             // no window, and the store's own law would refuse the lease this
             // would build. Saying so names the mistake; the typed refusal

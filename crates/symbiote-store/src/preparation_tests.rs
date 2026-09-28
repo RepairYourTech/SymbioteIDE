@@ -1376,3 +1376,206 @@ fn an_elevation_request_is_journaled_evidence_and_never_licenses() {
     drop(store);
     Store::open(temp.database()).unwrap();
 }
+
+/// The attribution slice (#269, fourteenth pass): a run that refuses files
+/// its ask and is failed by the Host WITHOUT dropping the dispatch binding.
+/// The task is `Failed` and still carries the dispatch the ask names — and
+/// because a dispatch id is minted deterministically per task, the recovered
+/// run re-mints the identical id. A decision recorded against that dispatch
+/// licenses exactly the run that comes back; under a Running-only rule the
+/// ask could never be answered by anything but a hand-written file. The
+/// reopen audit must accept the same records, or the ledger the reopen
+/// rebuilds would silently lose what this slice exists to make answerable.
+#[test]
+fn a_decision_attaches_to_a_failed_task_s_own_dispatch_and_survives_reopen() {
+    let temp = Temporary::new();
+    let mut store = Store::open(temp.database()).unwrap();
+    let (project, task) = full_fixture(&mut store, "elevfailed");
+    let task_role = store.task(&task).unwrap().role_id().clone();
+    let request = symbiote_workforce::RouteRequest {
+        project_id: project.clone(),
+        work_id: WorkId::Objective(id!(ObjectiveId, "project-prep-elevfailed")),
+        requested: Some(task_role.clone()),
+        domains: BTreeSet::new(),
+    };
+    let team = store.get_team(&project).unwrap();
+    let decision = symbiote_workforce::resolve_route(&team, &request).unwrap();
+    store
+        .record_route(
+            id!(CommandId, "route-elevfailed"),
+            decision,
+            id!(UserId, "owner"),
+            Timestamp(20),
+        )
+        .unwrap();
+    store
+        .prepare_dispatch(
+            id!(CommandId, "prepare-elevfailed"),
+            task.clone(),
+            id!(UserId, "owner"),
+            Timestamp(30),
+        )
+        .unwrap();
+    let host = Host {
+        id: id!(HostId, "host-elevfailed"),
+        revision: Revision(0),
+        device: id!(DeviceId, "device-elevfailed"),
+        fabric: None,
+        supported_runtimes: vec![RuntimeKind::NativeSymbiote],
+        controls: [
+            symbiote_domain::Control::Filesystem,
+            symbiote_domain::Control::Cancellation,
+            symbiote_domain::Control::CompletionAuthority,
+            symbiote_domain::Control::Process,
+        ]
+        .into_iter()
+        .map(|c| {
+            (
+                c,
+                symbiote_domain::EnforcementClaim {
+                    strength: symbiote_domain::EnforcementStrength::HostEnforced,
+                    evidence: id!(EvidenceId, "proof"),
+                    verified_at: Timestamp(1),
+                    expires_at: Timestamp(1_000_000),
+                },
+            )
+        })
+        .collect(),
+    };
+    let dispatch_id = id!(DispatchId, "dispatch-elevfailed");
+    store
+        .start_prepared_task(
+            id!(CommandId, "start-elevfailed"),
+            task.clone(),
+            dispatch_id.clone(),
+            id!(RuntimeContractId, "contract-elevfailed"),
+            &host,
+            id!(UserId, "owner"),
+            Timestamp(40),
+        )
+        .unwrap();
+
+    // The run refuses: the ask is filed as evidence (Running — the original
+    // rule), then the Host files the failure. The dispatch stays attached.
+    let ask = symbiote_domain::ElevationRequest {
+        id: id!(CommandId, "ask-elevfailed"),
+        project_id: project.clone(),
+        task_id: task.clone(),
+        dispatch_id: dispatch_id.clone(),
+        permission: Permission::UseCredential,
+        reason: "the run referenced a credential without UseCredential".into(),
+        requested_at: Timestamp(45),
+    };
+    store
+        .request_elevation(id!(CommandId, "ask-elevfailed"), ask)
+        .unwrap();
+    let task_record = store.task(&task).unwrap();
+    store
+        .apply_task(
+            &task,
+            TaskCommand {
+                id: id!(CommandId, "run-failed-elevfailed"),
+                expected_revision: task_record.revision(),
+                actor: Actor::Host(id!(HostId, "host-elevfailed")),
+                at: Timestamp(46),
+                action: TaskAction::Fail {
+                    reason: "credential lease refused: use_credential_not_granted".into(),
+                },
+            },
+        )
+        .unwrap();
+    let failed = store.task(&task).unwrap();
+    assert_eq!(failed.state(), &TaskState::Failed);
+    assert_eq!(
+        failed.current_dispatch().map(Dispatch::id),
+        Some(&dispatch_id)
+    );
+
+    // The decision the old rule refused: attached to the FAILED task's own
+    // dispatch. The ceiling is raised first — the fixture's does not carry
+    // UseCredential, and the binding does (the run's refusal is the gap).
+    // The re-grant check needs the binding WITHOUT the permission, so the
+    // lease below is what the composition is.
+    let grant = symbiote_domain::ElevationLease {
+        id: id!(CommandId, "grant-elevfailed"),
+        project_id: project.clone(),
+        task_id: task.clone(),
+        dispatch_id: dispatch_id.clone(),
+        permission: Permission::UseCredential,
+        reason: "the operator answered the ask the refused run filed".into(),
+        approved: true,
+        approved_by: id!(UserId, "owner"),
+        decided_at: Timestamp(50),
+        expires_at: Timestamp(50 + 300_000),
+        revoked_at: None,
+    };
+    assert!(matches!(
+        store.decide_elevation(id!(CommandId, "grant-elevfailed"), grant.clone()),
+        Err(StoreError::ElevationCeiling) | Err(StoreError::InvalidElevation)
+    ));
+    let mut raised = store.get_team(&project).unwrap();
+    raised
+        .access_ceiling
+        .grants
+        .insert(Permission::UseCredential);
+    raised.revision = Revision(1);
+    store
+        .replace_team(
+            id!(CommandId, "team-raise-elevfailed"),
+            Some(Revision(0)),
+            raised,
+            id!(UserId, "owner"),
+            Timestamp(47),
+        )
+        .unwrap();
+    // With the ceiling raised the same decision attaches — the ask is
+    // answered while the run that filed it is gone.
+    store
+        .decide_elevation(id!(CommandId, "grant-elevfailed"), grant)
+        .expect("the failed task's own dispatch is attachable");
+    assert!(
+        store
+            .active_elevation(&dispatch_id, &Permission::UseCredential, Timestamp(51))
+            .unwrap()
+    );
+
+    // A failed task whose dispatch is a DIFFERENT id refuses: only the
+    // task's own dispatch attaches, whatever the state.
+    let foreign = symbiote_domain::ElevationLease {
+        id: id!(CommandId, "grant-foreign-elevfailed"),
+        project_id: project.clone(),
+        task_id: task.clone(),
+        dispatch_id: id!(DispatchId, "dispatch-foreign-elevfailed"),
+        permission: Permission::UseCredential,
+        reason: "a dispatch this task never carried".into(),
+        approved: true,
+        approved_by: id!(UserId, "owner"),
+        decided_at: Timestamp(52),
+        expires_at: Timestamp(52 + 300_000),
+        revoked_at: None,
+    };
+    assert!(matches!(
+        store.decide_elevation(id!(CommandId, "grant-foreign-elevfailed"), foreign),
+        Err(StoreError::RelationshipMismatch)
+    ));
+
+    // The reopen must rebuild the ledger identically: the decision and the
+    // ask both carry the failed-but-attached attribution, and the audit
+    // reads them through the same predicate the write path used.
+    store.integrity_check().unwrap();
+    drop(store);
+    let reopened = Store::open(temp.database()).unwrap();
+    let ledger = reopened.elevations(&project, Timestamp(60)).unwrap();
+    assert_eq!(ledger.leases.len(), 1, "the grant survives the reopen");
+    assert_eq!(ledger.leases[0].lease.id.as_str(), "grant-elevfailed");
+    assert_eq!(
+        ledger.leases[0].standing,
+        symbiote_domain::ElevationStanding::Live
+    );
+    assert_eq!(ledger.requests.len(), 1, "the ask survives the reopen");
+    assert_eq!(
+        ledger.requests[0].decided_by.as_ref().map(|id| id.as_str()),
+        Some("grant-elevfailed"),
+        "the ask the refused run filed reads as answered"
+    );
+}

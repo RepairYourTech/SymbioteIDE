@@ -947,3 +947,59 @@ rather than re-driven, and the client's write rows are the second pass's own.
 * `shell-client-build` in `Bounded Linux proofs` has failed in CI on a crates.io download timeout
   for the `spikes/linux-shell` workspace. That is infrastructure, not a product defect, and it
   passed on the re-run.
+
+## The fourteenth pass: an ask survives the run that filed it
+
+The twelfth pass wrote down what it deliberately did not build: a decision
+attaches to a dispatch that is *running*, and the runner files an ask when a run
+is *refused* — the native credential path returns its typed refusal immediately
+after filing — so the window in which a lease could attach to the dispatch that
+asked for it was already shut by the time the ask existed. This pass built the
+structural half, and the measurement (`attach_run.sh`, transcript in the commit)
+found the shape of it before the fix: a native run driven to
+`use_credential_not_granted` fails its task, the operator's `decide-elevation`
+on that dispatch comes back `invalid_request: invalid request shape or field
+value` — the store's attribution law reported through the shape code — and the
+ledger keeps an ask nobody could ever answer.
+
+The defect was two layers deep. The store's attribution law (a decision must
+attach to a Running dispatch) was correct for grants but wrong for *evidence*:
+the failure is filed without dropping the dispatch binding, and a dispatch id is
+minted deterministically per task (`disp_{task_id}`), so the recovered task's
+next run re-mints the identical id the ask names. The Host then compounded the
+store's refusal by letting it surface as a shape error, which tells an operator
+their typing was wrong when the state is what refused.
+
+The fix reads one shared predicate in three places: the store's
+`decide_elevation` and `request_elevation`, and the reopen audit's
+`ElevationDecided`/`ElevationRequested` arms — a record attaches to a Running
+dispatch or to the dispatch a Failed task still carries; every other state
+refuses exactly as before. The Host consults the same law in its
+`DecideElevation` and `RequestElevation` arms and refuses every non-attachable
+state **by name** (`failed_precondition`, the state's own word, and recover-task
+beside it), so the shape code is never asked to say what a state refusal means.
+
+The loop now closes end to end, pinned by a daemon test
+(`an_asked_elevation_survives_the_run_that_filed_it_and_answers_the_next`): run
+refused → task `failed` with the dispatch still attached → ask on the ledger →
+`decide-elevation` answers it → `recover-task` → `prepare-dispatch` →
+`start-prepared-task` re-mints the same dispatch id → the run completes under
+the answer → crash → reopen → the ledger, the answered ask and the
+`completion_requested` task all read back identically. The store test pins the
+same attribution at the layer that owns it, including the reopen.
+
+Held by three dying mutants (all verified through `mutate.py`): the store
+predicate collapsing back to Running-only (the daemon test's decision refuses,
+and the store test's reopen loses the grant); the Host's state-naming refusal
+dropped (a decision on a `ready` task returns to the generic shape error, which
+the store test cannot see but the daemon's refusal-vocabulary pin does); and the
+reopen audit's `ElevationRequested` arm reverting to Running-only (the store
+test's reopen loses the ask).
+
+Carried, recorded rather than fixed: the three grant-side refusals (re-grant,
+no enforcement consumer, `EXTERNAL_HARNESS` dispatch) still collapse into one
+`StoreError::InvalidElevation` and surface as the generic shape error —
+splitting them is a protocol-visible vocabulary change and is the same shape of
+work as the state-naming refusal this pass built, applied one layer down.
+`request_task_completion` remains the next `raw`-only mutation after the
+elevation pair.

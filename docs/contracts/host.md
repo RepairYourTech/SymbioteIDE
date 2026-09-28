@@ -644,9 +644,11 @@ evidence (`register-project`, `create-work`, `create-task`,
 
 A worker that is refused a permission files an ask
 (`request-elevation <task_id> <dispatch_id> <permission> <reason>`, and the
-runner files one by itself when a run is refused), which is evidence and
-licenses nothing. Three commands close the loop, and all three are ordinary
-operations rather than a file an operator assembles:
+runner files one by itself when a run is refused — which is why an ask
+outlives the run that filed it: the refusal fails the task and the ask stays
+on the ledger), which is evidence and licenses nothing. Three commands close
+the loop, and all three are ordinary operations rather than a file an
+operator assembles:
 
 - `decide-elevation <task_id> <dispatch_id> <permission> <approve|deny>
   <reason> <window_ms>` is the answer. It is dangerous, because granting
@@ -659,11 +661,20 @@ operations rather than a file an operator assembles:
   permission; a denial's window is `0`, and a denial carrying any other is
   refused by name. A window past the domain's bound is refused with the bound
   in the answer, not shortened, so the grant an operator reads back is the
-  grant they gave. A decision still attaches to one **running** dispatch, may
-  not name a permission its binding already carries, may not elevate past the
-  Team's access ceiling, and may only name a permission with an enforcement
-  consumer — which is how a Project that asked for something ungrantable ends
-  up with an answer that is a refusal.
+  grant they gave. A decision attaches to a dispatch that can run: the
+  **running** one, or the one a **failed** task still carries — a run that
+  refused is failed by the Host without dropping its dispatch binding, and
+  the dispatch id is minted deterministically per task, so the recovered
+  task's next run re-mints the identical id and the answer licenses exactly
+  the run that comes back. An ask a refused run filed is therefore
+  answerable after the refusal, which is the only way it could be answered
+  at all. A decision may not name a permission its binding already carries,
+  may not elevate past the Team's access ceiling, and may only name a
+  permission with an enforcement consumer — which is how a Project that
+  asked for something ungrantable ends up with an answer that is a refusal.
+  A decision on a task that is neither running nor failed-with-its-dispatch
+  is refused with the state named (`ready`, `queued`, …) and the way back —
+  recover-task — beside it, never as a shape error.
 - `elevations <project_id>` is the ledger: every ask the Project was sent and
   every decision made on it, each decision with `standing` — `live`, `expired`,
   `revoked` or `denied` — read at the clock the answer publishes, so a reader

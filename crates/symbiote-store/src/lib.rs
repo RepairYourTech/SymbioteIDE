@@ -1540,11 +1540,14 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             EventPayload::ElevationDecided { lease } => {
                 lease.validate().map_err(|_| StoreError::InvalidElevation)?;
                 let task = tasks.get(&lease.task_id).ok_or(StoreError::NotFound)?;
+                // The same attribution the write path reads, through the
+                // same predicate: a decision attaches to a Running dispatch
+                // or to the dispatch a Failed task still carries (the id a
+                // recovered run re-mints). Replaying an old journal — one
+                // written entirely under the Running-only rule — still
+                // passes, because Running is one of the two accepted arms.
                 if task.project_id() != &lease.project_id
-                    || *task.state() != TaskState::Running
-                    || task
-                        .current_dispatch()
-                        .is_none_or(|dispatch| dispatch.id() != &lease.dispatch_id)
+                    || !elevation::elevation_attaches(task, &lease.dispatch_id)
                     || lease.id.as_str() != command_key
                     || revision != 0
                     || request != serde_json::to_string(&event)?
@@ -1593,11 +1596,13 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             EventPayload::ElevationRequested { ask } => {
                 ask.validate().map_err(|_| StoreError::InvalidElevation)?;
                 let task = tasks.get(&ask.task_id).ok_or(StoreError::NotFound)?;
+                // The same predicate the write path reads: an ask filed by a
+                // run that refused (task Failed, dispatch still attached) is
+                // evidence that must survive the reopen, or the ledger the
+                // reopen rebuilds would silently lose the asks this whole
+                // slice exists to make answerable.
                 if task.project_id() != &ask.project_id
-                    || *task.state() != TaskState::Running
-                    || task
-                        .current_dispatch()
-                        .is_none_or(|dispatch| dispatch.id() != &ask.dispatch_id)
+                    || !elevation::elevation_attaches(task, &ask.dispatch_id)
                     || ask.id.as_str() != command_key
                     || revision != 0
                     || request != serde_json::to_string(&event)?

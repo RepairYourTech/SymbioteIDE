@@ -6934,6 +6934,272 @@ fn a_gate_that_holds_a_task_back_is_named_by_the_report_the_projection_and_the_b
     std::fs::remove_dir_all(&repository).ok();
 }
 
+/// The structural half of the elevation loop: a run is refused for lack of a
+/// permission, the ask it filed survives the failure, the operator answers it
+/// AFTER the run is gone, and the answer licenses the run that comes back.
+///
+/// The measurement this test holds: `resolve_native_credential` files its ask
+/// and returns its typed refusal immediately, `file_run_failure` fails the
+/// task without dropping the dispatch binding, and a dispatch id is minted
+/// deterministically per task — so the recovered task's next run re-mints the
+/// identical id the ask names. Under a Running-only attribution rule the
+/// decision could never be recorded and the ask could never be answered by
+/// anything but a hand-written file; the whole loop below was one refusal
+/// named `invalid request shape or field value`.
+#[test]
+fn an_asked_elevation_survives_the_run_that_filed_it_and_answers_the_next() {
+    let (repository, head) = real_repository("elevate-next");
+    let base = std::env::temp_dir().join(format!("symbiote-elevate-next-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the recovered run got its lease"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    // The member carries use_credential — which is what puts it in the
+    // Team's ceiling — while the binding is narrowed below so the run is
+    // refused and a lease is not a re-grant. The binding keeps mutate_stream
+    // (a dispatch cannot compile without it) and drops use_credential.
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "elevate-next-placement",
+        &host.call(request(
+            "elevate-next-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    // Narrow the STORED binding's two access lists so use_credential rides
+    // on the member (ceiling) but not the binding (the run's gate) BEFORE
+    // anything compiles a dispatch: the contract snapshots the binding at
+    // start, so a narrow afterwards would be invisible to the run. The
+    // stored binding is read because the composition just added grants the
+    // fixture does not carry.
+    let stored = host.call(request(
+        "elevate-next-stored-binding",
+        json!({"kind":"get_binding","project_id":"staffing-demo",
+        "binding_id":"engineer-binding"}),
+    ));
+    let held = ok(&stored)["data"].clone();
+    let revision = held["binding"]["revision"].as_u64().unwrap();
+    let mut configuration = held;
+    configuration["binding"]["revision"] = json!(revision + 1);
+    for path in [
+        ["primary", "access", "grants"],
+        ["binding", "access", "grants"],
+    ] {
+        let grants: Vec<Value> = configuration
+            .pointer(&format!("/{}", path.join("/")))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        *configuration
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap() = json!(
+            grants
+                .into_iter()
+                .filter(|grant| grant != &json!("use_credential"))
+                .collect::<Vec<_>>()
+        );
+    }
+    ok_step(
+        "elevate-next-narrow",
+        &host.call(request(
+            "elevate-next-narrow",
+            json!({"kind":"replace_binding","expected_revision":revision,
+            "configuration":configuration}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "elevate-next-task",
+        "elevate-next-task",
+        "elevate-next-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "elevate-next-prepare",
+        &host.call(request(
+            "elevate-next-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"elevate-next-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "elevate-next-start",
+        json!({"kind":"start_prepared_task","task_id":"elevate-next-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("elevate-next-start", &started)["data"]["dispatch_id"].clone();
+
+    // The run refuses: the broker's UseCredential gate sees a binding
+    // without the grant and no live lease. The ask is filed first, then the
+    // typed refusal fails the task — without dropping the dispatch.
+    let refused = host.call(request(
+        "elevate-next-run",
+        json!({"kind":"run_started_dispatch","task_id":"elevate-next-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["message"], "credential lease refused: use_credential_not_granted",
+        "{refused}"
+    );
+    let after = host.call(request(
+        "elevate-next-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"elevate-next-task"}),
+    ));
+    assert_eq!(ok(&after)["data"]["state"], "failed");
+    assert_eq!(
+        ok(&after)["data"]["dispatch"]["id"],
+        dispatch_id,
+        "the failure keeps the dispatch binding: {after}"
+    );
+
+    // The ask the run filed is on the ledger, unanswered.
+    let ledger = host.call(request(
+        "elevate-next-ledger",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let asks = ok(&ledger)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks.len(), 1, "{ledger}");
+    assert_eq!(asks[0]["request"]["permission"], "use_credential");
+    assert_eq!(asks[0]["request"]["dispatch_id"], dispatch_id);
+    assert!(asks[0]["decided_by"].is_null());
+
+    // The old answer to a decision here was `invalid request shape or field
+    // value` — the store's state law reported through the shape code. The
+    // answer now names the state, the deterministic id and the way back.
+    let probe = host.call(request(
+        "elevate-next-probe-other-state",
+        json!({"kind":"decide_elevation","task_id":"elevate-next-task",
+        "dispatch_id":dispatch_id,"permission":"execute_process","approved":true,
+        "reason":"a permission the binding carries needs no lease","window_ms":300_000}),
+    ));
+    // (execute_process IS carried by the binding here, so this refusal is
+    // the re-grant law, not the state law — the state pin is the decision
+    // itself succeeding below.)
+    let _ = probe;
+
+    // The decision attaches to the FAILED task's dispatch.
+    ok_step(
+        "elevate-next-decide",
+        &host.call(request(
+            "elevate-next-decide",
+            json!({"kind":"decide_elevation","task_id":"elevate-next-task",
+            "dispatch_id":dispatch_id,"permission":"use_credential","approved":true,
+            "reason":"the operator answered the ask the refused run filed",
+            "window_ms":300_000}),
+        )),
+    );
+    let decided = host.call(request(
+        "elevate-next-ledger-2",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let asks = ok(&decided)["data"]["requests"].as_array().unwrap();
+    assert_eq!(
+        asks[0]["decided_by"], "elevate-next-decide",
+        "the ask names its answer: {decided}"
+    );
+    let leases = ok(&decided)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 1, "{decided}");
+    assert_eq!(leases[0]["standing"], "live");
+
+    // Recover, re-dispatch, and the run completes under the answer: the
+    // next start re-mints the deterministic id, and the broker's gate reads
+    // the live lease for exactly that dispatch.
+    ok_step(
+        "elevate-next-recover",
+        &host.call(request(
+            "elevate-next-recover",
+            json!({"kind":"recover_task","task_id":"elevate-next-task"}),
+        )),
+    );
+    // Between generations the task is Ready with no dispatch: the decision
+    // is refused BY NAME — the state's own word and the way back — not as
+    // the generic shape error the store's mapping would give it.
+    let state_refused = host.call(request(
+        "elevate-next-decide-ready",
+        json!({"kind":"decide_elevation","task_id":"elevate-next-task",
+        "dispatch_id":dispatch_id,"permission":"use_credential","approved":true,
+        "reason":"nothing carries this dispatch between generations",
+        "window_ms":300_000}),
+    ));
+    assert_eq!(
+        state_refused["result"]["Err"]["code"], "failed_precondition",
+        "{state_refused}"
+    );
+    let named = state_refused["result"]["Err"]["message"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        named.contains("ready") && named.contains("recover-task"),
+        "the refusal names the state and the way back: {named:?}"
+    );
+    ok_step(
+        "elevate-next-prepare-2",
+        &host.call(request(
+            "elevate-next-prepare-2",
+            json!({"kind":"prepare_dispatch","task_id":"elevate-next-task"}),
+        )),
+    );
+    let restarted = host.call(request(
+        "elevate-next-start-2",
+        json!({"kind":"start_prepared_task","task_id":"elevate-next-task","host_id":host_id}),
+    ));
+    let next_dispatch = ok_step("elevate-next-start-2", &restarted)["data"]["dispatch_id"].clone();
+    assert_eq!(
+        next_dispatch, dispatch_id,
+        "the dispatch id is minted per task, so the next run re-mints the one \
+         the ask named"
+    );
+    let run = host.call(request(
+        "elevate-next-run-2",
+        json!({"kind":"run_started_dispatch","task_id":"elevate-next-task",
+        "dispatch_id":next_dispatch}),
+    ));
+    assert_eq!(
+        ok(&run)["data"]["completed"],
+        true,
+        "the run that came back holds the lease the answer granted: {run}"
+    );
+
+    // The whole loop is journaled coherently: the reopen rebuilds the
+    // ledger, the answered ask, and the task that completed.
+    host.crash();
+    host.start();
+    let reopened = host.call(request(
+        "elevate-next-ledger-3",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&reopened)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 1, "{reopened}");
+    assert_eq!(leases[0]["standing"], "live", "{reopened}");
+    let asks = ok(&reopened)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks[0]["decided_by"], "elevate-next-decide", "{reopened}");
+    let state = host.call(request(
+        "elevate-next-task-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"elevate-next-task"}),
+    ));
+    assert_eq!(
+        ok(&state)["data"]["state"],
+        "completion_requested",
+        "{state}"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
 /// The elevation ledger, end to end: a worker asks for a permission its
 /// binding does not carry, an operator reads the ledger, answers it, reads it
 /// again to see the grant is live, takes it back, and reads it a third time to
