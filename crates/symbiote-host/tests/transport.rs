@@ -62,6 +62,39 @@ fn exclusive_lock_preserves_live_socket_and_stale_socket_recovers() {
     drop(recovered);
 }
 
+/// A second Host on a live state directory is refused by name. The safety property — the first
+/// Host's socket survives — is the sibling case's; this one is the diagnostic an operator reads
+/// when a unit is already running and the binary is started by hand. `EAGAIN: Try again` names
+/// neither the state directory nor the cause, while every other refusal in this module names both,
+/// and a beta operator meets this one by accident rather than by intent.
+#[test]
+fn a_second_host_is_refused_by_the_lock_it_could_not_take() {
+    let directory = Directory::new();
+    let first = LocalListener::bind(&directory.0).unwrap();
+    let error = match LocalListener::bind(&directory.0) {
+        Ok(_) => panic!("a second Host took the operator lock the first Host holds"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::AddrInUse,
+        "a caller that distinguishes this refusal from a permission refusal loses that: {error}"
+    );
+    let said = error.to_string();
+    let lock = directory.0.join("host.lock").display().to_string();
+    assert!(
+        said.contains(&lock),
+        "the refusal does not name the lock it could not take, so an operator is left with the \
+         errno alone: {said}"
+    );
+    assert!(
+        said.contains("another Host already holds"),
+        "the refusal does not say the lock is already held, so it reads as a transient error \
+         rather than as another Host serving this directory: {said}"
+    );
+    drop(first);
+}
+
 #[test]
 fn lock_symlink_and_non_socket_path_are_preserved() {
     let directory = Directory::new();

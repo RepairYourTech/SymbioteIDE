@@ -66,8 +66,22 @@ impl LocalListener {
         {
             return Err(invalid("host lock is not a private owned file"));
         }
-        let lock = Flock::lock(lock, FlockArg::LockExclusiveNonblock)
-            .map_err(|(_, error)| io::Error::new(io::ErrorKind::AddrInUse, error))?;
+        // The refusal names the lock it could not take, because this is the refusal an operator
+        // meets by accident — a unit already running, a container restart racing a process the
+        // last run left behind, a binary started by hand beside a live Host — and the os error
+        // alone (`EAGAIN: Try again`) names neither the state directory nor the cause. The kind
+        // stays `AddrInUse` so a caller that already distinguishes this from a permission refusal
+        // keeps doing so.
+        let lock = Flock::lock(lock, FlockArg::LockExclusiveNonblock).map_err(|(_, error)| {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "another Host already holds the operator lock {}: {}",
+                    directory.join(LOCK_FILE).display(),
+                    error
+                ),
+            )
+        })?;
         let path = directory.join(SOCKET_FILE);
         match fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_socket() && meta.uid() == geteuid().as_raw() => {
