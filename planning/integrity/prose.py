@@ -23,8 +23,9 @@ disagree.** Is this line an indented code block: `_indented_code`, from the meas
 `_opening` took, and nothing else. Does this line open a fence: `_fence`, and how wide it is.
 Is this line an HTML comment: `_opens_comment` and `_closes_comment`. The walk in `_read` keeps
 the state and asks nothing, so a change to one shape lands in the one function that owns it. A
-fence opened with four or more markers closes here at the first three, so a block the author
-believes still open is read as ending early. A line of any of these shapes is left uncounted and
+fence closes only on the same marker written at
+least as many times as the opening line wrote it, so a longer fence quoting a shorter one keeps the
+quotation inside the block instead of counting its lines as the document's claims. A line of any of these shapes is left uncounted and
 the document is refused by the line the shape begins on, because that is the line an author
 completes, deletes or unfences. **Every reason is returned, not the first**, so one run names
 every line to mend.
@@ -245,13 +246,6 @@ def _code_reason(number: int) -> str:
             f"uncounted rather than guessed at — fence it, or state it in prose")
 
 
-def _fence_reason(number: int, markers: int) -> str:
-    """Why the fence on line `number` is one this walk will not read as a block."""
-    return (f"a fence opened on line {number} uses {markers} markers, and a block closes here at "
-            f"the first three, so a bound it still holds would be counted as a statement the "
-            f"moment a three-marker line appears inside it — open the block with three")
-
-
 def _read(document: pathlib.Path) -> tuple[list[str], list[str], list[str]]:
     """The lines `document` states, why it is not well formed, and why it is not read whole.
 
@@ -274,7 +268,7 @@ def _read(document: pathlib.Path) -> tuple[list[str], list[str], list[str]]:
     # The content column of each list item we are inside, outermost first. A blank line
     # closes none of them, because a list item continues across one.
     items: list[int] = []
-    fence: str | None = None
+    fence: tuple[str, int] | None = None
     opened = 0
     in_comment = False
     # Whether a paragraph is open, which is the one thing that stops an indented line from
@@ -305,7 +299,9 @@ def _read(document: pathlib.Path) -> tuple[list[str], list[str], list[str]]:
             if not paragraph:
                 items.clear()
         if fence is not None:
-            if body.lstrip().startswith(fence):
+            marker, markers = fence
+            close = _fence(body.lstrip())
+            if close is not None and close[0] == marker and close[1] >= markers:
                 fence, opened, paragraph = None, 0, False
             continue
 
@@ -347,10 +343,7 @@ def _read(document: pathlib.Path) -> tuple[list[str], list[str], list[str]]:
             continue
 
         if (here := _fence(text)) is not None:
-            marker, markers = here
-            if markers > 3:
-                unread.append(_fence_reason(number, markers))
-            fence, opened, paragraph = marker, number, False
+            fence, opened, paragraph = here, number, False
             continue
 
         if opening.item is not None:
@@ -365,7 +358,7 @@ def _read(document: pathlib.Path) -> tuple[list[str], list[str], list[str]]:
         stated.append(line)
 
     if fence is not None:
-        malformed.append(f"a `{fence}` fence opened on line {opened} is never closed")
+        malformed.append(f"a `{fence[0]}` fence opened on line {opened} is never closed")
     return stated, malformed, unread
 
 
@@ -374,9 +367,13 @@ def statements(document: pathlib.Path) -> list[str]:
     return _read(document)[0]
 
 
-def unclosed(document: pathlib.Path) -> list[str]:
-    """Why this document is not well formed, one reason per fence it opens and never closes."""
-    return _read(document)[1]
+def unclosed(document: pathlib.Path) -> str | None:
+    """Why this document is not well formed, or None when every fence it opens it also closes.
+
+    Read from the same walk `statements` counts through, so the two cannot disagree about a fence.
+    """
+    reasons = _read(document)[1]
+    return "; ".join(reasons) if reasons else None
 
 
 def unseen(document: pathlib.Path) -> list[str]:

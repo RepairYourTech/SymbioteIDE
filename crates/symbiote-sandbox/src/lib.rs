@@ -29,6 +29,16 @@ use symbiote_runtime_transport::{
 use symbiote_trust::{Fingerprint, ResourceConsent, ResourceSnapshot, authorize_load};
 
 pub const INVOCATION_VERSION: &str = "linux-bwrap-0.12-v1";
+
+/// The bounds [`docs/security/linux-sandbox.md`](https://github.com/RepairYourTech/SymbioteIDE/blob/main/docs/security/linux-sandbox.md)
+/// states for a setup refusal. They are named here rather than written as literals at the two sites
+/// that enforce them, so the case that reads the document compares it against the bound rather than
+/// against a copy of the same number: a document that moved without the crate failing is the defect
+/// that shape prevents.
+pub const MAX_TREE_ENTRIES: usize = 100_000;
+pub const MAX_TREE_DEPTH: usize = 64;
+pub const MAX_SETUP_DIAGNOSTIC_LINES: usize = 8;
+pub const MAX_SETUP_DIAGNOSTIC_BYTES: usize = 1_024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
@@ -96,16 +106,17 @@ fn setup_failure(transport: &mut JsonlTransport, cause: Option<TransportError>) 
     // producer's final entry is already published into the diagnostic queue.
     let finished = transport.diagnostics_finished();
     let batch = transport.diagnostics();
-    let mut truncated = !finished || batch.dropped > 0 || batch.entries.len() > 8;
+    let mut truncated =
+        !finished || batch.dropped > 0 || batch.entries.len() > MAX_SETUP_DIAGNOSTIC_LINES;
     let diagnostics = batch
         .entries
         .into_iter()
-        .take(8)
+        .take(MAX_SETUP_DIAGNOSTIC_LINES)
         .map(|entry| {
             let mut text = entry.text;
-            truncated |= entry.truncated || text.len() > 1024;
-            if text.len() > 1024 {
-                let mut boundary = 1024;
+            truncated |= entry.truncated || text.len() > MAX_SETUP_DIAGNOSTIC_BYTES;
+            if text.len() > MAX_SETUP_DIAGNOSTIC_BYTES {
+                let mut boundary = MAX_SETUP_DIAGNOSTIC_BYTES;
                 while !text.is_char_boundary(boundary) {
                     boundary -= 1;
                 }
@@ -259,7 +270,7 @@ fn overlap(a: &Path, b: &Path) -> bool {
 // A pathname Unix socket inside a bind mount can reach the Host even with an
 // isolated network namespace. Reject sockets/devices/FIFOs and aliased hardlinks.
 fn inspect_tree(fd: &impl AsFd, depth: usize, left: &mut usize) -> Result<()> {
-    if depth > 64 {
+    if depth > MAX_TREE_DEPTH {
         return Err(SandboxError::ResourceLimit);
     }
     let mut entries =
@@ -394,7 +405,10 @@ pub fn launch(request: LaunchRequest<'_>) -> Result<SandboxProcess> {
             return Err(SandboxError::ProtectedOverlap);
         }
     }
-    inspect_tree(&worktree, 0, &mut 100_000)?;
+    // The budget is a local the traversal spends down, not the constant itself: `inspect_tree`
+    // decrements what it is given, and a `&mut` to a const item would be a borrow of a temporary.
+    let mut entries_left = MAX_TREE_ENTRIES;
+    inspect_tree(&worktree, 0, &mut entries_left)?;
     let mut args: Vec<OsString> = [
         "--unshare-all",
         "--unshare-user",
