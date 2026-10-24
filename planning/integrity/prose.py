@@ -10,10 +10,13 @@ example's. What the census owes a decision about is a claim the document makes, 
 reading that tells a statement from a quotation and `figures` counts through it.
 
 **A fence is a line beginning ` ``` ` or `~~~`, and the block it opens closes at the first line
-beginning with that same marker.** A block that opens and never closes runs to the end of the
-document, because a document that opens a fence and stops has still published a block. An indented
-code block is a shape this reading does not see, and says so here rather than leaving it to a
-reader of the diff to discover: the documents in this tree fence what they quote.
+beginning with that same marker written at least as many times as the opening line did.** A block
+that opens and never closes runs to the end of the
+document, because a document that opens a fence and stops has still published a block. A shorter
+run of the same characters inside a longer fence is that block quoting a fence, not closing one, so
+the census does not start counting a fenced example's own examples as the document's claims. An
+indented code block is a shape this reading does not see, and says so here rather than leaving it
+to a reader of the diff to discover: the documents in this tree fence what they quote.
 
 **One walk answers both questions, because they are asked of the same fence.** `statements` and
 `unclosed` were two copies of the same six lines of state machine, and a copy is changed on its
@@ -25,6 +28,18 @@ from __future__ import annotations
 import pathlib
 
 FENCE = ("```", "~~~")
+
+
+def _fence(stripped: str) -> tuple[str, int] | None:
+    """The fence a line writes — which three characters, and how many of them in a row — or None
+    when the line writes none. A closing fence writes the same characters at least as many times
+    as the opening one, so a fenced example that quotes a shorter fence states that line like any
+    other instead of closing its own fence and turning the lines after it into claims."""
+    for mark in FENCE:
+        width = len(stripped) - len(stripped.lstrip(mark[:1]))
+        if width >= len(mark):
+            return mark, width
+    return None
 
 
 def _read(document: pathlib.Path) -> tuple[list[str], str | None]:
@@ -42,20 +57,21 @@ def _read(document: pathlib.Path) -> tuple[list[str], str | None]:
     state passes every check that only compares counts.
     """
     stated: list[str] = []
-    fence: str | None = None
+    fence: tuple[str, int] | None = None
     opened = 0
     for number, line in enumerate(document.read_text().splitlines(), 1):
         stripped = line.lstrip()
         if fence is None:
-            if stripped.startswith(FENCE):
-                fence, opened = stripped[:3], number
-            else:
+            mark = _fence(stripped)
+            if mark is None:
                 stated.append(line)
-        elif stripped.startswith(fence):
+            else:
+                fence, opened = mark, number
+        elif (mark := _fence(stripped)) is not None and mark[0] == fence[0] and mark[1] >= fence[1]:
             fence = None
     if fence is None:
         return stated, None
-    return stated, f"a `{fence}` fence opened on line {opened} is never closed"
+    return stated, f"a `{fence[0]}` fence opened on line {opened} is never closed"
 
 
 def statements(document: pathlib.Path) -> list[str]:

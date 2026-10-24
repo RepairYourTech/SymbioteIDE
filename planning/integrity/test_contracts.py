@@ -232,6 +232,24 @@ class TheCensus(unittest.TestCase):
                 "the refusal does not say which line the fence opened on, so an author is left "
                 "looking for it")
 
+            # A longer fence quoting a shorter one: a document that opens a four-backtick fence
+            # to show a three-backtick example inside it was read by a closing rule that matched
+            # the first three characters alone, so the inner fence passed as the closer — the
+            # example's own lines were counted as the document's claims and the real closer
+            # opened a block that ate the claims after it.
+            (root / "nested.md").write_text(
+                stated + "\n\n````json\n```json\n" + quoted + "\n```\n\n````\n\n"
+                "It also allows at most 16 files.\n")
+            self.assertEqual(
+                contracts.figures("nested.md", root=root), 2,
+                "a shorter fence inside a longer one closes it, so an example quoting a fence "
+                "states the quoted lines for the document and the claim after the real closer "
+                "is swallowed by the block that closer opens")
+            self.assertIsNone(
+                prose.unclosed(root / "nested.md"),
+                "the inner fence is read as the closer and the real closer as a new opening, "
+                "so a document that closes its fence is refused as one that never did")
+
             def path_of(name: str) -> pathlib.Path:
                 """Where a name this census records lives, stated here and not read from
                 `contracts.figures`, which reads it the same way on purpose: an assertion that
