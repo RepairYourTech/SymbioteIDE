@@ -2668,11 +2668,14 @@ fn execute(
             task_id,
             dispatch_id,
         } => {
-            // The run's own input envelope, served for inspection: the
-            // same resolution the runner performs, so what a reader sees
-            // here is byte-for-byte the question the run was asked. Named
-            // by dispatch, because two dispatches of one task need not ask
-            // the same question; a dispatch the task is not running under
+            // The run's input envelope, served for inspection: the
+            // same resolution the runner performs over the same
+            // canonical records, read at the moment of this read. An
+            // origin work item edited while the dispatch runs serves
+            // its edited text, so this read and the envelope the run
+            // was given at activation can differ. Named by dispatch,
+            // because two dispatches of one task need not ask the
+            // same question; a dispatch the task is not running under
             // gets the same refusal the run paths give.
             let task_record = store.task(task_id).map_err(storage_error)?;
             authorize_task_resource(principal, project_id, &task_record)?;
