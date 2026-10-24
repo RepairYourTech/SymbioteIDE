@@ -109,8 +109,10 @@ an argument would put it in a process table where any user on the machine can
 read it. Standard input is the one channel this CLI has that is neither, so
 the value arrives by pipe:
 
-    printf %s "$SECRET" | symbiote add-credential \
-        /etc/symbiote/operator.json native-vault-ref demo OPENAI_API_KEY
+```console
+printf %s "$SECRET" | symbiote add-credential \
+    /etc/symbiote/operator.json native-vault-ref demo OPENAI_API_KEY
+```
 
 Every runtime profile names a credential, and a native run refuses without one
 by name — `no credential broker configured for this dispatch's credential
