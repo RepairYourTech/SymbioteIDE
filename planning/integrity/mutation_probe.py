@@ -333,7 +333,6 @@ def swap(document: str, before: str, after: str, run) -> str | None:
     text = path.read_text()
     if text.count(before) != 1:
         return f"{document} writes {before!r} {text.count(before)} times, where this row needs once"
-    path.write_bytes(path.read_bytes())
     shutil.copy2(path, backup)
     try:
         path.write_text(text.replace(before, after))
