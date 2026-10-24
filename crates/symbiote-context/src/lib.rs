@@ -52,7 +52,7 @@ use zeroize::Zeroize;
 /// the origin work item's structured guidance, all from trusted Host
 /// state. Serialized into the loop's task prompt by the caller; the loop
 /// sees text, this crate owns the bounded composition.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedContext {
     pub dispatch_id: DispatchId,
@@ -103,7 +103,7 @@ impl std::error::Error for ResolutionError {}
 /// A bounded text item with a visible truncation marker on overflow —
 /// the same char-boundary discipline as every other bounded text in the
 /// system.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct BoundedText(String);
 impl BoundedText {

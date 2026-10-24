@@ -3101,9 +3101,11 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "symbiote-context",
  "symbiote-contract-read",
  "symbiote-domain",
  "symbiote-host-inventory",
+ "symbiote-repo",
  "symbiote-runtime-discovery",
  "symbiote-runtime-sdk",
  "symbiote-trust",
@@ -3115,6 +3117,7 @@ name = "symbiote-repo"
 version = "0.1.0"
 dependencies = [
  "nix",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "symbiote-contract-read",

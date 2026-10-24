@@ -1933,6 +1933,31 @@ pub(crate) fn commands() -> Vec<Command> {
             },
         },
         Command {
+            name: "observe-worktree",
+            summary: "read the change-set evidence a task's stream worktree carries",
+            usage: "observe-worktree <project_id> <task_id>",
+            kind: Some("observe_worktree"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("observe_worktree"), map);
+                id_field(args, 0, "project_id", "project_id", map)?;
+                id_field(args, 1, "task_id", "task_id", map)?;
+                no_more(args, 2, "observe-worktree")
+            },
+        },
+        Command {
+            name: "get-task-context",
+            summary: "read the resolved context a task's run is told",
+            usage: "get-task-context <project_id> <task_id> <dispatch_id>",
+            kind: Some("get_task_context"),
+            build: |args, map| {
+                plain("kind", serde_json::json!("get_task_context"), map);
+                id_field(args, 0, "project_id", "project_id", map)?;
+                id_field(args, 1, "task_id", "task_id", map)?;
+                id_field(args, 2, "dispatch_id", "dispatch_id", map)?;
+                no_more(args, 3, "get-task-context")
+            },
+        },
+        Command {
             name: "scheduling-projection",
             summary: "readiness, blockers, progress and the critical path for a project",
             usage: "scheduling-projection <project_id>",

@@ -284,7 +284,7 @@ fn parse_merge_preview(buffer: &[u8]) -> Option<MergePreview> {
 /// or an explicit unborn/detached classification. The commit is empty only
 /// for an unborn branch. All fields are advertisements — observed
 /// provenance, never authorization.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HeadObservation {
     /// The commit HEAD points at. Always present for a valid repository
@@ -293,7 +293,7 @@ pub struct HeadObservation {
     pub state: HeadState,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HeadState {
     /// HEAD points at a branch tip.
@@ -306,7 +306,7 @@ pub enum HeadState {
 
 /// The observed difference set of a worktree: changed paths only, never
 /// content (content is the diff command's business, not the observer's).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorktreeStatus {
     pub uncommitted: Vec<String>,
@@ -430,7 +430,7 @@ pub const MAX_UNTRACKED_FILES: usize = 32;
 /// [`RunDiff::tracked_note`], and the untracked heads are collected
 /// regardless. Losing every untracked head because one tracked byte was
 /// not UTF-8 would make the preview less honest, not safer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunDiff {
     /// The tracked unified diff (`git diff HEAD`), the degraded `--stat`
@@ -455,7 +455,7 @@ pub struct RunDiff {
 }
 
 /// One untracked path's bounded content head.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UntrackedContent {
     pub path: String,

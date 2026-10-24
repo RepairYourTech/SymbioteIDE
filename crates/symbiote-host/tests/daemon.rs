@@ -186,7 +186,7 @@ fn concat_id(tag: &str, suffix: &str) -> &'static str {
 }
 
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 31},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 32},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -4687,6 +4687,71 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
     ));
     assert_eq!(ok(&read)["data"]["state"], "completion_requested");
 
+    // The worktree evidence is readable from the canonical record: the Host
+    // locates the stream's reservation through its own base — the caller
+    // names only the task — and observes HEAD, the changed paths and the
+    // bounded diff the same way the run's own report evidence is built.
+    let observed = host.call(request(
+        "run-observe",
+        json!({"kind":"observe_worktree","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&observed)["kind"], "worktree_observation");
+    assert_eq!(ok(&observed)["data"]["present"], true);
+    assert_eq!(
+        ok(&observed)["data"]["head"]["state"]["kind"],
+        "branch",
+        "the stream's worktree observes on its own branch"
+    );
+    // A task whose stream never provisioned holds no reservation: absence
+    // is the ANSWER (`present: false`), not a refusal — most tasks have no
+    // worktree, and "nothing is checked out" is a fact a reader acts on.
+    staffing_task(&host, "ctx-task", "ctx-task", "ctx-stream", &head, &head);
+    let unprovisioned = host.call(request(
+        "ctx-observe",
+        json!({"kind":"observe_worktree","project_id":"staffing-demo","task_id":"ctx-task"}),
+    ));
+    assert_eq!(ok(&unprovisioned)["data"]["present"], false);
+    assert!(ok(&unprovisioned)["data"]["head"].is_null());
+    // The read binds the stored task's Project: a caller cannot move the
+    // read to a Project it chooses and see another Project's worktree.
+    let foreign_project = host.call(request(
+        "ctx-observe-foreign",
+        json!({"kind":"observe_worktree","project_id":"staffing-other","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        foreign_project["result"]["Err"]["code"],
+        "permission_denied"
+    );
+    // The run's input envelope is inspectable: the same resolution the
+    // runner performed, named by dispatch — what the run was asked, whole,
+    // from the canonical records rather than from a caller's retelling.
+    let context = host.call(request(
+        "ctx-read",
+        json!({"kind":"get_task_context","project_id":"staffing-demo","task_id":"run-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(ok(&context)["kind"], "task_context");
+    assert_eq!(ok(&context)["data"]["task_id"], "run-task");
+    assert_eq!(ok(&context)["data"]["dispatch_id"], dispatch_id);
+    assert!(
+        ok(&context)["data"]["prompt"]
+            .as_str()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false),
+        "the run's prompt is served as the run received it"
+    );
+    // A dispatch the task is not running under gets the same refusal the
+    // run paths give: a foreign dispatch never reads as this task's run.
+    let foreign_dispatch = host.call(request(
+        "ctx-read-foreign",
+        json!({"kind":"get_task_context","project_id":"staffing-demo","task_id":"run-task",
+        "dispatch_id":"disp_other"}),
+    ));
+    assert_eq!(
+        foreign_dispatch["result"]["Err"]["code"],
+        "failed_precondition"
+    );
+
     // The three steps that had no operation at all. A task that reaches
     // `completion_requested` here used to stop for the life of the store:
     // there was no operation for any of them, and the daemon reported that
@@ -4867,6 +4932,75 @@ fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configura
     );
     std::fs::remove_dir_all(&base).ok();
     std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The read that has to work before anything has ever been provisioned.
+///
+/// Every other observation of a worktree is made in a Host that has already
+/// run something, so the base holds a directory for the project and the
+/// question "is this stream checked out?" is answered by finding its marker.
+/// The ordinary case is the one before that: a Host with a base, a project
+/// that has never reserved under it, and therefore no directory at all. That
+/// state is absence — a fact a reader acts on — and answering it with a
+/// refusal would make the read useless exactly where it is most often wanted,
+/// which is before the first run. A real live daemon said `failed_precondition`
+/// here, and the sentence blamed a reservation base that was perfectly
+/// readable: the project had simply never created a directory under it.
+#[test]
+fn a_project_that_never_reserved_reports_no_worktree_instead_of_refusing() {
+    let base = std::env::temp_dir().join(format!(
+        "symbiote-unreserved-worktrees-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+    }));
+    staffing_composition_with_grants(&host, Registration::Complete, &[], None, None);
+    // The stream's base and target are the lineage the task records, not a
+    // checkout this read will touch: nothing is provisioned, so the commits
+    // only have to be the ones the domain accepts.
+    let head = "0".repeat(39) + "1";
+    staffing_task(
+        &host,
+        "absent-observe",
+        "absent-task",
+        "absent-stream",
+        &head,
+        &head,
+    );
+    assert!(
+        !base.join("staffing-demo").exists(),
+        "nothing has reserved under this base yet"
+    );
+    let observed = host.call(request(
+        "absent-observe",
+        json!({"kind":"observe_worktree","project_id":"staffing-demo",
+        "task_id":"absent-task"}),
+    ));
+    assert_eq!(ok(&observed)["kind"], "worktree_observation");
+    assert_eq!(ok(&observed)["data"]["present"], false);
+    for field in ["head", "status", "diff"] {
+        assert!(
+            ok(&observed)["data"][field].is_null(),
+            "nothing checked out means no {field}"
+        );
+    }
+    // The read is still a read: it refuses a caller reaching for another
+    // Project's worktree, exactly as it does once something is checked out.
+    let foreign = host.call(request(
+        "absent-observe-foreign",
+        json!({"kind":"observe_worktree","project_id":"staffing-other",
+        "task_id":"absent-task"}),
+    ));
+    assert_eq!(foreign["result"]["Err"]["code"], "permission_denied");
+    std::fs::remove_dir_all(&base).ok();
 }
 
 /// The crash case, and the only failure the workspace cannot file for itself.

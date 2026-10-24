@@ -1594,6 +1594,54 @@
           },
           {
             "additionalProperties": false,
+            "description": "The bounded change-set evidence one Task's Change Stream worktree\ncarries right now: the observed HEAD, the changed paths, and the\nbounded diff with untracked content heads — the same run-diff\nobservation the worker's own run reports are built from, read from\nthe canonical record rather than from a caller's claim. The worktree\nis located through the Task's stream reservation; a Task whose\nstream holds no reservation here is answered with that fact rather\nthan a refusal, and a caller-supplied path is never consulted.",
+            "properties": {
+              "kind": {
+                "const": "observe_worktree",
+                "type": "string"
+              },
+              "project_id": {
+                "$ref": "#/$defs/ProjectId"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "project_id",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The resolved context one Task's run is told: the prompt and the\nrequirements, constraints, risks and acceptance items the dispatch\npreparation resolved from the Task's origin under its contract —\nthe run's own input envelope, served for inspection. It is named by\ndispatch so a reader compares what a specific run received, and it\nis served only from the canonical records: resolution failure\nrefuses by name rather than degrading.",
+            "properties": {
+              "dispatch_id": {
+                "$ref": "#/$defs/DispatchId"
+              },
+              "kind": {
+                "const": "get_task_context",
+                "type": "string"
+              },
+              "project_id": {
+                "$ref": "#/$defs/ProjectId"
+              },
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "kind",
+              "project_id",
+              "task_id",
+              "dispatch_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "kind": {
                 "const": "hello",
@@ -3837,6 +3885,10 @@
           "reason"
         ],
         "type": "object"
+      },
+      "BoundedText": {
+        "description": "A bounded text item with a visible truncation marker on overflow —\nthe same char-boundary discipline as every other bounded text in the\nsystem.",
+        "type": "string"
       },
       "CandidateObservation": {
         "description": "What this Host holds for one candidate the binding names. The three cases are\nthe three facts, never collapsed: an operator who declared nothing, an\nobservation this Host cannot attribute to itself, and this Host's own\nobservation of the runtime it would activate.",
@@ -6689,6 +6741,74 @@
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
       },
+      "HeadObservation": {
+        "additionalProperties": false,
+        "description": "Observed HEAD state of a repository: the exact commit and the branch,\nor an explicit unborn/detached classification. The commit is empty only\nfor an unborn branch. All fields are advertisements — observed\nprovenance, never authorization.",
+        "properties": {
+          "commit": {
+            "description": "The commit HEAD points at. Always present for a valid repository\n(an unborn branch is a separate classification).",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/$defs/HeadState"
+          }
+        },
+        "required": [
+          "commit",
+          "state"
+        ],
+        "type": "object"
+      },
+      "HeadState": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "HEAD points at a branch tip.",
+            "properties": {
+              "kind": {
+                "const": "branch",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "HEAD is detached at a commit.",
+            "properties": {
+              "kind": {
+                "const": "detached",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The checked-out branch has no commits yet (unborn).",
+            "properties": {
+              "kind": {
+                "const": "unborn",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Health": {
         "enum": [
           "reachable",
@@ -7793,6 +7913,71 @@
         ],
         "type": "string"
       },
+      "ResolvedContext": {
+        "additionalProperties": false,
+        "description": "The resolved context payload for one worker run: the prompt text plus\nthe origin work item's structured guidance, all from trusted Host\nstate. Serialized into the loop's task prompt by the caller; the loop\nsees text, this crate owns the bounded composition.",
+        "properties": {
+          "acceptance": {
+            "items": {
+              "$ref": "#/$defs/BoundedText"
+            },
+            "type": "array"
+          },
+          "access": {
+            "$ref": "#/$defs/AccessSnapshot",
+            "description": "The access snapshot the dispatch contract carries (current policy\nat compile time; the Host re-checks against the ceiling)."
+          },
+          "constraints": {
+            "items": {
+              "$ref": "#/$defs/BoundedText"
+            },
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/$defs/ContextPolicy",
+            "description": "The binding's context budget, carried so the caller can enforce\ninput bounds without re-reading the store."
+          },
+          "dispatch_id": {
+            "$ref": "#/$defs/DispatchId"
+          },
+          "project_id": {
+            "$ref": "#/$defs/ProjectId"
+          },
+          "prompt": {
+            "$ref": "#/$defs/BoundedText",
+            "description": "The run's prompt text: the origin work item's description, or its\ntitle when it has no description."
+          },
+          "requirements": {
+            "description": "The origin work item's requirements, constraints, risks and\nacceptance items, each bounded, in work-item order.",
+            "items": {
+              "$ref": "#/$defs/BoundedText"
+            },
+            "type": "array"
+          },
+          "risks": {
+            "items": {
+              "$ref": "#/$defs/BoundedText"
+            },
+            "type": "array"
+          },
+          "task_id": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "dispatch_id",
+          "task_id",
+          "project_id",
+          "prompt",
+          "requirements",
+          "constraints",
+          "risks",
+          "acceptance",
+          "context",
+          "access"
+        ],
+        "type": "object"
+      },
       "ResourceConsent": {
         "additionalProperties": false,
         "properties": {
@@ -8266,6 +8451,42 @@
               },
               "kind": {
                 "const": "task",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The observed change-set of one Task's stream worktree, whole with\nits degradations named, or the fact that the stream holds no\nreservation on this Host (`present: false`) — read from the\nreservation base this Host enforces, never from a caller's path.",
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/WorktreeObservation"
+              },
+              "kind": {
+                "const": "worktree_observation",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The resolved context one dispatch's run is told, exactly as the\nrun received it: the canonical answer for \"what does this run\nactually see\" (#329), read from the same resolution dispatch\npreparation performed.",
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ResolvedContext"
+              },
+              "kind": {
+                "const": "task_context",
                 "type": "string"
               }
             },
@@ -8898,6 +9119,45 @@
         "required": [
           "id",
           "held"
+        ],
+        "type": "object"
+      },
+      "RunDiff": {
+        "additionalProperties": false,
+        "description": "The bounded diff evidence of a run in a worktree: the tracked unified\ndiff plus bounded content heads of the untracked paths. This is\nPREVIEW evidence — rendered inert (escaped) downstream — and it is\nsize-capped at every layer: an oversized tracked diff degrades to the\n`--stat` summary with an explicit flag, an oversized untracked file is\ntruncated with an explicit flag, and symlinked or non-regular paths\nare never read (a bracketed placeholder names them instead).\n\nCollection never fails the caller: a tracked diff that cannot be\nobserved degrades to a bracketed placeholder plus a\n[`RunDiff::tracked_note`], and the untracked heads are collected\nregardless. Losing every untracked head because one tracked byte was\nnot UTF-8 would make the preview less honest, not safer.",
+        "properties": {
+          "tracked": {
+            "description": "The tracked unified diff (`git diff HEAD`), the degraded `--stat`\nsummary when the full diff exceeded the output bound, or a\nbracketed placeholder when the diff could not be observed at all\n(see [`RunDiff::tracked_note`]).",
+            "type": "string"
+          },
+          "tracked_note": {
+            "description": "Why `tracked` is degraded — empty when it is the full diff. The\n`--stat` degradation is described by [`RunDiff::tracked_truncated`]\ninstead, so the two never disagree.",
+            "type": "string"
+          },
+          "tracked_truncated": {
+            "description": "True when `tracked` is the degraded `--stat` summary, not the\nfull diff.",
+            "type": "boolean"
+          },
+          "untracked": {
+            "description": "Untracked paths (at most [`MAX_UNTRACKED_FILES`], in status\norder) with bounded content heads.",
+            "items": {
+              "$ref": "#/$defs/UntrackedContent"
+            },
+            "type": "array"
+          },
+          "untracked_omitted": {
+            "description": "How many further untracked paths the [`MAX_UNTRACKED_FILES`]\nbound left without a content head. Non-zero means this evidence\nis partial in a way its consumers must say out loud.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tracked",
+          "tracked_truncated",
+          "tracked_note",
+          "untracked",
+          "untracked_omitted"
         ],
         "type": "object"
       },
@@ -10336,6 +10596,29 @@
           }
         ]
       },
+      "UntrackedContent": {
+        "additionalProperties": false,
+        "description": "One untracked path's bounded content head.",
+        "properties": {
+          "content": {
+            "description": "The file's content head (at most\n[`MAX_UNTRACKED_FILE_BYTES`]), or a bracketed placeholder when\nthe content was not read (symlink, directory, non-UTF-8,\nunreadable).",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when `content` is a truncated head.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "content",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "UserId": {
         "maxLength": 128,
         "minLength": 1,
@@ -11437,6 +11720,72 @@
         "minLength": 1,
         "pattern": "^[A-Za-z0-9_-]+$",
         "type": "string"
+      },
+      "WorktreeObservation": {
+        "additionalProperties": false,
+        "description": "The observed change-set of one Task's stream worktree: the observed\nHEAD (commit and branch/detached/unborn state), the changed paths, and\nthe bounded tracked diff with bounded untracked content heads — the\nsame observation shape the worker's run reports carry, read by the\nHost from the worktree its own reservation base names. `present` is\nfalse when the stream holds no reservation on this Host, and every\nother field is then `None`: absence is the answer, not a refusal, so a\ncaller can tell \"nothing is checked out\" from \"the evidence is not\nobservable here\" the latter being what a refusal would mean.",
+        "properties": {
+          "diff": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunDiff"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HeadObservation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "present": {
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WorktreeStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "present"
+        ],
+        "type": "object"
+      },
+      "WorktreeStatus": {
+        "additionalProperties": false,
+        "description": "The observed difference set of a worktree: changed paths only, never\ncontent (content is the diff command's business, not the observer's).",
+        "properties": {
+          "uncommitted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "untracked": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "uncommitted",
+          "untracked"
+        ],
+        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",

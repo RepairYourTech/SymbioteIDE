@@ -961,9 +961,9 @@ impl Store {
         match body {
             None => Ok(None),
             Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
-                EventPayload::StreamChanged { command, access, .. } => {
-                    Ok(Some((*command, *access)))
-                }
+                EventPayload::StreamChanged {
+                    command, access, ..
+                } => Ok(Some((*command, *access))),
                 _ => Err(StoreError::IdempotencyConflict),
             },
         }

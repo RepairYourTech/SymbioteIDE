@@ -48,9 +48,9 @@ decides it:
 | Host identity, credentials, pairing | H04, HSDK-01…06, AUTH-01, AUTH-02 | 10 | **half** | `host_id` is minted once and is **stable across a clean restart and a `SIGKILL` restart**; there is no pairing, no device credential, no operator provisioning on this path |
 | Runtime discovery / harness | C01…C05, C17…C21, NAT-01…06, PROV-01 | 18 | **unfixed** | the daemon announces `ready (local metadata capabilities only)`; `publish-runtime-inventory` refuses a bad document honestly and keeps what it held, but the happy path needs a real harness installation this machine does not have; no Adapter SDK, no harness packs, no provider adapter |
 | Client SDK | H03 | 1 | **half** | `crates/symbiote-client-sdk` exists and the protocol it speaks is live, but no reconnect/replay surface was reachable from the CLI |
-| Repository / git | M01, GIT-01…05 | 6 | **unfixed** | no git operation in the 52; `symbiote-repo` is a crate with no CLI or protocol entry point |
-| Worktrees | FND-01, FND-02, FND-04, FND-06 | 4 | **unfixed** | `symbiote-worktrees` exists in the tree; no command, operation or capability reaches it |
-| Context broker | I01, I05, I06, N01 | 4 | **unfixed** | `symbiote-context` exists; no surface reaches it |
+| Repository / git | M01, GIT-01…05 | 6 | **half** | `observe-worktree` is a git operation on the wire (protocol v1.32, 54 operations): it answers HEAD and its state, the changed and untracked paths, and the bounded diff of a stream's own checkout, observed through `symbiote-repo` exactly as the run's report evidence is. Every other git verb — fetch, remote, push, a commit of the operator's own making — still has no surface |
+| Worktrees | FND-01, FND-02, FND-04, FND-06 | 4 | **half** | reservation, verification, reclaim and release have run inside the Host since the beginning; what was missing was a way to ASK, and `observe-worktree` answers from the canonical marker through `symbiote-worktrees::list` — present, HEAD, status, diff, or `present: false` when the stream holds nothing |
+| Context broker | I01, I05, I06, N01 | 4 | **half** | the broker has been resolving every run's prompt and brokering its credentials since the run paths were built; `get-task-context` now serves the resolution it produced, by dispatch, so the input envelope a run was given is readable as a record rather than as a guess |
 | Graph / overlays / topology | G06, G08, G09, G10, G14, G15 | 6 | **unfixed** | no graph surface of any kind |
 | Diagnostics bus | Q04, Q13 | 3 | **unfixed** | `host-pulse` is a single passive sample, not a bus; the "continuous" part is absent |
 | Security policy | Q01, Q10…Q13, N11 | 7 | **satisfied in the paths that exist** | the socket is `srw-------`, SO_PEERCRED is enforced, a shared or symlinked state directory is refused, `--yes`/policy gating exits 3 and sends nothing, a 0644 policy is refused, an expired policy does not authorize, an unknown kind is refused, framing is bounded |
@@ -60,11 +60,13 @@ decides it:
 | Measurement / learning | MEAS-01…06, A02, A03, A05, A06 | 12 | **unfixed** | the competitor registry and parity matrices are not in the product |
 | Research / epics / master | B01, A01, MASTER, EPIC 00…03 | 6 | **not product work** | definition and program issues, not capabilities |
 
-Tally over the 455: **0 fully satisfied**, **51 half** (present in the surface, degraded or
-raw-only), **398 unfixed**, 6 non-capability. No `prose-only` case was found. The numbers are
-unchanged by the three new commands, and the reason is worth stating plainly rather than rounding
-in their favour: **no issue's verdict moves.** What moves is the *evidence* in three rows, and the
-half of an issue that a command delivers.
+Tally over the 455: **0 fully satisfied**, **65 half** (present in the surface, degraded or
+raw-only), **384 unfixed**, 6 non-capability. No `prose-only` case was found. The three rows the
+earlier passes left at `unfixed` — Repository/git, Worktrees and the Context broker — are `half` now,
+which is the first movement in these counts: fourteen issues moved off `unfixed` because the crates
+behind them stopped being unreachable, not because they stopped being incomplete. Each one of the
+three rows was `unfixed` for the same single reason, and that reason was the same sentence in all
+three: *a crate with no entry point*. The eighteenth pass gave all three one.
 
 ### Which issues the new commands move, and which they do not
 

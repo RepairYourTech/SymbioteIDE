@@ -1103,6 +1103,21 @@ fn the_write_commands_refuse_a_mistyped_argument_by_name() {
             vec!["symbiote", "task-one"],
             "missing <report>",
         ),
+        // The two evidence reads name their ids positionally, and a surplus
+        // argument is named rather than dropped — a reader scripting the
+        // worktree observation or the run's context must not discover on the
+        // wire that its line was truncated.
+        ("observe-worktree", vec!["symbiote"], "missing <task_id>"),
+        (
+            "observe-worktree",
+            vec!["symbiote", "project-one", "surplus"],
+            r#"observe-worktree does not take the argument "surplus""#,
+        ),
+        (
+            "get-task-context",
+            vec!["symbiote", "project-one"],
+            "missing <dispatch_id>",
+        ),
         // Both elevation commands name a permission, so both check it: a
         // typo in the one field a worker's ask and an authority's answer share
         // is a question nobody can answer, and the daemon's answer to one is

@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 31,
+    minor: 32,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -482,6 +482,30 @@ pub enum Operation {
         project_id: ProjectId,
         task_id: TaskId,
     },
+    /// The bounded change-set evidence one Task's Change Stream worktree
+    /// carries right now: the observed HEAD, the changed paths, and the
+    /// bounded diff with untracked content heads — the same run-diff
+    /// observation the worker's own run reports are built from, read from
+    /// the canonical record rather than from a caller's claim. The worktree
+    /// is located through the Task's stream reservation; a Task whose
+    /// stream holds no reservation here is answered with that fact rather
+    /// than a refusal, and a caller-supplied path is never consulted.
+    ObserveWorktree {
+        project_id: ProjectId,
+        task_id: TaskId,
+    },
+    /// The resolved context one Task's run is told: the prompt and the
+    /// requirements, constraints, risks and acceptance items the dispatch
+    /// preparation resolved from the Task's origin under its contract —
+    /// the run's own input envelope, served for inspection. It is named by
+    /// dispatch so a reader compares what a specific run received, and it
+    /// is served only from the canonical records: resolution failure
+    /// refuses by name rather than degrading.
+    GetTaskContext {
+        project_id: ProjectId,
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+    },
     Hello {
         supported_versions: Vec<ProtocolVersion>,
     },
@@ -623,7 +647,9 @@ impl Operation {
             Self::ChangeWork { project_id, .. }
             | Self::GetWork { project_id, .. }
             | Self::AssignTaskOrigin { project_id, .. }
-            | Self::GetTaskOrigin { project_id, .. } => Some(project_id),
+            | Self::GetTaskOrigin { project_id, .. }
+            | Self::ObserveWorktree { project_id, .. }
+            | Self::GetTaskContext { project_id, .. } => Some(project_id),
             Self::RegisterProject { project } => Some(&project.id),
             Self::CreateTask { task } => Some(&task.project_id),
             Self::RecordResourceConsent { snapshot, .. } => Some(&snapshot.project_id),
@@ -1089,7 +1115,10 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::AssignTaskOrigin { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::ManageWork)
         }
-        Operation::GetWork { project_id, .. } | Operation::GetTaskOrigin { project_id, .. } => {
+        Operation::GetWork { project_id, .. }
+        | Operation::GetTaskOrigin { project_id, .. }
+        | Operation::ObserveWorktree { project_id, .. }
+        | Operation::GetTaskContext { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::Hello { .. } | Operation::Health {} => true,
@@ -1922,6 +1951,24 @@ pub struct ProjectSnapshot {
     pub cursor: JournalCursor,
 }
 
+/// The observed change-set of one Task's stream worktree: the observed
+/// HEAD (commit and branch/detached/unborn state), the changed paths, and
+/// the bounded tracked diff with bounded untracked content heads — the
+/// same observation shape the worker's run reports carry, read by the
+/// Host from the worktree its own reservation base names. `present` is
+/// false when the stream holds no reservation on this Host, and every
+/// other field is then `None`: absence is the answer, not a refusal, so a
+/// caller can tell "nothing is checked out" from "the evidence is not
+/// observable here" the latter being what a refusal would mean.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeObservation {
+    pub present: bool,
+    pub head: Option<symbiote_repo::HeadObservation>,
+    pub status: Option<symbiote_repo::WorktreeStatus>,
+    pub diff: Option<symbiote_repo::RunDiff>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
@@ -1981,6 +2028,16 @@ pub enum ResponseBody {
         projects: Vec<Project>,
     },
     Task(Box<Task>),
+    /// The observed change-set of one Task's stream worktree, whole with
+    /// its degradations named, or the fact that the stream holds no
+    /// reservation on this Host (`present: false`) — read from the
+    /// reservation base this Host enforces, never from a caller's path.
+    WorktreeObservation(Box<WorktreeObservation>),
+    /// The resolved context one dispatch's run is told, exactly as the
+    /// run received it: the canonical answer for "what does this run
+    /// actually see" (#329), read from the same resolution dispatch
+    /// preparation performed.
+    TaskContext(Box<symbiote_context::ResolvedContext>),
     ResourceConsent(Box<ResourceConsent>),
     /// One Project's elevation ledger: every ask it was sent and every
     /// decision made on it, each with what it is doing at the clock this

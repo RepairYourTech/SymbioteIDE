@@ -63,6 +63,8 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("get_scheduling_projection", Risk::ReadOnly),
     ("get_team", Risk::ReadOnly),
     ("get_task_origin", Risk::ReadOnly),
+    ("observe_worktree", Risk::ReadOnly),
+    ("get_task_context", Risk::ReadOnly),
     ("get_binding", Risk::ReadOnly),
     ("get_binding_readiness", Risk::ReadOnly),
     ("get_compatibility_dossier", Risk::ReadOnly),

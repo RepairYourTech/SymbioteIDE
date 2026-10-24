@@ -2586,6 +2586,105 @@ fn execute(
             .task_origin(project_id, task_id)
             .map(ResponseBody::TaskOrigin)
             .map_err(storage_error),
+        Operation::ObserveWorktree {
+            project_id,
+            task_id,
+        } => {
+            // A Project read of what the Task's stream worktree carries
+            // right now, located through the Host's own reservation base —
+            // never through a caller-supplied path. Absence of the base or
+            // of a reservation for this stream is the ANSWER (`present:
+            // false`), not a refusal: most Tasks have no worktree, and
+            // "nothing is checked out" is a fact a reader acts on.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            authorize_task_resource(principal, project_id, &task_record)?;
+            let observation = match workers.reservation_base() {
+                Err(_) => WorktreeObservation {
+                    present: false,
+                    head: None,
+                    status: None,
+                    diff: None,
+                },
+                Ok(base) => {
+                    let markers = symbiote_worktrees::list(&base, task_record.project_id())
+                        .map_err(|error| ProtocolError {
+                            code: ErrorCode::FailedPrecondition,
+                            message: format!(
+                                "the worktree reservation base is not readable: {error:?}"
+                            ),
+                        })?;
+                    match markers
+                        .into_iter()
+                        .find(|marker| marker.derived.stream_id == *task_record.stream_id())
+                    {
+                        None => WorktreeObservation {
+                            present: false,
+                            head: None,
+                            status: None,
+                            diff: None,
+                        },
+                        Some(marker) => {
+                            let path = marker.derived.worktree_path(&base);
+                            let mut git = symbiote_repo::SystemGit::new();
+                            let observed = || -> Result<
+                                (symbiote_repo::HeadObservation, symbiote_repo::WorktreeStatus, symbiote_repo::RunDiff),
+                                symbiote_repo::GitError,
+                            > {
+                                let head = symbiote_repo::observe_head(&mut git, &path)?;
+                                let status = symbiote_repo::observe_status(&mut git, &path)?;
+                                let diff =
+                                    symbiote_repo::observe_run_diff(&mut git, &path, &status);
+                                Ok((head, status, diff))
+                            }();
+                            match observed {
+                                Ok((head, status, diff)) => WorktreeObservation {
+                                    present: true,
+                                    head: Some(head),
+                                    status: Some(status),
+                                    diff: Some(diff),
+                                },
+                                // A reservation whose location no longer
+                                // observes as a repository is a stale
+                                // reservation — the same tamper signal the
+                                // reclaim path names, with the operations
+                                // that clear it named as the remedy.
+                                Err(error) => {
+                                    return Err(ProtocolError {
+                                        code: ErrorCode::FailedPrecondition,
+                                        message: format!(
+                                            "the stream's reservation names a worktree that does not observe as a repository ({error:?}); recover-task or abandon-change-stream reclaims a stale reservation"
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            Ok(ResponseBody::WorktreeObservation(Box::new(observation)))
+        }
+        Operation::GetTaskContext {
+            project_id,
+            task_id,
+            dispatch_id,
+        } => {
+            // The run's own input envelope, served for inspection: the
+            // same resolution the runner performs, so what a reader sees
+            // here is byte-for-byte the question the run was asked. Named
+            // by dispatch, because two dispatches of one task need not ask
+            // the same question; a dispatch the task is not running under
+            // gets the same refusal the run paths give.
+            let task_record = store.task(task_id).map_err(storage_error)?;
+            authorize_task_resource(principal, project_id, &task_record)?;
+            let current = task_record
+                .current_dispatch()
+                .ok_or_else(dispatch_binding_refused)?;
+            if current.id() != dispatch_id {
+                return Err(dispatch_binding_refused());
+            }
+            let context = resolve_run_context(store, task_id, current)?;
+            Ok(ResponseBody::TaskContext(Box::new(context)))
+        }
         Operation::Hello { supported_versions } => {
             Ok(ResponseBody::Hello(negotiate(supported_versions)?))
         }

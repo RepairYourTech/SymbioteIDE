@@ -590,10 +590,23 @@ pub fn release(reservation: &Reservation, policy: ReleasePolicy) -> Result<Outco
 
 /// Lists reservation markers recorded under one project of a base directory.
 /// Marker integrity is not re-verified here; call `verify` per reservation.
+///
+/// A project that has never reserved has no directory under the base at all,
+/// which is an ordinary state with an honest answer — no markers — rather than
+/// damage. Collapsing it into an error would tell every reader that a project
+/// with no worktrees has a broken reservation base, and would make the one
+/// question readers actually ask ("is anything checked out for this stream?")
+/// unanswerable until something was checked out. A base that exists but cannot
+/// be read is still an error: absence is only believable when it was observed.
 pub fn list(base: &Path, project: &ProjectId) -> Result<Vec<Marker>, WorktreeError> {
     let project_dir = base.join(project.as_str());
     let mut markers = Vec::new();
-    for entry in fs::read_dir(&project_dir).map_err(|_| WorktreeError::NotFound)? {
+    let entries = match fs::read_dir(&project_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(markers),
+        Err(_) => return Err(WorktreeError::NotFound),
+    };
+    for entry in entries {
         let entry = entry.map_err(|_| WorktreeError::Io)?;
         let name = entry.file_name();
         let name = name.to_str().ok_or(WorktreeError::UnsafePath)?;
@@ -926,6 +939,36 @@ mod tests {
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(mode);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    /// Absence is an answer a reader acts on, so it has to be the answer
+    /// `list` gives. A project that has never reserved has no directory under
+    /// the base, and reporting that as damage would make "is anything checked
+    /// out for this stream?" unanswerable for every project until it checked
+    /// something out. The base itself still has to be readable for the answer
+    /// to be worth anything: a base that is not a directory is a host that
+    /// cannot hold worktrees at all, and saying "no worktrees" there would be
+    /// inventing a fact.
+    #[test]
+    fn a_project_that_never_reserved_lists_nothing_and_a_base_that_is_not_a_directory_still_fails()
+    {
+        let base = temp_base("unread");
+        let project = ProjectId::new("never-reserved").unwrap();
+        assert!(!base.join(project.as_str()).exists());
+        assert_eq!(list(&base, &project).unwrap(), Vec::new());
+        // A base that is present but not a directory fails the read rather
+        // than answering, so absence is only ever reported where it was seen.
+        let file_base = base.join("not-a-directory");
+        fs::write(&file_base, b"base is a file").unwrap();
+        assert_eq!(
+            list(&file_base, &project).unwrap_err(),
+            WorktreeError::NotFound
+        );
+        // A project that HAS reserved still lists only its own reservation.
+        let reserved = ProjectId::new("demo").unwrap();
+        reserve(&derived("stream-a", "seed"), &base, Timestamp(1)).unwrap();
+        assert_eq!(list(&base, &reserved).unwrap().len(), 1);
+        assert_eq!(list(&base, &project).unwrap(), Vec::new());
     }
 
     #[test]
