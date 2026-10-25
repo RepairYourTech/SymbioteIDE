@@ -64,7 +64,13 @@ pub enum StoreError {
     /// the stated bound, or one item named twice with two observations. The
     /// set is refused whole; no link is repaired, trimmed or stored.
     InvalidForeignLink,
-    DependenciesUnresolved,
+    /// A gate recorded against the task is not satisfied. The gates travel
+    /// with the refusal because this is the one error a caller could act on
+    /// and not act: "your dependencies are unresolved" names the condition
+    /// and not the prerequisite, and the three remedies — wait for it, drop
+    /// the edge, run it anyway on a stream you no longer hold — are not
+    /// interchangeable.
+    DependenciesUnresolved(Vec<TaskGate>),
     InvalidLease,
     LeaseConflict(symbiote_domain::LeaseError),
     InvalidProvider,
@@ -73,7 +79,24 @@ pub enum StoreError {
     /// travels in the one dispatch-refusal vocabulary, so it is never
     /// collapsed into a generic precondition message.
     DispatchRefused(DispatchRefusal),
+    /// A grant-shaped decision that would license nothing: the three rules
+    /// that refuse an APPROVAL each name their own variant, because the
+    /// remedy differs — a re-grant needs no lease at all, a permission with
+    /// no enforcement consumer is ungrantable until its consumer lands, and
+    /// an external-harness dispatch never consults a lease. A denial skips
+    /// all three (it licenses nothing by definition) and a state refusal is
+    /// the Host's named answer, not a store variant.
     InvalidElevation,
+    /// The permission is already carried by the dispatch's binding access:
+    /// there is nothing to elevate.
+    ElevationRegrant,
+    /// No enforcement consumer consults this permission, so an approval
+    /// would license nothing and could mislead an auditor.
+    ElevationUnconsumed,
+    /// The dispatch's runtime has no consumer gate: every consumer lives on
+    /// the native loop, so a decision on any other runtime licenses
+    /// nothing regardless of the permission.
+    ElevationUnenforceableRuntime,
     ElevationCeiling,
     ResourceExhausted,
 }
@@ -218,6 +241,18 @@ pub enum EventPayload {
         task_id: TaskId,
         command: Box<TaskCommand>,
         task: Box<Task>,
+    },
+    StreamChanged {
+        stream_id: ChangeStreamId,
+        command: Box<symbiote_domain::StreamCommand>,
+        // The authority the transition was accepted under. A stream's
+        // transition is gated on an access snapshot rather than on the
+        // actor alone, so the journal has to carry the snapshot it was
+        // accepted under — otherwise the audit would have to invent one,
+        // and an audit that invents the authority it is auditing is not an
+        // audit.
+        access: Box<AccessSnapshot>,
+        stream: Box<ChangeStream>,
     },
     WorkRouted {
         decision: Box<RouteDecision>,
@@ -784,6 +819,156 @@ impl Store {
         Ok(receipt)
     }
 
+    /// The task command this journal already recorded under one command id,
+    /// read back whole. `apply_task` replays by comparing the request a
+    /// caller sends against the bytes it journaled, which only matches when
+    /// the caller can rebuild those bytes — and a Host arm that stamps its
+    /// own clock or reads `expected_revision` off the live record cannot,
+    /// because both move the moment the first attempt lands. Handing the
+    /// journaled command back is what makes a lost-response retry a replay
+    /// of the recorded intent rather than a fight with a clock: the caller
+    /// re-applies exactly what it applied, the byte comparison sees the
+    /// identical request, and the receipt says `replayed`.
+    ///
+    /// `None` when this command id has no journal row yet — the command has
+    /// never been applied, so there is nothing to replay. A row under this
+    /// id whose payload is not a task transition is an idempotency
+    /// conflict by construction: the id names some other operation.
+    pub fn journaled_task_command(&self, id: &CommandId) -> Result<Option<TaskCommand>> {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::TaskChanged { command, .. } => Ok(Some(*command)),
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
+    /// The change stream as it stands. A stream is written by
+    /// [`Store::apply_stream`] and by nothing else, so reading it back is
+    /// how a caller checks what it wrote: without this the only way to learn
+    /// a stream's state was to watch the task refuse to complete.
+    pub fn change_stream(&self, id: &ChangeStreamId) -> Result<ChangeStream> {
+        read_stream(&self.connection, id)
+    }
+
+    /// Every change stream cut against one root, in id order.
+    ///
+    /// This exists because two streams cut from the same base both believe
+    /// they are the Root's next commit, and the Host can only say *which one
+    /// got there first* if it can read the others. Naming the stream that
+    /// holds the Root is the whole of what a collision report says, so a
+    /// question that has no answer in the store cannot be answered in a
+    /// refusal. The read is one query, because a refusal that costs a scan
+    /// per candidate stream is a refusal nobody can afford to make.
+    pub fn root_streams(&self, project: &ProjectId, root: &RootId) -> Result<Vec<ChangeStream>> {
+        read_root_streams(&self.connection, project, root)
+    }
+
+    /// Internal trusted Host boundary for a change stream, exactly as
+    /// [`Store::apply_task`] is for a task: the caller authenticates and
+    /// constructs the command, this method does not.
+    ///
+    /// It is the only way a stream's state advances, which is why
+    /// `StreamState::Validated` existed in the domain and in no store: a
+    /// stream is created with its task and then could not move, so the one
+    /// state `TaskAction::Complete` requires was a state no client could
+    /// reach and no code could write.
+    pub fn apply_stream(
+        &mut self,
+        stream_id: &ChangeStreamId,
+        command: symbiote_domain::StreamCommand,
+        access: &AccessSnapshot,
+    ) -> Result<Receipt> {
+        let request = stream_mutation_request(stream_id, &command)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(receipt) = replay(&transaction, &command.id, &request)? {
+            return Ok(receipt);
+        }
+        let mut stream = read_stream(&transaction, stream_id)?;
+        // A stream carries no indexed revision column — unlike a task, whose
+        // revision is a column the update can guard on. The body itself is
+        // the record, so the guard compares the body this command read: one
+        // that no longer matches is a record that moved under us, and the
+        // domain's `expected_revision` is the check that names why.
+        let before = serde_json::to_string(&stream)?;
+        stream.apply(command.clone(), access)?;
+        let updated = transaction.execute(
+            "UPDATE streams SET body=?1 WHERE id=?2 AND body=?3",
+            params![serde_json::to_string(&stream)?, stream_id.as_str(), before],
+        )?;
+        if updated != 1 {
+            return Err(StoreError::Domain(DomainError::RevisionConflict));
+        }
+        let payload = EventPayload::StreamChanged {
+            stream_id: stream_id.clone(),
+            command: Box::new(command.clone()),
+            access: Box::new(access.clone()),
+            stream: Box::new(stream.clone()),
+        };
+        let receipt = append(
+            &transaction,
+            stream.project_id(),
+            &command.id,
+            stream.revision(),
+            &request,
+            &payload,
+        )?;
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
+    /// The stream command this journal already recorded under one command
+    /// id, read back whole with the access snapshot it was accepted under.
+    /// The twin of [`Store::journaled_task_command`], for the same reason:
+    /// `apply_stream` replays by comparing the request a caller sends
+    /// against the bytes it journaled, and a Host arm that rebuilds its
+    /// command from live observations — a worktree head, a Root head, a
+    /// revision that moved — cannot reproduce those bytes on a retry. The
+    /// access comes back with the command because a stream's authority is
+    /// part of its record: the replay re-applies under the snapshot that
+    /// answered the first time, not under whatever the caller presents now.
+    ///
+    /// `None` when the id has no journal row yet; a row whose payload is not
+    /// a stream transition is an idempotency conflict by construction.
+    pub fn journaled_stream_command(
+        &self,
+        id: &CommandId,
+    ) -> Result<
+        Option<(
+            symbiote_domain::StreamCommand,
+            symbiote_domain::AccessSnapshot,
+        )>,
+    > {
+        let body: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM journal WHERE command_id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(None),
+            Some(body) => match serde_json::from_str::<EventPayload>(&body)? {
+                EventPayload::StreamChanged {
+                    command, access, ..
+                } => Ok(Some((*command, *access))),
+                _ => Err(StoreError::IdempotencyConflict),
+            },
+        }
+    }
+
     /// Rebuild server-assigned timestamps for identical command retries.
     pub fn consent_command_timestamp(&self, command_id: &CommandId) -> Result<Option<Timestamp>> {
         let body: Option<String> = self
@@ -1251,6 +1436,23 @@ fn placement_request(
     ))?)
 }
 
+fn stream_mutation_request(
+    stream_id: &ChangeStreamId,
+    command: &symbiote_domain::StreamCommand,
+) -> Result<String> {
+    #[derive(Serialize)]
+    struct Mutation<'a> {
+        operation: &'static str,
+        stream_id: &'a ChangeStreamId,
+        command: &'a symbiote_domain::StreamCommand,
+    }
+    Ok(serde_json::to_string(&Mutation {
+        operation: "apply_stream",
+        stream_id,
+        command,
+    })?)
+}
+
 fn mutation_request(task_id: &TaskId, command: &TaskCommand) -> Result<String> {
     #[derive(Serialize)]
     struct Mutation<'a> {
@@ -1429,11 +1631,14 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             EventPayload::ElevationDecided { lease } => {
                 lease.validate().map_err(|_| StoreError::InvalidElevation)?;
                 let task = tasks.get(&lease.task_id).ok_or(StoreError::NotFound)?;
+                // The same attribution the write path reads, through the
+                // same predicate: a decision attaches to a Running dispatch
+                // or to the dispatch a Failed task still carries (the id a
+                // recovered run re-mints). Replaying an old journal — one
+                // written entirely under the Running-only rule — still
+                // passes, because Running is one of the two accepted arms.
                 if task.project_id() != &lease.project_id
-                    || *task.state() != TaskState::Running
-                    || task
-                        .current_dispatch()
-                        .is_none_or(|dispatch| dispatch.id() != &lease.dispatch_id)
+                    || !elevation::elevation_attaches(task, &lease.dispatch_id)
                     || lease.id.as_str() != command_key
                     || revision != 0
                     || request != serde_json::to_string(&event)?
@@ -1482,11 +1687,13 @@ fn audit_journal(connection: &Connection) -> Result<()> {
             EventPayload::ElevationRequested { ask } => {
                 ask.validate().map_err(|_| StoreError::InvalidElevation)?;
                 let task = tasks.get(&ask.task_id).ok_or(StoreError::NotFound)?;
+                // The same predicate the write path reads: an ask filed by a
+                // run that refused (task Failed, dispatch still attached) is
+                // evidence that must survive the reopen, or the ledger the
+                // reopen rebuilds would silently lose the asks this whole
+                // slice exists to make answerable.
                 if task.project_id() != &ask.project_id
-                    || *task.state() != TaskState::Running
-                    || task
-                        .current_dispatch()
-                        .is_none_or(|dispatch| dispatch.id() != &ask.dispatch_id)
+                    || !elevation::elevation_attaches(task, &ask.dispatch_id)
                     || ask.id.as_str() != command_key
                     || revision != 0
                     || request != serde_json::to_string(&event)?
@@ -1844,6 +2051,27 @@ fn audit_journal(connection: &Connection) -> Result<()> {
                     ));
                 }
             }
+            EventPayload::StreamChanged {
+                stream_id,
+                command,
+                access,
+                stream,
+            } => {
+                let previous = streams.get_mut(stream_id).ok_or_else(|| {
+                    StoreError::Integrity("transition precedes stream creation".into())
+                })?;
+                previous.apply(*command.clone(), access)?;
+                if previous != stream.as_ref()
+                    || stream.project_id().as_str() != project_key
+                    || stream.revision() != symbiote_domain::Revision(revision)
+                    || command.id.as_str() != command_key
+                    || request != stream_mutation_request(stream_id, command)?
+                {
+                    return Err(StoreError::Integrity(
+                        "stream journal does not replay to recorded state".into(),
+                    ));
+                }
+            }
         }
     }
     let dependency_targets = |project: &ProjectId, task: &TaskId| {
@@ -2112,6 +2340,52 @@ fn read_stream(connection: &Connection, id: &ChangeStreamId) -> Result<ChangeStr
         ));
     }
     Ok(stream)
+}
+
+/// The same row contract as [`read_stream`], applied to every stream on one
+/// root. The column/body cross-check is not repeated per row because it is the
+/// same check: a body whose columns disagree is the same defect whichever
+/// query found it, and skipping it here would make a listing a weaker
+/// guarantee than a single read.
+fn read_root_streams(
+    connection: &Connection,
+    project: &ProjectId,
+    root: &RootId,
+) -> Result<Vec<ChangeStream>> {
+    let mut statement = connection.prepare(
+        "SELECT id,project_id,root_id,worktree_id,branch,body FROM streams \
+         WHERE project_id=?1 AND root_id=?2 ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map(params![project.as_str(), root.as_str()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut streams = Vec::with_capacity(rows.len());
+    for (id, project_column, root_column, worktree, branch, body) in rows {
+        let stream: ChangeStream = serde_json::from_str(&body)?;
+        if stream.id().as_str() != id
+            || stream.project_id().as_str() != project_column
+            || stream.root_id().as_str() != root_column
+            || stream.worktree.as_str() != worktree
+            || stream.branch != branch
+            || project_column != project.as_str()
+            || root_column != root.as_str()
+        {
+            return Err(StoreError::Integrity(
+                "stream columns differ from validated body".into(),
+            ));
+        }
+        streams.push(stream);
+    }
+    Ok(streams)
 }
 
 #[cfg(test)]

@@ -250,6 +250,33 @@ class TheCensus(unittest.TestCase):
                 "the inner fence is read as the closer and the real closer as a new opening, "
                 "so a document that closes its fence is refused as one that never did")
 
+            # Tabs and the closer's own shape: a leading tab is the columns of the tab stop it
+            # lands on, not one character, so a nested item's marker line and its deeper second
+            # line are both the item's own — a reading that sliced the raw line would lose the
+            # marker to an index the columns do not name and read its second line as code. And a
+            # closing fence carries nothing but its markers: an info string after the run makes
+            # the line content of the block, not the closer.
+            (root / "tabbed.md").write_text(
+                "- an item\n\t- a nested item stating at most 16 files\n"
+                "\t\tand its own second line stating 32 KiB\n")
+            self.assertEqual(
+                contracts.figures("tabbed.md", root=root), 2,
+                "a tab-indented nested item or its second line is read as code or lost, so "
+                "the columns the width counts and the indexes the walk slices disagree about "
+                "where the item's content begins")
+            self.assertEqual(
+                prose.unseen(root / "tabbed.md"), [],
+                "a line the tab stops place inside the nested item is refused as one this "
+                "reading cannot see, so a tab is refused rather than expanded")
+            (root / "infocloser.md").write_text(
+                stated + "\n\n```\n" + quoted + "\n```json\n\n```\n\n"
+                "It also allows at most 16 files.\n")
+            self.assertEqual(
+                contracts.figures("infocloser.md", root=root), 2,
+                "a closing fence carrying an info string closes the block, so the line "
+                "styled as a closer with text after it is read as one and the block it "
+                "should have closed states its lines for the document")
+
             def path_of(name: str) -> pathlib.Path:
                 """Where a name this census records lives, stated here and not read from
                 `contracts.figures`, which reads it the same way on purpose: an assertion that
@@ -283,14 +310,15 @@ class TheCensus(unittest.TestCase):
 
             malformed = []
             for name in sorted(contracts.FIGURES):
-                why = prose.unclosed(path_of(name))
+                why = prose.unclosed(path_of(name)) or "; ".join(prose.unseen(path_of(name)))
                 if why:
                     malformed.append(f"{name} is not well formed: {why}")
             self.assertEqual(
                 malformed, [],
-                "a document the census records leaves a fence open, so the figures below it read as "
-                "quotations and the count it carries stops describing what the document states — a "
-                "bound it publishes would go unheld and every count-only check would stay green: "
+                "a document the census records leaves a fence open or holds a shape this reading "
+                "cannot see, so the figures below it read as quotations or go uncounted and the "
+                "count it carries stops describing what the document states — a bound it publishes "
+                "would go unheld and every count-only check would stay green: "
                 + "; ".join(malformed))
 
             # The case that was actually broken, against the document it happened in: `cli.md` as

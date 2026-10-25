@@ -38,17 +38,103 @@ error that names it, never a silent no-op. The daemon commands honor the
 daemon-facing flags (`--state-dir`, `--command-id`, `--policy`, `--json`,
 `--yes`), because each of them is answered by a request over the socket; the
 local `schema` command honors `--write` and `--check`, the local
-`publish-runtime-inventory` command honors `--state-dir`, and the local `help`
-command honors none. `--help`/`-h` is the one universal flag — every command
-honors it — but a help request honors no other flag, whatever command (if any)
-accompanied it: it renders the table, not a request, so `--json`, `--state-dir`
-and the rest mean nothing to it. `symbiote --help`, `symbiote -h`, `symbiote
-shutdown --help` and `symbiote schema --help` therefore exit 0 without a daemon
-or a state directory, while `--json --help` is refused exactly as `--json help`
-is. So `symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote
---json help`, `symbiote --state-dir DIR schema`, `symbiote schema --yes` and
-`symbiote --json --help health` each exit 1 printing nothing, while `symbiote
---state-dir DIR shutdown --yes` and `symbiote --json health` are unaffected.
+`publish-runtime-inventory` command honors `--state-dir`, and the local
+`init`, `add-credential` and `help` commands honor none.
+`--help`/`-h` is the one universal flag — every command honors it — but a help
+request honors no other flag, whatever command (if any) accompanied it: it
+renders the table, not a request, so `--json`, `--state-dir` and the rest mean
+nothing to it. `symbiote --help`, `symbiote -h`, `symbiote shutdown --help` and
+`symbiote schema --help` therefore exit 0 without a daemon or a state
+directory, while `--json --help` is refused exactly as `--json help` is. So
+`symbiote --write DIR health`, `symbiote --check DIR health`, `symbiote --json
+help`, `symbiote --state-dir DIR schema`, `symbiote schema --yes` and
+`symbiote --json --help health` each exit 1 printing nothing, while
+`symbiote --state-dir DIR shutdown --yes` and `symbiote --json health` are
+unaffected.
+
+## The write commands on this contract
+
+`register-project`, `create-work` and `create-task` are daemon commands like
+any other: they map onto operations the protocol already had, so they change
+no envelope, no schema and no exit code. What they change is the argument
+shape — identities, names, contract revisions and a base commit, rather than a
+JSON document the caller assembled — and that shape is stated in
+[host.md](host.md) beside the other commands. Their operations are
+`register_project`, `create_work` and `create_task`, which the operation-risk
+table classifies as mutations, so they are sent without `--yes` and appear
+unmarked in the command table; a policy naming one is refused, because a
+policy may only name a kind that is dangerous. A mistyped argument is a usage
+failure, so it prints no envelope and exits 1 exactly like any other, and a
+refusal the daemon answers arrives in `error` as any other daemon refusal
+does.
+
+## Initializing an operator configuration
+
+`symbiote init DIR RESERVATION_BASE` is local, like `schema`, and it writes the
+daemon's operator configuration at `DIR/operator.json` — the file that turns
+`run_started_dispatch` from "always refuses" into a working execution path.
+
+It is a file worth generating rather than writing. The daemon refuses an
+operator config with any group or other permission bit, and the schema is
+`deny_unknown_fields`, so a typo in a hand-written one silently removes a
+control rather than failing to apply — and the operator who has never run this
+product has no reason to know the field names. What is written is the smallest
+configuration that starts a native dispatch: a `reservation_base` for derived
+worktrees and the explicitly labeled `native_fixture` that demonstrates a
+dispatch with no model turn and no spending. A credential registration, a
+sandbox shell executor, an external harness and a compatibility dossier are
+operator choices about one machine, so none of them is written: a generated file
+carrying a value nobody chose would be the same defect this branch has been
+removing from the other commands. A credential is the one an operator must add
+before the fixture can run, and `symbiote add-credential` is how they add it.
+
+`RESERVATION_BASE` must be an absolute path, and is the one argument with no
+default: a worktree under the state directory would be inside the store, and
+one relative would be wherever a script happened to be run from. The file is
+written 0600 — from the moment the temporary file exists, so it is never briefly
+world-readable — and renamed into place, so a daemon starting at the same moment
+sees the old file or the new one. An existing `operator.json` is never
+overwritten: an operator configuration is the operator's, and `init` is not a
+way to replace one silently. It exits 0 on an install and 1 on a usage failure
+or a refusal, like `schema --check`, because no daemon is asked to do anything
+else and `--json` is not a flag it honors.
+
+## Registering a credential value
+
+`symbiote add-credential CONFIG REFERENCE PROJECT ENVIRONMENT` records one
+credential registration in an operator configuration, and reads the value from
+standard input. It is local, like `init`, and for a sharper reason: the value
+is a secret. A request would carry it over a socket and into an operation log;
+an argument would put it in a process table where any user on the machine can
+read it. Standard input is the one channel this CLI has that is neither, so
+the value arrives by pipe:
+
+```console
+printf %s "$SECRET" | symbiote add-credential \
+    /etc/symbiote/operator.json native-vault-ref demo OPENAI_API_KEY
+```
+
+Every runtime profile names a credential, and a native run refuses without one
+by name — `no credential broker configured for this dispatch's credential
+reference` — so this is not an optional extra. It is the step between a Host
+that records dispatches and a Host that executes them.
+
+`REFERENCE` and `PROJECT` are the daemon's own identities, validated here with
+the broker's own constructors, because a reference it cannot name or a project
+it cannot match is refused at registration and the operator should learn that
+at the command rather than from a daemon that will not start.
+`ENVIRONMENT` is the materialization name, bounded 1..=128 bytes. The value is
+read to end of input with one trailing newline removed, so a pipe and a here
+document both deliver the value the operator meant, and an empty value is
+refused rather than registered.
+
+A registration is never replaced. The broker refuses re-registration by design
+— a revoked reference can never come back, and rotation uses a NEW reference id
+— so a command that overwrote one would write a file the daemon then refuses
+to load, having already reported success. The file is rewritten 0600 through a
+temporary file that carries the mode from the moment it exists, and the
+daemon reads the configuration once at start, so the command says plainly that
+the Host must be restarted: the broker holds values in process memory only.
 
 ## Publishing a runtime inventory
 
@@ -131,6 +217,11 @@ own:
 - `policy_invalid` — a configured policy that could not be honored: missing,
   unreadable, insecure, oversized, the wrong schema, or naming a kind a policy
   may not name. Exit 1. The CLI never downgrades this to "no policy".
+- `request_refused` — the request could not be sent as one bounded frame: it is
+  past the frame bound, so the daemon was never asked and nothing was filed.
+  Exit 1. The message names the request and its size beside the bound rather
+  than a daemon that is running and serving. The bound itself is the one
+  [host.md](host.md) states; it is not restated here, so it has one owner.
 - `unreachable` — the daemon could not be reached, or answered with an
   unparseable frame. Exit 1.
 
@@ -138,6 +229,7 @@ own:
 {"schema":"symbiote.cli/v1","command":"shutdown","command_id":"cli-shutdown-1757556000000-1234-0","ok":true,"result":{"kind":"shutdown"}}
 {"schema":"symbiote.cli/v1","command":"shutdown","command_id":"cli-shutdown-1757556000000-1234-0","ok":false,"error":{"code":"authorization_required","message":"noninteractive runs require --yes or a policy naming \"shutdown\""}}
 {"schema":"symbiote.cli/v1","command":"shutdown","command_id":"cli-shutdown-1757556000000-1234-0","ok":false,"error":{"code":"policy_invalid","message":"cannot use the policy /etc/symbiote/policy.json: the policy is not a valid symbiote.cli-policy/v1 document"}}
+{"schema":"symbiote.cli/v1","command":"create-work","command_id":"cli-create-work-1757556000000-1234-0","ok":false,"error":{"code":"request_refused","message":"the request for create-work is 68105 bytes, past the 65536-byte request bound; nothing was sent (the command line's own arguments are the whole request)"}}
 ```
 
 ## The policy document
@@ -157,9 +249,9 @@ when the flag is absent, names a document with three keys:
 ```
 
 `authorize` may name **only** the kinds this CLI classifies as dangerous, and
-the schema's `enum` is exactly that list — `decide_elevation`,
-`record_resource_consent`, `run_started_dispatch`, `shutdown`,
-`start_prepared_task`. A read or a mutation is already ungated, so listing one
+the schema's `enum` is exactly that list — `complete_task`,
+`decide_elevation`, `record_resource_consent`, `run_started_dispatch`,
+`shutdown`, `start_prepared_task`. A read or a mutation is already ungated, so listing one
 would be a no-op an operator could mistake for coverage; an unknown kind cannot
 be classified; and a wildcard is deliberately not a syntax. Because the grants
 are a set, repeating a kind is accepted and collapses rather than being an

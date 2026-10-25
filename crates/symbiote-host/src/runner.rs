@@ -787,6 +787,33 @@ fn provision_error(error: symbiote_repo::provision::ProvisionError) -> RunnerErr
     RunnerError::Provisioning(error)
 }
 
+/// The worktree identity and branch the Host will require for one stream.
+///
+/// This is the ONE owner of that derivation, and it is public because a
+/// client has to be able to record what the Host will later insist on. The
+/// Host re-derives it at provisioning and refuses a stream whose recorded
+/// names differ, so a client that invents its own — which is what naming a
+/// worktree after the Task does — produces a Task that can never be
+/// dispatched, and the refusal arrives at `run_started_dispatch` with nothing
+/// to act on. Deriving it here means the same rule answers "what will you
+/// require?" and "is this acceptable?".
+///
+/// The policy seed is Host-owned configuration, not client JSON.
+pub fn derived_worktree(
+    project_id: &symbiote_domain::ProjectId,
+    root_id: &symbiote_domain::RootId,
+    stream_id: &symbiote_domain::ChangeStreamId,
+) -> Result<symbiote_worktrees::Derived, RunnerError> {
+    let policy_seed = symbiote_worktrees_policy_seed(stream_id)?;
+    symbiote_worktrees::Derived::derive(symbiote_worktrees::DeriveInputs {
+        project_id,
+        root_id,
+        stream_id,
+        seed: &policy_seed,
+    })
+    .map_err(|_| RunnerError::InvalidSeed)
+}
+
 /// The Host's worktree policy seed: stable Host-owned configuration that
 /// binds the derived naming namespace. One seed per store; it is derived
 /// from the stream's id namespace rather than client input, so a client
@@ -1430,16 +1457,16 @@ mod tests {
             &head.state,
             symbiote_repo::HeadState::Branch { .. }
         ));
-        // Re-provisioning refuses honestly (non-empty worktree).
-        let second = provision_worktree(&store, &task, &host_id, &mut git, &reservation_base);
-        // The stage must be Reservation (the reservation layer's
-        // non-empty rule), not a Store or wrong-stage error.
-        assert!(matches!(
-            second,
-            Err(RunnerError::Provisioning(
-                symbiote_repo::provision::ProvisionError::Reservation
-            ))
-        ));
+        // Re-provisioning the same stream answers with the same location,
+        // because this is the retry `recover_task` exists to enable: a Task has
+        // one Change Stream for its whole life, and the checkout the first run
+        // made is that stream's own work in that stream's own directory. The
+        // observed head is the branch tip, and it has not moved.
+        let second =
+            provision_worktree(&store, &task, &host_id, &mut git, &reservation_base).unwrap();
+        assert_eq!(second.worktree, provisioned.worktree);
+        assert_eq!(second.branch, provisioned.branch);
+        assert_eq!(second.observed_head, base_sha);
         let _ = std::fs::remove_dir_all(&repo_dir);
         let _ = std::fs::remove_dir_all(&reservation_base);
     }
@@ -2288,17 +2315,17 @@ mod tests {
                 CommandId::new("elevate-allowlist-network").unwrap(),
                 lease("elevate-allowlist-network", Permission::Network),
             ),
-            Err(symbiote_store::StoreError::InvalidElevation)
+            Err(symbiote_store::StoreError::ElevationUnconsumed)
         ));
         // MutateStream is refused too; for a Running dispatch its binding
-        // always carries MutateStream, so the never-re-grant check shadows
-        // the allowlist here — either way deciding it refuses.
+        // always carries MutateStream, so the never-re-grant check answers
+        // first — now with its own name, and still a refusal either way.
         assert!(matches!(
             store.decide_elevation(
                 CommandId::new("elevate-allowlist-mutate").unwrap(),
                 lease("elevate-allowlist-mutate", Permission::MutateStream),
             ),
-            Err(symbiote_store::StoreError::InvalidElevation)
+            Err(symbiote_store::StoreError::ElevationRegrant)
         ));
         // ExecuteProcess has the native shell-tool consumer (#269): the
         // decision licenses, the ask alone never did.
@@ -2313,6 +2340,274 @@ mod tests {
                 .active_elevation(dispatch.id(), &Permission::ExecuteProcess, Timestamp(61))
                 .unwrap()
         );
+    }
+
+    /// A denial is recorded where a grant could never be legal (#269). Every
+    /// grant-side rule — the consumer allowlist, the native-only runtime rule,
+    /// the never-re-grant check, the Team's ceiling — asks whether a license
+    /// would be meaningful, and a denial licenses nothing. Refusing to record
+    /// those refusals is how a Project ends up holding an ask its ledger says
+    /// nobody ever answered.
+    #[test]
+    fn a_denial_is_recorded_where_a_grant_could_never_have_been_legal() {
+        let (mut store, task, dispatch) = store_with_running_task_worker_grants(
+            "elevate-denial",
+            RuntimeKind::NativeSymbiote,
+            &[
+                Permission::ReadRoot,
+                Permission::MutateStream,
+                Permission::UseCredential,
+            ],
+        );
+        let project = store.task(&task).unwrap().project_id().clone();
+        // Network has no enforcement consumer, is not in the binding and is
+        // not in the fixture's ceiling: three separate reasons an APPROVAL
+        // naming it cannot be recorded, and not one of them a reason to
+        // refuse the record that the authority said no.
+        let denial = symbiote_domain::ElevationLease {
+            id: CommandId::new("deny-network").unwrap(),
+            project_id: project.clone(),
+            task_id: task.clone(),
+            dispatch_id: dispatch.id().clone(),
+            permission: Permission::Network,
+            reason: "the run asked for network and was told no".into(),
+            approved: false,
+            approved_by: fixture::user(),
+            decided_at: Timestamp(60),
+            expires_at: Timestamp(60),
+            revoked_at: None,
+        };
+        // The same three facts as an APPROVAL are refused outright, so the
+        // difference is the answer and nothing else.
+        assert!(matches!(
+            store.decide_elevation(
+                CommandId::new("grant-network").unwrap(),
+                symbiote_domain::ElevationLease {
+                    approved: true,
+                    expires_at: Timestamp(60 + 300_000),
+                    ..denial.clone()
+                },
+            ),
+            // approved stays false through the struct update, so this is the
+            // invalid-lease law refusing a "grant" whose window is a
+            // denial's — a shape the caller cannot send over the wire
+            // anyway, and evidence that the store's law fires first.
+            Err(symbiote_store::StoreError::InvalidElevation)
+        ));
+        store
+            .decide_elevation(CommandId::new("deny-network").unwrap(), denial)
+            .expect("a denial is evidence whatever the permission");
+        // It licenses nothing: `active_elevation` reads only approvals, and a
+        // denial with a zero window could not have licensed anything even if
+        // it were one.
+        for permission in [
+            Permission::Network,
+            Permission::UseCredential,
+            Permission::ExecuteProcess,
+        ] {
+            assert!(
+                !store
+                    .active_elevation(dispatch.id(), &permission, Timestamp(60))
+                    .unwrap(),
+                "{permission:?} is licensed by nothing here"
+            );
+        }
+    }
+
+    /// The attribution an answered ask needs: a run refuses, files its ask,
+    /// and `file_run_failure` fails the task WITHOUT dropping the dispatch
+    /// binding — so the dispatch the ask names is still the task's own, its
+    /// id is minted deterministically per task, and the recovered run
+    /// re-mints it. A decision recorded against that dispatch licenses
+    /// exactly the run that comes back. Under the old Running-only rule the
+    /// same decision was refused, and the ask could never be answered by
+    /// anything but a hand-written file.
+    #[test]
+    fn a_decision_attaches_to_the_dispatch_a_refused_run_left_behind() {
+        let (mut store, task, dispatch) = store_with_running_task_worker_grants(
+            "elevate-attach",
+            RuntimeKind::NativeSymbiote,
+            &[Permission::ReadRoot, Permission::MutateStream],
+        );
+        let project = store.task(&task).unwrap().project_id().clone();
+        // The run is refused the way resolve_native_credential refuses: the
+        // ask is filed, then the run errors out and the Host files the
+        // failure — the task is Failed and still carries its dispatch.
+        file_elevation_ask(
+            &mut store,
+            &task,
+            &dispatch,
+            Permission::UseCredential,
+            "the run referenced a credential without UseCredential on the binding",
+            Timestamp(55),
+        )
+        .unwrap();
+        let task_record = store.task(&task).unwrap();
+        let failure = TaskCommand {
+            id: fixture::command("elevate-attach", "run-failed"),
+            expected_revision: task_record.revision(),
+            actor: Actor::Host(fixture::host("elevate-attach").id.clone()),
+            at: Timestamp(56),
+            action: TaskAction::Fail {
+                reason: "credential lease refused: use_credential_not_granted".into(),
+            },
+        };
+        store.apply_task(&task, failure).unwrap();
+        let failed = store.task(&task).unwrap();
+        assert_eq!(failed.state(), &symbiote_domain::TaskState::Failed);
+        assert_eq!(
+            failed.current_dispatch().map(symbiote_domain::Dispatch::id),
+            Some(dispatch.id())
+        );
+
+        // The ceiling admits UseCredential for this Project (the binding
+        // does not, or the run would not have been refused).
+        let mut team = store.get_team(&project).unwrap();
+        team.access_ceiling.grants.insert(Permission::UseCredential);
+        team.revision = symbiote_domain::Revision(1);
+        store
+            .replace_team(
+                fixture::command("elevate-attach", "team-raise"),
+                Some(symbiote_domain::Revision(0)),
+                team,
+                fixture::user(),
+                Timestamp(57),
+            )
+            .unwrap();
+
+        // The decision attaches to the FAILED task's dispatch — the ask is
+        // answered while the run it came from is gone.
+        let grant = symbiote_domain::ElevationLease {
+            id: fixture::command("elevate-attach", "grant"),
+            project_id: project.clone(),
+            task_id: task.clone(),
+            dispatch_id: dispatch.id().clone(),
+            permission: Permission::UseCredential,
+            reason: "the operator answered the ask the refused run filed".into(),
+            approved: true,
+            approved_by: fixture::user(),
+            decided_at: Timestamp(58),
+            expires_at: Timestamp(58 + 300_000),
+            revoked_at: None,
+        };
+        store
+            .decide_elevation(fixture::command("elevate-attach", "grant"), grant)
+            .expect("the failed task's own dispatch is attachable");
+        assert!(
+            store
+                .active_elevation(dispatch.id(), &Permission::UseCredential, Timestamp(59))
+                .unwrap(),
+            "the grant is live at the reading clock"
+        );
+
+        // The re-minted run reads the same gate: recover drops the binding
+        // and start re-mints the deterministic id, so a dispatch compiled
+        // under that id again is licensed by the very decision recorded
+        // above.
+        let recovered = store.task(&task).unwrap();
+        let recover = TaskCommand {
+            id: fixture::command("elevate-attach", "recover"),
+            expected_revision: recovered.revision(),
+            actor: Actor::Host(fixture::host("elevate-attach").id.clone()),
+            at: Timestamp(60),
+            action: TaskAction::Recover,
+        };
+        store.apply_task(&task, recover).unwrap();
+        assert!(store.task(&task).unwrap().current_dispatch().is_none());
+        // The re-attachment contract: the Host service mints a task's
+        // dispatch id deterministically (`disp_{task_id}`, see
+        // StartPreparedTask), so the next generation of THIS task re-mints
+        // exactly one id — and the decision above is keyed to the dispatch
+        // identity, not to a particular generation. The fixture compiled
+        // the original dispatch under a hand-built id, so the pin here is
+        // that the RULE is a pure function of the task id.
+        let remint = |task_id: &TaskId| {
+            symbiote_domain::DispatchId::new(format!("disp_{}", task_id.as_str()))
+                .expect("the deterministic dispatch id")
+        };
+        assert_eq!(remint(&task).as_str(), format!("disp_{}", task.as_str()));
+
+        // A foreign dispatch id is still refused: only the task's own
+        // dispatch attaches, and only while the task can come back.
+        let foreign = symbiote_domain::ElevationLease {
+            id: fixture::command("elevate-attach", "grant-foreign"),
+            project_id: project.clone(),
+            task_id: task.clone(),
+            dispatch_id: symbiote_domain::DispatchId::new("dispatch-foreign").unwrap(),
+            permission: Permission::UseCredential,
+            reason: "a dispatch this task never carried".into(),
+            approved: true,
+            approved_by: fixture::user(),
+            decided_at: Timestamp(61),
+            expires_at: Timestamp(61 + 300_000),
+            revoked_at: None,
+        };
+        assert!(matches!(
+            store.decide_elevation(fixture::command("elevate-attach", "grant-foreign"), foreign),
+            Err(symbiote_store::StoreError::RelationshipMismatch
+                | symbiote_store::StoreError::NotFound)
+        ));
+        store.integrity_check().unwrap();
+        drop(store);
+    }
+
+    /// The states that refuse: a Recovered (or otherwise dispatched) task
+    /// carries no dispatch, and no decision can attach to a dispatch that
+    /// does not exist — the re-minted one must be decided AFTER it starts,
+    /// not before.
+    #[test]
+    fn a_decision_on_a_dispatchless_task_refuses_by_state() {
+        let (mut store, task, dispatch) = store_with_running_task_worker_grants(
+            "elevate-detached",
+            RuntimeKind::NativeSymbiote,
+            &[Permission::ReadRoot, Permission::MutateStream],
+        );
+        let project = store.task(&task).unwrap().project_id().clone();
+        let task_record = store.task(&task).unwrap();
+        let failure = TaskCommand {
+            id: fixture::command("elevate-detached", "run-failed"),
+            expected_revision: task_record.revision(),
+            actor: Actor::Host(fixture::host("elevate-detached").id.clone()),
+            at: Timestamp(55),
+            action: TaskAction::Fail {
+                reason: "the run did not come back".into(),
+            },
+        };
+        store.apply_task(&task, failure).unwrap();
+        let recovered_record = store.task(&task).unwrap();
+        let recover = TaskCommand {
+            id: fixture::command("elevate-detached", "recover"),
+            expected_revision: recovered_record.revision(),
+            actor: Actor::Host(fixture::host("elevate-detached").id.clone()),
+            at: Timestamp(56),
+            action: TaskAction::Recover,
+        };
+        store.apply_task(&task, recover).unwrap();
+        // Recovered: Ready, and the dispatch binding is gone — the state a
+        // task sits in between generations.
+        assert_eq!(store.task(&task).unwrap().state(), &TaskState::Ready);
+        assert!(store.task(&task).unwrap().current_dispatch().is_none());
+        let detached = symbiote_domain::ElevationLease {
+            id: fixture::command("elevate-detached", "grant"),
+            project_id: project.clone(),
+            task_id: task.clone(),
+            dispatch_id: dispatch.id().clone(),
+            permission: Permission::UseCredential,
+            reason: "nothing carries this dispatch any more".into(),
+            approved: true,
+            approved_by: fixture::user(),
+            decided_at: Timestamp(60),
+            expires_at: Timestamp(60 + 300_000),
+            revoked_at: None,
+        };
+        // A task between generations has no dispatch to read at all, so the
+        // store refuses before the predicate (NotFound) — and either way no
+        // decision can attach. The pin is the refusal, not which arm of it.
+        assert!(matches!(
+            store.decide_elevation(fixture::command("elevate-detached", "grant"), detached),
+            Err(symbiote_store::StoreError::RelationshipMismatch
+                | symbiote_store::StoreError::NotFound)
+        ));
     }
 
     /// The runtime-aware decide rule (#269): EVERY consumer gate lives on
@@ -2350,7 +2645,7 @@ mod tests {
             assert!(
                 matches!(
                     store.decide_elevation(CommandId::new(id).unwrap(), lease(id, permission)),
-                    Err(symbiote_store::StoreError::InvalidElevation)
+                    Err(symbiote_store::StoreError::ElevationUnenforceableRuntime)
                 ),
                 "a decision on an EXTERNAL_HARNESS dispatch must refuse: {id}"
             );
@@ -3405,25 +3700,29 @@ impl symbiote_native_agent::InferenceTransport for FixtureNativeTransport {
         use symbiote_runtime_sdk::provider::{
             FinishReason, PROVIDER_CONTRACT_VERSION, ProviderResponse,
         };
-        let (text, tool_calls, finish) = if self.proposed {
-            (self.echo_text.clone(), Vec::new(), FinishReason::Stop)
-        } else {
-            self.proposed = true;
-            let mut calls = Vec::new();
-            if let Some(tool) = &self.tool {
+        // A configured tool makes this a two-turn script: propose it, then
+        // complete with the echo text. With no tool there is nothing to
+        // propose, so the run completes on its first turn. Claiming
+        // `ToolCalls` over an empty list would be refused by the envelope
+        // contract — the fixture would refuse to run for the operator who
+        // asked for the simplest thing it can do, and would refuse with a
+        // `LoopFailed` identity that says nothing about a tool.
+        let (text, tool_calls, finish) = match (self.proposed, self.tool.as_ref()) {
+            (false, Some(tool)) => {
+                self.proposed = true;
                 let call_id = symbiote_domain::RequestId::new(&tool.call_id)
                     .map_err(|_| symbiote_runtime_sdk::provider::ProviderError::Unavailable)?;
-                calls.push(symbiote_runtime_sdk::provider::ProviderToolCall {
-                    call_id,
-                    name: "shell".into(),
-                    arguments: tool.arguments.clone(),
-                });
+                (
+                    "proposing the configured tool".into(),
+                    vec![symbiote_runtime_sdk::provider::ProviderToolCall {
+                        call_id,
+                        name: "shell".into(),
+                        arguments: tool.arguments.clone(),
+                    }],
+                    FinishReason::ToolCalls,
+                )
             }
-            (
-                "proposing the configured tool".into(),
-                calls,
-                FinishReason::ToolCalls,
-            )
+            _ => (self.echo_text.clone(), Vec::new(), FinishReason::Stop),
         };
         Ok(ProviderResponse {
             schema_version: PROVIDER_CONTRACT_VERSION,

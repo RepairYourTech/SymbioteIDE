@@ -146,6 +146,28 @@ impl TaskState {
         }
     }
 
+    /// This state's own name, for a sentence about it.
+    ///
+    /// A refusal that says "this task is running" is an answer; one that says
+    /// `(IllegalTransition)` is the sound of a gate with no door in it. The
+    /// match is exhaustive by construction for the same reason
+    /// `lifecycle_order` is: a new variant cannot be added and go unnamed.
+    pub fn name(&self) -> &'static str {
+        match self {
+            TaskState::Ready => "ready",
+            TaskState::Queued => "queued",
+            TaskState::Assigned => "assigned",
+            TaskState::Blocked => "held",
+            TaskState::Running => "running",
+            TaskState::CompletionRequested => "awaiting completion",
+            TaskState::Verifying => "verifying",
+            TaskState::Completed => "completed",
+            TaskState::Failed => "failed",
+            TaskState::Cancelled => "cancelled",
+            TaskState::Interrupted => "interrupted",
+        }
+    }
+
     /// The startable pre-dispatch pair: `Ready`, or `Assigned` once the Host
     /// has bound the Task's canonical Role. Dispatch compilation, the `Start`
     /// transition, the dispatch preparation and the scheduler's projections all
@@ -304,6 +326,30 @@ impl Task {
     }
     pub fn history(&self) -> &[TaskEvent] {
         &self.history
+    }
+
+    /// Why this task is being held, when it is.
+    ///
+    /// The domain puts the reason in the command history and nowhere else, on
+    /// the grounds that the history is the record — so reading it back is the
+    /// only way to answer "why is this not running" in the operator's own
+    /// words rather than in the scheduler's. Newest wins, because a task that
+    /// was held, released and held again is held for the reason given last,
+    /// and a caller reading the first would be told something untrue.
+    ///
+    /// None in every other state, including `Ready` after an unblock: the
+    /// release is a fact about the past and not a reason for anything now.
+    pub fn blocked_by(&self) -> Option<&str> {
+        if self.state != TaskState::Blocked {
+            return None;
+        }
+        self.history
+            .iter()
+            .rev()
+            .find_map(|event| match &event.command.action {
+                TaskAction::Block { reason } => Some(reason.as_str()),
+                _ => None,
+            })
     }
 
     /// A duplicate returns its original resulting revision, even after later work.
@@ -649,6 +695,11 @@ pub enum StreamState {
     Collided,
     Validated,
     Integrated,
+    /// The integrated stream's worktree has been reclaimed. Terminal, and
+    /// distinct from `Integrated`: the work landed either way, but the
+    /// location that held it is gone, so the stream can never be provisioned
+    /// again and a caller must not read `Integrated` as "still on disk".
+    Released,
     Cancelled,
 }
 
@@ -712,6 +763,11 @@ pub enum StreamAction {
         head: CommitSha,
         target: CommitSha,
     },
+    /// Reclaim an integrated stream's worktree. Carries no commit: the
+    /// commits are already recorded, and the caller proves they survive the
+    /// removal rather than restating them here as if the Host had not read
+    /// them from the stream.
+    Release,
     Cancel,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -870,6 +926,23 @@ impl ChangeStream {
     pub fn lineage(&self) -> &StreamLineage {
         &self.lineage
     }
+
+    /// The stream this one collided with, when it has been told it collided.
+    ///
+    /// A refusal that cannot say who took the Root is a refusal the operator
+    /// has to go and find out for themselves, and the record of who did was
+    /// written by the Host at the moment it found out. Reading it back is how
+    /// a second attempt says the same thing as the first: the state says
+    /// `Collided` but not why, and this is the why.
+    pub fn collided_with(&self) -> Option<&ChangeStreamId> {
+        self.history
+            .iter()
+            .rev()
+            .find_map(|event| match &event.command.action {
+                StreamAction::Collision { other } => Some(other),
+                _ => None,
+            })
+    }
     pub fn history(&self) -> &[StreamEvent] {
         &self.history
     }
@@ -904,7 +977,14 @@ impl ChangeStream {
         {
             return Err(DomainError::InvalidTimestamp);
         }
-        if matches!(self.state, StreamState::Integrated | StreamState::Cancelled) {
+        // `Integrated` and `Cancelled` are terminal, and `Released` is
+        // terminal too — with one exception in the first case: reclaiming the
+        // worktree is the last thing an integrated stream may do, and it is
+        // the only transition that changes nothing about the work.
+        if matches!(self.state, StreamState::Released | StreamState::Cancelled)
+            || (self.state == StreamState::Integrated
+                && !matches!(command.action, StreamAction::Release))
+        {
             return Err(DomainError::IllegalTransition);
         }
         let revision = Revision(
@@ -958,6 +1038,19 @@ impl ChangeStream {
                     return Err(DomainError::StaleEvidence);
                 }
                 self.state = StreamState::Integrated;
+            }
+            StreamAction::Release => {
+                // Only an integrated stream's worktree may be reclaimed. Every
+                // earlier state holds work that landed nowhere: `Active` and
+                // `NeedsRevalidation` may be mid-flight, `Collided` is waiting
+                // on reconciliation, and `Validated` is work that has not been
+                // landed. Removing a checkout is undoable by re-materializing;
+                // the uncommitted files in it are not, and git's own refusal
+                // of a dirty worktree is the last line of that guard.
+                if self.state != StreamState::Integrated {
+                    return Err(DomainError::StreamNotReady);
+                }
+                self.state = StreamState::Released;
             }
             StreamAction::Cancel => self.state = StreamState::Cancelled,
         }

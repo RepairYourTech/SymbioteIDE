@@ -9,6 +9,13 @@ use std::time::{Duration, Instant};
 use symbiote_host::transport::{exchange, private_directory};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// A commit id a typed `create-task` can start from: forty hex characters that
+/// are not the null object id. `create_task` records the base the caller named
+/// without opening a repository — the HEAD check belongs to provisioning, which
+/// is the only moment a real checkout exists — so a syntactically real commit
+/// is what these flows need, and the shape is what the CLI checks.
+const BASE: &str = "5117b5736e2e5cc2ff537a3852f8e1e37c6b0a12";
 struct Host {
     directory: PathBuf,
     child: Option<Child>,
@@ -168,8 +175,18 @@ impl Drop for Host {
         let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
+/// A command id derived from a task's own name. `staffing_task` takes its
+/// command id as a `&'static str` and its task and stream ids as `&str`, so a
+/// test that walks the same steps three times cannot hold one binding for
+/// both spellings; this is the `&'static str` half. The suffix carries its own
+/// separator, because a helper that added one would spell `first--stream` and
+/// every assertion naming the stream would have to know that.
+fn concat_id(tag: &str, suffix: &str) -> &'static str {
+    Box::leak(format!("{tag}{suffix}").into_boxed_str())
+}
+
 fn request(command: &str, operation: Value) -> Value {
-    json!({"version":{"major":1,"minor": 30},"correlation_id":"test-request","command_id":command,"operation":operation})
+    json!({"version":{"major":1,"minor": 32},"correlation_id":"test-request","command_id":command,"operation":operation})
 }
 
 #[test]
@@ -1521,15 +1538,20 @@ fn worker_completion_request_is_evidence_not_completion() {
     ok(&host.call(request("register-comp", project("comp"))));
     ok(&host.call(request("comp-maintenance", maintenance("comp"))));
     ok(&host.call(request("comp-task", task("comp-task", "comp"))));
-    // A completion request against a task that was never started is an
-    // illegal transition, and the Host keeps serving.
+    // A completion request against a task that was never started is named by
+    // the state that refused it — with the move that answers — rather than
+    // arriving as the shape error the store's mapping would give it.
     let request_completion = request(
         "comp-request",
         json!({"kind":"request_task_completion","task_id":"comp-task",
                "dispatch_id":"ghost-dispatch","report":"done"}),
     );
     let response = host.call(request_completion);
-    assert_eq!(response["result"]["Err"]["code"], "invalid_request");
+    assert_eq!(response["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        response["result"]["Err"]["message"],
+        "a completion report cannot be filed on a task that is ready; start-prepared-task activates a dispatch for it, and the run reports when it finishes"
+    );
     ok(&host.call(request("comp-alive", json!({"kind":"health"}))));
     // The task remains Ready: worker evidence never bypasses verification.
     let task_response = host.call(request(
@@ -1537,6 +1559,139 @@ fn worker_completion_request_is_evidence_not_completion() {
         json!({"kind":"get_task","project_id":"comp","task_id":"comp-task"}),
     ));
     assert_eq!(ok(&task_response)["data"]["state"], "ready");
+}
+
+#[test]
+fn a_workers_report_replays_is_named_by_state_and_never_completes() {
+    // The worker-completion command end to end on the wire: filed as
+    // evidence, replayed from the journal on a lost response, refused by
+    // name in every state that cannot take it, and never mistaken for
+    // completion.
+    let host = Host::new();
+    let host_id = staffing_composition(&host, Registration::Complete);
+    ok(&host.call(request(
+        "report-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"staffing-task"}),
+    )));
+    let started = host.call(request(
+        "report-start",
+        json!({"kind":"start_prepared_task","task_id":"staffing-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("report-start", &started)["data"]["dispatch_id"].clone();
+    // A report that says nothing is evidence of nothing, and is refused as
+    // the shape it is while the task is still Running.
+    let empty = host.call(request(
+        "report-empty",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,"report":"   "}),
+    ));
+    assert_eq!(empty["result"]["Err"]["code"], "invalid_request");
+    assert_eq!(
+        empty["result"]["Err"]["message"],
+        "a completion report has to say what the run did; an empty one is \
+         evidence of nothing and the task would carry it for the life of the \
+         record"
+    );
+    let running = host.call(request(
+        "report-read-running",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    ));
+    assert_eq!(ok(&running)["data"]["state"], "running");
+    // A Running task answers on identity, not state: a report naming a
+    // dispatch the task is not running under never speaks for it.
+    let foreign = host.call(request(
+        "report-foreign",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":"dispatch-not-this-one",
+               "report":"a foreign dispatch reports"}),
+    ));
+    assert_eq!(foreign["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        foreign["result"]["Err"]["message"],
+        "the report names a dispatch this task is not running under; the \
+         dispatch a run activated is the one that can report on it"
+    );
+    // The worker files its report as evidence.
+    let report = request(
+        "report-file",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,
+               "report":"the change is ready for verification"}),
+    );
+    let filed = host.call(report.clone());
+    assert_eq!(ok_step("report-file", &filed)["kind"], "receipt");
+    // The same command id replays: the journaled command IS the retry, so a
+    // lost response reads the record instead of fighting a clock the first
+    // attempt already moved.
+    let replayed = host.call(report);
+    assert_eq!(
+        ok_step("report-replay", &replayed)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("report-replay", &replayed)["data"]["sequence"],
+        ok_step("report-file", &filed)["data"]["sequence"],
+        "the replay lands on the original receipt"
+    );
+    assert_eq!(
+        ok_step("report-replay", &replayed)["data"]["sequence"],
+        ok_step("report-file", &filed)["data"]["sequence"],
+        "a lost-response retry replays the original receipt"
+    );
+    // A different report under the same id is still an idempotency conflict:
+    // the replay answers the recorded intent, never a second one.
+    let conflict = host.call(request(
+        "report-file",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,
+               "report":"a different report is not the recorded one"}),
+    ));
+    assert_eq!(conflict["result"]["Err"]["code"], "idempotency_conflict");
+    // A second filing under a new id is answered by the state the first
+    // attempt moved — by name, with the move that answers it.
+    let again = host.call(request(
+        "report-again",
+        json!({"kind":"request_task_completion","task_id":"staffing-task",
+               "dispatch_id":dispatch_id,
+               "report":"the change is ready for verification"}),
+    ));
+    assert_eq!(again["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        again["result"]["Err"]["message"],
+        "this task's run already reported completion, so the report is on the record; begin-task-verification moves it to verifying when the Host is ready"
+    );
+    // The task reads completion_requested: evidence, never completion.
+    let read = host.call(request(
+        "report-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    ));
+    assert_eq!(ok(&read)["data"]["state"], "completion_requested");
+    // The Host's own gate takes the task to verifying — and its command id
+    // replays the same way, the journaled command answering for the clock
+    // and revision the first attempt consumed.
+    let begun = host.call(request(
+        "report-verify",
+        json!({"kind":"begin_task_verification","task_id":"staffing-task"}),
+    ));
+    ok_step("report-verify", &begun);
+    let begun_again = host.call(request(
+        "report-verify",
+        json!({"kind":"begin_task_verification","task_id":"staffing-task"}),
+    ));
+    assert_eq!(
+        ok_step("report-verify-again", &begun_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("report-verify-again", &begun_again)["data"]["sequence"],
+        ok_step("report-verify", &begun)["data"]["sequence"],
+        "the begin-verification replay lands on its own original receipt"
+    );
+    let verifying = host.call(request(
+        "report-read-verifying",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
+    ));
+    assert_eq!(ok(&verifying)["data"]["state"], "verifying");
 }
 
 #[test]
@@ -1586,7 +1741,10 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     );
     let task_response = host.call(task_read);
     let task = ok(&task_response);
-    assert_eq!(task["data"]["state"], "running");
+    // The run refused, and the task says so. It used to read `running` here —
+    // a task claiming to be executed with nothing executing it, which no
+    // operation could ever move it out of.
+    assert_eq!(task["data"]["state"], "failed");
     // Activation against a foreign dispatch id is refused before anything
     // (message pins the ordering: the binding check precedes any transport
     // build, so this can never read as a no-transport refusal).
@@ -1601,14 +1759,16 @@ fn run_started_dispatch_refuses_closed_and_never_executes_without_transport() {
     );
     host.crash();
     host.start();
-    // The refusal left no residue: state replays identically.
+    // The foreign-dispatch refusal left no residue: it is refused as a bad
+    // *request*, before any execution was attempted, so it files no failure of
+    // its own and the state replays as the run's own refusal left it.
     let task_read = request(
         "activation-task-read-2",
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
     );
     let task_response = host.call(task_read);
     let task = ok(&task_response);
-    assert_eq!(task["data"]["state"], "running");
+    assert_eq!(task["data"]["state"], "failed");
 }
 
 #[test]
@@ -1709,22 +1869,16 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
         "create_work: {}",
         String::from_utf8_lossy(&created.stderr)
     );
-    let task_json = host.directory.join("task.json");
-    std::fs::write(
-        &task_json,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "id":"cli-task","project_id":"cli",
-            "root_id":"root-cli","role_id":"lead-cli",
-            "origin":{"kind":"objective","work":{"project_id":"cli",
-                "id":{"kind":"objective","id":"cli-objective"}}},
-            "task_contract":{"id":"coding-contract","revision":1},
-            "stream":{"id":"cli-stream","originating_chat":"chat","worktree":"cli-worktree",
-            "branch":"task/cli","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}))
-        .unwrap(),
-    )
-    .unwrap();
-    let created = run(&["create-task", task_json.to_str().unwrap()]);
+    let created = run(&[
+        "create-task",
+        "cli",
+        "cli-task",
+        "root-cli",
+        "lead-cli",
+        "cli-objective",
+        "coding-contract@1",
+        BASE,
+    ]);
     assert!(
         created.status.success(),
         "create-task: {}",
@@ -1780,11 +1934,10 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
     // start-prepared-task against this not-started task: typed refusals
     // with exit 2 (the commands are on the wire and authorized; the state
     // machine refuses the transition).
-    // run-started-dispatch and start-prepared-task refuse with the
-    // precondition code; request-task-completion against an unstarted task
-    // maps the domain's illegal transition to invalid_request. All are exit
-    // 2 with typed errors — the commands are on the wire and authorized,
-    // the state machine refuses the transition. The dangerous operations
+    // All refuse with the precondition code, each sentence naming the state
+    // that answered: exit 2 with typed errors — the commands are on the wire
+    // and authorized, the state machine refuses the transition. The
+    // dangerous operations
     // carry their explicit `--yes` so what is observed here is the daemon's
     // refusal, not the CLI's own authorization gate (exit 3).
     for (arguments, code) in [
@@ -1799,7 +1952,7 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
                 "disp_ghost",
                 "report",
             ],
-            "invalid_request",
+            "failed_precondition",
         ),
         (
             vec![
@@ -1846,6 +1999,416 @@ fn cli_administration_flow_uses_typed_commands_end_to_end() {
         .unwrap();
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("run-started-dispatch"));
+}
+
+/// The three writes a person or a script types, run through the real binary
+/// against a real daemon over its own socket: the receipts they answer with,
+/// what the typed reads then say about what they filed, the retry that
+/// replays its receipt instead of filing a second record, and every way of
+/// mistyping one.
+///
+/// The refusals are held from both sides. A mistyped argument exits 1 naming
+/// the argument, the shape it wanted and the value it got, and files nothing:
+/// the Project's journal stands where it was, which is what a real daemon can
+/// show (that the refusal happens before the socket at all is held in
+/// `cli_authorization`, against a listener that would see a frame). A request
+/// the daemon itself refuses exits 2 with the daemon's own code, and files
+/// nothing either.
+#[test]
+fn the_typed_write_commands_file_a_project_work_and_task_and_refuse_what_they_cannot() {
+    let host = Host::new();
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .arg("--state-dir")
+            .arg(&host.directory)
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    // The receipt a write command answered with, or the failure that says why
+    // it did not.
+    let receipt = |output: &std::process::Output| -> Value {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(body["kind"], "receipt", "{body}");
+        body["data"].clone()
+    };
+    // A typed read, or the failure that says why it did not answer.
+    let read = |arguments: &[&str]| -> Value {
+        let output = run(arguments);
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    // How many events the Project's journal holds, which is how much was filed.
+    let journaled = |project: &str| -> usize {
+        read(&["read-journal", project, "0", "100"])["data"]["events"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+
+    // Register, file work, create the task: three receipts, three sequences,
+    // and nothing hand-authored anywhere in the line.
+    let registered = run(&[
+        "register-project",
+        "typed",
+        "Typed project",
+        "lead-typed",
+        "lead-contract@1",
+        "root-main,root-tools",
+        // A second Role, so the Project this registers can hold a Team with an
+        // execution role. A Project registered with its lead alone can never
+        // have one: the store refuses a Team that names a Role the Project
+        // does not hold.
+        "engineer-typed:engineer-contract:1",
+    ]);
+    let first = receipt(&registered);
+    assert_eq!(first["sequence"], 1, "{first}");
+    assert_eq!(first["revision"], 0, "{first}");
+    assert_eq!(first["replayed"], false, "{first}");
+
+    // The typed reads say what the command was asked to file: the name and
+    // lead, and both roots, in the order they were named.
+    let project = read(&["get-project", "typed"]);
+    assert_eq!(project["data"]["name"], "Typed project");
+    assert_eq!(project["data"]["lead"], "lead-typed");
+    assert_eq!(project["data"]["roots"], json!(["root-main", "root-tools"]));
+    let snapshot = read(&["snapshot", "typed"]);
+    // Every Role the command named is registered, the lead's first. A Project
+    // registered with its lead alone could never hold a Team with an execution
+    // role, because the store refuses a Team naming a Role the Project lacks.
+    let roles = snapshot["data"]["roles"].as_array().unwrap();
+    assert_eq!(
+        roles.len(),
+        2,
+        "the project is registered with every role the command named"
+    );
+    assert_eq!(roles[0]["id"], "lead-typed");
+    assert_eq!(roles[0]["name"], "lead-typed");
+    assert_eq!(
+        roles[0]["operating_contract"],
+        json!({"id": "lead-contract", "revision": 1})
+    );
+    assert_eq!(roles[1]["id"], "engineer-typed");
+    assert_eq!(roles[1]["name"], "engineer-typed");
+    assert_eq!(
+        roles[1]["operating_contract"],
+        json!({"id": "engineer-contract", "revision": 1})
+    );
+
+    let work = run(&[
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-it",
+        "operational",
+        "Ship it",
+        "With a description",
+    ]);
+    assert_eq!(receipt(&work)["sequence"], 2);
+
+    let task = run(&[
+        "create-task",
+        "typed",
+        "task-one",
+        "root-main",
+        "lead-typed",
+        "ship-it",
+        "coding@1",
+        BASE,
+    ]);
+    assert_eq!(receipt(&task)["sequence"], 3);
+
+    // The task is ready under the contract revision that was typed, its stream
+    // is the one the command derived for it, and its origin is the work filed
+    // above — read back through the typed reads, not through the store.
+    let read_task = read(&["get-task", "typed", "task-one"]);
+    assert_eq!(read_task["data"]["state"], "ready");
+    assert_eq!(read_task["data"]["stream_id"], "stream-task-one");
+    assert_eq!(
+        read_task["data"]["task_contract"],
+        json!({"id": "coding", "revision": 1})
+    );
+    let origin = read(&["get-task-origin", "typed", "task-one"]);
+    assert_eq!(
+        origin["data"],
+        json!({
+            "kind": "objective",
+            "work": {"project_id": "typed", "id": {"kind": "objective", "id": "ship-it"}},
+        })
+    );
+
+    // A retry of an already-answered command replays that answer rather than
+    // filing a second Project, which is what `--command-id` is for.
+    let arguments = [
+        "--command-id",
+        "typed-once",
+        "register-project",
+        "replayed",
+        "Replayed project",
+        "lead-replayed",
+        "contract@1",
+        "root-replayed",
+    ];
+    assert_eq!(receipt(&run(&arguments))["replayed"], false);
+    assert_eq!(receipt(&run(&arguments))["replayed"], true);
+    assert_eq!(
+        read(&["get-project", "replayed"])["data"]["name"],
+        "Replayed project"
+    );
+
+    // A mistyped argument is refused where the command line is read: exit 1,
+    // the refusal names the argument and the value it got, and the Project's
+    // journal is where the proof that nothing was filed comes from.
+    let before = journaled("typed");
+    for (arguments, named) in [
+        (
+            vec!["register-project", "typed", "Typed project", "lead-typed"],
+            "missing <lead_contract_id>",
+        ),
+        (
+            vec![
+                "register-project",
+                "typed",
+                "Typed project",
+                "lead-typed",
+                "lead-contract",
+                "root-main",
+            ],
+            "<lead_contract_id> must be <contract_id>@<revision>; got \"lead-contract\"",
+        ),
+        (
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-two",
+                "urgent",
+                "Title",
+            ],
+            "<class> must be one of maintenance, operational, outcome; got \"urgent\"",
+        ),
+        (
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-two",
+                "maintenance",
+                "Title",
+                "Body",
+                "surplus",
+            ],
+            "create-work does not take the argument \"surplus\"",
+        ),
+        (
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-main",
+                "lead-typed",
+                "ship-it",
+                "coding",
+                BASE,
+            ],
+            "<contract_id> must be <contract_id>@<revision>; got \"coding\"",
+        ),
+        // An argument that is there and empty. No identity, name, title or
+        // base commit can be, so the position is named here rather than a
+        // daemon asked to refuse a draft the operator could see was
+        // incomplete.
+        (
+            vec!["register-project", "", "Typed", "lead-typed", "c@1", "root"],
+            "empty <project_id>",
+        ),
+        (
+            vec!["register-project", "typed", "", "lead-typed", "c@1", "root"],
+            "empty <name>",
+        ),
+        (
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-two",
+                "",
+                "Title",
+            ],
+            "empty <class>",
+        ),
+        (
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-main",
+                "lead-typed",
+                "ship-it",
+                "coding@1",
+                "",
+            ],
+            "empty <base_commit>",
+        ),
+    ] {
+        let refused = run(&arguments);
+        assert_eq!(refused.status.code(), Some(1), "{arguments:?}");
+        assert!(refused.stdout.is_empty(), "{arguments:?}");
+        let message = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            message.contains(named),
+            "{arguments:?} refused with {message:?}, which does not name {named:?}"
+        );
+        // The usage the refusal points at is the command's own.
+        assert!(
+            message.contains("usage: symbiote --state-dir DIR"),
+            "{arguments:?} refused with {message:?}"
+        );
+    }
+    assert_eq!(
+        journaled("typed"),
+        before,
+        "a refused command line must file nothing"
+    );
+
+    // A request the daemon itself refuses is exit 2 with the daemon's own code:
+    // the command was well formed, and the state it named does not exist or
+    // already does.
+    for (arguments, code) in [
+        (
+            // The Project is registered already.
+            vec![
+                "register-project",
+                "typed",
+                "Typed project",
+                "lead-other",
+                "contract@1",
+                "root-b",
+            ],
+            "conflict",
+        ),
+        (
+            // The root this Task names is not one the Project has.
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-ghost",
+                "lead-typed",
+                "ship-it",
+                "coding@1",
+                BASE,
+            ],
+            "invalid_request",
+        ),
+        (
+            // The work this Task originates from does not exist.
+            vec![
+                "create-task",
+                "typed",
+                "task-two",
+                "root-main",
+                "lead-typed",
+                "no-such-work",
+                "coding@1",
+                BASE,
+            ],
+            "not_found",
+        ),
+        (
+            // A title longer than the domain's own bound: that is the domain's
+            // rule, answered as its typed refusal rather than as a CLI usage
+            // error, because the CLI does not restate the domain's lengths.
+            vec![
+                "create-work",
+                "typed",
+                "lead-typed",
+                "ship-long",
+                "maintenance",
+                &"t".repeat(257),
+            ],
+            "invalid_request",
+        ),
+        (
+            // The role this work names is not one the Project has.
+            vec![
+                "create-work",
+                "typed",
+                "lead-ghost",
+                "ship-three",
+                "maintenance",
+                "Title",
+            ],
+            "invalid_request",
+        ),
+    ] {
+        let refused = run(&arguments);
+        assert_eq!(refused.status.code(), Some(2), "{arguments:?}");
+        let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+        assert_eq!(error["code"], code, "{arguments:?} answered {error}");
+    }
+    // None of those refusals filed anything either: the Task that was asked for
+    // four times does not exist, and the journal stands where it did.
+    assert_eq!(journaled("typed"), before);
+    let absent = run(&["get-task", "typed", "task-two"]);
+    assert_eq!(absent.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&absent.stderr).unwrap();
+    assert_eq!(error["code"], "not_found", "{error}");
+
+    // A command line too large to be one bounded frame is refused as the
+    // request it is. The daemon here is running and healthy, so a refusal that
+    // said it could not be reached would name a cause that is not the cause
+    // and offer a remedy for a daemon that needs none: this is the lock
+    // refusal's rule applied to the other way a request never gets sent.
+    let past_the_bound = "t".repeat(65_536);
+    let refused = run(&[
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-huge",
+        "maintenance",
+        &past_the_bound,
+    ]);
+    assert_eq!(refused.status.code(), Some(1), "{:?}", refused.status);
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        message.contains("past the 65536-byte request bound"),
+        "{message}"
+    );
+    assert!(message.contains("nothing was sent"), "{message}");
+    assert!(
+        !message.contains("is symbioted running"),
+        "a request that was never sent must not blame the daemon: {message}"
+    );
+    // The same refusal in the envelope, under its own code rather than
+    // `unreachable`, because a script branches on it.
+    let envelope = run(&[
+        "--json",
+        "create-work",
+        "typed",
+        "lead-typed",
+        "ship-huge",
+        "maintenance",
+        &past_the_bound,
+    ]);
+    assert_eq!(envelope.status.code(), Some(1));
+    let body: Value = serde_json::from_slice(&envelope.stdout).unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["code"], "request_refused", "{body}");
+    // And nothing was filed by either attempt.
+    assert_eq!(journaled("typed"), before);
+    // The daemon is still serving: a refusal that never asked left it alone.
+    assert!(run(&["health"]).status.success());
 }
 
 /// How `staffing_composition` registers the provider rows the binding's profile
@@ -1913,6 +2476,27 @@ fn staffing_composition_with_limits(
     max_memory_bytes: Option<u64>,
     max_cpu_millicores: Option<u64>,
 ) -> Value {
+    staffing_composition_with_grants(
+        host,
+        registration,
+        &["mutate_stream"],
+        max_memory_bytes,
+        max_cpu_millicores,
+    )
+}
+
+/// The same composition, with a test's own grants on top of the one every
+/// composition needs. A grant is named here rather than added afterwards,
+/// because the team ceiling, the member's access and the binding's own access
+/// have to agree: a grant on the binding alone is refused at compile time,
+/// and a grant the ceiling does not carry is refused before that.
+fn staffing_composition_with_grants(
+    host: &Host,
+    registration: Registration,
+    grants: &[&str],
+    max_memory_bytes: Option<u64>,
+    max_cpu_millicores: Option<u64>,
+) -> Value {
     ok(&host.call(
         serde_json::from_str(include_str!("../../../fixtures/project-team/register.json")).unwrap(),
     ));
@@ -1925,14 +2509,14 @@ fn staffing_composition_with_limits(
     .unwrap();
     team["command_id"] = json!("activation-team");
     for pointer in ["/access_ceiling/grants", "/members/1/access/grants"] {
-        let mut grants: Vec<Value> = team["operation"]["team"]
+        let mut held: Vec<Value> = team["operation"]["team"]
             .pointer_mut(pointer)
             .unwrap()
             .as_array()
             .unwrap()
             .clone();
-        grants.push(json!("mutate_stream"));
-        *team["operation"]["team"].pointer_mut(pointer).unwrap() = json!(grants);
+        held.extend(grants.iter().map(|grant| json!(grant)));
+        *team["operation"]["team"].pointer_mut(pointer).unwrap() = json!(held);
     }
     ok(&host.call(team));
     // The binding must name the live Host as eligible: resolve the real
@@ -1962,16 +2546,16 @@ fn staffing_composition_with_limits(
         ["operation", "configuration", "primary", "access", "grants"],
         ["operation", "configuration", "binding", "access", "grants"],
     ] {
-        let mut grants: Vec<Value> = binding
+        let mut held: Vec<Value> = binding
             .pointer_mut(&format!("/{}", path.join("/")))
             .unwrap()
             .as_array()
             .unwrap()
             .clone();
-        grants.push(json!("mutate_stream"));
+        held.extend(grants.iter().map(|grant| json!(grant)));
         *binding
             .pointer_mut(&format!("/{}", path.join("/")))
-            .unwrap() = json!(grants);
+            .unwrap() = json!(held);
     }
     ok(&host.call(binding));
     // The registration the profile names, with at most one fact broken.
@@ -2043,20 +2627,14 @@ fn staffing_composition_with_limits(
             "budget":null,"external_references":[]}}),
         )),
     );
-    ok_step(
+    staffing_task(
+        host,
         "activation-task",
-        &host.call(request(
-            "activation-task",
-            json!({"kind":"create_task","task":{"id":"staffing-task","project_id":"staffing-demo",
-            "root_id":"staffing-root","role_id":"engineer",
-            "origin":{"kind":"objective","work":{"project_id":"staffing-demo",
-                "id":{"kind":"objective","id":"staffing-objective"}}},
-            "task_contract":{"id":"coding-contract","revision":1},
-            "stream":{"id":"staffing-stream","originating_chat":"chat","worktree":"staffing-worktree",
-            "branch":"task/staffing","base":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "target":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}),
-        ),
-    ));
+        "staffing-task",
+        "staffing-stream",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
     ok_step(
         "activation-route",
         &host.call(request(
@@ -2069,6 +2647,48 @@ fn staffing_composition_with_limits(
     host_id
 }
 
+/// Files the staffing demo's task. `base` is the commit a run would start
+/// from, so a test that executes a dispatch names a real one and every other
+/// test can name a syntactically real commit it will never provision from.
+fn staffing_task(
+    host: &Host,
+    command_id: &'static str,
+    task_id: &str,
+    stream_id: &str,
+    base: &str,
+    target: &str,
+) {
+    let derived = staffing_worktree(stream_id);
+    ok_step(
+        command_id,
+        &host.call(request(
+            command_id,
+            json!({"kind":"create_task","task":{"id":task_id,"project_id":"staffing-demo",
+            "root_id":"staffing-root","role_id":"engineer",
+            "origin":{"kind":"objective","work":{"project_id":"staffing-demo",
+                "id":{"kind":"objective","id":"staffing-objective"}}},
+            "task_contract":{"id":"coding-contract","revision":1},
+            "stream":{"id":stream_id,"originating_chat":"chat",
+            "worktree":derived.worktree_id,"branch":derived.branch,"base":base,
+            "target":target}}}),
+        )),
+    );
+}
+
+/// The worktree identity and branch a stream's task must record, derived the
+/// way a client derives them. A stream that names its own is accepted at
+/// creation and refused at provisioning, with a refusal that names only the
+/// stage — so a test that executes a dispatch has to ask the same question
+/// the CLI asks, and there is one owner for the answer.
+fn staffing_worktree(stream_id: &str) -> symbiote_worktrees::Derived {
+    symbiote_host::runner::derived_worktree(
+        &symbiote_domain::ProjectId::new("staffing-demo").unwrap(),
+        &symbiote_domain::RootId::new("staffing-root").unwrap(),
+        &symbiote_domain::ChangeStreamId::new(stream_id).unwrap(),
+    )
+    .unwrap()
+}
+
 /// Registers the profile's model descriptor against `provider_id`.
 fn registry_model(host: &Host, command_id: &'static str, provider_id: &str) {
     ok_step(
@@ -2077,7 +2697,7 @@ fn registry_model(host: &Host, command_id: &'static str, provider_id: &str) {
             command_id,
             json!({"kind":"replace_model_descriptor","attribution":"staffing-demo",
             "descriptor":{"schema_version":1,"id":"coding-model","provider_id":provider_id,
-            "context_window_tokens":8192,"max_output_tokens":4096,
+            "context_window_tokens":32768,"max_output_tokens":4096,
             "capabilities":{"reasoning_efforts":[],"tools":true,"images":false,"streaming":false}}}),
         )),
     );
@@ -2540,8 +3160,9 @@ fn a_limit_the_host_cannot_bind_refuses_the_run_that_would_exceed_it() {
         next["result"]["Err"]["message"],
         "no worktree reservation base configured"
     );
-    // Nothing ran for the refused one: its task is still Running under its
-    // dispatch and replays identically after a crash.
+    // Nothing ran for the refused one, and the record says the run failed
+    // rather than leaving the task claiming to be executing. The failure
+    // survives a crash like everything else it wrote.
     demanding.crash();
     demanding.start();
     let task = ok(&demanding.call(request(
@@ -2549,7 +3170,7 @@ fn a_limit_the_host_cannot_bind_refuses_the_run_that_would_exceed_it() {
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
     )))["data"]
         .clone();
-    assert_eq!(task["state"], "running");
+    assert_eq!(task["state"], "failed");
 }
 
 /// The report an operator consults before dispatching and the run that would
@@ -2823,14 +3444,16 @@ fn run_started_dispatch_refuses_a_registration_that_lapsed_after_start() {
         run["result"]["Err"]["message"],
         "dispatch refused by recorded state (expired_entitlement)"
     );
-    // The refusal executed nothing: the dispatch is still the one that was
-    // started, and the task is still Running under it.
+    // The refusal executed nothing, and the task records that its run failed
+    // rather than staying `Running` under a dispatch that is executing
+    // nothing. The dispatch is still the one that was started — `recover_task`
+    // is what drops it, and only an operator asks for that.
     let task = ok(&host.call(request(
         "lapse-task-read",
         json!({"kind":"get_task","project_id":"staffing-demo","task_id":"staffing-task"}),
     )))
     .clone();
-    assert_eq!(task["data"]["state"], "running");
+    assert_eq!(task["data"]["state"], "failed");
 }
 
 /// The same re-check refuses a registration whose authentication/billing pair
@@ -3562,4 +4185,3793 @@ fn foreign_runtime_links_persist_survive_restart_and_complete_nothing() {
         "no canonical task transition was written: {kinds:?}"
     );
     ok(&host.call(request("foreign-alive", json!({"kind":"health"}))));
+}
+
+/// A repository this Host can place a Root at: a real git work tree with one
+/// commit, because the only moment a checkout exists is the moment a run
+/// provisions from it.
+fn real_repository(tag: &str) -> (PathBuf, String) {
+    let directory = std::env::temp_dir().join(format!("symbiote-repository-{tag}"));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(&directory).unwrap();
+    let git = |arguments: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&directory)
+            .args(arguments)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {arguments:?} failed");
+    };
+    git(&["init", "-q", "."]);
+    git(&["config", "user.email", "daemon@example.invalid"]);
+    git(&["config", "user.name", "daemon test"]);
+    std::fs::write(directory.join("README.md"), "the root this Host serves\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "root"]);
+    let head = String::from_utf8(
+        Command::new("git")
+            .current_dir(&directory)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    (directory, head)
+}
+
+/// The first daemon test that carries a dispatch to completion: a real
+/// repository placed as a Root, a real worktree provisioned from it, and the
+/// operator's explicitly labeled fixture lane running its scripted turn.
+///
+/// Every step of that is an operator's, and the test walks them in the order
+/// an operator must, because the order is the defect this test exists for.
+/// `run_started_dispatch` refuses with
+///
+///     no credential broker configured for this dispatch's credential
+///     reference
+///
+/// on a Host whose every other step was accepted, and the refusal arrives
+/// after a worktree has already been materialised — so a client that composes
+/// a dispatch the documented way records it, provisions for it, and is then
+/// told the one thing it did not know it had to configure. The registration
+/// here is the fixture's own explicitly labeled value, the same shape the
+/// workflow demo's operator configuration carries, and the binding grants
+/// `UseCredential` because the broker's gate is what the grant is for.
+/// A run that refuses must not leave a task that says it is running, and what
+/// it leaves on disk must be reclaimable by the operator rather than by hand.
+///
+/// The refusal here is the one a person causes by accident: they commit to
+/// their own repository between creating the task and dispatching it, so the
+/// stream's recorded base is no longer where the root is and provisioning
+/// refuses with `BaseMoved` before any worker exists. That leaves the task
+/// `Running` with nothing running it, and a reserved location no operation
+/// could touch — which is what this test walks from end to end.
+#[test]
+fn a_refused_run_is_recorded_and_what_it_left_can_be_abandoned_and_recovered() {
+    let (repository, head) = real_repository("refused-run");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-refused-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "refused-placement",
+        &host.call(request(
+            "refused-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "refused-task",
+        "refused-task",
+        "refused-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "refused-prepare",
+        &host.call(request(
+            "refused-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"refused-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "refused-start",
+        json!({"kind":"start_prepared_task","task_id":"refused-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("refused-start", &started)["data"]["dispatch_id"].clone();
+
+    // The operator commits to their own repository, the way a person does.
+    let commit = Command::new("git")
+        .current_dir(&repository)
+        .args(["commit", "--allow-empty", "-qm", "operator commit"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+
+    let refused = host.call(request(
+        "refused-run",
+        json!({"kind":"run_started_dispatch","task_id":"refused-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    // The caller still learns the run refused, and why: a run that did not
+    // happen is never reported as one that did.
+    assert_eq!(refused["result"]["Err"]["code"], "failed_precondition");
+    assert_eq!(
+        refused["result"]["Err"]["message"],
+        "worktree provisioning refused: BaseMoved"
+    );
+    // And the record agrees with the refusal. This used to read `running`:
+    // a task claiming to be executed with nothing executing it, and no
+    // operation in the workspace able to move it out, because nothing
+    // constructed a `TaskAction::Fail`.
+    let after = host.call(request(
+        "refused-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"refused-task"}),
+    ));
+    assert_eq!(ok(&after)["data"]["state"], "failed");
+
+    // The reservation the refused provisioning left behind: a directory and a
+    // marker, with no git worktree behind them. Nothing could reclaim it —
+    // the release path requires an integrated stream, and this stream never
+    // becomes one.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("refused-stream").worktree_id.as_str());
+    assert!(worktree.is_dir(), "the refused provisioning claimed it");
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("refused-stream").worktree_id
+    ));
+    assert!(marker.is_file(), "and left its reservation behind");
+
+    // The operator's way out. Abandoning is the one operation that destroys
+    // work, so it is gated: at the protocol it is a dangerous kind, and the
+    // authorization a caller supplies is what the contract asks for here.
+    let abandoned = host.call(request(
+        "refused-abandon",
+        json!({"kind":"abandon_change_stream","task_id":"refused-task"}),
+    ));
+    ok_step("refused-abandon", &abandoned);
+    assert!(
+        !worktree.exists() && !marker.exists(),
+        "the reservation is gone, marker and all"
+    );
+
+    // A second abandon is refused, not repeated: the stream is terminal, and
+    // a caller that asks twice must not delete a location twice.
+    let again = host.call(request(
+        "refused-abandon-2",
+        json!({"kind":"abandon_change_stream","task_id":"refused-task"}),
+    ));
+    // A lifecycle refusal names itself, and a second cancel of a cancelled
+    // stream is one: the code is the generic one, the sentence is the answer.
+    assert_eq!(
+        again["result"]["Err"]["message"], "lifecycle refused the transition (IllegalTransition)",
+        "{again}"
+    );
+
+    // And the task can be queued again. Without this the failure was a dead
+    // end: the lifecycle reaches `Ready` only through a recovery, and a
+    // recovery is what the Host could not construct.
+    let recovered = host.call(request(
+        "refused-recover",
+        json!({"kind":"recover_task","task_id":"refused-task"}),
+    ));
+    ok_step("refused-recover", &recovered);
+    let queued = host.call(request(
+        "refused-task-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"refused-task"}),
+    ));
+    assert_eq!(ok(&queued)["data"]["state"], "ready");
+    // Recovering a task that is not failed is refused rather than queued. The
+    // domain checks authority before applicability, and a recovered task has
+    // no dispatch — the recovery is what dropped it — so this arrives as the
+    // authority refusal it actually is rather than as a state complaint.
+    let premature = host.call(request(
+        "refused-recover-2",
+        json!({"kind":"recover_task","task_id":"refused-task"}),
+    ));
+    assert_eq!(
+        premature["result"]["Err"]["message"],
+        "lifecycle refused the transition (PermissionDenied)",
+        "{premature}"
+    );
+
+    // The abandoned stream is terminal, so the recovered task cannot be
+    // dispatched under it — and that is the correct answer, not a gap: a
+    // cancelled stream is exactly as unusable as an integrated one, and
+    // re-running the same task against it would contradict the lifecycle.
+    // The start is where the stream state bites, and the refusal names it:
+    // `stream_inactive` is a cancelled stream, which is exactly as unusable
+    // as an integrated one. Re-running the same task against it would
+    // contradict the lifecycle, so the retry is a new task.
+    let restarted_again = host.call(request(
+        "refused-restart",
+        json!({"kind":"start_prepared_task","task_id":"refused-task","host_id":host_id}),
+    ));
+    assert_eq!(
+        restarted_again["result"]["Err"]["message"],
+        "dispatch refused by recorded state (stream_inactive)",
+        "the abandoned stream is not reusable"
+    );
+
+    // So the retry is a new task, which is what a person does, and it works
+    // because the reservation the failure left is gone. The whole point of
+    // the three operations above is that this line reaches a run at all.
+    let current = String::from_utf8(
+        Command::new("git")
+            .current_dir(&repository)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    staffing_task(
+        &host,
+        "retry-task",
+        "retry-task",
+        "retry-stream",
+        &current,
+        &current,
+    );
+    ok_step(
+        "retry-prepare",
+        &host.call(request(
+            "retry-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"retry-task"}),
+        )),
+    );
+    let restarted = host.call(request(
+        "retry-start",
+        json!({"kind":"start_prepared_task","task_id":"retry-task","host_id":host_id}),
+    ));
+    let retry_dispatch = ok_step("retry-start", &restarted)["data"]["dispatch_id"].clone();
+    let rerun = host.call(request(
+        "retry-run",
+        json!({"kind":"run_started_dispatch","task_id":"retry-task",
+        "dispatch_id":retry_dispatch}),
+    ));
+    assert_eq!(
+        ok_step("retry-run", &rerun)["data"]["completed"],
+        true,
+        "the retry completes where the first run refused"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The other half of the failure path, from a different cause. The refused-run
+/// test above refuses at provisioning, before a worktree exists. This one
+/// halts *inside* the worker loop, after the worktree was materialized and the
+/// lease was held — so it is the case where git knows about the location, and
+/// the abandon has to remove a real registered worktree rather than clear a
+/// stale marker.
+///
+/// The fixture produces an empty report, which is the one thing the domain
+/// refuses a completion for, so the loop halts without finishing.
+#[test]
+fn a_run_that_halts_inside_the_loop_is_recorded_and_its_worktree_is_abandonable() {
+    let (repository, head) = real_repository("silent-run");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-silent-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        // An empty report: the domain refuses a completion without one, so the
+        // loop halts with the worktree already materialized.
+        "native_fixture": {"echo_text": ""},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "silent-placement",
+        &host.call(request(
+            "silent-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "silent-task",
+        "silent-task",
+        "silent-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "silent-prepare",
+        &host.call(request(
+            "silent-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"silent-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "silent-start",
+        json!({"kind":"start_prepared_task","task_id":"silent-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("silent-start", &started)["data"]["dispatch_id"].clone();
+    let halted = host.call(request(
+        "silent-run",
+        json!({"kind":"run_started_dispatch","task_id":"silent-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        halted["result"]["Err"]["message"],
+        "worker loop halted without finishing"
+    );
+    let after = host.call(request(
+        "silent-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"silent-task"}),
+    ));
+    assert_eq!(ok(&after)["data"]["state"], "failed");
+
+    // This time git knows about the location: the worktree was materialized
+    // before the loop ran, so the abandon has a real checkout to remove —
+    // which is the branch the other test cannot reach.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("silent-stream").worktree_id.as_str());
+    assert!(worktree.join("README.md").exists(), "the checkout is real");
+    let listed = Command::new("git")
+        .current_dir(&repository)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains(worktree.to_str().unwrap()),
+        "and git has it registered: {}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+
+    // Uncommitted content, which the release path would refuse and the abandon
+    // is authorized to discard. The commits would survive either way; these
+    // files exist nowhere else, which is exactly why this operation is the
+    // dangerous kind.
+    std::fs::write(worktree.join("half-written.txt"), "the run's last output\n").unwrap();
+    ok_step(
+        "silent-abandon",
+        &host.call(request(
+            "silent-abandon",
+            json!({"kind":"abandon_change_stream","task_id":"silent-task"}),
+        )),
+    );
+    assert!(
+        !worktree.exists(),
+        "the checkout and its uncommitted file are gone"
+    );
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("silent-stream").worktree_id
+    ));
+    assert!(!marker.exists(), "and so is the reservation");
+    // The administrative registration goes with it: a root that kept
+    // referring to a removed worktree is a repository that has to be pruned by
+    // hand.
+    let after_list = Command::new("git")
+        .current_dir(&repository)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&after_list.stdout).contains(worktree.to_str().unwrap()),
+        "no stale registration is left in the root: {}",
+        String::from_utf8_lossy(&after_list.stdout)
+    );
+    // And the branch, which the abandon never deletes.
+    let branch = Command::new("git")
+        .current_dir(&repository)
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}", staffing_worktree("silent-stream").branch),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        branch.status.success(),
+        "the branch survives its checkout: {}",
+        String::from_utf8_lossy(&branch.stderr)
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+#[test]
+fn the_fixture_lane_runs_a_dispatch_to_completion_on_the_operators_own_configuration() {
+    let (repository, head) = real_repository("run");
+    let base = std::env::temp_dir().join(format!("symbiote-run-worktrees-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    // The Root's checkout is an observation this Host makes for itself, and
+    // the base is the commit the run starts from: the two facts a real
+    // dispatch needs and a recorded-only one never has to supply.
+    ok_step(
+        "run-placement",
+        &host.call(request(
+            "run-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    // The stream's target is where the Root is expected to be when the work
+    // lands. A test that never integrates can leave the sentinel; a test that
+    // does must name a commit the Root can actually be at, and with a fixture
+    // that commits nothing that is the base it started from.
+    staffing_task(&host, "run-task", "run-task", "run-stream", &head, &head);
+    let prepared = host.call(request(
+        "run-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        ok_step("run-prepare", &prepared)["data"]["outcome"],
+        "ready"
+    );
+    let started = host.call(request(
+        "run-start",
+        json!({"kind":"start_prepared_task","task_id":"run-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("run-start", &started)["data"]["dispatch_id"].clone();
+    let run = host.call(request(
+        "run-execute",
+        json!({"kind":"run_started_dispatch","task_id":"run-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        ok_step("run-execute", &run)["data"]["completed"],
+        true,
+        "the run filed completion"
+    );
+    // The worktree is real: the fixture's report landed in the provisioned
+    // checkout, under the branch the task named.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("run-stream").worktree_id.as_str());
+    assert!(
+        worktree.join("README.md").exists(),
+        "the worktree carries the root's tree"
+    );
+    let read = host.call(request(
+        "run-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&read)["data"]["state"], "completion_requested");
+
+    // The worktree evidence is readable from the canonical record: the Host
+    // locates the stream's reservation through its own base — the caller
+    // names only the task — and observes HEAD, the changed paths and the
+    // bounded diff the same way the run's own report evidence is built.
+    let observed = host.call(request(
+        "run-observe",
+        json!({"kind":"observe_worktree","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&observed)["kind"], "worktree_observation");
+    assert_eq!(ok(&observed)["data"]["present"], true);
+    assert_eq!(
+        ok(&observed)["data"]["head"]["state"]["kind"],
+        "branch",
+        "the stream's worktree observes on its own branch"
+    );
+    // A task whose stream never provisioned holds no reservation: absence
+    // is the ANSWER (`present: false`), not a refusal — most tasks have no
+    // worktree, and "nothing is checked out" is a fact a reader acts on.
+    staffing_task(&host, "ctx-task", "ctx-task", "ctx-stream", &head, &head);
+    let unprovisioned = host.call(request(
+        "ctx-observe",
+        json!({"kind":"observe_worktree","project_id":"staffing-demo","task_id":"ctx-task"}),
+    ));
+    assert_eq!(ok(&unprovisioned)["data"]["present"], false);
+    assert!(ok(&unprovisioned)["data"]["head"].is_null());
+    // The read binds the stored task's Project: a caller cannot move the
+    // read to a Project it chooses and see another Project's worktree.
+    let foreign_project = host.call(request(
+        "ctx-observe-foreign",
+        json!({"kind":"observe_worktree","project_id":"staffing-other","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        foreign_project["result"]["Err"]["code"],
+        "permission_denied"
+    );
+    // The run's input envelope is inspectable: the same resolution the
+    // runner performed, named by dispatch — what the run was asked, whole,
+    // from the canonical records rather than from a caller's retelling.
+    let context = host.call(request(
+        "ctx-read",
+        json!({"kind":"get_task_context","project_id":"staffing-demo","task_id":"run-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(ok(&context)["kind"], "task_context");
+    assert_eq!(ok(&context)["data"]["task_id"], "run-task");
+    assert_eq!(ok(&context)["data"]["dispatch_id"], dispatch_id);
+    assert!(
+        ok(&context)["data"]["prompt"]
+            .as_str()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false),
+        "the run's prompt is served as the run received it"
+    );
+    // A dispatch the task is not running under gets the same refusal the
+    // run paths give: a foreign dispatch never reads as this task's run.
+    let foreign_dispatch = host.call(request(
+        "ctx-read-foreign",
+        json!({"kind":"get_task_context","project_id":"staffing-demo","task_id":"run-task",
+        "dispatch_id":"disp_other"}),
+    ));
+    assert_eq!(
+        foreign_dispatch["result"]["Err"]["code"],
+        "failed_precondition"
+    );
+
+    // The three steps that had no operation at all. A task that reaches
+    // `completion_requested` here used to stop for the life of the store:
+    // there was no operation for any of them, and the daemon reported that
+    // honestly enough that the transcript above read as a finished run.
+    let validated = host.call(request(
+        "run-validate",
+        json!({"kind":"validate_change_stream","task_id":"run-task",
+        "verification_run":"run-verify"}),
+    ));
+    ok_step("run-validate", &validated);
+    let verifying = host.call(request(
+        "run-begin",
+        json!({"kind":"begin_task_verification","task_id":"run-task"}),
+    ));
+    ok_step("run-begin", &verifying);
+    let begun = host.call(request(
+        "run-task-read-verifying",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&begun)["data"]["state"], "verifying");
+    // The caller's half is which gates passed; the Host binds each claim to
+    // this dispatch, this stream's head and target and its own identity, and
+    // the domain refuses a claim that does not cover the contract.
+    let completed = host.call(request(
+        "run-complete",
+        json!({"kind":"complete_task","task_id":"run-task",
+        "gates":["tests","security","impact","documentation",
+                 "independent_review","delivery","capability_closure"],
+        "reviewer":"lead"}),
+    ));
+    ok_step("run-complete", &completed);
+    let done = host.call(request(
+        "run-task-read-completed",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"run-task"}),
+    ));
+    assert_eq!(ok(&done)["data"]["state"], "completed");
+
+    // And the work has to land. A completed task whose work is still on a
+    // branch in a worktree is a task the canonical state calls done and the
+    // repository calls unfinished — the same disagreement one level down,
+    // with no operation to reconcile it.
+    let integrated = host.call(request(
+        "run-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"run-task"}),
+    ));
+    ok_step("run-integrate", &integrated);
+    // A lost integrate response replays: the retry re-observes the Root (now
+    // at the stream's head) and rebuilds different bytes, so the answer it
+    // needs is the journaled command. The replay must also be a no-op on the
+    // filesystem half — the merge has already landed.
+    let integrated_again = host.call(request(
+        "run-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        ok_step("run-integrate-replay", &integrated_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("run-integrate-replay", &integrated_again)["data"]["sequence"],
+        ok(&integrated)["data"]["sequence"],
+    );
+    // A different intent under the used id conflicts with the journal — the
+    // stream's own state would answer something else, and the conflict is
+    // the truer refusal: the id is spent, whatever the stream is.
+    let released_under_used_id = host.call(request(
+        "run-integrate",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        released_under_used_id["result"]["Err"]["code"],
+        "idempotency_conflict"
+    );
+    // ...and the conflict was named by the Host, before the release's own
+    // evidence checks and removal ran: the checkout is still on disk.
+    assert!(
+        worktree.exists(),
+        "a conflict under a used id removes nothing"
+    );
+    let branch = Command::new("git")
+        .current_dir(&repository)
+        .args(["branch", "--contains", head.as_str()])
+        .output()
+        .unwrap();
+    let branches = String::from_utf8_lossy(&branch.stdout).to_string();
+    assert!(
+        !branches.is_empty(),
+        "the worktree branch exists in the root's ref store: {branches:?}"
+    );
+    assert!(
+        worktree.exists(),
+        "integrating does not reclaim the checkout — that is a separate, \
+         evidence-checked step"
+    );
+
+    // The evidence, refused. Rewriting the root's commit leaves the stream's
+    // recorded head reachable from nothing in the repository, and a release
+    // that removed the only checkout holding it would destroy the work. The
+    // refusal has to arrive before anything is removed — so the checkout is
+    // still here afterwards, and the stream is still integrable-and-releasable
+    // once the root is restored.
+    let rewrite = Command::new("git")
+        .current_dir(&repository)
+        .args(["commit", "--amend", "-qm", "root rewritten"])
+        .output()
+        .unwrap();
+    assert!(rewrite.status.success());
+    let refused = host.call(request(
+        "run-release-unreachable",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    let body = refused["result"]["Err"].clone();
+    assert_eq!(body["code"], "failed_precondition", "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("not reachable from the root checkout"),
+        "the refusal names what could not be proven: {body}"
+    );
+    assert!(worktree.exists(), "a refused release removes nothing");
+    let restore = Command::new("git")
+        .current_dir(&repository)
+        .args(["reset", "--hard", head.as_str()])
+        .output()
+        .unwrap();
+    assert!(restore.status.success());
+    // And the last step: the checkout leaves the operator's disk. Nothing
+    // reclaimed it before, so every run leaked a full git worktree, and the
+    // reservation marker that `symbiote-worktrees` documents as the thing
+    // release removes had no production caller at all.
+    let released = host.call(request(
+        "run-release",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    ok_step("run-release", &released);
+    assert!(
+        !worktree.exists(),
+        "the worktree directory is gone after the release"
+    );
+    // A lost release response replays too — and this is the sharp one: the
+    // first attempt left the stream `Released`, which the arm's own state
+    // check refuses, so a retry without the journaled answer would read a
+    // successful removal as a second, refused removal. The replay answers
+    // from the journal and removes nothing twice.
+    let released_again = host.call(request(
+        "run-release",
+        json!({"kind":"release_change_stream","task_id":"run-task"}),
+    ));
+    assert_eq!(
+        ok_step("run-release-replay", &released_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("run-release-replay", &released_again)["data"]["sequence"],
+        ok(&released)["data"]["sequence"],
+    );
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("run-stream").worktree_id
+    ));
+    assert!(!marker.exists(), "the reservation marker is gone with it");
+    // The branch is NOT gone: a change stream is integrated, not erased, and
+    // its recorded lineage stays inspectable after the checkout is.
+    let after = Command::new("git")
+        .current_dir(&repository)
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}", staffing_worktree("run-stream").branch),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        after.status.success(),
+        "the integrated branch outlives its checkout: {}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The read that has to work before anything has ever been provisioned.
+///
+/// Every other observation of a worktree is made in a Host that has already
+/// run something, so the base holds a directory for the project and the
+/// question "is this stream checked out?" is answered by finding its marker.
+/// The ordinary case is the one before that: a Host with a base, a project
+/// that has never reserved under it, and therefore no directory at all. That
+/// state is absence — a fact a reader acts on — and answering it with a
+/// refusal would make the read useless exactly where it is most often wanted,
+/// which is before the first run. A real live daemon said `failed_precondition`
+/// here, and the sentence blamed a reservation base that was perfectly
+/// readable: the project had simply never created a directory under it.
+#[test]
+fn a_project_that_never_reserved_reports_no_worktree_instead_of_refusing() {
+    let base = std::env::temp_dir().join(format!(
+        "symbiote-unreserved-worktrees-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+    }));
+    staffing_composition_with_grants(&host, Registration::Complete, &[], None, None);
+    // The stream's base and target are the lineage the task records, not a
+    // checkout this read will touch: nothing is provisioned, so the commits
+    // only have to be the ones the domain accepts.
+    let head = "0".repeat(39) + "1";
+    staffing_task(
+        &host,
+        "absent-observe",
+        "absent-task",
+        "absent-stream",
+        &head,
+        &head,
+    );
+    assert!(
+        !base.join("staffing-demo").exists(),
+        "nothing has reserved under this base yet"
+    );
+    let observed = host.call(request(
+        "absent-observe",
+        json!({"kind":"observe_worktree","project_id":"staffing-demo",
+        "task_id":"absent-task"}),
+    ));
+    assert_eq!(ok(&observed)["kind"], "worktree_observation");
+    assert_eq!(ok(&observed)["data"]["present"], false);
+    for field in ["head", "status", "diff"] {
+        assert!(
+            ok(&observed)["data"][field].is_null(),
+            "nothing checked out means no {field}"
+        );
+    }
+    // The read is still a read: it refuses a caller reaching for another
+    // Project's worktree, exactly as it does once something is checked out.
+    let foreign = host.call(request(
+        "absent-observe-foreign",
+        json!({"kind":"observe_worktree","project_id":"staffing-other",
+        "task_id":"absent-task"}),
+    ));
+    assert_eq!(foreign["result"]["Err"]["code"], "permission_denied");
+    std::fs::remove_dir_all(&base).ok();
+}
+
+/// The crash case, and the only failure the workspace cannot file for itself.
+///
+/// The two failure tests above are both runs that lived long enough to see
+/// their own refusal and record it. A `kill -9` is the other thing entirely:
+/// the task is `Running`, the lease is held, and no process is left to observe
+/// any of it — so the canonical record says a run is executing the task, and
+/// the only party that can correct it is an operator. This walks that, with a
+/// real `SIGKILL` between the start and everything after it.
+///
+/// The state it dies in is the composite one an operator reaches by retrying.
+/// A first run left a checkout with its uncommitted output, the task was
+/// recovered and dispatched again, and the daemon died with the second run
+/// owning the first run's directory: a checkout holding content nobody is
+/// running, behind a lease that belongs to a process which no longer exists.
+///
+/// How it ends is the difference from abandoning. An abandoned stream is
+/// cancelled and the retry has to be a new task under a new stream; an
+/// interrupted task still has its stream, so the same task is dispatched again
+/// on the same location. One crash costs a run, not a task.
+#[test]
+fn a_run_a_crash_took_is_interrupted_and_runs_again_on_the_same_stream() {
+    let (repository, head) = real_repository("crash");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-crash-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let broker = json!([{"reference": "native-vault-ref",
+        "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+        "value": "fixture-not-a-real-secret"}]);
+    let mut host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        // The first run reports nothing, so its loop halts with a checkout and
+        // its uncommitted output left behind.
+        "native_fixture": {"echo_text": ""},
+        "credential_broker": broker,
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "crash-placement",
+        &host.call(request(
+            "crash-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "crash-task",
+        "crash-task",
+        "crash-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "crash-prepare",
+        &host.call(request(
+            "crash-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"crash-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "crash-start",
+        json!({"kind":"start_prepared_task","task_id":"crash-task","host_id":host_id}),
+    ));
+    let first = ok_step("crash-start", &started)["data"]["dispatch_id"].clone();
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("crash-stream").worktree_id.as_str());
+    // A start is a record and a lease; the checkout is materialized by the run
+    // that uses it, which is why the reservation below belongs to the run and
+    // not to the start.
+    assert!(
+        !worktree.exists(),
+        "nothing is provisioned until a run needs it"
+    );
+    let halted = host.call(request(
+        "crash-run-1",
+        json!({"kind":"run_started_dispatch","task_id":"crash-task","dispatch_id":first}),
+    ));
+    assert_eq!(
+        halted["result"]["Err"]["message"],
+        "worker loop halted without finishing"
+    );
+    assert!(
+        worktree.join("README.md").exists(),
+        "and this run provisioned it"
+    );
+    std::fs::write(
+        worktree.join("half-written.txt"),
+        "the first run's last output\n",
+    )
+    .unwrap();
+
+    // The operator recovers and dispatches again, so the second run inherits
+    // the first run's directory with its uncommitted content in it.
+    ok_step(
+        "crash-recover-1",
+        &host.call(request(
+            "crash-recover-1",
+            json!({"kind":"recover_task","task_id":"crash-task"}),
+        )),
+    );
+    ok_step(
+        "crash-prepare-2",
+        &host.call(request(
+            "crash-prepare-2",
+            json!({"kind":"prepare_dispatch","task_id":"crash-task"}),
+        )),
+    );
+    let restarted = host.call(request(
+        "crash-start-2",
+        json!({"kind":"start_prepared_task","task_id":"crash-task","host_id":host_id}),
+    ));
+    // The start is what makes this a new run, not the dispatch's name: a lease
+    // was taken again and a fresh contract revision was accepted, which is what
+    // the run after the crash has to be able to do — and what an abandoned
+    // stream refuses.
+    ok_step("crash-start-2", &restarted);
+
+    // The crash. Nothing runs after this start, so nothing gets to file
+    // anything, which is the whole difference between this and a run that
+    // refused.
+    host.crash();
+    // And the operator fixes the configuration and restarts. It is read at
+    // startup, so a crash is the only moment a Host will look at it again —
+    // which is the one piece of good news this story has.
+    let configuration = host.config.clone().expect("the operator's own file");
+    let fixed = json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran after the crash"},
+        "credential_broker": broker,
+    });
+    std::fs::write(
+        &configuration,
+        serde_json::to_string_pretty(&fixed).unwrap().as_bytes(),
+    )
+    .unwrap();
+    host.start();
+
+    // The store is durable, and so is the claim nobody is behind any more.
+    let stuck = host.call(request(
+        "crash-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"crash-task"}),
+    ));
+    assert_eq!(
+        ok(&stuck)["data"]["state"],
+        "running",
+        "a SIGKILL cannot tell the store anything, and running is the truth it holds"
+    );
+    assert!(
+        worktree.join("half-written.txt").exists(),
+        "and the dead run's uncommitted output is still in its checkout"
+    );
+
+    // The way out that was supposed to be the way out refuses, and that refusal
+    // is why the operation after it exists: a recovery accepts `Failed` and
+    // `Interrupted`, which are states a run files about itself.
+    let too_early = host.call(request(
+        "crash-recover-early",
+        json!({"kind":"recover_task","task_id":"crash-task"}),
+    ));
+    assert_eq!(
+        too_early["result"]["Err"]["message"],
+        "lifecycle refused the transition (IllegalTransition)",
+        "{too_early}"
+    );
+
+    // So the operator says what happened, in their own words. The reason is
+    // required rather than defaulted because the Host cannot tell a crash from
+    // somebody who walked away from a terminal, and this record is the only
+    // place that distinction survives to whoever reads it next.
+    let interrupted = host.call(request(
+        "crash-interrupt",
+        json!({"kind":"interrupt_task","task_id":"crash-task",
+        "reason":"the host was killed mid-run"}),
+    ));
+    let filed = ok(&interrupted);
+    assert_eq!(
+        filed["kind"], "task",
+        "the caller reads the task it changed"
+    );
+    assert_eq!(filed["data"]["state"], "interrupted");
+    // An interrupt with nothing to say is refused: a record that read
+    // "interrupted" alone would answer neither question it exists to answer.
+    let mute = host.call(request(
+        "crash-interrupt-mute",
+        json!({"kind":"interrupt_task","task_id":"crash-task","reason":"  "}),
+    ));
+    assert_eq!(mute["result"]["Err"]["code"], "invalid_request", "{mute}");
+
+    // The lease went with it, and the re-dispatch below is the proof rather
+    // than a claim about it: a lease is the fence on a task, so a task whose
+    // lost lease is still held cannot be started again. That is why the
+    // interrupt releases one instead of only writing a state — a task marked
+    // `interrupted` and fenced forever is the same dead end one layer down.
+    ok_step(
+        "crash-recover-2",
+        &host.call(request(
+            "crash-recover-2",
+            json!({"kind":"recover_task","task_id":"crash-task"}),
+        )),
+    );
+    let queued = host.call(request(
+        "crash-task-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"crash-task"}),
+    ));
+    assert_eq!(ok(&queued)["data"]["state"], "ready");
+
+    // The same stream, which is the whole difference from abandoning. An
+    // abandoned stream is cancelled and this start would answer
+    // `stream_inactive`; an interrupted one is still `Active`, so the task that
+    // lost a run gets another one under the stream it was created for.
+    ok_step(
+        "crash-prepare-3",
+        &host.call(request(
+            "crash-prepare-3",
+            json!({"kind":"prepare_dispatch","task_id":"crash-task"}),
+        )),
+    );
+    let third = host.call(request(
+        "crash-start-3",
+        json!({"kind":"start_prepared_task","task_id":"crash-task","host_id":host_id}),
+    ));
+    let dispatch = ok_step("crash-start-3", &third)["data"]["dispatch_id"].clone();
+    let ran = host.call(request(
+        "crash-run-3",
+        json!({"kind":"run_started_dispatch","task_id":"crash-task","dispatch_id":dispatch}),
+    ));
+    assert_eq!(
+        ok_step("crash-run-3", &ran)["data"]["completed"],
+        true,
+        "the third run files the completion two of them could not"
+    );
+    let done = host.call(request(
+        "crash-task-read-3",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"crash-task"}),
+    ));
+    assert_eq!(ok(&done)["data"]["state"], "completion_requested");
+    assert!(
+        worktree.exists(),
+        "on the same location, reused rather than duplicated"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// A refusal that arrives after the destruction it precedes is a refusal an
+/// operator cannot undo, so this walks the one operation that can destroy work
+/// in a state where it has to refuse, and checks that it refused first.
+///
+/// The state is one an operator makes in an ordinary order: a run halts, they
+/// recover the task to try again, and *then* think better of the stream.
+/// Recovering is what drops the dispatch binding, and the binding is where the
+/// access snapshot a stream transition is journalled under comes from — so the
+/// cancel has nothing to record itself with. The answer is a refusal. It is
+/// not an answer to come after the checkout is gone.
+#[test]
+fn an_abandon_that_cannot_journal_its_decision_removes_nothing() {
+    let (repository, head) = real_repository("orphan-abandon");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-orphan-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        // An empty report, so the loop halts: a run that failed on its own
+        // account rather than one the operator had to interrupt.
+        "native_fixture": {"echo_text": ""},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "orphan-placement",
+        &host.call(request(
+            "orphan-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "orphan-task",
+        "orphan-task",
+        "orphan-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "orphan-prepare",
+        &host.call(request(
+            "orphan-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"orphan-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "orphan-start",
+        json!({"kind":"start_prepared_task","task_id":"orphan-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("orphan-start", &started)["data"]["dispatch_id"].clone();
+    let halted = host.call(request(
+        "orphan-run",
+        json!({"kind":"run_started_dispatch","task_id":"orphan-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        halted["result"]["Err"]["message"],
+        "worker loop halted without finishing"
+    );
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("orphan-stream").worktree_id.as_str());
+    let marker = base.join("staffing-demo").join(format!(
+        "{}.json",
+        staffing_worktree("orphan-stream").worktree_id
+    ));
+    assert!(
+        worktree.join("README.md").exists(),
+        "the failed run's checkout"
+    );
+    assert!(marker.is_file(), "and its reservation");
+    // Uncommitted content, so "nothing was removed" is a claim about the files
+    // and not only about the directory.
+    std::fs::write(worktree.join("half-written.txt"), "the run's last output\n").unwrap();
+
+    // The operator recovers, which drops the dispatch binding, and then wants
+    // the stream gone after all.
+    ok_step(
+        "orphan-recover",
+        &host.call(request(
+            "orphan-recover",
+            json!({"kind":"recover_task","task_id":"orphan-task"}),
+        )),
+    );
+    let refused = host.call(request(
+        "orphan-abandon",
+        json!({"kind":"abandon_change_stream","task_id":"orphan-task"}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["message"], "task is not running under the requested dispatch",
+        "there is no access snapshot to journal the cancellation under: {refused}"
+    );
+    // The order this arm used to have them in removed the checkout first and
+    // refused afterwards, which left a refused call next to deleted work and a
+    // stream nothing could cancel afterwards.
+    assert!(
+        worktree.join("half-written.txt").exists(),
+        "a refused abandon removes nothing, and it means nothing"
+    );
+    assert!(marker.is_file(), "the reservation is still there too");
+
+    // Asking again is the same refusal, not a second attempt at the work: the
+    // operation refuses before it acts, so a caller who retries cannot make
+    // things worse.
+    let again = host.call(request(
+        "orphan-abandon-2",
+        json!({"kind":"abandon_change_stream","task_id":"orphan-task"}),
+    ));
+    assert_eq!(
+        again["result"]["Err"]["message"], "task is not running under the requested dispatch",
+        "{again}"
+    );
+    // And the stream is unharmed by the refusal, so the operator's other option
+    // still works: the recovered task runs again under the stream it has.
+    let reprepared = host.call(request(
+        "orphan-prepare-2",
+        json!({"kind":"prepare_dispatch","task_id":"orphan-task"}),
+    ));
+    assert_eq!(
+        ok_step("orphan-prepare-2", &reprepared)["data"]["outcome"],
+        "ready"
+    );
+    let restarted = host.call(request(
+        "orphan-start-2",
+        json!({"kind":"start_prepared_task","task_id":"orphan-task","host_id":host_id}),
+    ));
+    ok_step("orphan-start-2", &restarted);
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// A receipt is a fact about the store, and the fact that decides how an
+/// operator reads a command is not in it. The cost of abandoning a stream is
+/// that the retry is a *new task*, and until this note existed the only place
+/// an operator could learn it was the refusal of the retry they had already
+/// paid for: `start-prepared-task` answering `stream_inactive` on a task whose
+/// stream their own abandon cancelled.
+///
+/// So the note is where the operator is standing, on stderr — the `--json`
+/// envelope is a published contract of one object per invocation, and a
+/// sentence for a person does not belong in a field for a parser.
+#[test]
+fn a_created_task_says_out_loud_what_abandoning_its_stream_will_cost() {
+    let host = Host::new();
+    staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_symbiote"))
+            .arg("--state-dir")
+            .arg(&host.directory)
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    let create = |task: &str| {
+        let created = run(&[
+            "create-task",
+            "staffing-demo",
+            task,
+            "staffing-root",
+            "engineer",
+            "staffing-objective",
+            "coding-contract@1",
+            BASE,
+        ]);
+        assert!(
+            created.status.success(),
+            "create-task: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        created
+    };
+
+    let created = create("costly-task");
+    let receipt: Value = serde_json::from_slice(&created.stdout).unwrap();
+    assert_eq!(
+        receipt["kind"], "receipt",
+        "stdout is the daemon's own body and nothing else"
+    );
+    let said = String::from_utf8_lossy(&created.stderr);
+    assert!(
+        said.contains("abandoning the stream is terminal") && said.contains("a new Task"),
+        "the note has to name the cost, not gesture at it: {said}"
+    );
+
+    // The same command under `--json`: the note moves to stderr and the
+    // envelope is untouched, because a parser reading stdout must not find a
+    // sentence where it expects a schema.
+    let json = run(&[
+        "--json",
+        "create-task",
+        "staffing-demo",
+        "costly-task-json",
+        "staffing-root",
+        "engineer",
+        "staffing-objective",
+        "coding-contract@1",
+        BASE,
+    ]);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(envelope["command"], "create-task");
+    assert_eq!(envelope["result"]["kind"], "receipt");
+    assert!(
+        !serde_json::to_string(&envelope)
+            .unwrap()
+            .contains("abandoning the stream"),
+        "the envelope is a published contract and carries no prose: {envelope}"
+    );
+    assert!(
+        String::from_utf8_lossy(&json.stderr).contains("abandoning the stream is terminal"),
+        "but the operator running the scripted form still reads it"
+    );
+
+    // And the table stays a table: a read has no consequence to report, and a
+    // note on everything is a note nobody reads.
+    let read = run(&["get-task", "staffing-demo", "costly-task"]);
+    assert!(read.status.success());
+    assert!(
+        String::from_utf8_lossy(&read.stderr).is_empty(),
+        "a read says nothing: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    // And a refusal says nothing, because the cost was not paid: this task was
+    // never dispatched, so it has no dispatch binding to journal a cancellation
+    // under, and the abandon refuses before it touches the checkout — which is
+    // the ordering the crash commit's second test pins. Exit 2, and no note.
+    let refused = run(&["abandon-change-stream", "costly-task", "--yes"]);
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "an undispatched task cannot abandon its stream: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !said.contains("a new Task"),
+        "nothing was charged, so nothing is announced: {said}"
+    );
+
+    // The same table, on the step that closes a task. This one is dangerous
+    // rather than merely costly — nothing reopens a cancelled task — so it
+    // is gated, and `--yes` is the authorization. It holds nothing (this task
+    // was never dispatched), so it is also the one-call close, and the note
+    // has to say what the operator cannot get back.
+    let refused = run(&["cancel-task", "costly-task", "withdrawn"]);
+    assert_eq!(
+        refused.status.code(),
+        Some(3),
+        "an unauthorized cancel is the gate, not the lifecycle: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let closed = run(&["cancel-task", "costly-task", "withdrawn", "--yes"]);
+    assert!(
+        closed.status.success(),
+        "cancel-task: {}",
+        String::from_utf8_lossy(&closed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&closed.stdout).contains("\"state\": \"cancelled\""),
+        "the response is the daemon's own body: {}",
+        String::from_utf8_lossy(&closed.stdout)
+    );
+    let said = String::from_utf8_lossy(&closed.stderr);
+    assert!(
+        said.contains("nothing will run it again"),
+        "the note has to say the step is final, not gesture at it: {said}"
+    );
+    // And a read says nothing, which is the other half of the table staying a
+    // table rather than becoming a note on every command.
+    assert!(
+        String::from_utf8_lossy(&run(&["get-task", "staffing-demo", "costly-task"]).stderr)
+            .is_empty(),
+        "a read of a closed task is still just a read"
+    );
+}
+
+/// Two streams cut from one base, both with work, one integrating first. The
+/// second is then a stream that cannot land, and before this the only thing
+/// the operator was told was that the Root was not where they left it.
+///
+/// The wedge this pins is specific. `advance-change-stream` re-points a stream
+/// at the Root's current head, which looks like a way out and is not: the
+/// branch was never built on the Root the Root has become, so the re-pointed
+/// stream still cannot fast-forward and the collision has only been renamed.
+/// `release` needs an integrated stream, `validate` refuses from `Collided`,
+/// and the one exit left was to abandon a stream whose work had been verified
+/// and throw it away. So the test walks the whole way round: collide, be told
+/// who took the Root, reconcile, land — and then the half that must NOT work,
+/// where both sides moved one file and the merge has to be refused.
+#[test]
+fn a_stream_that_loses_the_race_for_the_root_is_named_and_put_back_on_it() {
+    let (repository, head) = real_repository("collision");
+    let base = std::env::temp_dir().join(format!(
+        "symbiote-collision-worktrees-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "collision-placement",
+        &host.call(request(
+            "collision-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    let git = |directory: &std::path::Path, arguments: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(directory)
+            .args(arguments)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {arguments:?} failed");
+    };
+    let head_of = |directory: &std::path::Path| {
+        String::from_utf8(
+            Command::new("git")
+                .current_dir(directory)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned()
+    };
+    // One task carried all the way to verified, twice over, each writing the
+    // file it is named for. `first` and `third` write the SAME file on purpose
+    // and `second` a different one, so the clean merge and the refused one
+    // are the same fixture rather than two fixtures that each prove half.
+    let carry = |tag: &'static str, file: &str| {
+        staffing_task(
+            &host,
+            concat_id(tag, "-create"),
+            tag,
+            concat_id(tag, "-stream"),
+            &head,
+            &head,
+        );
+        ok_step(
+            concat_id(tag, "-prepare"),
+            &host.call(request(
+                concat_id(tag, "-prepare"),
+                json!({"kind":"prepare_dispatch","task_id":tag}),
+            )),
+        );
+        let started = host.call(request(
+            concat_id(tag, "-start"),
+            json!({"kind":"start_prepared_task","task_id":tag,"host_id":host_id}),
+        ));
+        let dispatch_id =
+            ok_step(concat_id(tag, "-start"), &started)["data"]["dispatch_id"].clone();
+        ok_step(
+            concat_id(tag, "-run"),
+            &host.call(request(
+                concat_id(tag, "-run"),
+                json!({"kind":"run_started_dispatch","task_id":tag,
+                "dispatch_id":dispatch_id}),
+            )),
+        );
+        let worktree = base.join("staffing-demo").join(
+            staffing_worktree(concat_id(tag, "-stream"))
+                .worktree_id
+                .as_str(),
+        );
+        std::fs::write(worktree.join(file), format!("{tag} did the work\n")).unwrap();
+        git(&worktree, &["add", "-A"]);
+        git(
+            &worktree,
+            &[
+                "-c",
+                "user.email=daemon@example.invalid",
+                "-c",
+                "user.name=daemon test",
+                "commit",
+                "-qm",
+                "the run's own work",
+            ],
+        );
+        ok_step(
+            concat_id(tag, "-advance"),
+            &host.call(request(
+                concat_id(tag, "-advance"),
+                json!({"kind":"advance_change_stream","task_id":tag}),
+            )),
+        );
+        ok_step(
+            concat_id(tag, "-validate"),
+            &host.call(request(
+                concat_id(tag, "-validate"),
+                json!({"kind":"validate_change_stream","task_id":tag,
+                "verification_run":concat_id(tag, "-verify")}),
+            )),
+        );
+        ok_step(
+            concat_id(tag, "-begin"),
+            &host.call(request(
+                concat_id(tag, "-begin"),
+                json!({"kind":"begin_task_verification","task_id":tag}),
+            )),
+        );
+        ok_step(
+            concat_id(tag, "-complete"),
+            &host.call(request(
+                concat_id(tag, "-complete"),
+                json!({"kind":"complete_task","task_id":tag,
+                "gates":["tests","security","impact","documentation",
+                "independent_review","delivery","capability_closure"],
+                "reviewer":"lead"}),
+            )),
+        );
+        worktree
+    };
+
+    // All three are in flight before any of them lands, because a stream
+    // cannot be provisioned from a base the Root has already moved past —
+    // which is why a collision is a race that was lost, not a state a stream
+    // can be created into.
+    let first_worktree = carry("first", "first-only.txt");
+    let second_worktree = carry("second", "second-only.txt");
+    let third_worktree = carry("third", "first-only.txt");
+
+    // The race is decided.
+    ok_step(
+        "first-integrate",
+        &host.call(request(
+            "first-integrate",
+            json!({"kind":"integrate_change_stream","task_id":"first"}),
+        )),
+    );
+    let after_first = head_of(&repository);
+    assert_eq!(
+        after_first,
+        head_of(&first_worktree),
+        "the first stream's work is the Root now, which is what makes the second a collision"
+    );
+
+    let second_before = head_of(&second_worktree);
+    // The refusal. It has to name the stream that took the Root, because
+    // "the Root moved" is what the operator had before and could not act on.
+    let collided = host.call(request(
+        "second-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"second"}),
+    ));
+    let said = collided["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("first-stream"),
+        "the refusal has to name the stream that took the Root: {said}"
+    );
+    assert!(
+        said.contains("reconcile-change-stream"),
+        "the refusal has to name the way out of it: {said}"
+    );
+    assert!(
+        said.contains(&after_first),
+        "the refusal has to name where the Root actually is: {said}"
+    );
+    // And the state really moved: `Advance` is refused from `Collided`, which
+    // is the proof the collision was recorded rather than merely described.
+    // This is the operation that used to succeed here and make things worse.
+    // Its own command id, because the one `carry` spent has moved on with the
+    // stream: an id whose command no longer matches is an idempotency
+    // conflict, which is its own answer and not the one under test.
+    let pretended = host.call(request(
+        "second-advance-pretended",
+        json!({"kind":"advance_change_stream","task_id":"second"}),
+    ));
+    assert!(
+        pretended["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("IllegalTransition"),
+        "a collided stream must not be able to re-point itself at the Root and \
+         call the collision settled: {pretended}"
+    );
+    // Asking again says the same thing, because the holder is read back out of
+    // the record rather than re-derived into a second event.
+    let again = host.call(request(
+        "second-integrate-repeated",
+        json!({"kind":"integrate_change_stream","task_id":"second"}),
+    ));
+    assert_eq!(
+        again["result"]["Err"]["message"].as_str().unwrap(),
+        said,
+        "the answer must not depend on how many times it was asked"
+    );
+
+    // The way out, and the whole point of recording the collision: the Root's
+    // work goes underneath this stream's, on top of nothing needing deciding.
+    ok_step(
+        "second-reconcile",
+        &host.call(request(
+            "second-reconcile",
+            json!({"kind":"reconcile_change_stream","task_id":"second"}),
+        )),
+    );
+    let second_after = head_of(&second_worktree);
+    assert_ne!(
+        second_after, second_before,
+        "the Root is in the branch now, so its head cannot be the one it had"
+    );
+    assert_eq!(
+        std::fs::read_to_string(second_worktree.join("second-only.txt")).unwrap(),
+        "second did the work\n",
+        "the merge moved the work, it did not drop it"
+    );
+    // The commit the run made is still the same commit, reachable and
+    // unchanged. A rebase here would have rewritten every id the stream had
+    // already recorded, and a stream whose ids move under a caller is a stream
+    // whose evidence cannot be cited.
+    let output = Command::new("git")
+        .current_dir(&second_worktree)
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            second_before.as_str(),
+            "HEAD",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the run's own commit is still in the branch's history, under its own id"
+    );
+    // The evidence recorded before the merge is gone with it, so the stream
+    // cannot be integrated on the strength of a validation of other commits.
+    let stale = host.call(request(
+        "second-integrate-stale",
+        json!({"kind":"integrate_change_stream","task_id":"second"}),
+    ));
+    assert!(
+        stale["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("StreamNotReady"),
+        "the validation the second stream held was of commits that no longer \
+         exist: {stale}"
+    );
+    ok_step(
+        "second-validate-again",
+        &host.call(request(
+            "second-validate-again",
+            json!({"kind":"validate_change_stream","task_id":"second",
+            "verification_run":"second-verify-again"}),
+        )),
+    );
+    ok_step(
+        "second-integrate-landed",
+        &host.call(request(
+            "second-integrate-landed",
+            json!({"kind":"integrate_change_stream","task_id":"second"}),
+        )),
+    );
+    assert_eq!(
+        head_of(&repository),
+        second_after,
+        "both streams' work is on the Root, which is the whole of the story"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.join("first-only.txt")).unwrap(),
+        "first did the work\n",
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.join("second-only.txt")).unwrap(),
+        "second did the work\n",
+    );
+
+    // The half that must not work. `third` moves the same file `first` moved,
+    // so the Root and this stream both have an opinion about it and git has to
+    // ask a person. The Host asks first and merges nothing, so the refusal
+    // costs the operator no commits and leaves no merge in progress.
+    let third_before = head_of(&third_worktree);
+    host.call(request(
+        "third-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"third"}),
+    ));
+    let refused = host.call(request(
+        "third-reconcile",
+        json!({"kind":"reconcile_change_stream","task_id":"third"}),
+    ));
+    let said = refused["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("first-only.txt"),
+        "the refusal has to name the path that needs deciding: {said}"
+    );
+    assert!(
+        said.contains("nothing was merged"),
+        "the refusal has to say it cost nothing: {said}"
+    );
+    // Named as the conflict it is, not merely as a refusal: "nothing was
+    // merged" is also what a dirty checkout is told, and a test that accepted
+    // either would pass with the conflict check removed.
+    assert!(
+        said.contains("both changed first-only.txt") && !said.contains("untracked"),
+        "this is the conflict, named by its path: {said}"
+    );
+    assert_eq!(
+        head_of(&third_worktree),
+        third_before,
+        "a refused reconcile merges nothing, so the branch is where it was"
+    );
+    assert!(
+        !third_worktree.join(".git").join("MERGE_HEAD").exists(),
+        "a refused reconcile leaves no merge in progress for the next operator to find"
+    );
+    // And the stream is still exactly where the refusal found it: collided,
+    // with the same recorded head, so the operator can resolve the file by
+    // hand and ask again.
+    let after_refusal = host.call(request(
+        "third-reconcile-repeated",
+        json!({"kind":"reconcile_change_stream","task_id":"third"}),
+    ));
+    assert_eq!(
+        after_refusal["result"]["Err"]["message"].as_str().unwrap(),
+        said,
+        "asking again refuses the same way, because nothing changed"
+    );
+
+    // A stream that has not collided has nothing to reconcile. Said as itself
+    // rather than left to the domain's `IllegalTransition`, because "this
+    // stream is integrated" is an answer and "(IllegalTransition)" is not.
+    let healthy = host.call(request(
+        "first-reconcile",
+        json!({"kind":"reconcile_change_stream","task_id":"first"}),
+    ));
+    let said = healthy["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("has not collided") && said.contains("integrated"),
+        "a healthy stream is told what it is, not that a transition failed: {said}"
+    );
+
+    // A checkout with uncommitted work in it is refused before git is asked to
+    // start anything, for the same reason: a merge over a dirty worktree fails
+    // after it has begun and leaves the mess behind.
+    std::fs::write(third_worktree.join("first-only.txt"), "half a thought\n").unwrap();
+    let dirty = host.call(request(
+        "third-reconcile-dirty",
+        json!({"kind":"reconcile_change_stream","task_id":"third"}),
+    ));
+    let said = dirty["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("holds 1 changed and 0 untracked paths"),
+        "a dirty checkout is refused by its own counts, before git is asked \
+         anything: {said}"
+    );
+    assert!(
+        !said.contains("both changed"),
+        "and it is not refused as a conflict, because the conflict was not \
+         what stopped it: {said}"
+    );
+    // A Root that has moved on past the stream that landed is the other half
+    // of the question. Nothing is standing exactly on `second`'s head any
+    // more, so the holder has to be found by ancestry — and the one named is
+    // the most recently moved, not the first, because "second landed and then
+    // something landed on top of second" is what an operator needs to hear.
+    git(
+        &repository,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "a person committed here",
+        ],
+    );
+    let moved_on = host.call(request(
+        "third-integrate-moved-on",
+        json!({"kind":"integrate_change_stream","task_id":"third"}),
+    ));
+    let said = moved_on["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        said.contains("second-stream"),
+        "the Root moved on past second, so second is the stream that took it: {said}"
+    );
+    assert!(
+        !said.contains("first-stream"),
+        "first landed earlier and someone committed on top of second, so naming \
+         first is naming the wrong stream: {said}"
+    );
+
+    // Resolving it by hand and asking again is the documented way out, and it
+    // works because the question is asked of the repository and never of the
+    // request.
+    std::fs::write(
+        third_worktree.join("first-only.txt"),
+        std::fs::read_to_string(repository.join("first-only.txt")).unwrap(),
+    )
+    .unwrap();
+    git(&third_worktree, &["add", "-A"]);
+    git(
+        &third_worktree,
+        &[
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "commit",
+            "-qm",
+            "the operator's resolution",
+        ],
+    );
+    ok_step(
+        "third-reconcile-resolved",
+        &host.call(request(
+            "third-reconcile-resolved",
+            json!({"kind":"reconcile_change_stream","task_id":"third"}),
+        )),
+    );
+}
+
+/// A stream's head is the one record in the lifecycle a caller must never be
+/// able to write, because everything downstream trusts it: `Validate`,
+/// `Integrate` and `Complete` all compare against it. So the operation that
+/// moves it names no commits at all — the Host reads the stream's own checkout
+/// and the Root — and refuses a checkout whose history does not contain the
+/// stream's recorded head, which is what "those commits were not built on this
+/// stream" looks like.
+#[test]
+fn a_stream_only_advances_onto_work_built_on_its_own_head() {
+    let (repository, head) = real_repository("advance-guard");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-advance-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "advance-placement",
+        &host.call(request(
+            "advance-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "advance-task",
+        "advance-task",
+        "advance-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "advance-prepare",
+        &host.call(request(
+            "advance-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"advance-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "advance-start",
+        json!({"kind":"start_prepared_task","task_id":"advance-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("advance-start", &started)["data"]["dispatch_id"].clone();
+    ok_step(
+        "advance-run",
+        &host.call(request(
+            "advance-run",
+            json!({"kind":"run_started_dispatch","task_id":"advance-task",
+            "dispatch_id":dispatch_id}),
+        )),
+    );
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("advance-stream").worktree_id.as_str());
+
+    // The run's own work, on its own branch: the advance accepts this, and
+    // this is the case the lifecycle could not reach before the operation
+    // existed.
+    std::fs::write(worktree.join("the-work.txt"), "what the run did\n").unwrap();
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args(["add", "-A"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "commit",
+            "-qm",
+            "the run's own work",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "the run's work is committed");
+    let committed = String::from_utf8(
+        Command::new("git")
+            .current_dir(&worktree)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let advance = host.call(request(
+        "advance-advance",
+        json!({"kind":"advance_change_stream","task_id":"advance-task"}),
+    ));
+    ok_step("advance-advance", &advance);
+    // The stream's head is now the work, and its target is where the work
+    // lands — the Root's own HEAD, which has not moved. So the whole tail of
+    // the lifecycle is reachable from a task that did something.
+    ok_step(
+        "advance-validate",
+        &host.call(request(
+            "advance-validate",
+            json!({"kind":"validate_change_stream","task_id":"advance-task",
+            "verification_run":"advance-verify"}),
+        )),
+    );
+    // A lost response replays, on both of the observation-bearing commands
+    // above: the retry rebuilds different bytes (the worktree head, the
+    // Root's head, the revision all moved), so the answer it needs is the
+    // journaled command, not a byte comparison it can never win.
+    let advance_again = host.call(request(
+        "advance-advance",
+        json!({"kind":"advance_change_stream","task_id":"advance-task"}),
+    ));
+    assert_eq!(
+        ok_step("advance-advance-replay", &advance_again)["data"]["replayed"],
+        true
+    );
+    assert_eq!(
+        ok_step("advance-advance-replay", &advance_again)["data"]["sequence"],
+        ok(&advance)["data"]["sequence"],
+        "the replay lands on the original receipt"
+    );
+    let validate_again = host.call(request(
+        "advance-validate",
+        json!({"kind":"validate_change_stream","task_id":"advance-task",
+            "verification_run":"advance-verify"}),
+    ));
+    assert_eq!(
+        ok_step("advance-validate-replay", &validate_again)["data"]["replayed"],
+        true
+    );
+    let stream = host.call(request(
+        "advance-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"advance-task"}),
+    ));
+    assert_eq!(ok(&stream)["data"]["state"], "completion_requested");
+
+    // The refusal. A checkout on a history that does not contain the stream's
+    // recorded head is a stranger's work wearing this stream's path, and the
+    // one operation that could make it the stream's head is exactly the one
+    // that has to refuse.
+    let stranger = Command::new("git")
+        .current_dir(&worktree)
+        .args(["checkout", "-q", "--orphan", "not-this-streams-lineage"])
+        .output()
+        .unwrap();
+    assert!(stranger.status.success());
+    let orphan = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "an unrelated history",
+        ])
+        .output();
+    assert!(
+        orphan.is_ok(),
+        "git refusing an empty orphan commit is not this test's subject"
+    );
+    let refused = host.call(request(
+        "advance-refused",
+        json!({"kind":"advance_change_stream","task_id":"advance-task"}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["message"],
+        "the stream's checkout is not built on the stream's recorded head",
+        "{refused}"
+    );
+    // And the work the stream had already recorded is still recorded: the
+    // refusal took nothing, so the task is still where the accepted advance
+    // left it.
+    let unchanged = host.call(request(
+        "advance-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"advance-task"}),
+    ));
+    assert_eq!(ok(&unchanged)["data"]["state"], "completion_requested");
+    let on_disk = String::from_utf8(
+        Command::new("git")
+            .current_dir(&repository)
+            .args([
+                "rev-parse",
+                &format!("refs/heads/{}", staffing_worktree("advance-stream").branch),
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    assert_eq!(
+        committed, on_disk,
+        "and the branch still holds the commit the stream claimed"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The integrate is the one operation in the lifecycle with a window between
+/// what it does and what it records: the merge lands on the Root, and the
+/// journal write that turns the stream `Integrated` is a separate step after
+/// it. A daemon killed in that window leaves the work on the Root and the
+/// stream still `Validated` — and the retry used to refuse it, because the
+/// Root was no longer at the stream's recorded target.
+///
+/// That refusal closed every way out at once. The integrate refuses because
+/// the Root moved; `release-change-stream` needs an integrated stream; and
+/// `abandon-change-stream` refuses a stream whose work landed, which is
+/// exactly what this one is. So the state was permanent, and the only honest
+/// description of it was a wedge.
+///
+/// The test stands in the crash's part with two lines of git — the merge that
+/// had already run, with the journal write that did not — because that is the
+/// whole of what a crash leaves, and the operation's answer to it is the
+/// product question.
+#[test]
+fn work_that_landed_before_the_record_did_is_integrated_rather_than_refused() {
+    let (repository, head) = real_repository("lost-journal");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-journal-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture landed this work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "journal-placement",
+        &host.call(request(
+            "journal-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "journal-task",
+        "journal-task",
+        "journal-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "journal-prepare",
+        &host.call(request(
+            "journal-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"journal-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "journal-start",
+        json!({"kind":"start_prepared_task","task_id":"journal-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("journal-start", &started)["data"]["dispatch_id"].clone();
+    ok_step(
+        "journal-run",
+        &host.call(request(
+            "journal-run",
+            json!({"kind":"run_started_dispatch","task_id":"journal-task",
+            "dispatch_id":dispatch_id}),
+        )),
+    );
+    // The run's work, committed into its own branch, so there is something to
+    // land. The fixture lane reports rather than writes, so the commit is the
+    // test's — the point is the state a real run leaves, not who typed it.
+    let worktree = base
+        .join("staffing-demo")
+        .join(staffing_worktree("journal-stream").worktree_id.as_str());
+    std::fs::write(worktree.join("change.log"), "what the run changed\n").unwrap();
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "add",
+            "-A",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.email=daemon@example.invalid",
+            "-c",
+            "user.name=daemon test",
+            "commit",
+            "-qm",
+            "the work this stream exists to land",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "the run's work is committed");
+    let stream_head = String::from_utf8(
+        Command::new("git")
+            .current_dir(&worktree)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    // The step that was missing from the workspace: the run committed, so the
+    // stream's head has to move before anything may claim it is validated. It
+    // names no commits — the Host reads both out of git — and it invalidates
+    // earlier evidence by construction, so this is where a stream that has
+    // done work returns to needing revalidation.
+    let advanced = host.call(request(
+        "journal-advance",
+        json!({"kind":"advance_change_stream","task_id":"journal-task"}),
+    ));
+    ok_step("journal-advance", &advanced);
+    ok_step(
+        "journal-validate",
+        &host.call(request(
+            "journal-validate",
+            json!({"kind":"validate_change_stream","task_id":"journal-task",
+            "verification_run":"journal-verify"}),
+        )),
+    );
+    ok_step(
+        "journal-begin",
+        &host.call(request(
+            "journal-begin",
+            json!({"kind":"begin_task_verification","task_id":"journal-task"}),
+        )),
+    );
+    ok_step(
+        "journal-complete",
+        &host.call(request(
+            "journal-complete",
+            json!({"kind":"complete_task","task_id":"journal-task",
+            "gates":["tests","security","impact","documentation",
+                     "independent_review","delivery","capability_closure"],
+            "reviewer":"lead"}),
+        )),
+    );
+
+    // The crash's part: the fast-forward that already happened on the Root,
+    // with nothing in the store recording that it did.
+    let landed = Command::new("git")
+        .current_dir(&repository)
+        .args([
+            "merge",
+            "--ff-only",
+            &format!("refs/heads/{}", staffing_worktree("journal-stream").branch),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        landed.status.success(),
+        "the merge the crash interrupted after"
+    );
+    let root_head = String::from_utf8(
+        Command::new("git")
+            .current_dir(&repository)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    assert_eq!(root_head, stream_head, "the work is on the Root");
+    assert_ne!(
+        root_head, head,
+        "and the Root is nowhere near the target the stream recorded"
+    );
+
+    // The operation's answer. It proves the same thing either way — the Root is
+    // at the stream's head — and this time it records it.
+    let integrated = host.call(request(
+        "journal-integrate",
+        json!({"kind":"integrate_change_stream","task_id":"journal-task"}),
+    ));
+    ok_step("journal-integrate", &integrated);
+    // And the lifecycle that was closed behind the refusal opens: the release
+    // is the operation that reclaims the checkout, and it needs the stream to
+    // be integrated.
+    ok_step(
+        "journal-release",
+        &host.call(request(
+            "journal-release",
+            json!({"kind":"release_change_stream","task_id":"journal-task"}),
+        )),
+    );
+    assert!(
+        !worktree.exists(),
+        "and the checkout leaves the operator's disk"
+    );
+    assert!(
+        String::from_utf8(
+            Command::new("git")
+                .current_dir(&repository)
+                .args(["rev-parse", "--verify", &root_head])
+                .output()
+                .unwrap()
+                .stdout
+        )
+        .unwrap()
+        .trim()
+            == root_head,
+        "while the work it landed stays exactly where it landed"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// A Task could be started, failed, interrupted, recovered and completed, and
+/// not one of those is a way to stop wanting it. `TaskState::Cancelled` has
+/// been in the lifecycle since the lifecycle was written and no operation
+/// constructed `TaskAction::Cancel`, so a task the operator was done with was
+/// still `Ready` — still startable, still in the scheduling projection — and
+/// the only way to run it again was into the stream its own abandon had
+/// already cancelled, which the dispatch then refused as inactive. The work
+/// hierarchy counts `Cancelled` as *closed* against `open`, so the one state
+/// that closes a task was the state nothing could reach.
+///
+/// The gate on it is the hold, not the task. A reservation is taken by
+/// provisioning and not by `create_task`, so a Task nobody ever dispatched
+/// holds nothing and closes in one call. A Task whose run did provision holds
+/// a location that can still carry commits and uncommitted files, and there
+/// the cancel refuses rather than becoming a second, quieter way to discard
+/// them: it is a claim about a Task, not authority over a directory.
+/// `abandon-change-stream` is the operation for the directory, and it is what
+/// the refusal names.
+/// A task that is not ready has to be holdable, because otherwise it is either
+/// created and run or never created.
+///
+/// That is the whole of the defect, and it is worth stating what the product
+/// offered instead: a dependency on a task that never finishes. Which works,
+/// right up to the reporting — the store says `dependency_unresolved` and names
+/// a task that has nothing to do with the real reason, so the only way to say
+/// "not until the key is provisioned" made the store say something else, and
+/// the task itself carried nothing but `state: ready`.
+///
+/// The second half is the compounding one. The scheduling projection's query
+/// read only `ready` and `assigned`, so a held task would have been absent
+/// from both of its lists — which is not "not blocking anything", it is
+/// silence, and silence about a task somebody is deliberately waiting on reads
+/// as a task that is not waiting. So the projection has to list it and say who
+/// is holding it and why.
+#[test]
+fn a_held_task_says_why_it_is_held_and_comes_back_when_the_reason_is_gone() {
+    let (repository, head) = real_repository("hold-task");
+    let base = std::env::temp_dir().join(format!("symbiote-hold-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "hold-placement",
+        &host.call(request(
+            "hold-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "hold-create",
+        "held-task",
+        "held-stream",
+        &head,
+        &head,
+    );
+    let held = |tag: &'static str| {
+        host.call(request(
+            tag,
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"held-task"}),
+        ))
+    };
+    let projection = |tag: &'static str| {
+        host.call(request(
+            tag,
+            json!({"kind":"get_scheduling_projection","project_id":"staffing-demo"}),
+        ))
+    };
+    // The entry the projection makes for this task, and nothing else.
+    let entry = |tag: &'static str| {
+        let answer = ok_step(tag, &projection(tag))["data"].clone();
+        let mut entries: Vec<Value> = Vec::new();
+        for key in ["schedulable", "blocked"] {
+            for row in answer[key].as_array().cloned().unwrap_or_default() {
+                if row["task_id"] == "held-task" {
+                    entries.push(row);
+                }
+            }
+        }
+        entries
+    };
+
+    // Before the hold, this is a start candidate with nothing holding it.
+    assert_eq!(
+        entry("hold-projection-before")
+            .first()
+            .and_then(|row| row["reason"].as_str()),
+        Some("no_blocking_dependencies"),
+        "a task with no gates and no hold is schedulable, which is the whole \
+         of what this test changes"
+    );
+
+    // The hold. A reason is required, and required at the boundary rather than
+    // discovered in a refusal, because a hold nobody can read is a hold that
+    // has to be lifted to find out what it was for.
+    let nameless = host.call(request(
+        "hold-nameless",
+        json!({"kind":"block_task","task_id":"held-task","reason":"   "}),
+    ));
+    assert_eq!(
+        nameless["result"]["Err"]["code"], "invalid_request",
+        "an empty reason is refused, not stored: {nameless}"
+    );
+    assert!(
+        nameless["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("a hold has to say why"),
+        "and the refusal says what is wrong with it: {nameless}"
+    );
+
+    ok_step(
+        "hold-block",
+        &host.call(request(
+            "hold-block",
+            json!({"kind":"block_task","task_id":"held-task",
+            "reason":"the key this needs is not provisioned yet"}),
+        )),
+    );
+    assert_eq!(ok(&held("hold-read-held"))["data"]["state"], "blocked");
+
+    // The projection's answer is the point of the whole pass: the held task is
+    // listed, it is listed as held by an operator rather than by a derived
+    // fact, and it carries the sentence the operator wrote.
+    let listed = entry("hold-projection-after");
+    assert_eq!(
+        listed.len(),
+        1,
+        "the held task is listed exactly once: {listed:?}"
+    );
+    assert_eq!(listed[0]["reason"], "operator_held");
+    assert_eq!(
+        listed[0]["detail"], "the key this needs is not provisioned yet",
+        "the operator's own words, not a category"
+    );
+
+    // And it is not also offered for scheduling. A task in both lists is a task
+    // a caller could pick up and run, which is the one thing a hold is for.
+    let answer =
+        ok_step("hold-projection-both", &projection("hold-projection-both"))["data"].clone();
+    let offered = answer["schedulable"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let schedulable: Vec<&Value> = offered
+        .iter()
+        .filter(|row| row["task_id"] == "held-task")
+        .collect();
+    assert!(
+        schedulable.is_empty(),
+        "a held task must not also be offered for scheduling: {answer:?}"
+    );
+
+    // The boundary agrees. `prepare-dispatch` and `start-prepared-task` both
+    // refuse a task that is not startable, and the ninth pass's lesson is that
+    // the report has to say the same thing the refusal will — so the report is
+    // asked first here and the refusal second, in that order.
+    let report = host.call(request(
+        "hold-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"held-task"}),
+    ));
+    let steps = ok(&report)["data"]["steps"].clone();
+    assert!(
+        ok(&report)["data"]["outcome"] != "ready",
+        "a report that says ready for a held task is worse than no report: {report}"
+    );
+    // And it says WHY, which is the half that was missing. Every other step in
+    // that report is healthy — no unmet gates, an active stream, a resolved
+    // role, a validated provider — so a report that only refused left an
+    // operator looking for a stream problem, a lease or a missing route, and
+    // the answer they were missing was the one sentence somebody wrote.
+    let hold_step = steps
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "hold")
+        .unwrap_or_else(|| panic!("no hold step in the report: {report}"));
+    assert_eq!(
+        hold_step["reason"], "the key this needs is not provisioned yet",
+        "the report carries the operator's own sentence: {report}"
+    );
+    let started = host.call(request(
+        "hold-start",
+        json!({"kind":"start_prepared_task","task_id":"held-task","host_id":host_id}),
+    ));
+    assert!(
+        started["result"]["Err"].is_object(),
+        "a held task must not start: {started}"
+    );
+
+    // Asking again about a held task repeats the reason it is held for, which
+    // is the only way a caller who cannot read the projection finds it.
+    let again = host.call(request(
+        "hold-block-again",
+        json!({"kind":"block_task","task_id":"held-task","reason":"a different reason"}),
+    ));
+    let said = again["result"]["Err"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        said, "this task is already held: the key this needs is not provisioned yet",
+        "the second ask answers with the hold, not with the new reason: {said}"
+    );
+
+    // Lifting a hold that is not there is refused by name, so an operator who
+    // guesses wrong is told what the task actually is.
+    staffing_task(
+        &host,
+        "hold-create-ready",
+        "ready-task",
+        "ready-stream",
+        &head,
+        &head,
+    );
+    let not_held = host.call(request(
+        "hold-unblock-not-held",
+        json!({"kind":"unblock_task","task_id":"ready-task","reason":"nothing was holding it"}),
+    ));
+    assert!(
+        not_held["result"]["Err"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("it is ready"),
+        "lifting a hold that is not there names the state instead of failing a \
+         transition: {not_held}"
+    );
+
+    // The way out. The task comes back to `ready` and no further: it is offered
+    // for scheduling again, and nothing about it has been cancelled or lost.
+    ok_step(
+        "hold-unblock",
+        &host.call(request(
+            "hold-unblock",
+            json!({"kind":"unblock_task","task_id":"held-task",
+            "reason":"the key is provisioned and the run is wanted"}),
+        )),
+    );
+    assert_eq!(ok(&held("hold-read-released"))["data"]["state"], "ready");
+    let released = host.call(request(
+        "hold-prepare-released",
+        json!({"kind":"prepare_dispatch","task_id":"held-task"}),
+    ));
+    let steps = ok(&released)["data"]["steps"].clone();
+    let hold_step = steps
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "hold")
+        .unwrap_or_else(|| panic!("no hold step in the released report: {released}"));
+    assert!(
+        hold_step["reason"].is_null(),
+        "a task that is not held reports no hold, rather than the last reason \
+         it was held for: {released}"
+    );
+    assert_eq!(
+        entry("hold-projection-released")
+            .first()
+            .and_then(|row| row["reason"].as_str()),
+        Some("no_blocking_dependencies"),
+        "and the projection offers it again, which is the same place it stopped"
+    );
+    // The sentence is gone from the projection with the hold, because the task
+    // is no longer held: a reason that outlived its state would be an answer to
+    // a question nobody asked.
+    let after = entry("hold-projection-released");
+    assert!(
+        after[0].get("detail").is_none(),
+        "a task that is not held carries no hold reason: {after:?}"
+    );
+    // And the history carries both, because the release is the only account of
+    // why the hold went away.
+    let history = ok(&held("hold-read-history"))["data"]["history"].clone();
+    let said_by: Vec<&str> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| {
+            let action = &event["command"]["action"];
+            if action["kind"] == "block" || action["kind"] == "unblock" {
+                action["reason"].as_str()
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        said_by,
+        vec![
+            "the key this needs is not provisioned yet",
+            "the key is provisioned and the run is wanted",
+        ],
+        "both the hold and the release are in the record, in the order they \
+         happened: {history:?}"
+    );
+}
+
+#[test]
+fn a_task_is_closed_only_after_its_stream_gave_up_its_checkout() {
+    let (repository, head) = real_repository("close-task");
+    let base =
+        std::env::temp_dir().join(format!("symbiote-close-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "close-placement",
+        &host.call(request(
+            "close-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+
+    // The one-call close, and the state nothing could reach before this
+    // operation existed. No run, so no provisioning, so no reservation: the
+    // gate is the hold and there is nothing held.
+    staffing_task(
+        &host,
+        "close-quiet",
+        "close-quiet",
+        "close-quiet-stream",
+        &head,
+        &head,
+    );
+    let quiet = host.call(request(
+        "close-quiet-cancel",
+        json!({"kind":"cancel_task","task_id":"close-quiet","reason":"never started"}),
+    ));
+    assert_eq!(
+        ok(&quiet)["data"]["state"],
+        "cancelled",
+        "a task that held nothing closes in one call: {quiet}"
+    );
+
+    // Now the other half, where the hold is real. The run provisions the
+    // stream's own checkout, and everything in it belongs to that run.
+    staffing_task(
+        &host,
+        "close-task",
+        "close-task",
+        "close-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "close-prepare",
+        &host.call(request(
+            "close-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"close-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "close-start",
+        json!({"kind":"start_prepared_task","task_id":"close-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("close-start", &started)["data"]["dispatch_id"].clone();
+    ok_step(
+        "close-run",
+        &host.call(request(
+            "close-run",
+            json!({"kind":"run_started_dispatch","task_id":"close-task",
+            "dispatch_id":dispatch_id}),
+        )),
+    );
+    let worktree_id = staffing_worktree("close-stream").worktree_id;
+    let marker = base
+        .join("staffing-demo")
+        .join(format!("{worktree_id}.json"));
+    let worktree = base.join("staffing-demo").join(worktree_id.as_str());
+    assert!(marker.is_file(), "the run's own reservation is on disk");
+    // The run's uncommitted work, which is what a cancel must never be able
+    // to take with it.
+    std::fs::write(worktree.join("the-work.txt"), "what the run did\n").unwrap();
+
+    // The refusal, on a task with a live dispatch and a checkout full of
+    // somebody's afternoon. Said before the lifecycle is asked, because a
+    // refusal that had already written the transition would leave the
+    // operator with a cancelled task and the directory still right there.
+    let holding = host.call(request(
+        "close-holding",
+        json!({"kind":"cancel_task","task_id":"close-task","reason":"withdrawn"}),
+    ));
+    assert_eq!(
+        holding["result"]["Err"]["message"],
+        "the task's stream still holds a reservation; abandon-change-stream reclaims it",
+        "{holding}"
+    );
+    assert!(
+        worktree.join("the-work.txt").is_file(),
+        "and the file is exactly where it was: a refused cancel deletes nothing"
+    );
+    let untouched = host.call(request(
+        "close-read-holding",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"close-task"}),
+    ));
+    assert_eq!(
+        ok(&untouched)["data"]["state"],
+        "completion_requested",
+        "a refused cancel took nothing, and this says so"
+    );
+
+    // The abandon reclaims, which is the authorization the one operation that
+    // destroys work needs, and the uncommitted file goes with the checkout.
+    ok_step(
+        "close-abandon",
+        &host.call(request(
+            "close-abandon",
+            json!({"kind":"abandon_change_stream","task_id":"close-task"}),
+        )),
+    );
+    assert!(
+        !marker.exists() && !worktree.exists(),
+        "the reservation is gone, marker and checkout alike"
+    );
+
+    // And now the task closes, because the thing that could have been lost is
+    // not there any more.
+    let closed = host.call(request(
+        "close-cancel",
+        json!({"kind":"cancel_task","task_id":"close-task",
+        "reason":"the operator withdrew the work"}),
+    ));
+    assert_eq!(
+        ok(&closed)["data"]["state"],
+        "cancelled",
+        "the close returns the task, because the state is the answer: {closed}"
+    );
+
+    // Terminal, both ways. A cancelled task is neither recoverable nor
+    // dispatchable, so "closed" means closed rather than "closed for now":
+    // the lifecycle recovers a failed or interrupted run and nothing else.
+    let reopened = host.call(request(
+        "close-recover",
+        json!({"kind":"recover_task","task_id":"close-task"}),
+    ));
+    assert!(
+        reopened["result"]["Err"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("IllegalTransition"),
+        "a cancelled task is not recovered: {reopened}"
+    );
+    let restarted = host.call(request(
+        "close-restart",
+        json!({"kind":"start_prepared_task","task_id":"close-task","host_id":host_id}),
+    ));
+    assert_eq!(
+        restarted["result"]["Err"]["code"], "failed_precondition",
+        "and it is not run again either: {restarted}"
+    );
+
+    // The reason is the only account anyone will have of why the work was
+    // withdrawn, so the journal carries it rather than the bare fact.
+    let journal = host.call(request(
+        "close-journal",
+        json!({"kind":"read_journal","project_id":"staffing-demo","after":0,"limit":100}),
+    ));
+    let entries = ok(&journal)["data"].to_string();
+    assert!(
+        entries.contains("the operator withdrew the work") && entries.contains("never started"),
+        "the reason is in the record, for both closes: {entries}"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// A `requires` edge is the gate that holds a task back from starting, and the
+/// domain says so in the kind's own doc: "This task cannot start until the
+/// target completes." The boundary has always enforced that — and it refused
+/// with `{"code": "conflict", "message": "resource conflict"}`, a unit error
+/// with no name in it and the code this product uses for two writers racing
+/// for the same row.
+///
+/// Worse, the report lied in the same place. `prepare-dispatch` returned
+/// `outcome: ready` with `{"kind": "scheduling", "schedulable": true}` for
+/// the very task the boundary was about to refuse, because the composition
+/// read the task's own state and not what was holding it. The report is the
+/// thing an operator reads immediately before dispatching, so a report that
+/// says `ready` is worse than no report at all.
+///
+/// Three surfaces answer this question and all three must say the same thing:
+/// the scheduling projection, the composition report, and the boundary. The
+/// projection already said `dependency_unresolved`; the other two said
+/// nothing useful.
+#[test]
+fn a_gate_that_holds_a_task_back_is_named_by_the_report_the_projection_and_the_boundary() {
+    let (repository, head) = real_repository("gate");
+    let base = std::env::temp_dir().join(format!("symbiote-gate-worktrees-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the prerequisite did its work"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "gate-placement",
+        &host.call(request(
+            "gate-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "gate-first",
+        "gate-first",
+        "gate-first-stream",
+        &head,
+        &head,
+    );
+    staffing_task(
+        &host,
+        "gate-second",
+        "gate-second",
+        "gate-second-stream",
+        &head,
+        &head,
+    );
+    // The edge, recorded through the same operation the CLI now names.
+    ok_step(
+        "gate-edge",
+        &host.call(request(
+            "gate-edge",
+            json!({"kind":"set_task_dependencies","project_id":"staffing-demo",
+            "task_id":"gate-second","dependencies":[{"kind":"requires",
+            "target":{"project_id":"staffing-demo","task_id":"gate-first"}}]}),
+        )),
+    );
+
+    // One, the projection, which was the only surface already right: the
+    // dependent is blocked, and the reason is the word the others will use.
+    let projection = host.call(request(
+        "gate-projection",
+        json!({"kind":"get_scheduling_projection","project_id":"staffing-demo"}),
+    ));
+    let blocked = ok(&projection)["data"]["blocked"]
+        .as_array()
+        .expect("a blocked list")
+        .clone();
+    let held = blocked
+        .iter()
+        .find(|entry| entry["task_id"] == "gate-second")
+        .expect("the dependent is listed, or the projection is not doing its job");
+    assert_eq!(held["reason"], "dependency_unresolved", "{held}");
+    assert!(
+        !ok(&projection)["data"]["schedulable"]
+            .as_array()
+            .expect("a schedulable list")
+            .iter()
+            .any(|entry| entry["task_id"] == "gate-second"),
+        "and it is not also offered for scheduling: the two lists answer different questions"
+    );
+
+    // Two, the report. This is the one that said `ready`, and the assertion is
+    // deliberately about the outcome and not only the step: a report that
+    // records the gate and still calls itself ready has fixed nothing.
+    let prepared = host.call(request(
+        "gate-prepare",
+        json!({"kind":"prepare_dispatch","task_id":"gate-second"}),
+    ));
+    assert_eq!(
+        ok(&prepared)["data"]["outcome"],
+        "refused",
+        "the report may not promise a dispatch the boundary is about to refuse: {prepared}"
+    );
+    let steps = ok(&prepared)["data"]["steps"].to_string();
+    assert!(
+        steps.contains("\"kind\":\"dependencies\"")
+            && steps.contains("gate-first")
+            && steps.contains("ready"),
+        "and it names the gate and the state it is in, so the operator is not sent to look: {steps}"
+    );
+
+    // Three, the boundary, which is the only one that was actually enforced.
+    let refused = host.call(request(
+        "gate-start",
+        json!({"kind":"start_prepared_task","task_id":"gate-second","host_id":host_id}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["code"], "failed_precondition",
+        "a prerequisite that has not finished is a precondition, not a conflict: {refused}"
+    );
+    assert_eq!(
+        refused["result"]["Err"]["message"],
+        "dispatch refused by recorded state (dependency_unresolved)",
+        "and it names itself with the same word the projection used: {refused}"
+    );
+
+    // The control, because a refusal proves nothing until you know what it is
+    // refusing *instead of*. The prerequisite has no edges of its own and is
+    // started the same way, in the same daemon, while the dependent is held.
+    ok_step(
+        "gate-first-prepare",
+        &host.call(request(
+            "gate-first-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"gate-first"}),
+        )),
+    );
+    let first = host.call(request(
+        "gate-first-start",
+        json!({"kind":"start_prepared_task","task_id":"gate-first","host_id":host_id}),
+    ));
+    let first_dispatch = ok_step("gate-first-start", &first)["data"]["dispatch_id"].clone();
+    ok_step(
+        "gate-first-run",
+        &host.call(request(
+            "gate-first-run",
+            json!({"kind":"run_started_dispatch","task_id":"gate-first",
+            "dispatch_id":first_dispatch}),
+        )),
+    );
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-second-read",
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"gate-second"}),
+        )))["data"]["state"],
+        "ready",
+        "and the dependent is untouched: refusing a start takes nothing"
+    );
+
+    // A cancelled prerequisite does not open the gate, and this is the rule
+    // that makes `cancelled` different from `completed`: a cancelled task is
+    // closed but produced nothing, so the dependent still waits. The report
+    // has to be able to say which, because "waiting" and "waiting forever"
+    // are different problems with different answers.
+    let second = host.call(request(
+        "gate-second-prepare-2",
+        json!({"kind":"prepare_dispatch","task_id":"gate-second"}),
+    ));
+    let steps = ok(&second)["data"]["steps"].to_string();
+    assert!(
+        steps.contains("completion_requested") || steps.contains("cancelled"),
+        "the step reports the state the gate is actually in: {steps}"
+    );
+
+    // And the gate does open. The prerequisite runs to completion and the
+    // dependent starts, which is the whole point of a gate: it is a wait, not
+    // a wall.
+    ok_step(
+        "gate-first-advance",
+        &host.call(request(
+            "gate-first-advance",
+            json!({"kind":"advance_change_stream","task_id":"gate-first"}),
+        )),
+    );
+    ok_step(
+        "gate-first-validate",
+        &host.call(request(
+            "gate-first-validate",
+            json!({"kind":"validate_change_stream","task_id":"gate-first",
+            "verification_run":"gate-first-verify"}),
+        )),
+    );
+    ok_step(
+        "gate-first-begin",
+        &host.call(request(
+            "gate-first-begin",
+            json!({"kind":"begin_task_verification","task_id":"gate-first"}),
+        )),
+    );
+    ok_step(
+        "gate-first-complete",
+        &host.call(request(
+            "gate-first-complete",
+            json!({"kind":"complete_task","task_id":"gate-first","reviewer":"lead",
+            "gates":["tests","security","impact","documentation",
+            "independent_review","delivery","capability_closure"]}),
+        )),
+    );
+    let reopened = host.call(request(
+        "gate-second-prepare-3",
+        json!({"kind":"prepare_dispatch","task_id":"gate-second"}),
+    ));
+    assert_eq!(
+        ok(&reopened)["data"]["outcome"],
+        "ready",
+        "a completed prerequisite opens the gate: {reopened}"
+    );
+    ok_step(
+        "gate-second-start",
+        &host.call(request(
+            "gate-second-start",
+            json!({"kind":"start_prepared_task","task_id":"gate-second","host_id":host_id}),
+        )),
+    );
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-second-read-2",
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"gate-second"}),
+        )))["data"]["state"],
+        "running",
+        "and the dependent runs, which is what a gate is for"
+    );
+
+    // The re-check, which is the half a preparation cannot do for itself. A
+    // `Ready` preparation is a record, and a record can go stale: this task is
+    // prepared while it is genuinely free, and an edge arrives afterwards. The
+    // boundary has to re-ask the question rather than trust the record, for
+    // the same reason it re-reads the stream, the route and the registration
+    // instead of believing what the preparation said about them.
+    // The target has to still be unfinished: `gate-first` is completed by
+    // now, and a completed prerequisite satisfies everything, so pointing at
+    // it would make this half of the test measure nothing at all.
+    staffing_task(
+        &host,
+        "gate-idle",
+        "gate-idle",
+        "gate-idle-stream",
+        &head,
+        &head,
+    );
+    staffing_task(
+        &host,
+        "gate-late",
+        "gate-late",
+        "gate-late-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "gate-late-prepare",
+        &host.call(request(
+            "gate-late-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"gate-late"}),
+        )),
+    );
+    ok_step(
+        "gate-late-edge",
+        &host.call(request(
+            "gate-late-edge",
+            json!({"kind":"set_task_dependencies","project_id":"staffing-demo",
+            "task_id":"gate-late","dependencies":[{"kind":"requires",
+            "target":{"project_id":"staffing-demo","task_id":"gate-idle"}}]}),
+        )),
+    );
+    // The record still says ready, and the read the operator would do says
+    // ready too — which is the whole reason the boundary cannot be the report.
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-late-preparation-read",
+            json!({"kind":"get_dispatch_preparation","task_id":"gate-late"}),
+        )))["data"]["outcome"],
+        "ready",
+        "the stale record is served as itself: it is a record, not a live answer"
+    );
+    let stale = host.call(request(
+        "gate-late-start",
+        json!({"kind":"start_prepared_task","task_id":"gate-late","host_id":host_id}),
+    ));
+    assert_eq!(
+        stale["result"]["Err"]["message"],
+        "dispatch refused by recorded state (dependency_unresolved)",
+        "and the boundary re-asks rather than believing it: {stale}"
+    );
+    assert_eq!(
+        ok(&host.call(request(
+            "gate-late-read",
+            json!({"kind":"get_task","project_id":"staffing-demo","task_id":"gate-late"}),
+        )))["data"]["state"],
+        "ready",
+        "with nothing taken: a refused start leaves the task where it was"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The structural half of the elevation loop: a run is refused for lack of a
+/// permission, the ask it filed survives the failure, the operator answers it
+/// AFTER the run is gone, and the answer licenses the run that comes back.
+///
+/// The measurement this test holds: `resolve_native_credential` files its ask
+/// and returns its typed refusal immediately, `file_run_failure` fails the
+/// task without dropping the dispatch binding, and a dispatch id is minted
+/// deterministically per task — so the recovered task's next run re-mints the
+/// identical id the ask names. Under a Running-only attribution rule the
+/// decision could never be recorded and the ask could never be answered by
+/// anything but a hand-written file; the whole loop below was one refusal
+/// named `invalid request shape or field value`.
+#[test]
+fn an_asked_elevation_survives_the_run_that_filed_it_and_answers_the_next() {
+    let (repository, head) = real_repository("elevate-next");
+    let base = std::env::temp_dir().join(format!("symbiote-elevate-next-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the recovered run got its lease"},
+        "credential_broker": [{"reference": "native-vault-ref",
+            "project": "staffing-demo", "environment": "OPENAI_API_KEY",
+            "value": "fixture-not-a-real-secret"}],
+    }));
+    // The member carries use_credential — which is what puts it in the
+    // Team's ceiling — while the binding is narrowed below so the run is
+    // refused and a lease is not a re-grant. The binding keeps mutate_stream
+    // (a dispatch cannot compile without it) and drops use_credential.
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream", "use_credential"],
+        None,
+        None,
+    );
+    ok_step(
+        "elevate-next-placement",
+        &host.call(request(
+            "elevate-next-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    // Narrow the STORED binding's two access lists so use_credential rides
+    // on the member (ceiling) but not the binding (the run's gate) BEFORE
+    // anything compiles a dispatch: the contract snapshots the binding at
+    // start, so a narrow afterwards would be invisible to the run. The
+    // stored binding is read because the composition just added grants the
+    // fixture does not carry.
+    let stored = host.call(request(
+        "elevate-next-stored-binding",
+        json!({"kind":"get_binding","project_id":"staffing-demo",
+        "binding_id":"engineer-binding"}),
+    ));
+    let held = ok(&stored)["data"].clone();
+    let revision = held["binding"]["revision"].as_u64().unwrap();
+    let mut configuration = held;
+    configuration["binding"]["revision"] = json!(revision + 1);
+    for path in [
+        ["primary", "access", "grants"],
+        ["binding", "access", "grants"],
+    ] {
+        let grants: Vec<Value> = configuration
+            .pointer(&format!("/{}", path.join("/")))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        *configuration
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap() = json!(
+            grants
+                .into_iter()
+                .filter(|grant| grant != &json!("use_credential"))
+                .collect::<Vec<_>>()
+        );
+    }
+    ok_step(
+        "elevate-next-narrow",
+        &host.call(request(
+            "elevate-next-narrow",
+            json!({"kind":"replace_binding","expected_revision":revision,
+            "configuration":configuration}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "elevate-next-task",
+        "elevate-next-task",
+        "elevate-next-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "elevate-next-prepare",
+        &host.call(request(
+            "elevate-next-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"elevate-next-task"}),
+        )),
+    );
+    let started = host.call(request(
+        "elevate-next-start",
+        json!({"kind":"start_prepared_task","task_id":"elevate-next-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("elevate-next-start", &started)["data"]["dispatch_id"].clone();
+
+    // The run refuses: the broker's UseCredential gate sees a binding
+    // without the grant and no live lease. The ask is filed first, then the
+    // typed refusal fails the task — without dropping the dispatch.
+    let refused = host.call(request(
+        "elevate-next-run",
+        json!({"kind":"run_started_dispatch","task_id":"elevate-next-task",
+        "dispatch_id":dispatch_id}),
+    ));
+    assert_eq!(
+        refused["result"]["Err"]["message"], "credential lease refused: use_credential_not_granted",
+        "{refused}"
+    );
+    let after = host.call(request(
+        "elevate-next-task-read",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"elevate-next-task"}),
+    ));
+    assert_eq!(ok(&after)["data"]["state"], "failed");
+    assert_eq!(
+        ok(&after)["data"]["dispatch"]["id"],
+        dispatch_id,
+        "the failure keeps the dispatch binding: {after}"
+    );
+
+    // The ask the run filed is on the ledger, unanswered.
+    let ledger = host.call(request(
+        "elevate-next-ledger",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let asks = ok(&ledger)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks.len(), 1, "{ledger}");
+    assert_eq!(asks[0]["request"]["permission"], "use_credential");
+    assert_eq!(asks[0]["request"]["dispatch_id"], dispatch_id);
+    assert!(asks[0]["decided_by"].is_null());
+
+    // The old answer to a decision here was `invalid request shape or field
+    // value` — the store's state law reported through the shape code. The
+    // answer now names the state, the deterministic id and the way back.
+    let probe = host.call(request(
+        "elevate-next-probe-other-state",
+        json!({"kind":"decide_elevation","task_id":"elevate-next-task",
+        "dispatch_id":dispatch_id,"permission":"execute_process","approved":true,
+        "reason":"a permission the binding carries needs no lease","window_ms":300_000}),
+    ));
+    // (execute_process IS carried by the binding here, so this refusal is
+    // the re-grant law, not the state law — the state pin is the decision
+    // itself succeeding below.)
+    let _ = probe;
+
+    // The decision attaches to the FAILED task's dispatch.
+    ok_step(
+        "elevate-next-decide",
+        &host.call(request(
+            "elevate-next-decide",
+            json!({"kind":"decide_elevation","task_id":"elevate-next-task",
+            "dispatch_id":dispatch_id,"permission":"use_credential","approved":true,
+            "reason":"the operator answered the ask the refused run filed",
+            "window_ms":300_000}),
+        )),
+    );
+    let decided = host.call(request(
+        "elevate-next-ledger-2",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let asks = ok(&decided)["data"]["requests"].as_array().unwrap();
+    assert_eq!(
+        asks[0]["decided_by"], "elevate-next-decide",
+        "the ask names its answer: {decided}"
+    );
+    let leases = ok(&decided)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 1, "{decided}");
+    assert_eq!(leases[0]["standing"], "live");
+
+    // Recover, re-dispatch, and the run completes under the answer: the
+    // next start re-mints the deterministic id, and the broker's gate reads
+    // the live lease for exactly that dispatch.
+    ok_step(
+        "elevate-next-recover",
+        &host.call(request(
+            "elevate-next-recover",
+            json!({"kind":"recover_task","task_id":"elevate-next-task"}),
+        )),
+    );
+    // Between generations the task is Ready with no dispatch: the decision
+    // is refused BY NAME — the state's own word and the way back — not as
+    // the generic shape error the store's mapping would give it.
+    let state_refused = host.call(request(
+        "elevate-next-decide-ready",
+        json!({"kind":"decide_elevation","task_id":"elevate-next-task",
+        "dispatch_id":dispatch_id,"permission":"use_credential","approved":true,
+        "reason":"nothing carries this dispatch between generations",
+        "window_ms":300_000}),
+    ));
+    assert_eq!(
+        state_refused["result"]["Err"]["code"], "failed_precondition",
+        "{state_refused}"
+    );
+    let named = state_refused["result"]["Err"]["message"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        named.contains("ready") && named.contains("recover-task"),
+        "the refusal names the state and the way back: {named:?}"
+    );
+    ok_step(
+        "elevate-next-prepare-2",
+        &host.call(request(
+            "elevate-next-prepare-2",
+            json!({"kind":"prepare_dispatch","task_id":"elevate-next-task"}),
+        )),
+    );
+    let restarted = host.call(request(
+        "elevate-next-start-2",
+        json!({"kind":"start_prepared_task","task_id":"elevate-next-task","host_id":host_id}),
+    ));
+    let next_dispatch = ok_step("elevate-next-start-2", &restarted)["data"]["dispatch_id"].clone();
+    assert_eq!(
+        next_dispatch, dispatch_id,
+        "the dispatch id is minted per task, so the next run re-mints the one \
+         the ask named"
+    );
+    let run = host.call(request(
+        "elevate-next-run-2",
+        json!({"kind":"run_started_dispatch","task_id":"elevate-next-task",
+        "dispatch_id":next_dispatch}),
+    ));
+    assert_eq!(
+        ok(&run)["data"]["completed"],
+        true,
+        "the run that came back holds the lease the answer granted: {run}"
+    );
+
+    // The whole loop is journaled coherently: the reopen rebuilds the
+    // ledger, the answered ask, and the task that completed.
+    host.crash();
+    host.start();
+    let reopened = host.call(request(
+        "elevate-next-ledger-3",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&reopened)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 1, "{reopened}");
+    assert_eq!(leases[0]["standing"], "live", "{reopened}");
+    let asks = ok(&reopened)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks[0]["decided_by"], "elevate-next-decide", "{reopened}");
+    let state = host.call(request(
+        "elevate-next-task-read-2",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"elevate-next-task"}),
+    ));
+    assert_eq!(
+        ok(&state)["data"]["state"],
+        "completion_requested",
+        "{state}"
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
+}
+
+/// The elevation ledger, end to end: a worker asks for a permission its
+/// binding does not carry, an operator reads the ledger, answers it, reads it
+/// again to see the grant is live, takes it back, and reads it a third time to
+/// see it dead.
+///
+/// The story exists because a worker could ask and the product could not let
+/// anybody answer. `request_elevation` was a first-class command and
+/// `decide_elevation` was not one at all: the only route to a grant was a
+/// hand-written `raw` file carrying a finished lease — ten fields, four of
+/// them facts the operator had to invent (an id kept equal to `--command-id`
+/// by hand, a `decided_at` and `expires_at` in epoch milliseconds that had to
+/// be retyped exactly for a retry to replay rather than collide, and an
+/// `approved_by` slug), and nothing in the product listed what had been asked
+/// or granted, so there was nothing to answer from and nothing to name when
+/// taking an answer back.
+#[test]
+fn an_elevation_ask_can_be_read_answered_and_taken_back() {
+    let (repository, head) = real_repository("elevation");
+    let base = std::env::temp_dir().join(format!("symbiote-elevation-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = Host::with_operator_config(json!({
+        "reservation_base": base,
+        "native_fixture": {"echo_text": "the fixture ran end to end"},
+    }));
+    let host_id = staffing_composition_with_grants(
+        &host,
+        Registration::Complete,
+        &["mutate_stream"],
+        None,
+        None,
+    );
+    // The binding is narrowed to hold no ExecuteProcess while the Team's
+    // ceiling still carries it. That is the only state in which a decision
+    // is legal at all: the store refuses a permission the binding already
+    // grants (a re-grant needs no lease) and one the ceiling does not (the
+    // ceiling is law), so the test has to sit between the two.
+    // The STORED binding is read rather than the fixture, because the
+    // composition just added the grant this test needs the ceiling to carry
+    // and the fixture does not have it. Its revision is read too, and the new
+    // one is the next: a binding that does not advance its own revision is
+    // not a new configuration, and the refusal for that says nothing about
+    // which of the two were wrong.
+    let stored = host.call(request(
+        "elevation-stored-binding",
+        json!({"kind":"get_binding","project_id":"staffing-demo",
+        "binding_id":"engineer-binding"}),
+    ));
+    let held = ok(&stored)["data"].clone();
+    let revision = held["binding"]["revision"].as_u64().unwrap();
+    let mut configuration = held;
+    configuration["binding"]["revision"] = json!(revision + 1);
+    for path in [
+        ["primary", "access", "grants"],
+        ["binding", "access", "grants"],
+    ] {
+        let grants: Vec<Value> = configuration
+            .pointer(&format!("/{}", path.join("/")))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        *configuration
+            .pointer_mut(&format!("/{}", path.join("/")))
+            .unwrap() = json!(
+            grants
+                .into_iter()
+                .filter(|grant| grant != &json!("execute_process"))
+                .collect::<Vec<_>>()
+        );
+    }
+    let narrowed = json!({"kind":"replace_binding","expected_revision":revision,
+        "configuration":configuration});
+    ok_step(
+        "elevation-binding",
+        &host.call(request("elevation-binding", narrowed)),
+    );
+    ok_step(
+        "elevation-placement",
+        &host.call(request(
+            "elevation-placement",
+            json!({"kind":"observe_root_placement","project_id":"staffing-demo",
+            "root_id":"staffing-root","host_id":host_id,
+            "path":repository.to_str().unwrap(),"expected_revision":0}),
+        )),
+    );
+    staffing_task(
+        &host,
+        "elevation-task",
+        "elevation-task",
+        "elevation-stream",
+        &head,
+        &head,
+    );
+    ok_step(
+        "elevation-prepare",
+        &host.call(request(
+            "elevation-prepare",
+            json!({"kind":"prepare_dispatch","task_id":"elevation-task"}),
+        )),
+    );
+    // Started and not run: the task is Running and its dispatch is the
+    // current one, which is the only window a decision may attach to.
+    let started = host.call(request(
+        "elevation-start",
+        json!({"kind":"start_prepared_task","task_id":"elevation-task","host_id":host_id}),
+    ));
+    let dispatch_id = ok_step("elevation-start", &started)["data"]["dispatch_id"].clone();
+    let running = host.call(request(
+        "elevation-running",
+        json!({"kind":"get_task","project_id":"staffing-demo","task_id":"elevation-task"}),
+    ));
+    assert_eq!(ok(&running)["data"]["state"], "running");
+
+    // Nothing is granted before anyone asks, and the ledger says so by
+    // answering with the two empty lists rather than by refusing.
+    let empty = host.call(request(
+        "elevation-ledger-empty",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    assert_eq!(ok(&empty)["kind"], "elevations");
+    assert!(
+        ok(&empty)["data"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(ok(&empty)["data"]["leases"].as_array().unwrap().is_empty());
+    // The worker asks, which licenses nothing and is kept as evidence.
+    ok_step(
+        "elevation-ask",
+        &host.call(request(
+            "elevation-ask",
+            json!({"kind":"request_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"execute_process",
+            "reason":"the run needs the consented build tool"}),
+        )),
+    );
+
+    // The ask is now visible, with the permission and the reason the worker
+    // gave, and the ledger still grants nothing.
+    let asked = host.call(request(
+        "elevation-ledger-asked",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let asks = ok(&asked)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks.len(), 1, "the ask is on the ledger: {asked}");
+    assert_eq!(asks[0]["request"]["permission"], "execute_process");
+    assert_eq!(
+        asks[0]["request"]["reason"],
+        "the run needs the consented build tool"
+    );
+    assert_eq!(asks[0]["request"]["dispatch_id"], dispatch_id);
+    // Unanswered, and the answer says so rather than leaving a reader to join
+    // two lists to discover it.
+    assert!(
+        asks[0]["decided_by"].is_null(),
+        "an ask nobody has decided is published as unanswered: {asked}"
+    );
+    assert!(
+        ok(&asked)["data"]["leases"].as_array().unwrap().is_empty(),
+        "an ask is evidence and never a grant: {asked}"
+    );
+
+    // A decision is refused by name for every way of getting it wrong, and
+    // each refusal says which rule it broke rather than only that a shape was
+    // invalid.
+    let decision = |approved: bool, window: u64| {
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"execute_process",
+            "approved":approved,"reason":"the build tool is consented","window_ms":window})
+    };
+    let refusal = |command: &'static str, operation: Value| {
+        let response = host.call(request(command, operation));
+        let error = &response["result"]["Err"];
+        (
+            error["code"].clone(),
+            error["message"].as_str().unwrap_or_default().to_owned(),
+            response,
+        )
+    };
+    // A permission the binding already carries needs no lease at all, and
+    // the answer names THAT — not the generic shape sentence that used to
+    // send an operator looking for a typo.
+    let (code, message, _) = refusal(
+        "elevation-regrant",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"mutate_stream","approved":true,
+            "reason":"already carried","window_ms":300_000}),
+    );
+    assert_eq!(code, "failed_precondition", "a re-grant is refused");
+    assert!(
+        message.contains("nothing to elevate"),
+        "the re-grant refusal names the rule: {message:?}"
+    );
+    // A permission no consumer consults is ungrantable until its consumer
+    // lands, and the answer names the consumers there are.
+    let (code, message, _) = refusal(
+        "elevation-unconsumed",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"network","approved":true,
+            "reason":"wants the network","window_ms":300_000}),
+    );
+    assert_eq!(code, "failed_precondition", "{message:?}");
+    assert!(
+        message.contains("no enforcement consumer")
+            && message.contains("use_credential")
+            && message.contains("execute_process"),
+        "the no-consumer refusal names the rule and the consumers: {message:?}"
+    );
+    // A permission the ceiling does not carry is law, not preference, and a
+    // decision that would elevate past it is a precondition the record never
+    // met rather than a malformed request.
+    let (code, _, response) = refusal(
+        "elevation-above-ceiling",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"use_credential","approved":true,
+            "reason":"the secret is configured","window_ms":300_000}),
+    );
+    assert_eq!(
+        code, "failed_precondition",
+        "the ceiling is law: {response}"
+    );
+    // A window past the domain's bound is refused with the bound in it.
+    let (code, message, response) = refusal("elevation-long", decision(true, 900_001));
+    assert_eq!(code, "invalid_request", "{response}");
+    assert!(
+        message.contains("900000") && message.contains("re-requested"),
+        "the overlong window is refused by name, not clamped: {message:?}"
+    );
+    // A denial carrying a window says something else, and is told so.
+    let (code, message, response) = refusal("elevation-denial-window", decision(false, 60_000));
+    assert_eq!(code, "invalid_request", "{response}");
+    assert!(
+        message.contains("denial licenses nothing"),
+        "a denial with a window names the rule: {message:?}"
+    );
+
+    // The decision itself. The four facts the caller used to have to invent
+    // are the Host's: the lease's id is the command's own, its Project is the
+    // task's, its approver is the authenticated principal and its clock is
+    // the Host's — none of which a request can carry.
+    let decision = request("elevation-decision", decision(true, 300_000));
+    let granted = host.call(decision.clone());
+    assert_eq!(ok_step("elevation-decision", &granted)["kind"], "receipt");
+    // The same command id replays: the Host rebuilt the same lease from the
+    // journal's own clock, so the journal's byte-for-byte comparison answered
+    // a replay rather than an idempotency conflict.
+    let replay = host.call(decision);
+    assert_eq!(
+        ok(&replay)["data"]["sequence"],
+        ok(&granted)["data"]["sequence"],
+        "a lost-response retry replays the original receipt"
+    );
+    assert_eq!(ok(&replay)["data"]["replayed"], true);
+
+    // The ledger now says what was granted and that it is live.
+    let live = host.call(request(
+        "elevation-ledger-live",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&live)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 1, "the grant is on the ledger: {live}");
+    assert_eq!(leases[0]["standing"], "live");
+    assert_eq!(leases[0]["lease"]["id"], "elevation-decision");
+    assert_eq!(leases[0]["lease"]["task_id"], "elevation-task");
+    assert_eq!(leases[0]["lease"]["dispatch_id"], dispatch_id);
+    assert_eq!(leases[0]["lease"]["approved"], true);
+    assert!(leases[0]["lease"]["revoked_at"].is_null());
+    // The grant is the operator's sentence, not the worker's.
+    assert_eq!(leases[0]["lease"]["reason"], "the build tool is consented");
+    // The two clocks the caller no longer types: the window is the Host's own
+    // decision instant plus the window the operator gave.
+    let decided_at = leases[0]["lease"]["decided_at"].as_u64().unwrap();
+    let expires_at = leases[0]["lease"]["expires_at"].as_u64().unwrap();
+    assert_eq!(
+        expires_at - decided_at,
+        300_000,
+        "the window is the operator's, measured from the Host's clock"
+    );
+    // The reading clock is published, so a reader can tell how old the
+    // standings are rather than re-deriving them from its own — and it is the
+    // Host's, like the decision's.
+    let read_at = ok(&live)["data"]["read_at"].as_u64().unwrap();
+    assert!(
+        decided_at <= read_at && read_at < expires_at,
+        "the ledger is read inside the window it reports the lease to be in: \
+         decided {decided_at}, read {read_at}, expires {expires_at}"
+    );
+
+    // A second decision on the same dispatch and permission is a second
+    // LEASE, not a renewal of the first: each is its own record with its own
+    // window and its own revocation, and the enforcement gate is satisfied by
+    // whichever of them is live. That is a property of the record worth
+    // pinning here rather than a law invented for this test — an operator
+    // re-approving a still-live grant gets an extra row they can see and
+    // revoke, and a test that called that a refusal would be asserting a
+    // rule nothing asked for.
+    ok_step(
+        "elevation-again",
+        &host.call(request(
+            "elevation-again",
+            json!({"kind":"decide_elevation","task_id":"elevation-task",
+            "dispatch_id":dispatch_id,"permission":"execute_process","approved":true,
+            "reason":"the build moved and needs the tool again","window_ms":60_000}),
+        )),
+    );
+    let twice = host.call(request(
+        "elevation-ledger-twice",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&twice)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 2, "both grants are on the ledger: {twice}");
+    assert_eq!(leases[0]["lease"]["id"], "elevation-decision");
+    assert_eq!(leases[1]["lease"]["id"], "elevation-again");
+    assert_eq!(leases[1]["standing"], "live");
+
+    // Taking it back, by the id the ledger published.
+    let revoke = host.call(request(
+        "elevation-revoke",
+        json!({"kind":"revoke_elevation","project_id":"staffing-demo",
+        "elevation_id":"elevation-decision"}),
+    ));
+    assert_eq!(ok_step("elevation-revoke", &revoke)["kind"], "receipt");
+    let dead = host.call(request(
+        "elevation-ledger-dead",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&dead)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 2, "{dead}");
+    assert_eq!(leases[0]["standing"], "revoked", "{dead}");
+    assert!(
+        !leases[0]["lease"]["revoked_at"].is_null(),
+        "the revocation is sticky and the ledger says when: {dead}"
+    );
+    // Taking one back leaves the other alone: a revocation names a lease, not
+    // a permission, so the grant made after it keeps licensing.
+    assert_eq!(leases[1]["standing"], "live", "{dead}");
+    assert!(leases[1]["lease"]["revoked_at"].is_null(), "{dead}");
+
+    // A revocation of an id this Project does not hold names what an id IS,
+    // because "resource not found" leaves an operator with nothing to do.
+    let (code, message, response) = refusal(
+        "elevation-revoke-unknown",
+        json!({"kind":"revoke_elevation","project_id":"staffing-demo",
+        "elevation_id":"no-such-lease"}),
+    );
+    assert_eq!(code, "not_found", "{response}");
+    assert!(
+        message.contains("decide-elevation"),
+        "the refusal names the command that mints an id: {message:?}"
+    );
+    // And a revocation cannot be undone: a second one finds the lease already
+    // revoked and refuses rather than moving the clock again.
+    let (code, _, _) = refusal(
+        "elevation-revoke-twice",
+        json!({"kind":"revoke_elevation","project_id":"staffing-demo",
+        "elevation_id":"elevation-decision"}),
+    );
+    assert_eq!(code, "invalid_request", "revocation is sticky");
+
+    // A denial is evidence, not a grant — and it is evidence precisely when a
+    // grant could never have been legal. This one names a permission the
+    // Team's ceiling does not carry, so an approval naming it is refused
+    // (`elevation_above_ceiling` above); the refusal is still recorded, which
+    // is the difference between a ledger that says the authority saw this and
+    // said no and a ledger with an ask nobody ever answered.
+    let denied = host.call(request(
+        "elevation-denial",
+        json!({"kind":"decide_elevation","task_id":"elevation-task",
+        "dispatch_id":dispatch_id,"permission":"use_credential","approved":false,
+        "reason":"the ceiling does not carry it","window_ms":0}),
+    ));
+    assert_eq!(ok_step("elevation-denial", &denied)["kind"], "receipt");
+    let final_ledger = host.call(request(
+        "elevation-ledger-final",
+        json!({"kind":"get_elevations","project_id":"staffing-demo"}),
+    ));
+    let leases = ok(&final_ledger)["data"]["leases"].as_array().unwrap();
+    assert_eq!(leases.len(), 3, "the denial is kept: {final_ledger}");
+    assert_eq!(leases[0]["standing"], "revoked");
+    assert_eq!(leases[1]["standing"], "live");
+    assert_eq!(leases[2]["standing"], "denied", "{final_ledger}");
+    assert_eq!(
+        leases[2]["lease"]["reason"],
+        "the ceiling does not carry it"
+    );
+    // A denial's window IS its decision instant, so the two clocks agree and
+    // it can never have licensed anything even for a millisecond.
+    assert_eq!(
+        leases[2]["lease"]["expires_at"], leases[2]["lease"]["decided_at"],
+        "a denial has no window: {final_ledger}"
+    );
+    // The ask is still on the ledger beside the decision that answered it, and
+    // the two are correlated in the answer: the ledger is the record of both
+    // halves, not only the grants.
+    let asks = ok(&final_ledger)["data"]["requests"].as_array().unwrap();
+    assert_eq!(asks.len(), 1, "{final_ledger}");
+    assert_eq!(
+        asks[0]["decided_by"], "elevation-decision",
+        "the ask names the decision that answered it, which is the id a reader \
+         revokes: {final_ledger}"
+    );
+
+    // A Project that was never registered has a ledger with nothing on it,
+    // which is the same answer a Project with no asks and no decisions gets:
+    // "nothing has been asked here" and "this Project does not exist" are the
+    // same answer to the only question this read answers, and refusing the
+    // second would make the read's one job — telling an operator whether there
+    // is anything for them to answer — fail for a reason it cannot express.
+    let unknown = host.call(request(
+        "elevation-ledger-unknown-project",
+        json!({"kind":"get_elevations","project_id":"no-such-project"}),
+    ));
+    assert_eq!(ok(&unknown)["data"]["project_id"], "no-such-project");
+    assert!(
+        ok(&unknown)["data"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        ok(&unknown)["data"]["leases"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&repository).ok();
 }

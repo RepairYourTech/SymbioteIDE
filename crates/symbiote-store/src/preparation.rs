@@ -102,6 +102,13 @@ impl Store {
         // Provider: resolve the registration the dispatch profile names from
         // the registry and validate it through the SDK contract.
         let provider = resolve_provider_binding(&transaction, &task, at)?;
+        // The unsatisfied gates, read by the same function the start boundary
+        // refuses on, so the report this records cannot promise a dispatch the
+        // boundary is about to refuse. The scheduling step alone is the task's
+        // own state; what is holding it is somebody else's state, and a report
+        // that cannot see that is a report that is wrong precisely when it
+        // matters.
+        let waiting_on = dependency::unsatisfied_gates(&transaction, &project, &task_id)?;
         let preparation = DispatchPreparation::compose(
             &task,
             routing
@@ -110,6 +117,7 @@ impl Store {
             lease.as_ref().map(|(dispatch, token)| (dispatch, *token)),
             &stream,
             provider,
+            waiting_on,
             at,
         );
         preparation
@@ -260,7 +268,21 @@ impl Store {
         // Start-time scheduling gates (P1 from PR #494 review): unresolved
         // completion-blocking dependencies and unsafe streams refuse the
         // start — the same conditions the #95 projection encodes.
-        dependency::completion_gate(&transaction, &preparation.project_id, &task_id)?;
+        {
+            let gates =
+                dependency::unsatisfied_gates(&transaction, &preparation.project_id, &task_id)?;
+            if !gates.is_empty() {
+                // In the dispatch-refusal vocabulary, like the stream check
+                // three lines below and for the same reason: the code alone
+                // would collapse "a prerequisite has not finished" into the
+                // generic precondition sentence, and the reason is what tells
+                // the operator whether to wait, to drop the edge, or to look
+                // for a lease held on the stream instead.
+                return Err(StoreError::DispatchRefused(
+                    DispatchRefusal::DependencyUnresolved,
+                ));
+            }
+        }
         {
             let stream_body: String = transaction.query_row(
                 "SELECT body FROM streams WHERE id=?1",

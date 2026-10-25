@@ -917,6 +917,180 @@ fn stream_permissions_concurrency_and_exact_target_integration() {
     );
 }
 
+/// The report and the boundary must agree about the stream. A start compiles
+/// against `Active` and refuses every other state with `stream_inactive`; the
+/// report used to say only that a worktree was "declared" and still reported
+/// `ready`, so it promised a dispatch the start was about to refuse. The
+/// vocabulary already had the refusal — only the report could not reach it.
+#[test]
+fn a_stream_a_start_would_refuse_is_refused_by_the_report_too() {
+    let f = Fixture::new(RuntimeKind::NativeSymbiote);
+    let compose = |stream: &ChangeStream| {
+        DispatchPreparation::compose(
+            &f.task,
+            Some(f.role.id.clone()),
+            None,
+            stream,
+            Some(ProviderResolution {
+                connection: id!(ProviderConnectionId, "connection"),
+                model: id!(ModelId, "model"),
+                refusal: None,
+            }),
+            Vec::new(),
+            Timestamp(30),
+        )
+    };
+
+    // An active stream: ready, and the step names the state that made it so.
+    let active = compose(&f.stream);
+    assert_eq!(active.outcome, PreparationOutcome::Ready);
+    assert_eq!(active.refusal(), None);
+    assert!(active.steps.iter().any(|step| matches!(
+        step,
+        CompositionStep::Worktree {
+            declared: true,
+            startable: true,
+            state: StreamState::Active,
+        }
+    )));
+    active.validate().unwrap();
+
+    // A stream that moved on, and one that was cancelled: both refused, both
+    // with the name the start boundary gives for the same condition.
+    let mut moved = f.stream.clone();
+    moved
+        .apply(
+            f.stream_command(
+                "advance",
+                StreamAction::Advance {
+                    head: sha('c'),
+                    target: sha('b'),
+                },
+            ),
+            &f.binding.access,
+        )
+        .unwrap();
+    let mut cancelled = f.stream.clone();
+    cancelled
+        .apply(
+            f.stream_command("cancel", StreamAction::Cancel),
+            &f.binding.access,
+        )
+        .unwrap();
+    for stream in [&moved, &cancelled] {
+        let report = compose(stream);
+        assert_eq!(report.outcome, PreparationOutcome::Refused);
+        assert_eq!(report.refusal(), Some(DispatchRefusal::StreamInactive));
+        assert_eq!(
+            report.refusal().map(|refusal| refusal.name()),
+            Some("stream_inactive"),
+            "the report names the same refusal the start gives"
+        );
+        report.validate().unwrap();
+    }
+
+    // And a report whose step disagrees with the state it carries is refused
+    // by `validate`, so nothing can hand a client a report that calls a
+    // cancelled stream startable.
+    let mut forged = compose(&cancelled);
+    for step in &mut forged.steps {
+        if let CompositionStep::Worktree { startable, .. } = step {
+            *startable = true;
+        }
+    }
+    assert_eq!(
+        forged.validate(),
+        Err(DomainError::InvalidStream),
+        "a report that contradicts its own recorded state is refused"
+    );
+}
+
+#[test]
+fn only_an_integrated_stream_may_release_its_worktree() {
+    let mut f = Fixture::new(RuntimeKind::NativeSymbiote);
+    // Every state before `Integrated` holds work that landed nowhere, so
+    // reclaiming the checkout is refused in each of them. `Release` from a
+    // stream nobody integrated is how a run's unmerged work would disappear.
+    assert_eq!(f.stream.state(), &StreamState::Active);
+    let release = f.stream_command("release-early", StreamAction::Release);
+    let mut denied = f.binding.access.clone();
+    denied.grants.clear();
+    assert_eq!(
+        f.stream.apply(release.clone(), &denied),
+        Err(DomainError::PermissionDenied)
+    );
+    assert_eq!(
+        f.stream.apply(release, &f.binding.access),
+        Err(DomainError::StreamNotReady)
+    );
+    f.stream
+        .apply(
+            f.stream_command(
+                "validate",
+                StreamAction::Validate {
+                    head: f.stream.head().clone(),
+                    target: f.stream.target().clone(),
+                    run: id!(VerificationRunId, "run"),
+                },
+            ),
+            &f.binding.access,
+        )
+        .unwrap();
+    assert_eq!(f.stream.state(), &StreamState::Validated);
+    // Validated is not Integrated: the work has been checked and has not
+    // landed, which is exactly the state a premature reclaim would destroy.
+    assert_eq!(
+        f.stream.apply(
+            f.stream_command("release-validated", StreamAction::Release),
+            &f.binding.access
+        ),
+        Err(DomainError::StreamNotReady)
+    );
+    f.stream
+        .apply(
+            f.stream_command(
+                "integrate",
+                StreamAction::Integrate {
+                    head: sha('a'),
+                    target: sha('b'),
+                },
+            ),
+            &f.binding.access,
+        )
+        .unwrap();
+    let released = f.stream.apply(
+        f.stream_command("release-integrated", StreamAction::Release),
+        &f.binding.access,
+    );
+    assert_eq!(released, Ok(Revision(3)));
+    assert_eq!(f.stream.state(), &StreamState::Released);
+    // Released is terminal, and it is not the same fact as Integrated: a
+    // released stream's location is gone, so nothing may re-derive it.
+    for (name, action) in [
+        ("release-twice", StreamAction::Release),
+        ("cancel-released", StreamAction::Cancel),
+    ] {
+        assert_eq!(
+            f.stream
+                .apply(f.stream_command(name, action), &f.binding.access),
+            Err(DomainError::IllegalTransition)
+        );
+    }
+    assert_eq!(
+        f.stream.apply(
+            f.stream_command(
+                "advance-released",
+                StreamAction::Advance {
+                    head: sha('a'),
+                    target: sha('b'),
+                },
+            ),
+            &f.binding.access
+        ),
+        Err(DomainError::IllegalTransition)
+    );
+}
+
 #[test]
 fn independent_and_stacked_streams_have_separate_worktree_and_chat_identity() {
     let f = Fixture::new(RuntimeKind::NativeSymbiote);

@@ -966,6 +966,41 @@ fn task_records(suffix: &str) -> (Task, ChangeStream) {
     .unwrap();
     (task, stream)
 }
+/// A task and stream on a different project's root. The same shape as
+/// [`task_records`], which is hard-wired to the one fixture project, so the
+/// "another project does not appear" case needs its own — and it takes the
+/// root and role of the project it is for, because those belong to it.
+fn task_records_elsewhere(project_id: &ProjectId) -> (Task, ChangeStream) {
+    let root_id = id!(RootId, "root-two");
+    let task_id = id!(TaskId, "task-elsewhere");
+    let stream_id = id!(ChangeStreamId, "stream-elsewhere");
+    let task = Task::new(
+        task_id.clone(),
+        project_id.to_owned(),
+        root_id.clone(),
+        id!(RoleId, "role-two"),
+        stream_id.clone(),
+        VersionedTaskContract {
+            id: id!(TaskContractId, "task-contract"),
+            revision: Revision(1),
+        },
+    );
+    let stream = ChangeStream::new(NewChangeStream {
+        id: stream_id,
+        project_id: project_id.to_owned(),
+        root_id,
+        tasks: BTreeSet::from([task_id]),
+        originating_chat: id!(ChatId, "chat-elsewhere"),
+        worktree: id!(WorktreeId, "worktree-elsewhere"),
+        branch: "branch-elsewhere".into(),
+        lineage: StreamLineage::Independent,
+        base: sha('a'),
+        target: sha('b'),
+    })
+    .unwrap();
+    (task, stream)
+}
+
 fn start_command(task: &Task, role: &Role) -> TaskCommand {
     let host_id = id!(HostId, "host");
     let profile = RuntimeProfile {
@@ -1467,6 +1502,48 @@ fn lifecycle_updates_journal_once_and_denied_worker_does_not_mutate() {
         store.events(task.project_id(), 0, 10).unwrap().events.len(),
         4
     );
+}
+
+#[test]
+fn journaled_task_command_reads_back_whole_and_replays_byte_identically() {
+    // A Host arm that stamps its own clock or reads `expected_revision` off
+    // the live record cannot rebuild the bytes `apply_task` journaled, so the
+    // replay it needs is the journaled command itself: read back whole, clock
+    // and revision included, re-applying it must be a replay.
+    let mut store = Store::memory().unwrap();
+    let (_, _, roles) = register(&mut store, "one");
+    let (task, stream) = task_records("one");
+    store
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
+        .unwrap();
+    store
+        .apply_task(task.id(), start_command(&task, &roles[0]))
+        .unwrap();
+    let command = TaskCommand {
+        id: id!(CommandId, "unit-clock"),
+        expected_revision: Revision(1),
+        actor: Actor::Worker(id!(DispatchId, "dispatch")),
+        at: Timestamp(1_724_800_000_000),
+        action: TaskAction::RequestCompletion {
+            dispatch_id: id!(DispatchId, "dispatch"),
+            report: "the change is ready for verification".into(),
+        },
+    };
+    assert!(store.journaled_task_command(&command.id).unwrap().is_none());
+    let first = store.apply_task(task.id(), command.clone()).unwrap();
+    let read = store
+        .journaled_task_command(&command.id)
+        .unwrap()
+        .expect("the applied command is journaled");
+    assert_eq!(
+        read, command,
+        "the command reads back whole, clock included"
+    );
+    // The read-back re-applies exactly what was journaled: a replay of the
+    // recorded intent, landing on the row the first attempt owns.
+    let receipt = store.apply_task(task.id(), read).unwrap();
+    assert_eq!(receipt.sequence, first.sequence);
+    assert!(receipt.replayed);
 }
 
 #[test]
@@ -2192,4 +2269,174 @@ fn process_kill_at_migration_state_journal_and_commit_boundaries_is_atomic() {
             );
         }
     }
+}
+
+/// The root's streams are a question the collision refusal cannot be asked
+/// without: "which stream took the Root" has no answer if the store cannot
+/// list the streams that share it. Read in one query, in id order so a caller
+/// sees the same list twice, and bounded to the root asked about rather than
+/// the project's whole registry.
+#[test]
+fn the_streams_sharing_a_root_are_listed_in_id_order_and_only_for_that_root() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(temporary.database()).unwrap();
+    let project = register(&mut store, "one").0;
+    let root = project.roots.iter().next().unwrap();
+    // Three streams on this root, created out of order so a listing that
+    // sorted by insertion could not hide behind the fixture.
+    for suffix in ["charlie", "alpha", "bravo"] {
+        let (task, stream) = task_records(suffix);
+        store
+            .create_fixture_task(id!(CommandId, format!("create-{suffix}")), task, stream)
+            .unwrap();
+    }
+    // And one in a different project entirely, which must not appear: a
+    // collision is with a stream that competes for the SAME checkout, and a
+    // stream on another root cannot be what took this one. A filter that
+    // forgot the project would name it, and a refusal naming a stream from
+    // another project is worse than no refusal at all.
+    let other_project = register(&mut store, "two").0;
+    let (other_task, other_stream) = task_records_elsewhere(&other_project.id);
+    store
+        .create_fixture_task(id!(CommandId, "create-elsewhere"), other_task, other_stream)
+        .unwrap();
+
+    let listed: Vec<String> = store
+        .root_streams(&project.id, root)
+        .unwrap()
+        .iter()
+        .map(|stream| stream.id().as_str().to_owned())
+        .collect();
+    assert_eq!(
+        listed,
+        vec!["stream-alpha", "stream-bravo", "stream-charlie"],
+        "the root's streams in id order, and nothing from another root"
+    );
+    // Asked twice, the same list: a listing that reordered between calls would
+    // make a refusal name a different stream each time it was asked.
+    let again: Vec<String> = store
+        .root_streams(&project.id, root)
+        .unwrap()
+        .iter()
+        .map(|stream| stream.id().as_str().to_owned())
+        .collect();
+    assert_eq!(listed, again);
+    // A root with no streams is an empty answer, not an error: "nobody else
+    // put the Root where it is" is exactly what a collision has to be able to
+    // say.
+    assert!(
+        store
+            .root_streams(&project.id, &id!(RootId, "root-with-nothing-on-it"))
+            .unwrap()
+            .is_empty()
+    );
+    store.integrity_check().unwrap();
+}
+
+/// A change stream moves, journals once per command, replays an identical
+/// retry, and refuses a transition its access does not cover — and the whole
+/// record survives the journal audit, which is the only reason a stream may
+/// be written at all.
+#[test]
+fn a_stream_transition_is_written_journalled_and_audited() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(temporary.database()).unwrap();
+    let project = register(&mut store, "one").0;
+    let (task, stream) = task_records("validated");
+    store
+        .create_fixture_task(id!(CommandId, "create"), task.clone(), stream)
+        .unwrap();
+    let access = AccessSnapshot {
+        project_id: id!(ProjectId, "project-one"),
+        roots: BTreeSet::from([id!(RootId, "root-one")]),
+        grants: BTreeSet::from([Permission::MutateStream]),
+        policy_revision: Revision(1),
+    };
+    let validate = StreamCommand {
+        id: id!(CommandId, "validate"),
+        expected_revision: Revision(0),
+        host_id: id!(HostId, "host-one"),
+        at: Timestamp(30),
+        action: StreamAction::Validate {
+            head: sha('a'),
+            target: sha('b'),
+            run: id!(VerificationRunId, "run-one"),
+        },
+    };
+    let stream_id = task.stream_id();
+    let first = store
+        .apply_stream(stream_id, validate.clone(), &access)
+        .unwrap();
+    let retry = store.apply_stream(stream_id, validate, &access).unwrap();
+    assert_eq!(first.sequence, retry.sequence);
+    assert!(
+        retry.replayed,
+        "an identical retry replays the first receipt"
+    );
+    // The journaled command reads back whole — head, target, run, clock,
+    // revision — with the access snapshot it was accepted under, and the
+    // read-back re-applies byte-identically: a replay of the recorded
+    // intent, landing on the row the first attempt owns. This is what a
+    // Host arm that rebuilds its command from live observations needs,
+    // because it can never reproduce those bytes itself.
+    let journaled = store
+        .journaled_stream_command(&id!(CommandId, "validate"))
+        .unwrap()
+        .expect("the applied command is journaled")
+        .0;
+    let replay_back = store.apply_stream(stream_id, journaled, &access).unwrap();
+    assert!(replay_back.replayed);
+    assert!(
+        store
+            .journaled_stream_command(&id!(CommandId, "never-sent"))
+            .unwrap()
+            .is_none()
+    );
+    let events = store.events(&project.id, 0, 16).unwrap().events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::StreamChanged { .. }))
+            .count(),
+        1,
+        "one accepted transition, no refusal journaled: {events:?}"
+    );
+    store.integrity_check().unwrap();
+
+    // The authority is the transition's, not the caller's: a snapshot that
+    // does not reach the stream's root is refused, and a mutation the
+    // command id claims a different intent for cannot ride a replay.
+    let outside = AccessSnapshot {
+        roots: BTreeSet::from([id!(RootId, "root-elsewhere")]),
+        ..access.clone()
+    };
+    assert!(matches!(
+        store.apply_stream(
+            stream_id,
+            StreamCommand {
+                id: id!(CommandId, "outside"),
+                expected_revision: Revision(1),
+                host_id: id!(HostId, "host-one"),
+                at: Timestamp(31),
+                action: StreamAction::Cancel,
+            },
+            &outside,
+        ),
+        Err(StoreError::Domain(DomainError::PermissionDenied))
+    ));
+    assert!(matches!(
+        store.apply_stream(
+            stream_id,
+            StreamCommand {
+                id: id!(CommandId, "validate"),
+                expected_revision: Revision(1),
+                host_id: id!(HostId, "host-one"),
+                at: Timestamp(32),
+                action: StreamAction::Cancel,
+            },
+            &access,
+        ),
+        Err(StoreError::IdempotencyConflict)
+    ));
+    store.integrity_check().unwrap();
 }

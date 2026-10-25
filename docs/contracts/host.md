@@ -41,12 +41,26 @@ target/debug/symbiote --state-dir /absolute/private/state-directory health
 operations — `hello`, `health`, `host-pulse`, `runtime-inventory`, `shutdown`,
 `get-project`,
 `list-projects`, `snapshot`,
+`register-project`, `create-work`,
 `create-task`, `get-task`, `read-journal`, `prepare-dispatch`,
 `get-dispatch-preparation`, `start-prepared-task`, `run-started-dispatch`,
 `request-task-completion`, `request-elevation`,
+`decide-elevation`, `revoke-elevation`, `elevations`,
+`advance-change-stream`, `reconcile-change-stream`,
+`validate-change-stream`,
+`begin-task-verification`, `complete-task`,
+`integrate-change-stream`, `release-change-stream`,
+`abandon-change-stream`, `recover-task`, `interrupt-task`,
+`cancel-task`, `block-task`, `unblock-task`,
+`observe-worktree <project_id> <task_id>`,
+`get-task-context <project_id> <task_id> <dispatch_id>`,
 `scheduling-projection <project_id>`,
-`get-team`,
-`get-task-origin`, and `raw <operation.json>` for anything the typed
+`observe-root-placement`,
+`replace-team`, `get-team`, `replace-binding`, `record-route`,
+`register-provider-connection`, `register-billing-entitlement`,
+`register-model-descriptor`,
+`get-task-origin`, `set-task-dependencies`, `get-task-dependencies`,
+and `raw <operation.json>` for anything the typed
 commands do not cover (the daemon still validates and authorizes every
 field). Responses are the daemon's own JSON, pretty-printed. Exit codes
 are distinct: 0 success, 1 usage/connection failure, 2 a daemon-refused
@@ -82,6 +96,526 @@ actor identities exist. The interactive/headless coding-agent experience is
 #467's surface and shares this client plumbing; this binary carries no model
 loop.
 
+### The write commands, and what they leave to `raw`
+
+Registering a Project, creating work and creating a Task are the writes this
+client is built around, and each is a command whose arguments are the facts an
+operator or a script actually holds — an identity, a name, a contract
+revision, a branch — rather than a JSON document somebody assembled by hand:
+
+```sh
+symbiote --state-dir DIR register-project symbiote "Symbiote" lead lead-contract@1 root-main
+symbiote --state-dir DIR create-work symbiote lead ship-it operational "Ship the beta" "and say what done is"
+symbiote --state-dir DIR create-task symbiote task-one root-main lead ship-it coding@1 5117b5736e2e5cc2ff537a3852f8e1e37c6b0a12
+```
+
+Each returns the daemon's own receipt, and each is read back by the typed
+reads: `get-project`, `snapshot` and `read-journal` after a registration,
+`get-task`, `get-task-origin` and `prepare-dispatch` after a Task.
+
+A receipt is a fact about the store, and the fact that decides how an operator
+reads a command is not in it. `create-task` therefore also says, on stderr,
+what the Task it just created is committed to: the Task owns one Change Stream
+for its whole life, its worktree and branch derive from that stream, and
+abandoning the stream is terminal — so the retry after an abandon is a new
+Task. The commands that charge that cost say the same thing when they charge
+it, and so do the ones that end a run (`interrupt-task`) or a task
+(`complete-task`, which is not the same as landing the work, and
+`cancel-task`, which is not the same as abandoning the stream). The note is
+stderr and never part of the response: `--json` prints one envelope per
+invocation, and that envelope is a published contract
+(`symbiote.cli.v1.schema.json`). A refusal prints no note, because nothing was
+charged, and a read prints none either — a note on every command is a note
+nobody reads.
+
+Two spellings recur because two facts do. A contract is written
+`<contract_id>@<revision>`: a contract is recorded under an identity *and* the
+revision of it, and only the caller knows which revision this Project or Task
+is written against. And `<class>` is the classification the domain requires of
+an Objective — `maintenance` and `operational` are the two a Task may
+originate from, `outcome` the third the domain declares — because that
+classification is what decides whether `create-task` may name the work at all.
+
+Everything else the operations accept is derived rather than asked for, and
+each derivation is stated here so that nothing in the record is a surprise. A
+registered Root names neither a repository nor a host path: placement is a
+Host's to record, per Host, once it has observed a checkout. A registered
+Project carries its lead Role, named for the identity it is registered under.
+A created Task's stream and its chat are named for the Task it belongs to —
+`stream-<task_id>` and `chat-<task_id>` — and its worktree and branch are the
+Host's own derivation, not the caller's: the Host re-derives both from its
+policy seed before it provisions anything and refuses a stream whose recorded
+names disagree, so a caller that names its own gets a Task that can never be
+dispatched, refused at `run_started_dispatch` with nothing to act on. The
+`symbiote` binary asks the Host for that derivation and records exactly what it
+returns, so the pair a Task carries is the pair the Host will insist on. The
+stream's base is the `<base_commit>` the caller named, which must be a full
+commit id that is not the null object id, because the Host checks it against
+the repository's real HEAD before it provisions anything; its target is the
+null object id, because a Task that has done no work has reached nothing.
+A created Objective states its title, its optional description and its class,
+and leaves its requirements, constraints, risks, acceptance criteria, budget,
+dependencies and external references unstated at the domain's lowest priority,
+because a work item is filed here and specified through `raw`.
+
+### Registering a Project's runtime
+
+`observe-root-placement`, `replace-team`, `replace-binding`, `record-route`,
+`register-provider-connection`, `register-billing-entitlement` and
+`register-model-descriptor` register what a Project runs on, and every argument
+they take is a fact the operator holds. Two argument shapes carry more than one
+value, and both are owned here rather than left to a document somebody
+assembled: a list is comma-separated, and a record is colon-separated in a
+stated field order.
+
+```sh
+symbiote --state-dir DIR observe-root-placement symbiote root-main "$(symbiote --state-dir DIR host-pulse | jq -r .data.host_id)" /srv/checkout 0
+symbiote --state-dir DIR replace-team symbiote lead ctx tools skills bounded \
+  'lead:lead_orchestrator:read_root:root:coordination:engineer' \
+  'engineer:general_execution:read_root,execute_process,mutate_stream,use_credential:root:coding:lead'
+symbiote --state-dir DIR register-provider-connection symbiote openai openai-responses https://api.openai.example/v1 api_credential
+symbiote --state-dir DIR register-billing-entitlement symbiote ent-1 openai metered_api proof-1 4102444800000
+symbiote --state-dir DIR register-model-descriptor symbiote coding-model openai 32768 4096 tools
+symbiote --state-dir DIR record-route symbiote ship-it engineer
+```
+
+A `<member>` is `<role_id>:<function>:<grant>,<grant>:<root>,<root>:<domain>,<domain>:<reviewer>,<reviewer>`.
+Every member's access is its own rather than a copy of the Team's, because a
+Team exists so two Roles can reach different places; the Team's
+`access_ceiling` is the union of what its members were granted, so no member
+can reach past it. `read_root` is added to every member, because the domain
+refuses a member that cannot read the Root — a member is reviewed against the
+Roots it can see. A member's `responsibilities` are its `task_domains`: the two
+lists are the same words, and spelling them separately would let a Team say a
+Role is responsible for work it never routes to.
+
+`register-project` takes its Roots as one comma-separated argument and any
+further Roles as `<role_id>:<contract_id>:<revision>`, because a Project
+registered with its lead Role alone can never hold a Team: the store refuses a
+Team that names a Role the Project does not hold, and the domain refuses a
+Team with no execution role. A Project registered from the command line can
+therefore be staffed and dispatched from the command line.
+
+### Completing a dispatched task
+
+Three operations close the lifecycle, and a dispatched task could not take any
+of them: over the whole workspace the Host constructed exactly one
+`TaskAction` — `RequestCompletion` — so a run that finished left its task at
+`completion_requested` for the life of the store, with the worker's report on
+record and no way for any client to accept it. `validate-change-stream`,
+`begin-task-verification` and `complete-task` are those three steps.
+
+```sh
+symbiote --state-dir DIR validate-change-stream task1 run-verify
+symbiote --state-dir DIR begin-task-verification task1
+symbiote --state-dir DIR complete-task task1 lead \
+  tests,security,impact,documentation,independent_review,delivery,capability_closure --yes
+```
+
+Each is the same authority `start-prepared-task` holds, and each takes only
+what its caller actually knows.
+
+`validate-change-stream` names the verification run; it does **not** name the
+commit. The Host observes the provisioned worktree itself and validates what it
+reads, because a validation of a commit nobody looked at is a validation of
+nothing. A stream whose recorded head and target are not what the worktree
+holds stays where it was.
+
+`begin-task-verification` takes a task and nothing else. A task with no current
+dispatch has no contract whose gates could be covered, and is refused with the
+same refusal a run gives for a task not running under its dispatch.
+
+`complete-task` splits the claim in two. The caller says **which gates
+passed**; the Host binds each claim to this dispatch, this stream's recorded
+head and target, and its own inventory identity, and the domain refuses a
+claim that does not cover the contract's required set. That split is the whole
+point: a Host that invented the gate set would be filing a runtime-local
+success flag as evidence, and a caller that supplied whole evidence rows would
+be filing claims the Host never checked. The `independent_review` gate carries
+the caller's reviewer, and the domain refuses one that is the Task's own Role.
+
+`integrate-change-stream` is the step after that. A completed task's work is on
+a branch in a worktree, and nothing else moves it: without this the canonical
+state says the work is done and the repository says otherwise, and the two
+disagree for the life of the store. The Host merges, because "the branch is
+the stream's" and "the Root is where it lands" are both facts only the Host
+holds. The Root must be at the stream's recorded target before the merge and
+at its recorded head after, and the merge is `--ff-only` — a merge the Host
+would have to resolve is a merge it has no authority to decide.
+
+That last step is what makes the stream's `target` a fact rather than a
+placeholder. `create-task` used to record the null Git object id there, on the
+reasoning that a task which has done no work has reached nothing — which made
+a task created from the command line dispatchable, runnable, completable and
+then permanently un-integratable, because a Root can never be "at" a commit
+that does not exist. It records the base instead: that is where the Root is
+until work lands, and a Task that cannot finish should not be creatable. A
+stream that aims somewhere other than its base is created through `raw`.
+
+`release-change-stream` is the step after that, and the only one that removes
+anything. It reclaims the checkout the work ran in, and it refuses to do so
+until the Host has proved the stream's recorded head is still reachable from
+the root — not equal to it, *reachable from* it, because the root may have
+moved on and a descendant proves exactly as much. Only then does it run `git
+worktree remove`, and never with `--force`: git itself refuses a checkout
+holding uncommitted or untracked content, so the removal cannot destroy work
+the branch does not already hold. The branch is never deleted. A change
+stream is integrated, not erased, and the lineage a stream recorded stays
+inspectable after its checkout is gone. The reservation marker goes with the
+directory, under `DeleteIfEmpty`, so a git layer that left something behind
+keeps the evidence rather than reporting a release that did not happen.
+
+The operation is classified a mutation rather than dangerous: it starts and
+ends no execution and cannot express any operation, which is what the
+dangerous kind means in this table. What gates it is the evidence above, not
+a flag.
+
+Until this existed, every completed run left a full git worktree on the
+operator's disk forever, and `symbiote-worktrees::release` — a function its
+own contract describes in detail, with two policies and a content discipline
+— had no production caller anywhere in the workspace. A task that reached
+`Integrated` and stopped there was not a state anyone could leave.
+
+A failed run is the other end, and until `abandon-change-stream` existed it
+had nowhere to go. A provisioning that refused — a base that moved, a
+credential the broker would not lease, a transport with no factory — left the
+task `Running` with nothing running it, because the Host constructed no
+`TaskAction::Fail` anywhere in the workspace, and left a reserved location
+that `release-change-stream` could not touch because that path requires an
+integrated stream. The operator's only answer was to edit the filesystem by
+hand. Three things fix that, and they are one story:
+
+The run itself now records its own refusal. Every error past the two
+request-identity preconditions — a foreign dispatch id, and a task that is not
+`Running`, which refuse the request rather than the run — is filed as a
+`Fail` against the task before it is returned, under a command id derived
+from the run's own so a retry replays rather than appends. The reason is the
+same content-free sentence the caller receives, so the journal and the
+operator read one classification. The caller still gets the refusal: a run
+that did not happen is never reported as one that did.
+
+`abandon-change-stream` then reclaims what the failure left, and it is the
+one operation that destroys work. It refuses an integrated stream outright —
+that work landed, and `release-change-stream` is the operation for it, and it
+refuses a dirty checkout rather than forcing it — so it is never a second,
+weaker way to do the same thing. Everywhere else it cancels the stream and
+reclaims the location with `--force`, which is the authorization the caller's
+word provides and the only place in the product where that flag appears. The
+branch is still never deleted.
+
+`interrupt-task` is the one case a run cannot file for itself. A refused
+run observes its own failure; a Host that died with a task `Running` has no
+run left to observe anything, and the task sits there for the life of the
+store claiming to be executed. The Host cannot tell a crash from an operator
+walking away, so the reason is a required argument rather than a default: only
+the caller knows which it was. It releases the lease for the same reason a
+failure does, and then `recover-task` applies. A crash therefore costs an
+operator one declaration and two commands rather than a task stuck in
+`Running`, and — because the stream is still `Active` — the recovered task
+can be dispatched again under the same stream, which is the one retry path
+that does not cost a new task record.
+
+The reclaim is idempotent, and that is load-bearing. A caller whose first
+attempt removed the location and then failed to record its stream transition
+would otherwise be stuck: the retry would refuse `NotFound` for work it had
+already done. The marker is the reservation, so an absent marker means the
+reclaim is complete — including for a directory left behind without one,
+which the reservation crate explicitly calls an abandoned location and never
+reclaims. A marker that exists and cannot be *read* is a tamper signal and is
+not absorbed.
+
+An abandon refuses before it destroys anything, and the order is the point.
+This is the one operation in the product that deletes work, so a refusal it
+had already acted on would leave the caller holding a failed call and an
+absent checkout. Both preconditions are therefore asked first: the stream's
+state (an integrated stream is released, not abandoned; a cancelled or
+released one is terminal) and the task's dispatch binding, which is where the
+access snapshot a stream transition is journalled under comes from. A task
+that was recovered has no dispatch — recovering is what dropped it — so its
+abandon is refused, and it is refused with the checkout still on disk and the
+stream still `Active`. Asking again is the same refusal rather than a second
+attempt at the work. The order an operator wants is the other one: abandon
+before recovering, or recover and let the next run reuse the location.
+
+Which is the other half of the crash story, and it is a repository-layer
+fact rather than a Host one. A recovered task can only ever be re-dispatched
+under the same stream, so provisioning has to be able to answer twice for one
+stream: it reuses a location the stream still holds — proven by the marker
+binding the derived identity, the base still matching, git registering a
+worktree at exactly that path, and its HEAD being the stream's branch — and
+refuses anything it cannot attribute. Before that, every run of a recovered
+task failed with `Reservation`, and `recover_task` was a way to make a task
+unrunnable. See `docs/contracts/repository.md` for the contract.
+
+`recover-task` is the way out of the failure rather than around it:
+`Failed` and `Interrupted` become `Ready` and the dispatch binding is
+dropped, so the task is dispatched afresh. The lifecycle reaches `Ready`
+only through this, which is why the two were missing together: a failure
+that can be filed and a failure that can be left are the same gap seen from
+opposite ends.
+
+`cancel-task` is the operation that closes a Task, and the workspace had
+no way to close one. `TaskState::Cancelled` has been in the lifecycle since
+the lifecycle was written and nothing constructed `TaskAction::Cancel`:
+a Task is created `Ready` and leaves `Ready` only by being started, so a
+Task whose stream was abandoned stayed startable for the life of the
+store. Every dispatch of it ran into a stream the abandon had already
+cancelled, and the work hierarchy counts `Cancelled` as *closed* against
+`open`, so a task the operator was done with had no way to be anything but
+running.
+
+The order an operator wants is abandon, then cancel — and refusing
+otherwise is the whole design. Cancelling a Task is a claim about the
+Task, not authority over a directory, and the directory is the one thing
+here that can lose commits. So `cancel-task` reads the stream's
+reservation marker first and, while one is present, refuses with
+`the task's stream still holds a reservation; abandon-change-stream
+reclaims it`. `abandon-change-stream` and `release-change-stream` are the
+two that clear it, so either one makes the cancel a one-call close; the
+marker is the record of the hold rather than the checkout's presence on
+disk, which is the difference between a reservation and a directory
+somebody left behind. A Host with no `reservation_base` configured cannot
+be holding one, so that is the answer and not a refusal — the base is
+worker configuration, and a caller whose Host was never set up to run work
+still has to be able to close a task.
+
+The gate is the hold and not the task, and the two halves of that are
+worth separating because they are not symmetric. A reservation is taken by
+*provisioning*, not by `create-task`, so a Task nobody ever dispatched
+holds nothing and closes in one call; a Task whose run provisioned holds a
+checkout, and there the refusal stands until the abandon or the release
+has reclaimed it.
+
+`Failed` and `Interrupted` are not cancelled from here either, because the
+lifecycle does not draw that edge: `recover-task` returns them to `Ready`
+and `Ready` is the state a cancel takes. So the whole of a failed run's
+cleanup is three commands, in this order — `abandon-change-stream` to
+reclaim what the failure left, `recover-task` to make the task startable
+again, `cancel-task` to close it — and the second one is only there
+because the third cannot be reached without it. A Task nobody ever
+dispatched needs only the third, because it never held a reservation. The
+reason is required, as on `interrupt-task`: a Task closed as "cancelled"
+with no record of why is the least useful entry in the journal. A lease
+left on a cancelled task is released, for the same reason a failure
+releases one.
+
+A `requires` edge is the other gate a start is refused on, and it is the
+one the client could not even record. `set_task_dependencies` and
+`get_task_dependencies` existed in the protocol and had no typed command at
+all, so the one relation that holds a task back from starting could only be
+set through a `raw` operation file — on a branch whose whole subject is
+first-class commands. The command takes the whole edge set rather than a
+delta, because the store's contract is replacement semantics and a caller
+that thought it was adding an edge would silently be dropping the others. It
+refuses a kind no boundary enforces, by name, rather than storing a gate
+nothing will ever read: of the eight relations only `requires` and `blocks`
+are enforced today, and the other six are recorded provenance.
+
+The start boundary already refused an unsatisfied gate, but it refused with
+`{"code": "conflict", "message": "resource conflict"}` — a unit error with
+no name in it, and the code this product uses for two writers racing for the
+same row. Three gates reach that check, from either direction: a `requires`
+target that has not completed, a `blocks` edge another task has put on this
+one, and a task whose own dependencies are fine but whose prerequisite is
+cancelled. The three have three different remedies — wait, drop the edge, or
+give up on the task — and the refusal named none of them. It is now
+`dispatch refused by recorded state (dependency_unresolved)`, the one
+dispatch-refusal vocabulary, with `failed_precondition` for a condition the
+caller has not met rather than a conflict it lost.
+
+The report was wrong in the same place, and that is the half that mattered
+more. `prepare-dispatch` returned `outcome: ready` with
+`{"kind": "scheduling", "schedulable": true}` for a task the boundary was
+about to refuse, because the composition read the task's own state and not
+what was holding it. The report exists to be read immediately before
+dispatching, so a report that says `ready` is worse than no report. The
+composition now records a `dependencies` step naming every unsatisfied gate
+and the state it is in, and it reads the same function the boundary refuses
+on, so the projection, the report and the boundary cannot disagree. The
+scheduling projection already said `dependency_unresolved` for the same fact,
+so one word now answers in all three places.
+
+`advance-change-stream` is the operation the Change Stream contract was
+written around and the workspace did not have. A stream carries a head and a
+target, a run that commits moves the head, and `StreamAction::Advance` — the
+domain's own action for exactly that — was constructed nowhere in the
+workspace. So a stream's head stayed the commit it was cut from, and
+`validate-change-stream`, which compares the checkout's observed head with the
+recorded one, refused with `StaleEvidence` the moment a run had committed
+anything: a task with real work could never be validated, integrated or
+released. The whole lifecycle was walkable end to end only because the
+fixture lane commits nothing, which is exactly the kind of thing a demo proves
+and nobody notices.
+
+It names no commits. The Host reads both out of git — the stream's checkout
+for the work, the Root for where it lands — and refuses a checkout that is not
+built on the stream's recorded head, because those commits were not built on
+this stream. The advance invalidates any earlier evidence by construction
+(`Advance` clears `last_validated_*` and returns the stream to
+`NeedsRevalidation`), so `validate-change-stream` has to run again, and the
+CLI says so where the operator is standing.
+
+`reconcile-change-stream` is the way out of a collision, and the collision
+itself was a state nothing could reach. Two streams cut from the same base
+both hold validated work and both expect to be the Root's next commit; the
+first to integrate moves the Root, and the second then cannot fast-forward
+onto it. The refusal said only that the Root was not where the stream left
+it, which named neither who moved it nor what to do, and every remaining
+operation was worse than useless: `integrate` refused, `release` needed an
+integrated stream, and `advance` — which re-points a stream at the Root's
+head — pretended the collision away by aiming at a Root the branch was never
+built on, so the next integrate failed on a fast-forward that could never be
+one. The only exit left was to abandon a stream whose work had been verified
+and throw it away. `StreamState::Collided` and `StreamAction::Reconcile` had
+been in the domain since the lifecycle was written, with nothing in the
+workspace to construct either.
+
+The integrate refusal now names the stream that took the Root, the commit it
+is at, and the work that is stranded on top of what it had recorded, and it
+records the collision as a state — which is what makes the rest walkable,
+because the domain refuses `Advance` from `Collided` and admits `Reconcile`
+into it. The record of who collided is read back on a second attempt, so the
+answer does not change with how many times it is asked, and the command id it
+is written under is derived from the Root's commit rather than the caller's,
+so a retry replays the record instead of writing a second one or spending an
+id the caller still owns.
+
+A collision with nobody to collide with is a different thing and is not
+recorded: when no stream cut against that root accounts for the move — a person
+committed there, or the checkout was reset — `advance-change-stream` is the
+honest answer, because it re-points the stream at a Root nobody else is
+competing for.
+
+`reconcile-change-stream` gets the Root's commits into the stream's history, and
+where both sides changed a file that needs a person: git stops and asks. So the
+order is the whole of it — ask, move, record.
+
+The move is a merge of the Root into the stream's branch, and it is a merge
+rather than a rebase because the question asked first has to be the question
+the move answers. A rebase replays the branch's commits one at a time, so "do
+these two tips merge without a decision" is a different question: two tips can
+agree while an earlier commit still conflicts, and the rebase then fails
+halfway with a conflict to clean up. A merge is one operation between the same
+two tips, which is exactly what the preview computes, so the preview is the
+move asked in advance rather than an approximation of it. A rebase would also
+have rewritten every commit id the stream had already recorded, for no gain.
+
+So the Host asks git first, with
+`git merge-tree --write-tree --no-messages --name-only -z`, which writes the
+merged tree and the conflicting paths and touches nothing at all, and it
+refuses naming those paths rather than resolving them. A caller who has already
+resolved the conflict by hand gets the same answer, because the question is
+asked of the repository and never of the request. The checkout is asked to be
+clean first, because a merge over a dirty worktree fails after git has already
+started one and leaves a merge in progress behind it; and a merge that fails
+after the preview said it would not is aborted, so the checkout is what the
+caller had either way. The ancestry is re-checked afterwards, since a merge
+that exited zero and left the Root outside the branch's history would hand the
+fast-forward in `integrate` the same failure this operation exists to leave.
+Nothing already committed is rewritten, so no id the store recorded moves under
+a caller; but the head has moved, so the evidence is stale and the CLI says
+`validate-change-stream` has to run again before the work lands — the same
+staleness `Advance` carries, reached here by the other road.
+
+`--no-messages` is what makes that frame readable. Git writes its `Auto-merging`
+and `CONFLICT` prose to standard output, interleaved with the very paths the
+refusal has to name, and a caller that trusted the lines would report
+`CONFLICT (content): Merge conflict in shared/file.txt` as a filename. A
+frame that is not a tree followed by paths is not read as an answer at all: a
+frame with no NUL terminator is either a foreign shape or one the bounded
+reader cut short, and reading a clean merge out of a truncated one is the
+guess the rest of this crate refuses to make. An unsupported git is refused
+with the paths unnamed rather than guessed at.
+
+`block-task` is the state a task could not reach, and the one a product without
+it has no vocabulary for. `TaskState::Blocked` and `TaskAction::{Block, Unblock}`
+had been in the domain since the lifecycle was written with nothing to construct
+them, so an operator whose task was not ready had two moves: create it and let
+it run, or never create it. The one lever in between was a dependency on a task
+that never finishes — which reports `dependency_unresolved` and names a task
+that has nothing to do with the real reason, so the only way to say "not until
+the key is provisioned" made the store say something else and left the task
+carrying nothing but `state: ready`.
+
+`block-task <task_id> <reason>` holds the task and `unblock-task <task_id>
+<reason>` lifts it. The reason is the operator's own sentence, not a category,
+and it is required at the command line: a hold the scheduling projection cannot
+explain is a hold that has to be lifted to find out what it was for. The
+projection now lists held tasks at all — the query behind it read only `ready`
+and `assigned`, so a held task was absent from both lists and the answer read
+as "not waiting" for a task somebody was deliberately waiting on — and reports
+them as `operator_held` with the reason in `detail`. The other three reasons
+carry no detail, because they are facts the store derived from rows and there is
+nothing of anybody's to report; the gates are named per task in `readiness`, and
+the same gate is never carried twice. A hold is asked about *before* every
+derived blocker and wins when it applies: naming a lease an operator can do
+nothing about would hide the sentence they wrote, and naming a dependency for a
+task whose hold they lifted is a category error.
+
+The refusals say what the task is rather than that a transition failed, because
+"this task is running" is an answer and `(IllegalTransition)` is the sound of a
+gate with no door in it. A task that is running is `interrupt-task` or
+`cancel-task`; one that failed or was interrupted is `recover-task` first; one
+that is completed or cancelled has nothing left to hold. A second `block-task`
+on a held task repeats the reason it is held for, which is the only way a caller
+who cannot see the projection can find it. Lifting a hold returns the task to
+`ready` and no further: it offers the task for scheduling and does not start it,
+so the dependency and stream checks still apply — which is also why neither
+command is a dangerous kind, since neither can begin execution.
+
+`complete-task` is classified dangerous, because it ends a task's execution
+rather than changing it. The refusals name themselves — a claim that does not
+cover the contract arrives as `lifecycle refused the transition
+(EvidenceMissing)` and a self-review as `(IndependentReviewRequired)`, not as
+the generic `invalid_request` sentence that says neither.
+
+One thing the command line cannot carry is a credential. Every runtime profile
+names one, and a native run refuses without it by name, so the registration is
+operator authority this client cannot hold: `symbiote init` writes the 0600
+configuration and `symbiote add-credential` records one registration in it,
+reading the value from standard input so a secret is never an argument, a
+process-table entry, or a line in the journal. The binding's member and
+candidate both carry `use_credential`, because the broker's gate is what the
+grant is for and a lease cannot issue without it. Both steps are local, and
+both happen before the daemon is started, because the configuration is read
+once (see [cli.md](cli.md) and
+[context-credential-resolution.md](context-credential-resolution.md)).
+
+A binding's `schema_version`, its candidate's `config_identity`, the
+candidate's limits, `root_effort`, `local_children`, `fallback_consent` and
+the `minimum_enforcement` map are all stated by the command and named in its
+refusals, and the binding and the candidate it staffs are written from the same
+access, context, tools and skills — the domain refuses a configuration where
+they differ, and the only way they cannot is by not being written twice. The
+seven policy references are named one argument each: a policy document is
+something the operator publishes, and a reference this client invented would
+name a document that does not exist.
+
+A model whose `max_output_tokens` exceeds its `context_window_tokens` is refused
+where both figures are on the command line, rather than as a `context_limit`
+from a provider turn long after the descriptor was on record. That check is the
+descriptor's own; the incoherence between a binding's `max_input_tokens` and a
+model's window spans two records, and is the provider's to refuse.
+
+`raw` is not a lesser path and not deprecated. It is how a Project with more
+than one Role, a work item of another kind (a request, a plan, a milestone),
+a fully specified Objective, or a Task whose stream carries real lineage is
+created: the typed commands cover the writes a person or a script types, and
+the daemon still validates and authorizes every field of both.
+
+A command line that cannot be honored is refused before anything is sent, and
+the refusal names the argument, the shape it wanted and the value it got — the
+way a refused lock names the lock it could not take — with the command's usage
+beside it. An argument that is absent, and an argument that is there and
+empty, are both refused that way, because no identity, name, title or branch
+can be empty; what an argument may *contain* — its length, its characters,
+whether it is only whitespace — is the domain's, and comes back as the
+daemon's own typed refusal. A surplus argument is named rather than dropped,
+and an argument that begins with `--` is a flag unless `--` precedes it, which
+ends flag parsing. A command line large enough to exceed the frame bound is
+refused as the request it is, naming its size and the bound, rather than as a
+daemon that is unreachable: it never asked (see [cli.md](cli.md)).
+
 ### Dangerous operations require explicit authorization
 
 Authorization follows the **operation**, not the command name. One table
@@ -91,11 +625,82 @@ decided by it — so `raw shutdown.json` cannot bypass the gate on
 the ones that start or end execution or grant capability:
 `shutdown`, `start_prepared_task`, `run_started_dispatch`,
 `decide_elevation` (the grant; `revoke_elevation` narrows and is not
-gated) and `record_resource_consent`. A kind the table does not know
-cannot be proven safe, so it fails closed as dangerous. Reads are free;
+gated), `record_resource_consent`, `complete_task` — which ends a task's
+execution rather than changing it, so it is gated like the operations that
+start it — and `abandon_change_stream`, which discards a checkout and the
+uncommitted files in it. That last one is the only operation in the product
+that destroys work, and the branch it leaves behind holds every commit, so
+what it destroys is work that was never recorded anywhere else — and
+`interrupt_task`, which ends a run's execution authority, the same reason
+`complete_task` is gated, and `cancel_task`, which closes a Task outright
+and can never reopen it — the lifecycle recovers a failed or interrupted
+run and nothing else, so a policy has to be told about this one as well.
+A kind the table does not know cannot be proven safe, so it fails closed as
+dangerous. Reads are free;
 everything else is a mutation the daemon still authorizes — filing
-evidence (`create-task`, `prepare-dispatch`, `request-task-completion`,
+evidence (`register-project`, `create-work`, `create-task`,
+`prepare-dispatch`, `request-task-completion`,
 `request-elevation`) is not starting work.
+
+### An elevation can be answered
+
+A worker that is refused a permission files an ask
+(`request-elevation <task_id> <dispatch_id> <permission> <reason>`, and the
+runner files one by itself when a run is refused — which is why an ask
+outlives the run that filed it: the refusal fails the task and the ask stays
+on the ledger), which is evidence and licenses nothing. Three commands close
+the loop, and all three are ordinary operations rather than a file an
+operator assembles:
+
+- `decide-elevation <task_id> <dispatch_id> <permission> <approve|deny>
+  <reason> <window_ms>` is the answer. It is dangerous, because granting
+  capability is the one thing the gate exists for. The lease's identity, its
+  Project, who decided and when are the Host's: the lease's id is the
+  command's own, the Project is the task's, the approver is the authenticated
+  principal, and the clock is the Host's — or the one this command id already
+  answered with, so a lost-response retry replays its receipt instead of
+  colliding with the journal. An approval names how long it licenses the
+  permission; a denial's window is `0`, and a denial carrying any other is
+  refused by name. A window past the domain's bound is refused with the bound
+  in the answer, not shortened, so the grant an operator reads back is the
+  grant they gave. A decision attaches to a dispatch that can run: the
+  **running** one, or the one a **failed** task still carries — a run that
+  refused is failed by the Host without dropping its dispatch binding, and
+  the dispatch id is minted deterministically per task, so the recovered
+  task's next run re-mints the identical id and the answer licenses exactly
+  the run that comes back. An ask a refused run filed is therefore
+  answerable after the refusal, which is the only way it could be answered
+  at all. A decision may not name a permission its binding already carries
+  (refused as `failed_precondition`: there is nothing to elevate, no lease
+  is needed and none can be granted), may not elevate past the Team's
+  access ceiling (refused the same way: the ceiling is law), and may only
+  name a permission with an enforcement consumer (refused with the
+  consumers there are named — `use_credential` and `execute_process` so
+  far); a decision on a dispatch whose runtime has no consumer gate is
+  refused the same way. Each is a rule about what a license WOULD mean,
+  refused by name rather than as a shape error, because an operator
+  reading `invalid request shape or field value` goes looking for a typo
+  that does not exist. A decision on a task that is neither running nor
+  failed-with-its-dispatch is refused with the state named (`ready`,
+  `queued`, …) and the way back — recover-task — beside it.
+- `elevations <project_id>` is the ledger: every ask the Project was sent and
+  every decision made on it, each decision with `standing` — `live`, `expired`,
+  `revoked` or `denied` — read at the clock the answer publishes, so a reader
+  knows how old it is. Each ask carries the ask whole and `decided_by`: the id
+  of the decision that answered it, or nothing. The pairing is on the three
+  facts a decision is *about* — the task, the dispatch and the permission — so
+  an ask nobody has decided is published as `decided_by: null` rather than
+  left for a reader to discover by joining two lists, and a denial answers an
+  ask exactly as an approval does. It is a Project read and it licenses nothing
+  it lists. A denial is kept even where a grant could never have been legal,
+  because "the authority saw this and said no" is the record that stops an ask
+  looking unanswered.
+- `revoke-elevation <project_id> <elevation_id>` takes a grant back. An
+  elevation's id is the command id of the `decide-elevation` that granted it,
+  which is what the ledger publishes; an id the Project does not hold is
+  refused with that sentence rather than `resource not found`. A revocation
+  names a lease, not a permission, so it cannot disturb another lease for the
+  same permission, and it is sticky.
 
 A dangerous operation is sent only when the invocation is explicitly
 authorized: `--yes` for this one run, a `yes` typed at the prompt when

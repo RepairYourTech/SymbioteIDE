@@ -363,7 +363,7 @@ fn a_foreign_complete_completes_nothing_canonically() {
         .unwrap();
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&project, &task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
     // And the link set itself is not a completion gate of any kind: a Task
     // with nothing but a foreign `complete` is still Ready.

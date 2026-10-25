@@ -169,7 +169,7 @@ FIGURES: dict[str, int] = {
     "docs/architecture/product-constitution.md": 1,
     "docs/contracts/agent-environment.md": 2,
     "docs/contracts/architecture.md": 0,
-    "docs/contracts/cli.md": 2,
+    "docs/contracts/cli.md": 3,
     "docs/contracts/client-sdk.md": 1,
     "docs/contracts/configuration.md": 0,
     "docs/contracts/constitution.md": 0,

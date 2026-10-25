@@ -638,11 +638,13 @@ fn two_projects_on_one_daemon_without_work_configuration_or_credential_leakage()
         }
         other => panic!("the run must refuse at the daemon, got {other:?}"),
     }
-    // The refusal left the dispatch intact for Host retry policy: the
-    // leak task stays Running, and the binding replacement does not
-    // rewire its already-compiled contract.
+    // The refusal is recorded rather than left as a lie: the leak task says
+    // its run failed instead of claiming to be executing with nothing
+    // executing it. What the refusal did NOT do is rewire the already
+    // compiled contract — lane B below runs the corrected credential on the
+    // SAME replaced binding, which is the evidence for that half.
     let leak_task = driver_reads_task(state_dir, "b-leak-task", "project-isolation-b");
-    assert_eq!(leak_task, "running");
+    assert_eq!(leak_task, "failed");
 
     // Lane B, correct configuration: the project's OWN credential. This
     // lane's worktree cannot exist yet — project A's run never created

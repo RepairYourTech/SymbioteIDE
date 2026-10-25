@@ -27,8 +27,9 @@ pub(crate) fn success_envelope(
 
 /// The versioned failure envelope. `code` is the daemon's own error code, or
 /// one of the CLI's own: `authorization_required` (nothing was sent),
-/// `policy_invalid` (the policy could not be honored; nothing was sent) and
-/// `unreachable` (the daemon could not be reached).
+/// `policy_invalid` (the policy could not be honored; nothing was sent),
+/// `request_refused` (the request was past the frame bound; nothing was sent)
+/// and `unreachable` (the daemon could not be reached).
 pub(crate) fn error_envelope(
     command: &str,
     command_id: &str,

@@ -474,6 +474,33 @@ fn check_private_dir(path: &Path, exact: bool) -> Result<(), WorktreeError> {
 /// identity binding, ownership and private modes. This is the provisioner-side
 /// premise the sandbox launcher relies on; the launcher still revalidates.
 pub fn verify(reservation: &Reservation) -> Result<Marker, WorktreeError> {
+    let marker = verify_reservation(reservation)?;
+    // The reserved worktree is empty until Git materialization populates it;
+    // any other content means someone else used this location.
+    let mut entries = fs::read_dir(reservation.derived.worktree_path(&reservation.base))
+        .map_err(|_| WorktreeError::NotFound)?;
+    if entries.next().is_some() {
+        return Err(WorktreeError::NotEmpty);
+    }
+    Ok(marker)
+}
+
+/// Everything `verify` proves, minus the emptiness rule: this stream still
+/// holds this location, and the location is private and bound to that
+/// identity.
+///
+/// Emptiness has to be separable because it is the one premise a location
+/// stops meeting the moment a run materializes a checkout in it. A caller
+/// asking "whose location is this?" — the provisioning layer, deciding
+/// whether an existing directory is this stream's own earlier work or
+/// something it must refuse — needs the first question answered on its own.
+/// A caller about to hand the location to `git worktree add` needs both, and
+/// that is `verify`.
+///
+/// Verification never creates state, so every absence is a refusal: a
+/// missing base, a missing marker, and a marker for another identity are all
+/// answered the same way, and none of them is a claim.
+pub fn verify_reservation(reservation: &Reservation) -> Result<Marker, WorktreeError> {
     let base = &reservation.base;
     // Verification never creates state: a missing or non-private base fails.
     validate_absolute(base, MAX_BASE_BYTES)?;
@@ -493,12 +520,6 @@ pub fn verify(reservation: &Reservation) -> Result<Marker, WorktreeError> {
         read_marker(&project_dir.join(format!("{}.json", reservation.derived.worktree_id)))?;
     if marker.derived != reservation.derived {
         return Err(WorktreeError::IdentityMismatch);
-    }
-    // The reserved worktree is empty until Git materialization populates it;
-    // any other content means someone else used this location.
-    let mut entries = fs::read_dir(&worktree).map_err(|_| WorktreeError::NotFound)?;
-    if entries.next().is_some() {
-        return Err(WorktreeError::NotEmpty);
     }
     Ok(marker)
 }
@@ -527,14 +548,29 @@ pub fn release(reservation: &Reservation, policy: ReleasePolicy) -> Result<Outco
             Ok(Outcome::Retained)
         }
         ReleasePolicy::DeleteIfEmpty => {
-            let mut entries = fs::read_dir(&worktree).map_err(|_| WorktreeError::NotFound)?;
-            if entries.next().is_some() {
+            // A location that is already gone holds no entries, so it
+            // satisfies "delete if empty". This is the ordinary end of a
+            // materialized reservation: the repository layer removes the
+            // worktree git put there, and the marker is what release is for.
+            // Refusing here meant no materialized reservation could ever be
+            // released at all, so its marker outlived the directory it
+            // reserved and `reserve` kept refusing the identity forever.
+            let empty = match fs::read_dir(&worktree) {
+                Ok(mut entries) => entries.next().is_none(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(_) => return Err(WorktreeError::NotFound),
+            };
+            if !empty {
                 return Err(WorktreeError::NotEmpty);
             }
             // Remove the directory first: remove_dir fails closed on any
             // content, and a failure here keeps the marker as the source of
             // truth instead of downgrading the reservation to abandoned.
-            fs::remove_dir(&worktree).map_err(|_| WorktreeError::Io)?;
+            match fs::remove_dir(&worktree) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(WorktreeError::Io),
+            }
             if unlink(&marker_path).is_err() {
                 // Roll back to a consistent marker-plus-empty-directory
                 // state so a retry can proceed instead of leaving a stale
@@ -554,10 +590,23 @@ pub fn release(reservation: &Reservation, policy: ReleasePolicy) -> Result<Outco
 
 /// Lists reservation markers recorded under one project of a base directory.
 /// Marker integrity is not re-verified here; call `verify` per reservation.
+///
+/// A project that has never reserved has no directory under the base at all,
+/// which is an ordinary state with an honest answer — no markers — rather than
+/// damage. Collapsing it into an error would tell every reader that a project
+/// with no worktrees has a broken reservation base, and would make the one
+/// question readers actually ask ("is anything checked out for this stream?")
+/// unanswerable until something was checked out. A base that exists but cannot
+/// be read is still an error: absence is only believable when it was observed.
 pub fn list(base: &Path, project: &ProjectId) -> Result<Vec<Marker>, WorktreeError> {
     let project_dir = base.join(project.as_str());
     let mut markers = Vec::new();
-    for entry in fs::read_dir(&project_dir).map_err(|_| WorktreeError::NotFound)? {
+    let entries = match fs::read_dir(&project_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(markers),
+        Err(_) => return Err(WorktreeError::NotFound),
+    };
+    for entry in entries {
         let entry = entry.map_err(|_| WorktreeError::Io)?;
         let name = entry.file_name();
         let name = name.to_str().ok_or(WorktreeError::UnsafePath)?;
@@ -753,6 +802,38 @@ mod tests {
     }
 
     #[test]
+    fn a_reservation_whose_location_the_repository_removed_still_releases() {
+        // The repository layer removes a materialized worktree; the marker is
+        // then the only thing left of the reservation. Release has to be able
+        // to say so, or the identity stays reserved for a directory that no
+        // longer exists and `reserve` refuses it forever.
+        let base = temp_base("materialized");
+        let d = derived("stream-9", "seed");
+        let reservation = reserve(&d, &base, Timestamp(1)).unwrap();
+        let path = d.worktree_path(&base);
+        fs::create_dir(path.join("nested")).unwrap();
+        fs::remove_dir_all(&path).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            release(&reservation, ReleasePolicy::DeleteIfEmpty).unwrap(),
+            Outcome::Deleted
+        );
+        assert!(read_marker(&base.join("demo").join(format!("{}.json", d.worktree_id))).is_err());
+        // The released identity is reservable again, which is the whole
+        // point: nothing about this location can still claim it.
+        let reclaimed = reserve(&d, &base, Timestamp(2)).unwrap();
+        verify(&reclaimed).unwrap();
+        // Retain says the same thing about an absent location: the marker is
+        // gone and there was nothing to keep.
+        fs::remove_dir_all(&path).unwrap();
+        assert_eq!(
+            release(&reclaimed, ReleasePolicy::Retain).unwrap(),
+            Outcome::Retained
+        );
+        assert!(read_marker(&base.join("demo").join(format!("{}.json", d.worktree_id))).is_err());
+    }
+
+    #[test]
     fn release_never_deletes_nonempty_work() {
         let base = temp_base("nonempty");
         let d = derived("stream-4", "seed");
@@ -858,6 +939,36 @@ mod tests {
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(mode);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    /// Absence is an answer a reader acts on, so it has to be the answer
+    /// `list` gives. A project that has never reserved has no directory under
+    /// the base, and reporting that as damage would make "is anything checked
+    /// out for this stream?" unanswerable for every project until it checked
+    /// something out. The base itself still has to be readable for the answer
+    /// to be worth anything: a base that is not a directory is a host that
+    /// cannot hold worktrees at all, and saying "no worktrees" there would be
+    /// inventing a fact.
+    #[test]
+    fn a_project_that_never_reserved_lists_nothing_and_a_base_that_is_not_a_directory_still_fails()
+    {
+        let base = temp_base("unread");
+        let project = ProjectId::new("never-reserved").unwrap();
+        assert!(!base.join(project.as_str()).exists());
+        assert_eq!(list(&base, &project).unwrap(), Vec::new());
+        // A base that is present but not a directory fails the read rather
+        // than answering, so absence is only ever reported where it was seen.
+        let file_base = base.join("not-a-directory");
+        fs::write(&file_base, b"base is a file").unwrap();
+        assert_eq!(
+            list(&file_base, &project).unwrap_err(),
+            WorktreeError::NotFound
+        );
+        // A project that HAS reserved still lists only its own reservation.
+        let reserved = ProjectId::new("demo").unwrap();
+        reserve(&derived("stream-a", "seed"), &base, Timestamp(1)).unwrap();
+        assert_eq!(list(&base, &reserved).unwrap().len(), 1);
+        assert_eq!(list(&base, &project).unwrap(), Vec::new());
     }
 
     #[test]

@@ -28,6 +28,41 @@ pub enum CompositionStep {
     Scheduling {
         schedulable: bool,
     },
+    /// The gates recorded against this task that are not satisfied yet, in
+    /// canonical order, each naming the other side and the state it is in.
+    /// Empty when nothing holds the task, which is why the step is recorded
+    /// either way: "nothing is in the way" is an answer, not an absence.
+    ///
+    /// This step exists for the same reason the stream step does. The start
+    /// boundary refuses a task whose gates are unresolved with
+    /// `dependency_unresolved`, so a report that said only "schedulable"
+    /// would promise a dispatch the start is about to refuse — and this is
+    /// the report an operator reads immediately before dispatching. The
+    /// scheduling projection already answers the same question over the same
+    /// rows, and this step reads that same answer, so the projection, the
+    /// report and the boundary cannot disagree about what is holding a task.
+    Dependencies {
+        waiting_on: Vec<TaskGate>,
+    },
+    /// The operator's hold on this task and the sentence they gave, or `None`
+    /// when nobody is holding it.
+    ///
+    /// This step exists for the reason the one above it does, and it is the
+    /// same argument reached from a different direction. A hold makes
+    /// `Scheduling { schedulable: false }` true and the `Dependencies` step
+    /// empty — the task has no unmet gates, its stream is `Active`, its role
+    /// resolved and its provider validated — so a report assembled from those
+    /// facts refuses a dispatch and says nothing about which of them did it. An
+    /// operator reading that before dispatching goes looking for a stream
+    /// problem, a lease, or a missing route, and the answer they are missing is
+    /// the one sentence somebody wrote.
+    ///
+    /// The hold is read from the task's own record, the same record the
+    /// `block_task` boundary transition writes, so the report cannot disagree
+    /// with the boundary about whether the task is held.
+    Hold {
+        reason: Option<String>,
+    },
     Routing {
         resolved: Option<RoleId>,
     },
@@ -36,6 +71,16 @@ pub enum CompositionStep {
     },
     Worktree {
         declared: bool,
+        /// Whether the stream is in the one state a start compiles against.
+        /// The stream row declares the identity either way, and a report that
+        /// said only that would answer a question nobody asked: the boundary
+        /// refuses every state but `Active` with `stream_inactive`, so the
+        /// report has to be able to say the same thing — otherwise it reports
+        /// a dispatch the start is about to refuse.
+        startable: bool,
+        /// The state it read, so the report names which state refused rather
+        /// than only that something did.
+        state: StreamState,
     },
     Provider {
         validated: bool,
@@ -101,6 +146,12 @@ pub enum DispatchRefusal {
     /// ran: `Queued` and `Blocked` are not startable, and neither is any state
     /// the task has already left the startable pair for.
     NotSchedulable,
+    /// A gate recorded against the task is not satisfied: a `requires` target
+    /// that has not completed, or a `blocks` edge another task has put on it.
+    /// The boundary has always refused this; what it did not do was name it.
+    /// The wire name is the one the scheduling projection already publishes
+    /// for the same fact, so one word answers in both places.
+    DependencyUnresolved,
     /// No route resolved for the task's origin, so no Role — and therefore no
     /// runtime profile — was chosen.
     Unrouted,
@@ -118,6 +169,7 @@ impl DispatchRefusal {
     pub fn name(self) -> &'static str {
         match self {
             Self::NotSchedulable => "not_schedulable",
+            Self::DependencyUnresolved => "dependency_unresolved",
             Self::Unrouted => "unrouted",
             Self::StreamInactive => "stream_inactive",
             Self::Provider(refusal) => refusal.name(),
@@ -166,12 +218,19 @@ impl DispatchPreparation {
     /// Pure aggregation of already-resolved authoritative inputs. The Host
     /// resolves everything from storage; no field is client-supplied.
     #[allow(clippy::too_many_arguments)]
+    /// `waiting_on` is the unsatisfied-gate answer for this task, read by the
+    /// caller from the same rows the scheduling projection reads. It is passed
+    /// in rather than derived here because a Task's pure `apply` cannot
+    /// validate a graph spanning other aggregates — the same reason dependency
+    /// edges are separate first-class state and not lifecycle commands.
+    #[allow(clippy::too_many_arguments)]
     pub fn compose(
         task: &Task,
         routed_role: Option<RoleId>,
         lease: Option<(&DispatchId, u64)>,
         stream: &ChangeStream,
         provider: Option<ProviderResolution>,
+        waiting_on: Vec<TaskGate>,
         at: Timestamp,
     ) -> Self {
         let mut steps = Vec::new();
@@ -179,10 +238,19 @@ impl DispatchPreparation {
         // `Ready`, or `Assigned` once the Host has bound its canonical Role.
         // `Queued` and `Blocked` are deliberately not startable, and no state
         // at or past the start is. This is the projection's schedulable core
-        // condition; dependency/stream/lease detail is recorded by the
-        // scheduler slice.
+        // condition; the dependency, stream and lease detail are recorded by
+        // the steps below it, each of which a boundary also refuses on.
         let schedulable = task.state().is_startable();
         steps.push(CompositionStep::Scheduling { schedulable });
+        steps.push(CompositionStep::Dependencies {
+            waiting_on: waiting_on.clone(),
+        });
+        // The hold, read off the task rather than passed in: it is a property
+        // of the task's own state, and a caller that had to supply it would be
+        // able to supply a reason for a task that is not held.
+        steps.push(CompositionStep::Hold {
+            reason: task.blocked_by().map(|reason| reason.to_owned()),
+        });
         steps.push(CompositionStep::Routing {
             resolved: routed_role.clone(),
         });
@@ -194,7 +262,16 @@ impl DispatchPreparation {
         });
         // The stream row declares the worktree identity; filesystem
         // reservation is issue 211's separate concern and is NOT checked here.
-        steps.push(CompositionStep::Worktree { declared: true });
+        // What IS reported is the state: a start compiles against `Active` and
+        // refuses every other state with `stream_inactive`, so a report that
+        // said only "declared" would promise a dispatch the boundary refuses.
+        // An operator reading this before dispatching learns it here.
+        let stream_startable = stream.state() == &StreamState::Active;
+        steps.push(CompositionStep::Worktree {
+            declared: true,
+            startable: stream_startable,
+            state: stream.state().clone(),
+        });
         // The provider step is earned by the registry validating the
         // profile's stored connection/entitlement/model registration, not by
         // the presence of a profile. A refused registration is recorded with
@@ -207,7 +284,11 @@ impl DispatchPreparation {
             validated: refusal.is_none(),
             refusal,
         });
-        let ready = schedulable && routed_role.is_some() && refusal.is_none();
+        let ready = schedulable
+            && waiting_on.is_empty()
+            && routed_role.is_some()
+            && refusal.is_none()
+            && stream_startable;
         Self {
             version: PREPARATION_VERSION,
             project_id: task.project_id().clone(),
@@ -242,7 +323,13 @@ impl DispatchPreparation {
             CompositionStep::Scheduling { schedulable: false } => {
                 Some(DispatchRefusal::NotSchedulable)
             }
+            CompositionStep::Dependencies { waiting_on } if !waiting_on.is_empty() => {
+                Some(DispatchRefusal::DependencyUnresolved)
+            }
             CompositionStep::Routing { resolved: None } => Some(DispatchRefusal::Unrouted),
+            CompositionStep::Worktree {
+                startable: false, ..
+            } => Some(DispatchRefusal::StreamInactive),
             CompositionStep::Provider {
                 refusal: Some(refusal),
                 ..
@@ -260,6 +347,16 @@ impl DispatchPreparation {
             // exactly when the step did not validate.
             if let CompositionStep::Provider { validated, refusal } = step {
                 if *validated != refusal.is_none() {
+                    return Err(DomainError::InvalidStream);
+                }
+            }
+            // And the stream step must agree with the state it reports, so a
+            // report cannot call a cancelled stream startable.
+            if let CompositionStep::Worktree {
+                startable, state, ..
+            } = step
+            {
+                if *startable != (*state == StreamState::Active) {
                     return Err(DomainError::InvalidStream);
                 }
             }

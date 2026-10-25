@@ -10,7 +10,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 100;
 pub const CURRENT_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 30,
+    minor: 32,
 };
 
 /// The published canonical schema (#181): the request, response and telemetry documents these
@@ -266,6 +266,174 @@ pub enum Operation {
         permission: Permission,
         reason: String,
     },
+    /// Record that the dispatched stream's work is where the stream says it
+    /// is. The head is the Host's own observation of the provisioned
+    /// worktree and the target is the stream's; neither is a claim the
+    /// caller may make, because a validation of a commit nobody observed is
+    /// a validation of nothing.
+    ValidateChangeStream {
+        task_id: TaskId,
+        /// Which verification run this validation belongs to. A run is a
+        /// fact the operator holds and names; the outcome is not theirs to
+        /// assert here.
+        verification_run: String,
+    },
+    /// Move a Task whose completion was requested into verification. No
+    /// client could take this step, so a dispatched Task stayed
+    /// `completion_requested` for the life of the store.
+    BeginTaskVerification {
+        task_id: TaskId,
+    },
+    /// Merge a validated stream's branch into the Root's checkout and record
+    /// the stream as integrated. Without it a completed Task's work sat on a
+    /// branch in a worktree that nothing ever moved: the canonical state said
+    /// the work was done and the repository said otherwise, and no client had
+    /// the operation that would have reconciled them.
+    IntegrateChangeStream {
+        task_id: TaskId,
+    },
+    /// Reclaim an integrated stream's worktree: the checkout leaves the
+    /// filesystem and the reservation is released. The stream's branch is
+    /// never deleted — the work is integrated, not erased — and a worktree
+    /// still holding uncommitted content is refused by git rather than
+    /// discarded. Takes a task only, because the Host derives the stream, the
+    /// Root, the location and the evidence.
+    ReleaseChangeStream {
+        task_id: TaskId,
+    },
+    /// Abandon a stream whose work never landed: cancel it and reclaim its
+    /// worktree, discarding whatever is in the checkout. This is the one
+    /// operation that destroys work — a run that failed or was abandoned
+    /// leaves commits and uncommitted files in a location nothing else can
+    /// reclaim, and an operator has to be able to say "this one is finished
+    /// and is not coming back". The branch is still never deleted, so every
+    /// commit the run made stays inspectable; only the checkout goes. Refuses
+    /// an integrated stream: that work landed, and `release_change_stream` is
+    /// the operation for it.
+    AbandonChangeStream {
+        task_id: TaskId,
+    },
+    /// Put a failed or interrupted task back in the queue: `Failed` or
+    /// `Interrupted` becomes `Ready` and the dispatch binding is dropped, so
+    /// the task can be dispatched afresh. Without it a failed run is a dead
+    /// end — the lifecycle can leave `Running` for a failure and into
+    /// `Ready` only from a state nothing could reach.
+    RecoverTask {
+        task_id: TaskId,
+    },
+    /// Record where a stream's work actually is. A Change Stream carries a
+    /// head and a target; a run that commits moves the head, and nothing else
+    /// in the lifecycle can know that — only the Host can read the stream's
+    /// own checkout. Both commits are observed here and neither is named by
+    /// the caller: a client that could write the stream's head could claim
+    /// anyone's work as this stream's.
+    ///
+    /// `Validate` refuses any stream whose observed head is not the head it
+    /// recorded (`StaleEvidence`), so without this operation a task whose run
+    /// committed anything could never be validated, never integrated, and
+    /// never released. A change stream that cannot carry a change.
+    AdvanceChangeStream {
+        task_id: TaskId,
+    },
+    /// Put a collided stream's work back on top of the Root, and record that
+    /// it is there.
+    ///
+    /// `AdvanceChangeStream` re-points a stream at the Root's current head,
+    /// which is the right answer when nothing else moved and the wrong one
+    /// when another stream already landed: the branch's commits are not
+    /// built on the Root's new head, so the re-pointed stream still cannot
+    /// fast-forward and the collision is only renamed. The domain has said so
+    /// since the lifecycle was written — `StreamAction::Reconcile` is legal
+    /// from `Collided` and `Advance` refuses it — and no operation carried
+    /// either half, so a collided stream had no way out but to be abandoned
+    /// with its work thrown away.
+    ///
+    /// The rebase happens here rather than in the caller's hands because the
+    /// Host is the only party that can prove it is safe to do: it asks git
+    /// what the merge would take before moving anything, and refuses naming
+    /// the paths when a person has to decide. A caller that has already
+    /// rebased by hand gets the same answer — the question is asked of the
+    /// checkout, not of the request.
+    ReconcileChangeStream {
+        task_id: TaskId,
+    },
+    /// Declare that a run is not coming back. `Running`,
+    /// `CompletionRequested` and `Verifying` become `Interrupted`, which is
+    /// the one state a crashed or abandoned run can be moved out of.
+    ///
+    /// A refused run files its own failure, so this is for the case nothing
+    /// else can file: the Host died with the task `Running`, and no run is
+    /// left to observe. `reason` is the caller's, because only the caller
+    /// knows which of those it was — the Host cannot distinguish a crash from
+    /// an operator walking away, and both arrive here.
+    InterruptTask {
+        task_id: TaskId,
+        reason: String,
+    },
+    /// Hold a task that is not ready to run, and say why.
+    ///
+    /// The domain has had `TaskAction::Block` and `TaskState::Blocked` since
+    /// the lifecycle was written, with nothing to construct either, so a task
+    /// that was not ready could not be held: it was either created and run, or
+    /// never created. The one lever an operator had was a dependency on a task
+    /// that never finishes, which reports `dependency_unresolved` and names a
+    /// task that has nothing to do with the real reason — so the only way to
+    /// say "not until the key is provisioned" made the store say something
+    /// else, and the task itself carried nothing but `state: ready`.
+    ///
+    /// `reason` is the operator's own sentence, not a category, and it is
+    /// carried into the scheduling projection verbatim: a hold nobody can read
+    /// the reason for is a hold that has to be lifted to find out what it was
+    /// for. The domain refuses an empty one, so the refusal cannot be sent.
+    BlockTask {
+        task_id: TaskId,
+        reason: String,
+    },
+    /// Lift a hold, and say why — the same shape as the hold, because a release
+    /// nobody records the reason for is how the next operator repeats it.
+    ///
+    /// The task returns to `Ready` and nothing more: the scheduler still
+    /// applies its dependency and stream checks, so lifting a hold offers the
+    /// task for scheduling and does not start it.
+    UnblockTask {
+        task_id: TaskId,
+        reason: String,
+    },
+    /// Close a Task that is not coming back: `Ready`, `Queued`, `Assigned` or
+    /// `Blocked` becomes `Cancelled`, and so does a run the Host is executing.
+    /// `reason` is the caller's, because only the caller knows whether the
+    /// work was withdrawn, superseded, or simply wrong.
+    ///
+    /// This is the state nothing could reach. `TaskState::Cancelled` has been
+    /// in the lifecycle since it was written and no operation constructed
+    /// `TaskAction::Cancel`, so a task whose stream had been abandoned stayed
+    /// startable for the life of the store: every dispatch of it ran into a
+    /// stream the abandon had already cancelled. `Failed` and `Interrupted`
+    /// are not cancelled from here either — `recover_task` returns them to
+    /// `Ready`, and that is the state a cancel takes.
+    ///
+    /// Refused while the stream still holds its reservation. A cancel is a
+    /// claim about a Task, not authority over a directory, and the directory
+    /// is the one thing here that can lose commits. `abandon_change_stream`
+    /// is the operation that reclaims it, and says so when it refuses.
+    CancelTask {
+        task_id: TaskId,
+        reason: String,
+    },
+    /// File the evidence a dispatch contract's gates require and complete the
+    /// Task. `gates` is the claim: which gates the caller says passed. The
+    /// Host binds each claim to the dispatch, the stream's head and target
+    /// and this Host's identity, and refuses a claim that does not cover the
+    /// contract — so the caller asserts and the Host binds, and neither side
+    /// gets to do the other's half.
+    CompleteTask {
+        task_id: TaskId,
+        gates: Vec<Gate>,
+        /// The independent reviewer, required by the contract's
+        /// `independent_review` gate and refused when it is the Task's own
+        /// Role.
+        reviewer: Option<RoleId>,
+    },
     GetDispatchPreparation {
         task_id: TaskId,
     },
@@ -314,6 +482,30 @@ pub enum Operation {
         project_id: ProjectId,
         task_id: TaskId,
     },
+    /// The bounded change-set evidence one Task's Change Stream worktree
+    /// carries right now: the observed HEAD, the changed paths, and the
+    /// bounded diff with untracked content heads — the same run-diff
+    /// observation the worker's own run reports are built from, read from
+    /// the canonical record rather than from a caller's claim. The worktree
+    /// is located through the Task's stream reservation; a Task whose
+    /// stream holds no reservation here is answered with that fact rather
+    /// than a refusal, and a caller-supplied path is never consulted.
+    ObserveWorktree {
+        project_id: ProjectId,
+        task_id: TaskId,
+    },
+    /// The resolved context one Task's run is told: the prompt and the
+    /// requirements, constraints, risks and acceptance items the dispatch
+    /// preparation resolved from the Task's origin under its contract —
+    /// the run's own input envelope, served for inspection. It is named by
+    /// dispatch so a reader compares what a specific run received, and it
+    /// is served only from the canonical records: resolution failure
+    /// refuses by name rather than degrading.
+    GetTaskContext {
+        project_id: ProjectId,
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+    },
     Hello {
         supported_versions: Vec<ProtocolVersion>,
     },
@@ -354,12 +546,40 @@ pub enum Operation {
         project_id: ProjectId,
         task_id: TaskId,
     },
+    /// The authority's answer to a worker's ask: a bounded grant for one
+    /// dispatch, or a denial that licenses nothing.
+    ///
+    /// The wire carries the DECISION and never a finished lease. The lease's
+    /// identity, the Project it belongs to, who decided and when are four
+    /// facts the Host holds and no client may assert: a caller that named its
+    /// own lease id, its own clock and its own approver would be able to
+    /// record a decision nobody made at a moment nobody chose, and a retry
+    /// that retyped the clock would collide with the journal instead of
+    /// replaying.
     DecideElevation {
-        lease: Box<symbiote_domain::ElevationLease>,
+        task_id: TaskId,
+        dispatch_id: DispatchId,
+        permission: Permission,
+        /// False journals an explicit denial: evidence that the authority saw
+        /// the ask and refused it. It licenses nothing.
+        approved: bool,
+        /// Why this decision, carried with it as the ask carried its own.
+        reason: String,
+        /// How long the grant licenses the permission, in milliseconds from
+        /// the Host's own clock. Zero for a denial, because a denial has no
+        /// window. Bounded by domain law: the Host refuses a longer one by
+        /// name rather than shortening a caller's grant.
+        window_ms: u64,
     },
     RevokeElevation {
         project_id: ProjectId,
         elevation_id: CommandId,
+    },
+    /// Everything one Project has been asked for and everything it has been
+    /// granted. A Project read, because both records are the Project's own
+    /// facts about work it dispatched.
+    GetElevations {
+        project_id: ProjectId,
     },
     RecordResourceConsent {
         snapshot: ResourceSnapshot,
@@ -407,6 +627,19 @@ impl Operation {
             Self::StartPreparedTask { .. } => None,
             Self::RunStartedDispatch { .. } => None,
             Self::RequestTaskCompletion { .. } | Self::RequestElevation { .. } => None,
+            Self::ValidateChangeStream { .. }
+            | Self::BeginTaskVerification { .. }
+            | Self::CompleteTask { .. }
+            | Self::IntegrateChangeStream { .. }
+            | Self::ReleaseChangeStream { .. }
+            | Self::RecoverTask { .. }
+            | Self::AdvanceChangeStream { .. }
+            | Self::ReconcileChangeStream { .. }
+            | Self::InterruptTask { .. }
+            | Self::CancelTask { .. }
+            | Self::BlockTask { .. }
+            | Self::UnblockTask { .. }
+            | Self::AbandonChangeStream { .. } => None,
             Self::GetRoute { project_id, .. } => Some(project_id),
             Self::ReplaceTeam { team, .. } => Some(&team.project_id),
             Self::GetTeam { project_id } => Some(project_id),
@@ -414,11 +647,15 @@ impl Operation {
             Self::ChangeWork { project_id, .. }
             | Self::GetWork { project_id, .. }
             | Self::AssignTaskOrigin { project_id, .. }
-            | Self::GetTaskOrigin { project_id, .. } => Some(project_id),
+            | Self::GetTaskOrigin { project_id, .. }
+            | Self::ObserveWorktree { project_id, .. }
+            | Self::GetTaskContext { project_id, .. } => Some(project_id),
             Self::RegisterProject { project } => Some(&project.id),
             Self::CreateTask { task } => Some(&task.project_id),
             Self::RecordResourceConsent { snapshot, .. } => Some(&snapshot.project_id),
-            Self::DecideElevation { lease } => Some(&lease.project_id),
+            // The decision names no Project: the Host reads the one the task
+            // belongs to, so a lease can never be filed against another.
+            Self::DecideElevation { .. } => None,
             Self::RevokeElevation { project_id, .. } => Some(project_id),
             Self::GetProject { project_id }
             | Self::ObserveRootPlacement { project_id, .. }
@@ -426,6 +663,7 @@ impl Operation {
             | Self::GetResourceConsent { project_id, .. }
             | Self::GetTask { project_id, .. }
             | Self::Snapshot { project_id }
+            | Self::GetElevations { project_id }
             | Self::ReadJournal { project_id, .. } => Some(project_id),
             Self::Hello { .. }
             | Self::Health {}
@@ -464,6 +702,19 @@ impl Operation {
                 | Self::DecideElevation { .. }
                 | Self::RevokeElevation { .. }
                 | Self::RequestElevation { .. }
+                | Self::ValidateChangeStream { .. }
+                | Self::BeginTaskVerification { .. }
+                | Self::CompleteTask { .. }
+                | Self::IntegrateChangeStream { .. }
+                | Self::ReleaseChangeStream { .. }
+                | Self::RecoverTask { .. }
+                | Self::AdvanceChangeStream { .. }
+                | Self::ReconcileChangeStream { .. }
+                | Self::InterruptTask { .. }
+                | Self::CancelTask { .. }
+                | Self::BlockTask { .. }
+                | Self::UnblockTask { .. }
+                | Self::AbandonChangeStream { .. }
         )
     }
 }
@@ -596,7 +847,26 @@ impl Request {
             Operation::RecordResourceConsent { snapshot, .. } => {
                 snapshot.validate().map_err(|_| invalid())
             }
-            Operation::DecideElevation { lease } => lease.validate().map_err(|_| invalid()),
+            Operation::DecideElevation { reason, .. } => {
+                // The reason's own bound is the ask's: nonempty, <=1024, no
+                // control characters. A decision is evidence whether it
+                // grants or refuses, so a denial carries one too.
+                if reason.trim().is_empty()
+                    || reason.len() > 1024
+                    || reason.contains('\0')
+                    || reason.chars().any(char::is_control)
+                {
+                    return Err(invalid());
+                }
+                // What a WINDOW may be — how long, and whether a denial may
+                // carry one at all — is not shape. Those are rules about
+                // what a decision means, they live with the decision, and the
+                // Host is where a rule is named: a refusal from here can only
+                // say that a field was wrong, which leaves an operator who
+                // typed a year-long lease with no idea which field to change.
+                // The Host refuses both, by name, before it builds a lease.
+                Ok(())
+            }
             Operation::RequestElevation { reason, .. } => {
                 // Same reason bound as a decided lease: nonempty, ≤1024,
                 // no control characters. The Host separately attributes the
@@ -803,6 +1073,26 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
             // can license anything.
             principal.local_owner
         }
+        Operation::ValidateChangeStream { .. }
+        | Operation::BeginTaskVerification { .. }
+        | Operation::CompleteTask { .. }
+        | Operation::IntegrateChangeStream { .. }
+        | Operation::ReleaseChangeStream { .. }
+        | Operation::RecoverTask { .. }
+        | Operation::AdvanceChangeStream { .. }
+        | Operation::ReconcileChangeStream { .. }
+        | Operation::InterruptTask { .. }
+        | Operation::CancelTask { .. }
+        | Operation::BlockTask { .. }
+        | Operation::UnblockTask { .. }
+        | Operation::AbandonChangeStream { .. } => {
+            // The three steps a dispatched Task could not take at all, so a
+            // run stayed `completion_requested` for the life of the store.
+            // They are the same authority `start_prepared_task` holds: the
+            // Host owns execution and verification, and a Project Read grant
+            // is not authority over whether work is real.
+            principal.local_owner
+        }
         Operation::GetRoute { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
@@ -825,7 +1115,10 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         Operation::AssignTaskOrigin { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::ManageWork)
         }
-        Operation::GetWork { project_id, .. } | Operation::GetTaskOrigin { project_id, .. } => {
+        Operation::GetWork { project_id, .. }
+        | Operation::GetTaskOrigin { project_id, .. }
+        | Operation::ObserveWorktree { project_id, .. }
+        | Operation::GetTaskContext { project_id, .. } => {
             principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::Hello { .. } | Operation::Health {} => true,
@@ -841,10 +1134,16 @@ pub fn authorize(principal: &Principal, request: &Request) -> Result<(), Protoco
         }
         Operation::DecideElevation { .. } | Operation::RevokeElevation { .. } => {
             // The deciding/revoking authority is the authenticated
-            // same-UID owner. The Host separately verifies the lease's
+            // same-UID owner. The Host separately verifies the dispatch's
             // attribution (a Running dispatch), the Team ceiling, and
             // that the permission is not already granted.
             principal.local_owner
+        }
+        Operation::GetElevations { project_id } => {
+            // Evidence and decisions are the Project's own records about
+            // work it dispatched, so a Project read serves them and nothing
+            // more: reading the ledger grants nothing it lists.
+            principal.permits(project_id, ProjectPermission::Read)
         }
         Operation::RegisterProject { project } => {
             principal.permits(&project.id, ProjectPermission::Register)
@@ -1117,6 +1416,13 @@ pub enum Capability {
     TaskDependencyRead,
     ForeignLinkWrite,
     ForeignLinkRead,
+    /// Answering a worker's elevation ask, and taking an answer back. The
+    /// ask itself was never advertised — a worker that had to negotiate
+    /// before asking would not ask — but the authority that grants is the
+    /// capability a client looks for before it grants.
+    ElevationDecision,
+    /// The Project's own record of what it was asked for and what it decided.
+    ElevationLedgerRead,
     RouteResolution,
     RouteRecording,
     RouteRead,
@@ -1172,6 +1478,8 @@ pub fn negotiate(offered: &[ProtocolVersion]) -> Result<ServerHello, ProtocolErr
             Capability::TaskDependencyRead,
             Capability::ForeignLinkWrite,
             Capability::ForeignLinkRead,
+            Capability::ElevationDecision,
+            Capability::ElevationLedgerRead,
             Capability::RouteResolution,
             Capability::RouteRecording,
             Capability::RouteRead,
@@ -1341,6 +1649,11 @@ pub enum EventPayload {
         command: TaskCommand,
         task: Box<Task>,
     },
+    StreamChanged {
+        stream_id: ChangeStreamId,
+        command: symbiote_domain::StreamCommand,
+        stream: Box<ChangeStream>,
+    },
 }
 impl EventPayload {
     fn project_id(&self) -> &ProjectId {
@@ -1360,6 +1673,7 @@ impl EventPayload {
             Self::ProjectRegistered { project, .. } => &project.id,
             Self::RootPlacementObserved { root, .. } => &root.project_id,
             Self::TaskCreated { task, .. } | Self::TaskChanged { task, .. } => task.project_id(),
+            Self::StreamChanged { stream, .. } => stream.project_id(),
             Self::WorkRouted { decision, .. } => &decision.project_id,
             Self::TaskDependenciesSet { project_id, .. } => project_id,
             Self::TaskForeignLinksSet { project_id, .. } => project_id,
@@ -1520,6 +1834,9 @@ impl EventPayload {
             Self::TaskChanged { task_id, task, .. } => {
                 task.project_id() == project_id && task_id == task.id()
             }
+            Self::StreamChanged {
+                stream_id, stream, ..
+            } => stream.project_id() == project_id && stream_id == stream.id(),
             Self::DispatchPrepared {
                 preparation, at, ..
             } => {
@@ -1634,6 +1951,24 @@ pub struct ProjectSnapshot {
     pub cursor: JournalCursor,
 }
 
+/// The observed change-set of one Task's stream worktree: the observed
+/// HEAD (commit and branch/detached/unborn state), the changed paths, and
+/// the bounded tracked diff with bounded untracked content heads — the
+/// same observation shape the worker's run reports carry, read by the
+/// Host from the worktree its own reservation base names. `present` is
+/// false when the stream holds no reservation on this Host, and every
+/// other field is then `None`: absence is the answer, not a refusal, so a
+/// caller can tell "nothing is checked out" from "the evidence is not
+/// observable here" the latter being what a refusal would mean.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeObservation {
+    pub present: bool,
+    pub head: Option<symbiote_repo::HeadObservation>,
+    pub status: Option<symbiote_repo::WorktreeStatus>,
+    pub diff: Option<symbiote_repo::RunDiff>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
@@ -1693,7 +2028,22 @@ pub enum ResponseBody {
         projects: Vec<Project>,
     },
     Task(Box<Task>),
+    /// The observed change-set of one Task's stream worktree, whole with
+    /// its degradations named, or the fact that the stream holds no
+    /// reservation on this Host (`present: false`) — read from the
+    /// reservation base this Host enforces, never from a caller's path.
+    WorktreeObservation(Box<WorktreeObservation>),
+    /// The resolved context one dispatch's run is told, exactly as the
+    /// run received it: the canonical answer for "what does this run
+    /// actually see" (#329), read from the same resolution dispatch
+    /// preparation performed.
+    TaskContext(Box<symbiote_context::ResolvedContext>),
     ResourceConsent(Box<ResourceConsent>),
+    /// One Project's elevation ledger: every ask it was sent and every
+    /// decision made on it, each with what it is doing at the clock this
+    /// answer was read. A read of evidence and decisions — it licenses
+    /// nothing it lists.
+    Elevations(Box<symbiote_domain::ElevationLedger>),
     Receipt(Receipt),
     TaskLease(Box<symbiote_domain::TaskLease>),
     ProviderConnection(Box<symbiote_domain::ProviderConnection>),

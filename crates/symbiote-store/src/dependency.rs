@@ -247,13 +247,20 @@ impl Store {
     }
 }
 
-/// Shared gate implementation; called inside the apply_task transaction and
-/// by the read-only query above.
-pub(super) fn completion_gate(
+/// The gates recorded against one task that are not satisfied yet, in the
+/// canonical order the DAG answer and the scheduling projection publish them.
+///
+/// This is the one read of the question, and both of its consumers use it: the
+/// start boundary, which refuses on a non-empty answer, and the dispatch
+/// composition, which records it so a report can say what is holding a task
+/// before the boundary is asked. Two reads would be two chances to answer
+/// different questions, and the report promising a dispatch the boundary then
+/// refuses is exactly that.
+pub(super) fn unsatisfied_gates(
     connection: &Connection,
     project: &ProjectId,
     task: &TaskId,
-) -> Result<()> {
+) -> Result<Vec<TaskGate>> {
     {
         let mut statement = connection.prepare(
             "SELECT kind,target_project,target_task FROM task_dependencies WHERE project_id=?1 AND task_id=?2",
@@ -265,7 +272,7 @@ pub(super) fn completion_gate(
                 r.get::<_, String>(2)?,
             ))
         })?;
-        let mut blocking: Vec<(String, String)> = Vec::new();
+        let mut blocking: Vec<(String, String, TaskDependencyKind)> = Vec::new();
         for row in outgoing {
             let (kind, target_project, target_task) = row?;
             let kind: TaskDependencyKind = serde_json::from_str(&kind)?;
@@ -276,7 +283,7 @@ pub(super) fn completion_gate(
             // which kinds mean this, so this scan cannot drift from the DAG
             // answer's.
             if orders_start(&kind) {
-                blocking.push((target_project, target_task));
+                blocking.push((target_project, target_task, kind));
             }
         }
         let mut statement = connection.prepare(
@@ -296,10 +303,11 @@ pub(super) fn completion_gate(
             // so the owner is the work that has to finish. `blocks_completion`
             // is the one owner of which kinds mean this.
             if blocks_completion(&kind) {
-                blocking.push((owner_project, owner_task));
+                blocking.push((owner_project, owner_task, kind));
             }
         }
-        for (target_project, target_task) in blocking {
+        let mut unresolved = Vec::with_capacity(blocking.len());
+        for (target_project, target_task, kind) in blocking {
             let body: String = connection
                 .query_row(
                     "SELECT body FROM tasks WHERE id=?1 AND project_id=?2",
@@ -314,10 +322,36 @@ pub(super) fn completion_gate(
             // counts as delivered therefore lands here without this write path
             // being restated.
             if !gate_satisfied(target.state()) {
-                return Err(StoreError::DependenciesUnresolved);
+                unresolved.push(TaskGate {
+                    kind,
+                    target: GraphTaskRef {
+                        project_id: ProjectId::new(&target_project)
+                            .map_err(|_| StoreError::Integrity("bad gate project".into()))?,
+                        task_id: TaskId::new(&target_task)
+                            .map_err(|_| StoreError::Integrity("bad gate task".into()))?,
+                    },
+                    target_state: target.state().clone(),
+                });
             }
         }
+        // Canonical order, so this answer and the DAG answer's are the same
+        // list and not merely the same set.
+        unresolved.sort_by(|a, b| (&a.kind, &a.target).cmp(&(&b.kind, &b.target)));
+        Ok(unresolved)
+    }
+}
+
+/// The write-path and start-path refusal: the same answer, named.
+pub(super) fn completion_gate(
+    connection: &Connection,
+    project: &ProjectId,
+    task: &TaskId,
+) -> Result<()> {
+    let unresolved = unsatisfied_gates(connection, project, task)?;
+    if unresolved.is_empty() {
         Ok(())
+    } else {
+        Err(StoreError::DependenciesUnresolved(unresolved))
     }
 }
 

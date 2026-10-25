@@ -128,8 +128,260 @@ impl ElevationRequest {
     }
 }
 
+/// What one decided elevation is doing at a reading clock. Standing is not
+/// stored: it is the lease read at the clock the ledger was served, so a
+/// lease that was live a moment ago and is dead now says so without anyone
+/// having to run a sweeper to discover it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum ElevationStanding {
+    /// Approved, unrevoked, and inside its window: this lease licenses its
+    /// permission for its dispatch at the reading clock.
+    Live,
+    /// Approved, and the window has closed. Expiry IS the automatic
+    /// revocation, and this is the fact that says it happened.
+    Expired,
+    /// Manually revoked. Dead regardless of any window, and never undone.
+    Revoked,
+    /// A denial: evidence the authority saw the ask and refused it. It never
+    /// licensed anything and it never will.
+    Denied,
+}
+
+/// One decided elevation as a reader meets it: the whole lease, and what it is
+/// doing right now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecidedElevation {
+    pub lease: ElevationLease,
+    pub standing: ElevationStanding,
+}
+
+impl DecidedElevation {
+    /// The lease read at `at`. The order matters: a denial is a denial
+    /// whether or not it was revoked, and a revocation outranks a window
+    /// because a revoked lease is dead however long its window ran.
+    pub fn read(lease: ElevationLease, at: Timestamp) -> Self {
+        let standing = if !lease.approved {
+            ElevationStanding::Denied
+        } else if lease.revoked_at.is_some() {
+            ElevationStanding::Revoked
+        } else if lease.licenses(at) {
+            ElevationStanding::Live
+        } else {
+            ElevationStanding::Expired
+        };
+        Self { lease, standing }
+    }
+}
+
+/// Everything one Project has asked for and everything it has been granted:
+/// the one read an operator needs before answering an ask, and the one read
+/// they need before taking an answer back.
+///
+/// It publishes evidence and decisions, never authority. A live lease here
+/// says a permission is licensed for one dispatch; it does not widen a
+/// binding, and it grants nothing to whoever reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ElevationLedger {
+    pub project_id: ProjectId,
+    /// The clock the standings were judged at, carried so a reader can tell
+    /// how old this answer is rather than re-deriving it from its own.
+    pub read_at: Timestamp,
+    /// The asks, in the order they were filed. An ask licenses nothing at
+    /// any standing; it is here so the decision beside it can be read next
+    /// to the request it answers.
+    pub requests: Vec<AnsweredRequest>,
+    pub leases: Vec<DecidedElevation>,
+}
+
+/// One ask beside the decision that answered it, or the absence of one.
+///
+/// The correlation is on the three facts an ask and its decision share — the
+/// task, the dispatch and the permission — because those are exactly the
+/// three a decision is *about*. An ask naming a dispatch that has since
+/// finished has no answer by construction rather than by anyone's choice,
+/// and an ask with `decided_by: null` says so in the answer rather than
+/// leaving a reader to work it out from two lists and a join.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnsweredRequest {
+    pub request: ElevationRequest,
+    /// The id of the lease that decided this ask, or nothing when no decision
+    /// names the same task, dispatch and permission. It is a lease's own
+    /// identity, so a reader can revoke exactly the decision it is looking
+    /// at.
+    pub decided_by: Option<CommandId>,
+}
+
+impl AnsweredRequest {
+    /// The ask read against the decisions on the ledger. A denial counts: it
+    /// is the answer to an ask, and it is the answer that is easiest to lose
+    /// sight of.
+    pub fn read(request: ElevationRequest, leases: &[DecidedElevation]) -> Self {
+        let decided_by = leases
+            .iter()
+            .find(|decided| {
+                decided.lease.task_id == request.task_id
+                    && decided.lease.dispatch_id == request.dispatch_id
+                    && decided.lease.permission == request.permission
+            })
+            .map(|decided| decided.lease.id.clone());
+        Self {
+            request,
+            decided_by,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The correlation is on the three facts a decision is ABOUT, so a
+    /// decision for another dispatch, another permission or another task
+    /// leaves its ask unanswered — and a denial answers an ask exactly as an
+    /// approval does, which is the half that is easiest to lose.
+    #[test]
+    fn an_ask_names_the_decision_that_answered_it_or_says_it_was_not_answered() {
+        let ask = ElevationRequest {
+            id: CommandId::new("ask-1").unwrap(),
+            project_id: ProjectId::new("project").unwrap(),
+            task_id: TaskId::new("task").unwrap(),
+            dispatch_id: DispatchId::new("dispatch").unwrap(),
+            permission: Permission::ExecuteProcess,
+            reason: "the run needs the consented build tool".into(),
+            requested_at: Timestamp(1_000),
+        };
+        // Nothing decided: the ask is published as unanswered rather than
+        // being dropped, because a dropped ask is a question with no trace.
+        let unanswered = AnsweredRequest::read(ask.clone(), &[]);
+        assert_eq!(unanswered.decided_by, None);
+        assert_eq!(unanswered.request, ask);
+        let decision =
+            |id: &str, task: &str, dispatch: &str, permission: Permission| DecidedElevation {
+                lease: ElevationLease {
+                    id: CommandId::new(id).unwrap(),
+                    project_id: ProjectId::new("project").unwrap(),
+                    task_id: TaskId::new(task).unwrap(),
+                    dispatch_id: DispatchId::new(dispatch).unwrap(),
+                    permission,
+                    reason: "the authority's sentence".into(),
+                    approved: true,
+                    approved_by: UserId::new("owner").unwrap(),
+                    decided_at: Timestamp(1_100),
+                    expires_at: Timestamp(1_100 + 300_000),
+                    revoked_at: None,
+                },
+                standing: ElevationStanding::Live,
+            };
+        // A decision that shares two of the three facts and not the third is
+        // a decision about something else.
+        for other in [
+            decision(
+                "other-task",
+                "task-two",
+                "dispatch",
+                Permission::ExecuteProcess,
+            ),
+            decision(
+                "other-dispatch",
+                "task",
+                "dispatch-two",
+                Permission::ExecuteProcess,
+            ),
+            decision(
+                "other-permission",
+                "task",
+                "dispatch",
+                Permission::UseCredential,
+            ),
+        ] {
+            assert_eq!(
+                AnsweredRequest::read(ask.clone(), &[other]).decided_by,
+                None,
+                "a decision about other work is not an answer to this ask"
+            );
+        }
+        // The matching one answers it, and it is the FIRST match: two
+        // decisions for the same ask are two leases, and naming the one that
+        // was written first is what keeps the pairing stable across reads.
+        let mut second = decision("second", "task", "dispatch", Permission::ExecuteProcess);
+        second.lease.decided_at = Timestamp(1_200);
+        let answered = AnsweredRequest::read(
+            ask.clone(),
+            &[
+                decision("first", "task", "dispatch", Permission::ExecuteProcess),
+                second,
+            ],
+        );
+        assert_eq!(answered.decided_by, Some(CommandId::new("first").unwrap()));
+        // A denial is an answer: the pairing does not care which way it went,
+        // which is what keeps a refused ask from reading as an ignored one.
+        let mut refused = decision("refused", "task", "dispatch", Permission::ExecuteProcess);
+        refused.lease.approved = false;
+        refused.lease.expires_at = Timestamp(1_100);
+        refused.standing = ElevationStanding::Denied;
+        assert_eq!(
+            AnsweredRequest::read(ask, &[refused]).decided_by,
+            Some(CommandId::new("refused").unwrap())
+        );
+    }
+
+    /// The standing is a READ at a clock, not a fact the record carries: the
+    /// same lease is live, expired or revoked depending only on when it is
+    /// asked about, and the two orderings that could be got wrong are a
+    /// revocation outranking a window and a denial outranking both.
+    #[test]
+    fn a_standing_is_read_at_a_clock_and_never_stored() {
+        let live = lease(true);
+        assert_eq!(
+            DecidedElevation::read(live.clone(), Timestamp(1_000)).standing,
+            ElevationStanding::Live
+        );
+        assert_eq!(
+            DecidedElevation::read(live.clone(), Timestamp(1_000 + 299_999)).standing,
+            ElevationStanding::Live
+        );
+        assert_eq!(
+            DecidedElevation::read(live.clone(), Timestamp(301_000)).standing,
+            ElevationStanding::Expired
+        );
+        // A lease read BEFORE it was decided is not live: the window has not
+        // opened yet, and saying "expired" is the honest half of that — it
+        // licenses nothing at that clock either way.
+        assert_eq!(
+            DecidedElevation::read(live.clone(), Timestamp(999)).standing,
+            ElevationStanding::Expired
+        );
+        // A revocation outranks a window: dead at once, and dead inside the
+        // window it was granted for, which is the whole point of one.
+        let mut revoked = lease(true);
+        revoked.revoked_at = Some(Timestamp(1_500));
+        assert_eq!(
+            DecidedElevation::read(revoked.clone(), Timestamp(1_500)).standing,
+            ElevationStanding::Revoked
+        );
+        assert_eq!(
+            DecidedElevation::read(revoked, Timestamp(1_600)).standing,
+            ElevationStanding::Revoked
+        );
+        // A denial is a denial whatever else is true of it.
+        let mut denied = lease(false);
+        denied.revoked_at = Some(Timestamp(1_200));
+        assert_eq!(
+            DecidedElevation::read(denied, Timestamp(9_999)).standing,
+            ElevationStanding::Denied
+        );
+        // The lease itself is carried whole beside the standing, so a reader
+        // never has to re-derive a fact the record already holds.
+        assert_eq!(
+            DecidedElevation::read(live, Timestamp(1_000))
+                .lease
+                .expires_at,
+            Timestamp(1_000 + 300_000)
+        );
+    }
+
     use super::*;
 
     fn lease(approved: bool) -> ElevationLease {

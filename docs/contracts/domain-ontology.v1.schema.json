@@ -3376,6 +3376,19 @@
           "type": "object"
         },
         {
+          "description": "Reclaim an integrated stream's worktree. Carries no commit: the\ncommits are already recorded, and the caller proves they survive the\nremoval rather than restating them here as if the Host had not read\nthem from the stream.",
+          "properties": {
+            "kind": {
+              "const": "release",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "kind": {
               "const": "cancel",
@@ -3474,15 +3487,24 @@
       ]
     },
     "StreamState": {
-      "enum": [
-        "active",
-        "needs_revalidation",
-        "collided",
-        "validated",
-        "integrated",
-        "cancelled"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "active",
+            "needs_revalidation",
+            "collided",
+            "validated",
+            "integrated",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "released",
+          "description": "The integrated stream's worktree has been reclaimed. Terminal, and\ndistinct from `Integrated`: the work landed either way, but the\nlocation that held it is gone, so the stream can never be provisioned\nagain and a caller must not read `Integrated` as \"still on disk\".",
+          "type": "string"
+        }
+      ]
     },
     "Task": {
       "additionalProperties": false,

@@ -252,7 +252,7 @@ fn completion_blocks_on_unresolved_dependencies_and_incoming_blocks() {
     // gate even before lifecycle evidence is considered.
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&project, &task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
     // Incoming blocks: other_task blocking completion of task.
     set_edges(
@@ -270,14 +270,14 @@ fn completion_blocks_on_unresolved_dependencies_and_incoming_blocks() {
     .unwrap();
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&project, &task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
     // Remove the owner's outgoing requires via replacement; the incoming
     // blocks edge from other_task must still gate.
     set_edges(&mut store, "dep-clear", &project, &task, &[], 13).unwrap();
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&project, &task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
     // Non-blocking kinds never gate completion: replace the blocker's edges.
     set_edges(
@@ -327,7 +327,7 @@ fn blocks_edges_gate_only_the_blocked_target_and_clearing_reopens() {
     );
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&other_project, &other_task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
     // Clearing to the empty set is a legal write and the store reopens. The
     // blocks edge is owned by the blocker, so clearing it releases the
@@ -369,7 +369,7 @@ fn blocks_edges_gate_only_the_blocked_target_and_clearing_reopens() {
     let store = Store::open(temp.database()).unwrap();
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&fourth_project, &fourth_task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
 }
 
@@ -456,7 +456,7 @@ fn a_cancelled_prerequisite_does_not_satisfy_a_completion_gate() {
         .unwrap();
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&project, &task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
 }
 
@@ -491,7 +491,7 @@ fn only_the_enforced_kinds_block_completion() {
         assert!(
             matches!(
                 store.dependencies_satisfied_for_completion(&project, &task),
-                Err(StoreError::DependenciesUnresolved)
+                Err(StoreError::DependenciesUnresolved(_))
             ),
             "{kind:?} must gate completion"
         );
@@ -518,7 +518,7 @@ fn only_the_enforced_kinds_block_completion() {
     .unwrap();
     assert!(matches!(
         store.dependencies_satisfied_for_completion(&project, &task),
-        Err(StoreError::DependenciesUnresolved)
+        Err(StoreError::DependenciesUnresolved(_))
     ));
     // The incoming `blocks` edge still gates, so it is cleared before the
     // provenance kinds are tried; otherwise the case would be asserting that

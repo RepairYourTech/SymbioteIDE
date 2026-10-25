@@ -63,6 +63,8 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("get_scheduling_projection", Risk::ReadOnly),
     ("get_team", Risk::ReadOnly),
     ("get_task_origin", Risk::ReadOnly),
+    ("observe_worktree", Risk::ReadOnly),
+    ("get_task_context", Risk::ReadOnly),
     ("get_binding", Risk::ReadOnly),
     ("get_binding_readiness", Risk::ReadOnly),
     ("get_compatibility_dossier", Risk::ReadOnly),
@@ -75,11 +77,56 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("get_billing_entitlement", Risk::ReadOnly),
     ("get_model_descriptor", Risk::ReadOnly),
     ("get_resource_consent", Risk::ReadOnly),
+    // The elevation ledger: what a Project was asked for and what it decided.
+    // A read, because it publishes evidence and grants nothing — a lease it
+    // lists as live licenses exactly the dispatch it names, and reading this
+    // widens nobody's access.
+    ("get_elevations", Risk::ReadOnly),
     // Mutations: they change state, but they neither start or end execution
     // nor widen authority.
     ("create_task", Risk::Mutation),
     ("prepare_dispatch", Risk::Mutation),
     ("request_task_completion", Risk::Mutation),
+    ("validate_change_stream", Risk::Mutation),
+    ("begin_task_verification", Risk::Mutation),
+    ("integrate_change_stream", Risk::Mutation),
+    // Reclaims a worktree, so it removes a directory tree — but it starts and
+    // ends no execution and cannot express any operation, which is what
+    // `Dangerous` means in this table. The removal itself is gated by the
+    // evidence the Host proves before it removes anything.
+    ("release_change_stream", Risk::Mutation),
+    // Discards a checkout, uncommitted files included. The commits survive in
+    // the branch, so this destroys work that was never recorded anywhere else
+    // — which is exactly what the dangerous kind is for, and the caller's
+    // word is the confirmation the Change Stream contract asks for.
+    ("abandon_change_stream", Risk::Dangerous),
+    ("recover_task", Risk::Mutation),
+    // Moves the stream's head to where its work is and its target to where the
+    // Root is, which invalidates the evidence the previous target was
+    // validated against. A mutation: it decides what may be merged where.
+    ("advance_change_stream", Risk::Mutation),
+    // Merges the Root into the stream's branch, adding a commit to it. A
+    // mutation and not a dangerous kind because the one thing that would
+    // destroy work is the one thing this refuses: where both sides changed a
+    // path the Host asks git first, says which paths, and merges nothing.
+    // Nothing already committed is rewritten, so no id the store has recorded
+    // moves under a caller.
+    ("reconcile_change_stream", Risk::Mutation),
+    // Ends a run's execution authority — the same thing `complete_task` is
+    // gated for, and for the same reason: the run stops being the task's
+    // future, and only an operator may say so.
+    ("interrupt_task", Risk::Dangerous),
+    ("cancel_task", Risk::Dangerous),
+    // Holds a task, which changes what the scheduler offers and nothing else:
+    // no run starts, stops, or is expressible, and nothing is discarded — the
+    // task and its stream are exactly where they were, one state further from
+    // being started. A mutation.
+    ("block_task", Risk::Mutation),
+    // Lifts a hold, which is the same class of change in the other direction.
+    // Notably NOT a start: this offers the task for scheduling and the
+    // scheduler's own checks still decide, so a caller cannot use it to begin
+    // execution — which is why it is a mutation and not a dangerous kind.
+    ("unblock_task", Risk::Mutation),
     ("request_elevation", Risk::Mutation),
     ("replace_binding", Risk::Mutation),
     ("record_route", Risk::Mutation),
@@ -103,8 +150,18 @@ pub const OPERATION_RISKS: &[(&str, Risk)] = &[
     ("start_prepared_task", Risk::Dangerous),
     ("run_started_dispatch", Risk::Dangerous),
     ("shutdown", Risk::Dangerous),
+    // Grants one permission to one dispatch for a bounded window, which is
+    // the definition of widening authority and the one operation whose whole
+    // purpose is to make something possible that was not possible before it.
+    // Dangerous, beside the operations that start execution for the same
+    // reason: a caller has to say out loud that it is granting something.
     ("decide_elevation", Risk::Dangerous),
     ("record_resource_consent", Risk::Dangerous),
+    // Ending a Task's execution: a claim, bound by the Host, that every gate
+    // its dispatch contract required has passed. A mutation changes state;
+    // this one decides that the work is done, so it is gated like the
+    // operations that start execution.
+    ("complete_task", Risk::Dangerous),
 ];
 
 /// `None` for a kind this build does not know: the caller must fail closed
@@ -280,7 +337,7 @@ fn envelope_schema() -> serde_json::Value {
                 "additionalProperties": false,
                 "properties": {
                     "code": {
-                        "description": "The daemon's error code, or one of the CLI's own: `authorization_required` (nothing was sent), `policy_invalid` (the configured policy could not be honored; nothing was sent), `unreachable`.",
+                        "description": "The daemon's error code, or one of the CLI's own: `authorization_required` (nothing was sent), `policy_invalid` (the configured policy could not be honored; nothing was sent), `request_refused` (the request was past the frame bound; nothing was sent), `unreachable`.",
                         "type": "string",
                         "minLength": 1
                     },

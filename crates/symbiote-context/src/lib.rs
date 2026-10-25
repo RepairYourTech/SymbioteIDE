@@ -52,13 +52,14 @@ use zeroize::Zeroize;
 /// the origin work item's structured guidance, all from trusted Host
 /// state. Serialized into the loop's task prompt by the caller; the loop
 /// sees text, this crate owns the bounded composition.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedContext {
     pub dispatch_id: DispatchId,
     pub task_id: TaskId,
     pub project_id: ProjectId,
-    /// The origin work item's description — the run's prompt text.
+    /// The run's prompt text: the origin work item's description, or its
+    /// title when it has no description.
     pub prompt: BoundedText,
     /// The origin work item's requirements, constraints, risks and
     /// acceptance items, each bounded, in work-item order.
@@ -83,7 +84,8 @@ pub const MAX_LIST_TOTAL_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolutionError {
-    /// The origin work item is missing or its description is empty.
+    /// The origin work item is missing, or it has neither a description nor
+    /// a title to prompt from.
     NoPrompt,
     /// A list exceeded its structural bound.
     Overbound,
@@ -101,7 +103,7 @@ impl std::error::Error for ResolutionError {}
 /// A bounded text item with a visible truncation marker on overflow —
 /// the same char-boundary discipline as every other bounded text in the
 /// system.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct BoundedText(String);
 impl BoundedText {
@@ -165,6 +167,11 @@ pub trait ContextSource {
 /// The bounded slice of a work item a run's context needs.
 #[derive(Clone)]
 pub struct WorkItemText {
+    /// The work item's title. The domain requires one and leaves the
+    /// description optional, so this is the prompt when the description is
+    /// blank: a work item that has a title has said what the work is, and a
+    /// run that refused it would be refusing the only sentence there is.
+    pub title: String,
     pub description: String,
     pub requirements: Vec<String>,
     pub constraints: Vec<String>,
@@ -194,10 +201,21 @@ pub fn resolve_context(
     let work = source
         .work_item_text(inputs.project_id, inputs.origin_work)?
         .ok_or(ResolutionError::NoPrompt)?;
-    if work.description.trim().is_empty() {
+    // The prompt is the description when there is one, and the title when
+    // there is not. The domain requires a title and leaves the description
+    // optional, so refusing a work item that has a title would refuse the only
+    // sentence the author wrote — and it would refuse it at the dispatch
+    // activation, after the Task was on record as dispatchable, a worktree was
+    // provisioned and a lease taken.
+    let source = if work.description.trim().is_empty() {
+        work.title.as_str()
+    } else {
+        work.description.as_str()
+    };
+    if source.trim().is_empty() {
         return Err(ResolutionError::NoPrompt);
     }
-    let prompt = BoundedText::new(&work.description)?;
+    let prompt = BoundedText::new(source)?;
     Ok(ResolvedContext {
         dispatch_id: inputs.dispatch_id.clone(),
         task_id: inputs.task_id.clone(),
@@ -558,6 +576,7 @@ mod tests {
         let (dispatch, task, project, work) = ids("resolve");
         let source = FixedSource {
             item: Some(WorkItemText {
+                title: "A work item.".into(),
                 description: "Implement the bounded change.".into(),
                 requirements: vec!["must compile".into(), "must test".into()],
                 constraints: vec!["no network".into()],
@@ -588,6 +607,7 @@ mod tests {
         let (dispatch, task, project, work) = ids("overbound");
         let source = FixedSource {
             item: Some(WorkItemText {
+                title: "A work item.".into(),
                 description: "d".into(),
                 requirements: (0..65).map(|i| format!("r{i}")).collect(),
                 constraints: vec![],
@@ -606,6 +626,7 @@ mod tests {
         // MAX_LIST_ITEMS items resolve.
         let source = FixedSource {
             item: Some(WorkItemText {
+                title: "A work item.".into(),
                 description: "d".into(),
                 requirements: (0..MAX_LIST_ITEMS).map(|i| format!("r{i}")).collect(),
                 constraints: vec![],
@@ -626,6 +647,7 @@ mod tests {
         // not.
         let source = FixedSource {
             item: Some(WorkItemText {
+                title: "A work item.".into(),
                 description: "d".into(),
                 requirements: (0..8).map(|_| "x".repeat(MAX_ITEM_BYTES)).collect(),
                 constraints: vec![],
@@ -645,6 +667,7 @@ mod tests {
         // budget (9 x 8192 > 65536).
         let source = FixedSource {
             item: Some(WorkItemText {
+                title: "A work item.".into(),
                 description: "d".into(),
                 requirements: vec!["x".repeat(MAX_ITEM_BYTES); 9],
                 constraints: vec![],
@@ -667,6 +690,7 @@ mod tests {
         let emoji = "🔍".repeat(MAX_ITEM_BYTES); // 4-byte chars
         let source = FixedSource {
             item: Some(WorkItemText {
+                title: "A work item.".into(),
                 description: "ok".into(),
                 requirements: vec![emoji],
                 constraints: vec![],
@@ -697,9 +721,11 @@ mod tests {
             ),
             Err(ResolutionError::NoPrompt)
         );
+        // Neither a description nor a title: there is no sentence at all.
         let source = FixedSource {
             item: Some(WorkItemText {
-                description: "   ".into(),
+                title: "   ".into(),
+                description: "".into(),
                 requirements: vec![],
                 constraints: vec![],
                 risks: vec![],
@@ -713,6 +739,46 @@ mod tests {
             ),
             Err(ResolutionError::NoPrompt)
         );
+    }
+
+    /// A work item with a title and no description is a work item that said
+    /// what the work is. The domain requires the title and leaves the
+    /// description optional, so a run that refused it would be refusing the
+    /// only sentence the author wrote — and it would refuse it at the dispatch
+    /// activation, long after the Task was on record as dispatchable, a
+    /// worktree was provisioned and a lease was taken. The refusal the
+    /// operator saw was `failed_precondition: task origin provides no run
+    /// prompt`, on a Task every prior step had accepted.
+    #[test]
+    fn a_title_is_the_prompt_when_a_work_item_has_no_description() {
+        let (dispatch, task, project, work) = ids("title-prompt");
+        for (title, description, expected) in [
+            ("Fix the bug", "", "Fix the bug"),
+            ("Fix the bug", "   ", "Fix the bug"),
+            ("Fix the bug", "Do the work.", "Do the work."),
+            ("Fix the bug", "\n\t", "Fix the bug"),
+        ] {
+            let source = FixedSource {
+                item: Some(WorkItemText {
+                    title: title.into(),
+                    description: description.into(),
+                    requirements: vec![],
+                    constraints: vec![],
+                    risks: vec![],
+                    acceptance: vec![],
+                }),
+            };
+            let context = resolve_context(
+                &source,
+                inputs(&dispatch, &task, &project, &work, access(&project)),
+            )
+            .unwrap_or_else(|error| panic!("{title:?}/{description:?} refused as {error:?}"));
+            assert_eq!(
+                context.prompt.as_str(),
+                expected,
+                "{title:?}/{description:?}"
+            );
+        }
     }
 
     fn lease_request<'a>(
