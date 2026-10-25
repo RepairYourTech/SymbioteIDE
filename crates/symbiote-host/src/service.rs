@@ -683,12 +683,15 @@ fn is_ancestry(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute(
     store: &mut Store,
     principal: &Principal,
     inventory: &mut crate::inventory::InventoryService,
     workers: &mut crate::runner::WorkerTransports,
+    running: &RunningDispatches,
     request: &Request,
+    deferred: &mut Option<DeferredRun>,
 ) -> Result<ResponseBody, ProtocolError> {
     authorize(principal, request)?;
     match &request.operation {
@@ -1090,30 +1093,47 @@ fn execute(
                     _ => Err(dispatch_binding_refused()),
                 };
             }
-            // Everything past the two request-identity preconditions above is
-            // an execution attempt, and an attempt that refuses has to leave
-            // the task somewhere honest. The failure is filed first and the
-            // original refusal is returned unchanged, so the operator sees
-            // why it failed and the record says it too.
-            match run_started_dispatch_body(
+            // The claim, under the same locks the prechecks read: nothing else
+            // may run this dispatch's turn while this one is in flight, and
+            // the refusal is the caller's to read rather than a second turn
+            // for the Host to run. Not filed as a run failure — the run that
+            // owns the dispatch is still executing, and it will file its own
+            // outcome.
+            let claim =
+                DispatchRunGuard::acquire(running, current.id()).ok_or_else(|| ProtocolError {
+                    code: ErrorCode::Conflict,
+                    message: "a run is already in flight for this dispatch".into(),
+                })?;
+            // Everything past the identity prechecks has claimed work, so
+            // every refusal it can return is filed against the task before
+            // the caller sees it — the same rule the turn's own halt answers
+            // by when the deferred run resolves.
+            match prepare_started_dispatch(
                 store,
                 workers,
                 inventory,
                 principal,
-                &task_record,
+                request,
                 task_id,
+                &task_record,
+                current,
+                claim,
+                deferred,
                 at,
             ) {
-                Ok(body) => Ok(body),
-                Err(error) => Err(file_run_failure(
+                Ok(placeholder) => Ok(placeholder),
+                Err(error) => match file_run_failure(
                     store,
-                    principal,
-                    inventory,
-                    request,
+                    principal.user_id(),
+                    inventory.host_id(),
+                    &request.command_id,
                     &task_record,
                     task_id,
                     error,
-                )?),
+                ) {
+                    Ok(refusal) => Err(refusal),
+                    Err(failure) => Err(failure),
+                },
             }
         }
         Operation::RequestTaskCompletion {
@@ -3284,14 +3304,183 @@ fn execute(
     }
 }
 
+/// The dispatches a connection thread is currently running a turn for. The
+/// store's own state cannot say this: a task stays `Running` for the whole
+/// turn, so "is this dispatch already executing?" is a question about the
+/// Host's live threads, and answering it from journaled state would answer
+/// it for a turn that already finished. One set, one lock, held only for the
+/// insert and the remove.
+pub type RunningDispatches =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashSet<symbiote_domain::DispatchId>>>;
+
+/// Membership of one dispatch in [`RunningDispatches`], held for exactly as
+/// long as its turn is in flight. Acquired under the store lock — together
+/// with the `Running` precheck it makes "this task is running under this
+/// dispatch" and "no other thread is running it" one decision — and dropped
+/// when `DeferredRun::resolve` finishes, however it finishes, because `Drop`
+/// is the one path that cannot be forgotten. A second activation of the same
+/// dispatch while one is in flight is refused by name rather than queued: the
+/// retry contract for a run is the task's own state, and a caller that
+/// re-activates a dispatch whose turn is still executing is a caller the Host
+/// must not run twice.
+pub struct DispatchRunGuard {
+    running: RunningDispatches,
+    dispatch_id: symbiote_domain::DispatchId,
+}
+
+impl DispatchRunGuard {
+    /// Claims `dispatch_id` for this Host, or `None` when another connection
+    /// is already running it.
+    pub fn acquire(
+        running: &RunningDispatches,
+        dispatch_id: &symbiote_domain::DispatchId,
+    ) -> Option<Self> {
+        let mut held = running
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !held.insert(dispatch_id.clone()) {
+            return None;
+        }
+        Some(Self {
+            running: std::sync::Arc::clone(running),
+            dispatch_id: dispatch_id.clone(),
+        })
+    }
+}
+
+impl Drop for DispatchRunGuard {
+    fn drop(&mut self) {
+        self.running
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.dispatch_id);
+    }
+}
+
+/// A registry with no dispatch in flight: what `serve_full` starts the Host
+/// with.
+pub fn empty_running_dispatches() -> RunningDispatches {
+    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// A `run_started_dispatch` whose preconditions are all checked, whose
+/// worktree is provisioned and whose transport is built, but whose TURN has
+/// not run yet — because the turn is the one part of activation that can take
+/// minutes, and it must not run while the Host's store lock is held (#38: a
+/// headless Host serving several clients at once, one of which is running
+/// work). The answer to the operation is not known until the turn finishes,
+/// so the response the caller gets first is a placeholder and the real one is
+/// built by [`DeferredRun::resolve`] afterwards.
+pub struct DeferredRun {
+    pub prepared: crate::runner::PreparedRun<'static>,
+    /// The claim on this dispatch, released when the turn's evidence is filed
+    /// (or its failure is) and `resolve` returns — never before.
+    pub claim: DispatchRunGuard,
+    /// What a failure must be filed against: the caller the Host answered
+    /// and the command a retry will repeat, so the `-run-failed` journal
+    /// entry a deferred halt writes is the same one the synchronous path
+    /// would have written — a task must not stay `Running` because its run
+    /// moved off the store lock (#764's failed-run-is-a-failure rule).
+    pub user_id: symbiote_domain::UserId,
+    pub host_id: symbiote_domain::HostId,
+    pub request_command_id: symbiote_domain::CommandId,
+}
+
+impl DeferredRun {
+    /// Runs the turn with the store RELEASED, then re-takes it to file the
+    /// evidence, and answers the operation. Taking the lock is this
+    /// function's own job precisely so that no caller can run a turn while
+    /// holding it: there is no API here that accepts a store borrow across
+    /// the turn, so the discipline cannot be forgotten.
+    pub fn resolve(self, store: &std::sync::Mutex<Store>) -> Result<ResponseBody, ProtocolError> {
+        let Self {
+            prepared,
+            claim,
+            user_id,
+            host_id,
+            request_command_id,
+        } = self;
+        let mut prepared = prepared;
+        let task_id = prepared.task_id().clone();
+        let runtime = prepared.runtime();
+        // The turn. Deliberately outside the `lock()` scope below.
+        let _ = prepared.execute();
+        let outcome = {
+            let mut guard = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match prepared.file(&mut guard) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    // The run halted after the store was released, and the
+                    // rule the synchronous path answers by is still the rule:
+                    // a task with a live dispatch does not stay `Running`
+                    // because its turn refused, and the lease the run held
+                    // does not keep fencing the task's re-dispatch. Filed
+                    // here under the same lock, then the refusal is answered.
+                    let refusal = worker_error(error);
+                    // The same generation question `file` refused on: a task
+                    // that was interrupted, recovered and re-started while
+                    // this turn ran must not be failed by the turn that was
+                    // superseded, and its lease is not this run's to release.
+                    if !prepared.generation_is_current(&guard) {
+                        return Err(refusal);
+                    }
+                    let task_record = guard.task(&task_id).map_err(storage_error)?;
+                    let answered = file_run_failure(
+                        &mut guard,
+                        &user_id,
+                        &host_id,
+                        &request_command_id,
+                        &task_record,
+                        &task_id,
+                        refusal,
+                    );
+                    // The failure filed and the refusal is the answer; a
+                    // filing that itself refused answers with the store's
+                    // refusal, which is a worse one to swallow.
+                    return match answered {
+                        Ok(refusal) => Err(refusal),
+                        Err(failure) => Err(failure),
+                    };
+                }
+            }
+        };
+        let answer = ResponseBody::WorkerRun(Box::new(WorkerRun {
+            task_id,
+            dispatch_id: outcome.dispatch_id,
+            runtime,
+            completed: outcome.completion_filed,
+        }));
+        // The claim is released here and not earlier: the dispatch is not
+        // available for another run until this one's evidence is filed and
+        // its outcome is built, whatever the outcome was.
+        drop(claim);
+        Ok(answer)
+    }
+}
+
 pub fn handle(
     store: &mut Store,
     principal: &Principal,
     inventory: &mut crate::inventory::InventoryService,
     workers: &mut crate::runner::WorkerTransports,
+    running: &RunningDispatches,
     request: Request,
-) -> (Response, bool) {
-    let result = execute(store, principal, inventory, workers, &request);
+) -> (Response, bool, Option<DeferredRun>) {
+    // The out-channel for the one operation whose answer depends on a turn
+    // that must not run under this borrow. Every other operation answers from
+    // state the borrow already covers.
+    let mut deferred = None;
+    let result = execute(
+        store,
+        principal,
+        inventory,
+        workers,
+        running,
+        &request,
+        &mut deferred,
+    );
     let shutdown = result.is_ok() && matches!(request.operation, Operation::Shutdown {});
     (
         Response {
@@ -3300,6 +3489,7 @@ pub fn handle(
             result,
         },
         shutdown,
+        deferred,
     )
 }
 
@@ -3442,29 +3632,94 @@ fn resolve_route(
         .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
 }
 
-/// The execution half of `run_started_dispatch`, split out so every refusal
-/// it can produce is recorded against the task before it reaches the caller.
+fn reclaim_worktree(
+    git: &mut impl symbiote_repo::GitExecutor,
+    checkout: &std::path::Path,
+    reservation: &symbiote_worktrees::Reservation,
+    force: symbiote_repo::RemovalForce,
+) -> Result<(), ProtocolError> {
+    let worktree = reservation.derived.worktree_path(&reservation.base);
+    // The reclaim is complete when the marker is gone — that is the
+    // reservation crate's own definition of released, and a directory left
+    // behind without one is an abandoned location it explicitly never
+    // reclaims. Asking again must therefore succeed rather than report
+    // `NotFound`, or a caller whose FIRST attempt reclaimed the location and
+    // then failed to record its stream transition is stuck: the retry would
+    // refuse a filesystem error for work it had already done.
+    //
+    // Only an absent marker counts. A marker that exists and cannot be read
+    // is a tamper signal, and it is not this function's to absorb.
+    let marker = reservation
+        .base
+        .join(reservation.derived.project_id.as_str())
+        .join(format!("{}.json", reservation.derived.worktree_id));
+    if !marker.exists() {
+        return Ok(());
+    }
+    let registered = symbiote_repo::registered_worktrees(git, checkout)
+        .map_err(|error| {
+            storage_error(StoreError::Integrity(format!(
+                "registered worktrees are not observable: {error:?}"
+            )))
+        })?
+        .contains(&worktree);
+    if registered {
+        symbiote_repo::remove_worktree(git, checkout, &worktree, force).map_err(|error| {
+            ProtocolError {
+                code: ErrorCode::FailedPrecondition,
+                message: format!("worktree removal refused: {error:?}"),
+            }
+        })?;
+    }
+    match symbiote_worktrees::release(
+        reservation,
+        symbiote_worktrees::ReleasePolicy::DeleteIfEmpty,
+    ) {
+        Ok(symbiote_worktrees::Outcome::Deleted) => Ok(()),
+        Ok(symbiote_worktrees::Outcome::Retained) => Err(ProtocolError {
+            code: ErrorCode::FailedPrecondition,
+            message: "worktree location was retained rather than released".into(),
+        }),
+        Err(error) => Err(ProtocolError {
+            code: ErrorCode::FailedPrecondition,
+            message: format!("worktree reservation release refused: {error:?}"),
+        }),
+    }
+}
+
+/// Records a run refusal against the task it refused to run, and hands the
+/// original error back. A caller must not see success for a run that did not
+/// happen, and a task must not stay `Running` for one.
 ///
-/// It starts after the two request-identity preconditions — a foreign dispatch
-/// id, and a task that is not `Running` — because those refuse the *request*,
-/// not the run: nothing has been claimed and nothing has executed, so no
-/// failure belongs to the task. Everything here has: the worktree is reserved,
-/// a transport may be built, a worker may run. A refusal in this half that
-/// left the task `Running` would be a task claiming to be executed with
-/// nothing executing it, and no operation could ever move it out, because
-/// nothing constructed a `TaskAction::Fail`.
-fn run_started_dispatch_body(
+/// The reason is the same content-free sentence the caller receives, so the
+/// journal and the operator read one classification rather than two
+/// vocabularies that can drift.
+///
+/// The command id is derived from the run's own, so a retry that fails the
+/// same way files the same failure and the store replays it instead of
+/// appending a second one.
+/// Everything in a `run_started_dispatch` after the two request-identity
+/// prechecks — the dispatch binding and the task's `Running` state — because
+/// those refuse the *request* while everything here has claimed work: the
+/// registration is re-validated, the worktree reserved, a transport built, a
+/// credential leased, a turn prepared. A refusal in this half that left the
+/// task `Running` would be a task claiming to be executed with nothing
+/// executing it, so the caller files every refusal this returns.
+#[allow(clippy::too_many_arguments)]
+fn prepare_started_dispatch(
     store: &mut Store,
     workers: &mut crate::runner::WorkerTransports,
-    inventory: &mut crate::inventory::InventoryService,
+    inventory: &crate::inventory::InventoryService,
     principal: &Principal,
-    task_record: &symbiote_domain::Task,
+    request: &Request,
     task_id: &TaskId,
-    at: symbiote_domain::Timestamp,
+    task_record: &symbiote_domain::Task,
+    current: &symbiote_domain::Dispatch,
+    claim: DispatchRunGuard,
+    deferred: &mut Option<DeferredRun>,
+    at: Timestamp,
 ) -> Result<ResponseBody, ProtocolError> {
-    let current = task_record
-        .current_dispatch()
-        .ok_or_else(dispatch_binding_refused)?;
+    // The third precondition, and the one that makes #447 real: what
     // executes is the contract's PINNED profile, so its registration
     // is re-validated here at execution time. A registration that was
     // valid at preparation and start can lapse before the run
@@ -3515,7 +3770,7 @@ fn run_started_dispatch_body(
     let prompt = symbiote_context::render_prompt(&context);
     match runtime {
         symbiote_domain::RuntimeKind::NativeSymbiote => {
-            let mut transport = workers.native_build().map_err(worker_error)?;
+            let transport = workers.native_build().map_err(worker_error)?;
             // Credential leases (#217): the dispatch's profile
             // references a credential, so the operator's broker
             // must be configured and THIS dispatch's binding
@@ -3603,21 +3858,39 @@ fn run_started_dispatch_body(
                 Ok(None) => None,
                 Err(error) => return Err(worker_error(error)),
             };
-            let outcome = crate::runner::run_native_boxed(
+            // Everything above this line was prepared under the
+            // caller's store borrow: the runnable precondition, the
+            // provider registration, the declared limits, the
+            // provisioned worktree, the rendered prompt, the built
+            // transport and the operator's tool executor. The TURN is
+            // handed back to the caller as a prepared run so it
+            // executes with the borrow released.
+            let prepared = crate::runner::prepare_native_run(
                 store,
                 task_id,
                 current,
-                &prompt,
-                transport.as_mut(),
+                prompt,
+                transport,
                 tool_execution,
                 at,
             )
             .map_err(worker_error)?;
+            let dispatch = current.id().clone();
+            *deferred = Some(DeferredRun {
+                prepared,
+                claim,
+                user_id: principal.user_id().clone(),
+                host_id: this_host.clone(),
+                request_command_id: request.command_id.clone(),
+            });
+            // A placeholder the caller replaces with the real answer
+            // once the turn has run; `completed` is exactly the fact
+            // the turn decides, so it cannot be written here.
             Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
                 task_id: task_id.clone(),
-                dispatch_id: outcome.dispatch_id,
+                dispatch_id: dispatch,
                 runtime,
-                completed: outcome.completion_filed,
+                completed: false,
             })))
         }
         symbiote_domain::RuntimeKind::ExternalHarness => {
@@ -3627,7 +3900,7 @@ fn run_started_dispatch_body(
             // cannot promise a bound it does not apply. The one
             // process this lane starts is the one the Host bounds.
             let harness_access = current.contract().effective_access().clone();
-            let mut transport = workers
+            let transport = workers
                 .external_build(crate::runner::ExternalHarnessInputs {
                     root_id: &provisioned.root_id,
                     worktree: &provisioned.worktree,
@@ -3643,114 +3916,41 @@ fn run_started_dispatch_body(
                 .map_err(worker_error)?;
             // The sandboxed launcher mounts the reserved worktree at
             // /workspace; that is the only cwd the harness sees.
-            let outcome = crate::runner::run_external_boxed(
+            let prepared = crate::runner::prepare_external_run(
                 store,
                 task_id,
                 current,
-                &prompt,
-                "/workspace",
-                transport.as_mut(),
+                prompt,
+                // The sandboxed launcher mounts the reserved worktree
+                // at /workspace; that is the only cwd the harness sees.
+                "/workspace".to_owned(),
+                transport,
                 at,
             )
             .map_err(worker_error)?;
+            let dispatch = current.id().clone();
+            *deferred = Some(DeferredRun {
+                prepared,
+                claim,
+                user_id: principal.user_id().clone(),
+                host_id: this_host.clone(),
+                request_command_id: request.command_id.clone(),
+            });
             Ok(ResponseBody::WorkerRun(Box::new(WorkerRun {
                 task_id: task_id.clone(),
-                dispatch_id: outcome.dispatch_id,
+                dispatch_id: dispatch,
                 runtime,
-                completed: outcome.completion_filed,
+                completed: false,
             })))
         }
     }
 }
 
-/// Reclaims a stream's reserved location: the git worktree if one is
-/// registered there, and the reservation marker with it.
-///
-/// The two callers disagree only about `force` and about what evidence they
-/// have proved before arriving here. Everything that decides *what is deleted*
-/// lives in this one function, so the integrated path and the abandoned path
-/// cannot drift apart in the only respect that matters.
-///
-/// The registration check is the part that is easy to get wrong. A
-/// provisioning that refused before materializing leaves the reserved location
-/// and its marker on disk with no git worktree behind them, and `worktree
-/// remove` against a path git does not know refuses for a reason that has
-/// nothing to do with work in the way — a refusal the caller must not read as
-/// "someone's work is in there". Conversely, a directory that holds content
-/// and is *not* a registered worktree is something this Host did not put
-/// there, and `DeleteIfEmpty` refuses it rather than deleting a stranger's
-/// files.
-fn reclaim_worktree(
-    git: &mut impl symbiote_repo::GitExecutor,
-    checkout: &std::path::Path,
-    reservation: &symbiote_worktrees::Reservation,
-    force: symbiote_repo::RemovalForce,
-) -> Result<(), ProtocolError> {
-    let worktree = reservation.derived.worktree_path(&reservation.base);
-    // The reclaim is complete when the marker is gone — that is the
-    // reservation crate's own definition of released, and a directory left
-    // behind without one is an abandoned location it explicitly never
-    // reclaims. Asking again must therefore succeed rather than report
-    // `NotFound`, or a caller whose FIRST attempt reclaimed the location and
-    // then failed to record its stream transition is stuck: the retry would
-    // refuse a filesystem error for work it had already done.
-    //
-    // Only an absent marker counts. A marker that exists and cannot be read
-    // is a tamper signal, and it is not this function's to absorb.
-    let marker = reservation
-        .base
-        .join(reservation.derived.project_id.as_str())
-        .join(format!("{}.json", reservation.derived.worktree_id));
-    if !marker.exists() {
-        return Ok(());
-    }
-    let registered = symbiote_repo::registered_worktrees(git, checkout)
-        .map_err(|error| {
-            storage_error(StoreError::Integrity(format!(
-                "registered worktrees are not observable: {error:?}"
-            )))
-        })?
-        .contains(&worktree);
-    if registered {
-        symbiote_repo::remove_worktree(git, checkout, &worktree, force).map_err(|error| {
-            ProtocolError {
-                code: ErrorCode::FailedPrecondition,
-                message: format!("worktree removal refused: {error:?}"),
-            }
-        })?;
-    }
-    match symbiote_worktrees::release(
-        reservation,
-        symbiote_worktrees::ReleasePolicy::DeleteIfEmpty,
-    ) {
-        Ok(symbiote_worktrees::Outcome::Deleted) => Ok(()),
-        Ok(symbiote_worktrees::Outcome::Retained) => Err(ProtocolError {
-            code: ErrorCode::FailedPrecondition,
-            message: "worktree location was retained rather than released".into(),
-        }),
-        Err(error) => Err(ProtocolError {
-            code: ErrorCode::FailedPrecondition,
-            message: format!("worktree reservation release refused: {error:?}"),
-        }),
-    }
-}
-
-/// Records a run refusal against the task it refused to run, and hands the
-/// original error back. A caller must not see success for a run that did not
-/// happen, and a task must not stay `Running` for one.
-///
-/// The reason is the same content-free sentence the caller receives, so the
-/// journal and the operator read one classification rather than two
-/// vocabularies that can drift.
-///
-/// The command id is derived from the run's own, so a retry that fails the
-/// same way files the same failure and the store replays it instead of
-/// appending a second one.
 fn file_run_failure(
     store: &mut Store,
-    principal: &Principal,
-    inventory: &crate::inventory::InventoryService,
-    request: &Request,
+    user_id: &symbiote_domain::UserId,
+    host_id: &symbiote_domain::HostId,
+    request_command_id: &symbiote_domain::CommandId,
     task_record: &symbiote_domain::Task,
     task_id: &TaskId,
     error: ProtocolError,
@@ -3761,12 +3961,12 @@ fn file_run_failure(
         return Ok(error);
     }
     let command_id =
-        symbiote_domain::CommandId::new(format!("{}-run-failed", request.command_id.as_str()))
+        symbiote_domain::CommandId::new(format!("{}-run-failed", request_command_id.as_str()))
             .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
     let command = symbiote_domain::TaskCommand {
         id: command_id,
         expected_revision: task_record.revision(),
-        actor: Actor::Host(inventory.host_id().clone()),
+        actor: Actor::Host(host_id.clone()),
         at: now_timestamp()?,
         action: symbiote_domain::TaskAction::Fail {
             reason: error.message.clone(),
@@ -3784,7 +3984,7 @@ fn file_run_failure(
     if let Ok(lease) = store.task_lease(task_id) {
         let lease_command = symbiote_domain::CommandId::new(format!(
             "{}-run-failed-lease",
-            request.command_id.as_str()
+            request_command_id.as_str()
         ))
         .map_err(|_| ProtocolError::new(ErrorCode::Internal))?;
         store
@@ -3796,12 +3996,45 @@ fn file_run_failure(
                 // The actor that acquired it. The lease audit attributes a
                 // release the same way it attributed the acquisition, and the
                 // acquisition was recorded against the authenticated caller.
-                principal.user_id().clone(),
+                user_id.clone(),
                 now_timestamp()?,
             )
             .map_err(storage_error)?;
     }
     Ok(error)
+}
+
+#[cfg(test)]
+mod dispatch_run_guard_tests {
+    use super::*;
+
+    fn dispatch(n: &str) -> symbiote_domain::DispatchId {
+        symbiote_domain::DispatchId::new(n).expect("a valid dispatch id")
+    }
+
+    /// One claim per dispatch at a time: the second acquire of a dispatch
+    /// another connection is running is refused, and the dispatch is
+    /// available again exactly when the holder is dropped — not before, and
+    /// not lost by a holder that never returns it.
+    #[test]
+    fn a_dispatch_is_claimed_once_until_its_holder_is_dropped() {
+        let running = empty_running_dispatches();
+        let held = DispatchRunGuard::acquire(&running, &dispatch("dispatch-a"))
+            .expect("the first claim of a dispatch succeeds");
+        assert!(
+            DispatchRunGuard::acquire(&running, &dispatch("dispatch-a")).is_none(),
+            "a second claim of a dispatch whose turn is in flight runs it twice"
+        );
+        assert!(
+            DispatchRunGuard::acquire(&running, &dispatch("dispatch-b")).is_some(),
+            "a claim of one dispatch refuses a claim of another"
+        );
+        drop(held);
+        assert!(
+            DispatchRunGuard::acquire(&running, &dispatch("dispatch-a")).is_some(),
+            "a dispatch whose holder dropped is still held: the claim leaked"
+        );
+    }
 }
 
 #[cfg(test)]

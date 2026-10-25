@@ -85,7 +85,10 @@ impl std::error::Error for LoopError {}
 /// separation: implementations translate a validated [`ProviderRequest`] into
 /// a [`ProviderResponse`] envelope. The production implementation is the
 /// OpenAI Responses API client; tests provide deterministic offline responses.
-pub trait InferenceTransport {
+/// `Send` because the Host builds a run's transport on one connection's
+/// thread and the prepared run may be handed to another: a transport the Host
+/// cannot move is a transport the Host cannot schedule.
+pub trait InferenceTransport: Send {
     fn request(
         &mut self,
         request: &ProviderRequest,

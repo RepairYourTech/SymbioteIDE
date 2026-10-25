@@ -48,6 +48,8 @@ pub mod shell_executor;
 pub mod transport;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use symbiote_domain::{HostId, UserId};
 use symbiote_protocol::{
     CURRENT_VERSION, ErrorCode, Principal, ProtocolError, Response, encode_response, parse_request,
@@ -80,11 +82,11 @@ pub fn serve_with_telemetry(
 pub fn serve_full(
     directory: &Path,
     telemetry: bool,
-    mut worker_transports: runner::WorkerTransports,
+    worker_transports: runner::WorkerTransports,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let local = transport::LocalListener::bind(directory)?;
     let host_id = identity::load(directory)?;
-    let mut inventory = inventory::InventoryService::new(
+    let inventory = inventory::InventoryService::new(
         host_id.clone(),
         telemetry,
         runtime_inventory::Published::new(directory, host_id),
@@ -95,7 +97,7 @@ pub fn serve_full(
         "local-uid-{}",
         nix::unistd::geteuid()
     ))?);
-    let mut store = Store::open(directory.join(paths::DATABASE_FILE))?;
+    let store = Store::open(directory.join(paths::DATABASE_FILE))?;
     if worker_transports.reservation_base().is_ok() {
         eprintln!(
             "symbioted: operator provisioning active (reservation base + configured transports)"
@@ -103,51 +105,229 @@ pub fn serve_full(
     } else {
         eprintln!("symbioted: ready (local metadata capabilities only)");
     }
-    // Known limitation: connections are served synchronously. With no
-    // worker transports configured this is irrelevant (activation refuses
-    // before any loop runs); if an operator ever provisions a transport,
-    // turns must move off this loop or every connection stalls for the
-    // turn's duration. See the worker-activation contract notes.
-    for connection in local.listener.incoming() {
-        let connection = connection?;
-        if transport::LocalListener::authenticate(&connection).is_err() {
-            continue;
-        }
-        let request = transport::read_frame(&connection)
-            .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
-            .and_then(|bytes| parse_request(&bytes));
-        let (response, shutdown) = match request {
-            Ok(request) => service::handle(
-                &mut store,
-                &principal,
-                &mut inventory,
-                &mut worker_transports,
-                request,
-            ),
-            Err(error) => (
-                Response {
-                    version: CURRENT_VERSION,
-                    correlation_id: None,
-                    result: Err(error),
-                },
-                false,
-            ),
-        };
-        let mut bytes = match encode_response(&response) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                encode_response(&Response::failure(response.correlation_id.clone(), error))?
-            }
-        };
-        bytes.push(b'\n');
-        // A disconnected client does not roll back an already committed command.
-        // Retrying its command ID recovers the durable receipt.
-        if transport::write_response(&connection, &bytes).is_err() {
-            eprintln!("symbioted: response disconnected; command disposition retained");
-        }
-        if shutdown {
+    let serving = Arc::new(Serving {
+        store: Mutex::new(store),
+        inventory: Mutex::new(inventory),
+        workers: Mutex::new(worker_transports),
+        running: service::empty_running_dispatches(),
+    });
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    // The accept loop polls rather than blocks, because a shutdown request is
+    // served on a CONNECTION thread and has to be able to stop the loop that
+    // is waiting for the next connection. Blocking in `accept` would leave the
+    // daemon running until some unrelated client happened to connect.
+    local.listener.set_nonblocking(true)?;
+    // The connection threads this loop spawned, so a shutdown can wait for
+    // the turns those connections are still running: a `Shutdown` served on
+    // one connection stops new work here, and the joins below are the whole
+    // grace period — in-flight turns finish, file their evidence, and answer
+    // their callers before the process exits. Nothing is killed that the
+    // operator did not kill with a signal.
+    let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
             break;
         }
+        // Reap the connections that have finished: an exited joinable thread
+        // keeps its stack mapped until it is joined or detached, and a Host
+        // that is polled connection-per-request would otherwise hold one dead
+        // stack per poll for its whole life. Finished handles drop (detaching
+        // threads that have already exited), live ones stay for the shutdown
+        // joins below.
+        threads.retain(|handle| !handle.is_finished());
+        match local.listener.accept() {
+            Ok((connection, _)) => {
+                if in_flight.load(Ordering::SeqCst) >= MAX_IN_FLIGHT_CONNECTIONS {
+                    // At capacity the connection is REFUSED, by name, on the
+                    // spot: serving it here on the accept loop would let one
+                    // slow client freeze every client that connects after it,
+                    // and a silent close would be an unexplained failure for a
+                    // client that did nothing wrong. `resource_exhausted` is
+                    // the protocol's own word for a bound reached, and the
+                    // client's retry is the remedy.
+                    refuse_exhausted(&connection);
+                    continue;
+                }
+                in_flight.fetch_add(1, Ordering::SeqCst);
+                let serving_thread = Arc::clone(&serving);
+                let principal_thread = principal.clone();
+                let shutdown_thread = Arc::clone(&shutdown);
+                let in_flight_thread = Arc::clone(&in_flight);
+                threads.push(std::thread::spawn(move || {
+                    // The decrement rides a guard rather than a trailing
+                    // statement: a connection that panics unwinds through
+                    // this drop, so a slot is never leaked by a thread that
+                    // died — and a leaked slot is a capacity the Host never
+                    // gives back.
+                    let _slot = InFlightGuard(&in_flight_thread);
+                    serve_connection(
+                        &connection,
+                        &serving_thread,
+                        &principal_thread,
+                        &shutdown_thread,
+                    );
+                }));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(ACCEPT_POLL);
+            }
+            Err(error) => return Err(Box::new(error)),
+        }
+    }
+    for thread in threads {
+        // A connection thread cannot be joining itself: the loop is the only
+        // joiner, and it has stopped accepting.
+        let _ = thread.join();
     }
     Ok(())
+}
+
+/// The accept loop's release of a connection slot. `Drop`, because a trailing
+/// decrement is a line a panic skips and a slot the Host never re-lets.
+struct InFlightGuard<'a>(&'a Arc<AtomicUsize>);
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Answers one overflow connection with the protocol's own named bound and
+/// closes it. Nothing about the request is read — the bound is on the Host's
+/// own serving capacity, which the connection itself proves by arriving.
+fn refuse_exhausted(connection: &std::os::unix::net::UnixStream) {
+    let response = Response {
+        version: CURRENT_VERSION,
+        correlation_id: None,
+        result: Err(ProtocolError {
+            code: ErrorCode::ResourceExhausted,
+            message: format!(
+                "the Host is serving at most {MAX_IN_FLIGHT_CONNECTIONS} connections at once; retry"
+            ),
+        }),
+    };
+    let Ok(mut bytes) = encode_response(&response) else {
+        return;
+    };
+    bytes.push(b'\n');
+    let _ = transport::write_response(connection, &bytes);
+}
+
+/// How many connections the Host serves at once. Four concurrent agent
+/// streams plus a client watching each of them is the workload #38 names, and
+/// this sits above it; the number is a bound, not a target.
+pub const MAX_IN_FLIGHT_CONNECTIONS: usize = 16;
+
+/// How long the accept loop waits before looking again. It exists only so a
+/// shutdown served on a connection thread can stop the loop promptly, so it is
+/// short enough that `shutdown` is not noticeably delayed and long enough not
+/// to busy-wait.
+const ACCEPT_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// The Host's mutable serving state, shared by every connection thread.
+///
+/// The three are separate locks rather than one because they are not held for
+/// the same span: `workers` builds a run's transport and is released before
+/// the turn, and only `store` is taken again afterwards, to file the
+/// evidence. They are locked in exactly one place — [`Serving::handle`] — and
+/// always in the order store, inventory, workers, so the set cannot deadlock:
+/// no other code path takes any of them, and none takes a second while
+/// holding a first in a different order.
+pub(crate) struct Serving {
+    pub(crate) store: Mutex<Store>,
+    inventory: Mutex<inventory::InventoryService>,
+    pub(crate) workers: Mutex<runner::WorkerTransports>,
+    running: service::RunningDispatches,
+}
+
+impl Serving {
+    /// Serves one request under all three locks and releases them again. The
+    /// one operation that outlives them — an agent turn — comes back as a
+    /// `DeferredRun` rather than as an answer.
+    pub(crate) fn handle(
+        &self,
+        principal: &Principal,
+        request: symbiote_protocol::Request,
+    ) -> (Response, bool, Option<service::DeferredRun>) {
+        let mut store = self
+            .store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inventory = self
+            .inventory
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut workers = self
+            .workers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        service::handle(
+            &mut store,
+            principal,
+            &mut inventory,
+            &mut workers,
+            &self.running,
+            request,
+        )
+    }
+}
+
+/// Authenticates, serves and answers one connection. Everything the request
+/// needs is borrowed from `serving` and released again before the response is
+/// written, so a long turn never holds a lock another client is waiting for.
+fn serve_connection(
+    connection: &std::os::unix::net::UnixStream,
+    serving: &Serving,
+    principal: &Principal,
+    shutdown: &AtomicBool,
+) {
+    if transport::LocalListener::authenticate(connection).is_err() {
+        return;
+    }
+    let request = transport::read_frame(connection)
+        .map_err(|_| ProtocolError::new(ErrorCode::InvalidRequest))
+        .and_then(|bytes| parse_request(&bytes));
+    let (mut response, requested_shutdown, deferred) = match request {
+        Ok(request) => serving.handle(principal, request),
+        Err(error) => (
+            Response {
+                version: CURRENT_VERSION,
+                correlation_id: None,
+                result: Err(error),
+            },
+            false,
+            None,
+        ),
+    };
+    // Every lock `Serving::handle` took is released. The turn runs here, and
+    // `resolve` re-takes only the store, for the moment it files evidence.
+    if let Some(deferred) = deferred {
+        response.result = deferred.resolve(&serving.store);
+    }
+    let mut bytes = match encode_response(&response) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // The response itself does not encode. The fallback failure is
+            // reported on stderr rather than propagated: this connection's
+            // thread has no caller to return to, and every other connection is
+            // still being served.
+            match encode_response(&Response::failure(response.correlation_id.clone(), error)) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!("symbioted: response could not be encoded: {error}");
+                    return;
+                }
+            }
+        }
+    };
+    bytes.push(b'\n');
+    // A disconnected client does not roll back an already committed command.
+    // Retrying its command ID recovers the durable receipt.
+    if transport::write_response(connection, &bytes).is_err() {
+        eprintln!("symbioted: response disconnected; command disposition retained");
+    }
+    if requested_shutdown {
+        shutdown.store(true, Ordering::SeqCst);
+    }
 }

@@ -36,7 +36,10 @@ const CANCEL_TIMEOUT: Duration = Duration::from_millis(500);
 /// The raw framed IO both transports provide: send one JSON value, receive
 /// one JSON value or `None` when nothing arrives within the timeout. `Err`
 /// means the stream is closed or failed (process exit, broken pipe, EOF).
-pub trait FrameIo {
+/// `Send` because `CodexServerProcess` is itself a `CodexTransport`, and a
+/// transport the Host cannot move to the thread that runs the turn is a
+/// transport the Host cannot schedule.
+pub trait FrameIo: Send {
     fn send_frame(&mut self, frame: &Value, timeout: Duration) -> Result<(), DriverError>;
     fn recv_frame(&mut self, timeout: Duration) -> Result<Option<Value>, DriverError>;
     /// Terminates the process this IO owns, if any, so a run that stops at its

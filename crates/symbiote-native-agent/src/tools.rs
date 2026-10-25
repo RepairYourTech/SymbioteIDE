@@ -114,7 +114,10 @@ pub struct ToolExecution {
 /// (WorktreeWrite profile, reserved worktree, no network, private HOME);
 /// tests script outputs and failures — no real side effect is possible in
 /// a test.
-pub trait ShellToolExecutor {
+/// `Send` for the same reason as [`crate::InferenceTransport`]: the Host may
+/// move a prepared run to the thread that executes it, and a tool executor
+/// that could not move would silently forbid that.
+pub trait ShellToolExecutor: Send {
     /// Runs one shell invocation inside the reserved worktree and returns
     /// its bounded stdout and exit code. `Err` means the invocation could
     /// not be completed (transport/consent/launch failure) — distinct from
