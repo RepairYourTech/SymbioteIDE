@@ -83,19 +83,20 @@ def _indented(line: str) -> tuple[str, int, int]:
 
     The count is the quote's depth, and it is what tells a line that continues the paragraph
     a quote already holds from one that opens a quote beside it — a marker at the depth the
-    paragraph was written at continues it, and a deeper one is a new container, which is
-    also what tells the walk to forget the list items outside it.
+    paragraph was written at continues it, and a deeper one is a new container, which is also
+    what tells the walk to forget the list items outside it.
+
+    A leading tab is expanded to the spaces of the column the next multiple of four is,
+    because the width this returns is counted in columns while `_opening` and `_content`
+    slice the line by index: a tab kept in the line is one character wide to a slice and four
+    columns wide to the count, and the two disagree about where content begins.
     """
     line, depth = _unquote(line)
-    width = 0
-    for character in line:
-        if character == " ":
-            width += 1
-        elif character == "\t":
-            width += 4 - width % 4
-        else:
-            break
-    return line, width, depth
+    text = line.lstrip(" \t")
+    lead = 0
+    for character in line[: len(line) - len(text)]:
+        lead += 4 - lead % 4 if character == "\t" else 1
+    return " " * lead + text, lead, depth
 
 
 def _opening(line: str, width: int) -> _Opening:
@@ -300,8 +301,14 @@ def _read(document: pathlib.Path) -> tuple[list[str], list[str], list[str]]:
                 items.clear()
         if fence is not None:
             marker, markers = fence
-            close = _fence(body.lstrip())
-            if close is not None and close[0] == marker and close[1] >= markers:
+            # A closing fence carries nothing but its markers and sits no deeper than any
+            # other block: a remainder after the run is an info string a closer cannot
+            # carry, and an indentation of CODE columns or more is the block's own content.
+            indent = len(body) - len(body.lstrip(" "))
+            rest = body.lstrip(" ")
+            close = _fence(rest)
+            if (indent < CODE and close is not None and close[0] == marker
+                    and close[1] >= markers and not rest[close[1]:].strip()):
                 fence, opened, paragraph = None, 0, False
             continue
 
