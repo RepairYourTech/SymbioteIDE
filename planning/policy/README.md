@@ -28,7 +28,7 @@ applicability  security, privacy, accessibility, performance and cross-platform,
 assumption   the licence, authentication and telemetry assumption about a product in #171's universe
 ```
 
-As committed: **5** artifact classes, **17** obligations, **31** contract documents, **11**
+As committed: **5** artifact classes, **17** obligations, **32** contract documents, **11**
 dependencies, **7** generated artifacts and **10** universe products.
 
 ## The readings
