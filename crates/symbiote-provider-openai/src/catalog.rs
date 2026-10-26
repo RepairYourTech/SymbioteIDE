@@ -103,7 +103,11 @@ impl ProviderCatalog {
         if request.max_output_tokens > entry.max_output_tokens {
             return Err(ProviderError::OutputLimit);
         }
-        if request.input_token_budget > entry.context_window_tokens {
+        // The window holds the whole exchange: the input estimate plus the
+        // output the caller has reserved must fit it, or a catalog smaller
+        // than the descriptor could authorize a request whose two halves
+        // each fit and whose sum does not.
+        if request.input_token_budget + request.max_output_tokens > entry.context_window_tokens {
             return Err(ProviderError::ContextLimit);
         }
         if let Some(effort) = &request.reasoning {

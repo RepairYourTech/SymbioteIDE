@@ -421,6 +421,169 @@ fn a_credential_source_failure_refuses_before_the_wire() {
     );
 }
 
+#[test]
+fn a_whole_call_in_its_first_fragment_keeps_its_arguments() {
+    let mut assembler = StreamAssembler::default();
+    assembler
+        .feed(&serde_json::json!({
+            "choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-2", "type": "function",
+                "function": {"name": "shell", "arguments": "{\"command\": \"echo done\"}"}}]}, "index": 0}]
+        }))
+        .expect("the fragment is fed");
+    assembler
+        .feed(&serde_json::json!({
+            "choices": [{"delta": {}, "finish_reason": "tool_calls", "index": 0}]
+        }))
+        .expect("the finish is fed");
+    let request = request("model-a", true);
+    let model = descriptor("model-a");
+    let outcome = assembler
+        .assemble(&request, &model)
+        .expect("a call delivered whole in one chunk is one call");
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(
+        outcome.tool_calls[0].arguments,
+        serde_json::json!({"command": "echo done"})
+    );
+}
+
+#[test]
+fn an_early_null_usage_leaves_the_slot_for_the_real_one() {
+    let mut assembler = StreamAssembler::default();
+    assembler
+        .feed(&serde_json::json!({
+            "choices": [{"delta": {"content": "hi"}, "usage": null, "index": 0}]
+        }))
+        .expect("the first chunk is fed");
+    assembler
+        .feed(&serde_json::json!({"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}}))
+        .expect("the usage chunk is fed");
+    assembler
+        .feed(&serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop", "index": 0}]}))
+        .expect("the finish is fed");
+    let request = request("model-a", true);
+    let model = descriptor("model-a");
+    let outcome = assembler
+        .assemble(&request, &model)
+        .expect("the stream completes");
+    assert_eq!(
+        outcome.usage,
+        TokenUsage::Known {
+            input_tokens: 7,
+            output_tokens: 3,
+            cached_input_tokens: None,
+            reasoning_tokens: None,
+        }
+    );
+}
+
+#[test]
+fn an_image_part_is_refused_before_the_wire_never_dropped() {
+    let simulator = Simulator::new(|_body| http(&whole_response_body()));
+    let mut transport = simulator.transport(catalog("model-a"));
+    let mut with_image = request("model-a", false);
+    with_image.messages[0]
+        .content
+        .push(symbiote_runtime_sdk::provider::InputPart::Image {
+            artifact_id: symbiote_domain::ArtifactId::new("art-a").expect("a valid artifact id"),
+        });
+    let error = transport
+        .request(&with_image, &descriptor("model-a"))
+        .expect_err("an image is refused by this text-only adapter");
+    assert!(matches!(error, ProviderError::UnsupportedCapability));
+    assert_eq!(
+        simulator
+            .connections
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+#[test]
+fn an_effort_without_an_exact_wire_spelling_is_refused_even_when_advertised() {
+    let mut catalog = catalog("model-a");
+    catalog.models[0]
+        .supported_reasoning
+        .insert(ReasoningEffort::Ultra);
+    let simulator = Simulator::new(|_body| http(&whole_response_body()));
+    let mut transport = simulator.transport(catalog);
+    let mut effort = request("model-a", false);
+    effort.reasoning = Some(ReasoningEffort::Ultra);
+    let error = transport
+        .request(&effort, &descriptor("model-a"))
+        .expect_err("an effort the wire cannot spell is refused, not downgraded");
+    assert!(matches!(error, ProviderError::UnsupportedCapability));
+    assert_eq!(
+        simulator
+            .connections
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+#[test]
+fn a_chunked_response_is_decoded_before_parsing() {
+    let body = whole_response_body();
+    let chunks: Vec<String> = body
+        .as_bytes()
+        .chunks(64)
+        .map(|piece| format!("{:x}\r\n", piece.len()) + std::str::from_utf8(piece).unwrap())
+        .collect();
+    let framed = format!("{}\r\n0\r\n\r\n", chunks.join("\r\n"));
+    let head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+    let simulator = Simulator::new(move |_body| {
+        let mut raw = head.as_bytes().to_vec();
+        raw.extend_from_slice(framed.as_bytes());
+        raw
+    });
+    let mut transport = simulator.transport(catalog("model-a"));
+    let outcome = transport
+        .request(&request("model-a", false), &descriptor("model-a"))
+        .expect("a chunked body is the body it carried");
+    assert_eq!(outcome.text, "the work is done");
+}
+
+#[test]
+fn a_response_past_the_published_bound_is_refused_on_the_socket() {
+    let filler = " ".repeat(600 * 1024);
+    let simulator = Simulator::new(move |_body| http(&filler));
+    let mut transport = simulator.transport(catalog("model-a"));
+    let error = transport
+        .request(&request("model-a", false), &descriptor("model-a"))
+        .expect_err("a response past the bound is refused");
+    assert!(matches!(error, ProviderError::EnvelopeTooLarge));
+}
+
+#[test]
+fn a_remote_endpoint_is_refused_at_construction() {
+    let error = Endpoint::new("api.example.com", 443, "/v1/chat/completions")
+        .expect_err("a remote endpoint is a policy refusal in this increment");
+    assert!(matches!(error, ProviderError::LocalPolicyRequired));
+}
+
+#[test]
+fn a_credential_with_control_characters_is_refused_before_the_wire() {
+    let simulator = Simulator::new(|_body| http(&whole_response_body()));
+    let mut transport = OpenAiTransport::new(
+        Endpoint::new(HOST, simulator.port, "/v1/chat/completions").expect("a sane endpoint"),
+        AllowedHosts::new([HOST]),
+        Box::new(FixedCredential::new("secret\r\nX-Evil: injected")),
+        catalog("model-a"),
+        Duration::from_secs(5),
+    )
+    .expect("the endpoint is allowlisted");
+    let error = transport
+        .request(&request("model-a", false), &descriptor("model-a"))
+        .expect_err("an injectable credential is refused");
+    assert!(matches!(error, ProviderError::CredentialRequired));
+    assert_eq!(
+        simulator
+            .connections
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
 /// The house census reads this document against the bounds the crate holds;
 /// the case that reads it must exist and hold it.
 #[test]

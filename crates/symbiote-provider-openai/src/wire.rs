@@ -36,8 +36,23 @@ use symbiote_runtime_sdk::provider::{
 };
 
 /// The neutral request as the provider's JSON. No field here is invented:
-/// everything encoded is something the contract carried.
-pub fn encode_request(request: &ProviderRequest) -> Value {
+/// everything encoded is something the contract carried — and a request this
+/// encoding cannot spell honestly is refused, never rewritten: an image part
+/// is `UnsupportedCapability` (this adapter is text-only, and dropping the
+/// picture while keeping the caption is the coercion this crate refuses),
+/// and an effort the wire has no exact spelling for is refused rather than
+/// sent as the nearest one.
+pub fn encode_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
+    for message in &request.messages {
+        if message.content.iter().any(|part| {
+            matches!(
+                part,
+                symbiote_runtime_sdk::provider::InputPart::Image { .. }
+            )
+        }) {
+            return Err(ProviderError::UnsupportedCapability);
+        }
+    }
     let messages: Vec<Value> = request
         .messages
         .iter()
@@ -51,14 +66,9 @@ pub fn encode_request(request: &ProviderRequest) -> Value {
                 .content
                 .iter()
                 .filter_map(|part| match part {
-                    symbiote_runtime_sdk::provider::InputPart::Text { text } => Some(text),
-                    // An image part rides an artifact reference the Host
-                    // resolved; this adapter's text-only encoding states that
-                    // boundary by leaving the part out rather than guessing a
-                    // provider shape for it.
+                    symbiote_runtime_sdk::provider::InputPart::Text { text } => Some(text.as_str()),
                     symbiote_runtime_sdk::provider::InputPart::Image { .. } => None,
                 })
-                .cloned()
                 .collect::<Vec<_>>()
                 .join("");
             json!({ "role": role, "content": text })
@@ -88,26 +98,29 @@ pub fn encode_request(request: &ProviderRequest) -> Value {
         encoded["tools"] = Value::Array(tools);
     }
     if let Some(effort) = &request.reasoning {
-        encoded["reasoning_effort"] = encode_effort(effort);
+        encoded["reasoning_effort"] = encode_effort(effort)?;
     }
     if request.streaming {
         encoded["stream_options"] = json!({ "include_usage": true });
     }
-    encoded
+    Ok(encoded)
 }
 
-fn encode_effort(effort: &ReasoningEffort) -> Value {
+fn encode_effort(effort: &ReasoningEffort) -> Result<Value, ProviderError> {
+    // Exact spellings only. The contract's highest efforts have no
+    // provider-wide spelling on this wire, and sending the nearest one would
+    // be the silent downgrade that turns a run's answer into a different
+    // run's — so they are refused here, wherever they might have slipped
+    // past a catalog that advertised them.
     match effort {
-        ReasoningEffort::None => json!("none"),
-        ReasoningEffort::Minimal => json!("minimal"),
-        ReasoningEffort::Low => json!("low"),
-        ReasoningEffort::Medium => json!("medium"),
-        ReasoningEffort::High => json!("high"),
-        // The contract's highest efforts have no provider-wide spelling; the
-        // adapter does not silently downgrade, so they are refused by the
-        // catalog's supported-set check before encoding is reached. This arm
-        // exists so the mapping is total and the refusal is the catalog's.
-        ReasoningEffort::XHigh | ReasoningEffort::Max | ReasoningEffort::Ultra => json!("high"),
+        ReasoningEffort::None => Ok(json!("none")),
+        ReasoningEffort::Minimal => Ok(json!("minimal")),
+        ReasoningEffort::Low => Ok(json!("low")),
+        ReasoningEffort::Medium => Ok(json!("medium")),
+        ReasoningEffort::High => Ok(json!("high")),
+        ReasoningEffort::XHigh | ReasoningEffort::Max | ReasoningEffort::Ultra => {
+            Err(ProviderError::UnsupportedCapability)
+        }
     }
 }
 
@@ -202,10 +215,17 @@ pub fn decode_response(
         .unwrap_or_default()
         .to_owned();
     let mut tool_calls = Vec::new();
-    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for call in calls {
-            tool_calls.push(decode_tool_call(call)?);
+    match message.get("tool_calls") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(calls)) => {
+            for call in calls {
+                tool_calls.push(decode_tool_call(call)?);
+            }
         }
+        // A present-but-wrong-typed calls field is data the provider sent
+        // and this decode would otherwise drop; a malformed call that
+        // vanishes is a call the loop never answers.
+        Some(_) => return Err(ProviderError::InvalidEnvelope),
     }
     let finish = decode_finish(choice.get("finish_reason").and_then(Value::as_str))?;
     let response = ProviderResponse {
@@ -297,7 +317,10 @@ impl StreamAssembler {
         {
             self.finish = Some(decode_finish(Some(reason))?);
         }
-        if self.usage.is_none() && event.get("usage").is_some() {
+        // A `"usage": null` in an early chunk is the provider saying "not in
+        // this one", not a measurement of nothing — the slot stays open for
+        // the usage chunk the stream options asked for.
+        if self.usage.is_none() && event.get("usage").is_some_and(|usage| !usage.is_null()) {
             self.usage = Some(decode_usage(event.get("usage"))?);
         }
         Ok(())
@@ -326,10 +349,18 @@ impl StreamAssembler {
                 .and_then(|function| function.get("name"))
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            // The first fragment can carry arguments with the id — some
+            // providers deliver a whole call in one chunk — so what arrived
+            // with the id is the call's first argument bytes, not nothing.
+            let arguments = fragment
+                .get("function")
+                .and_then(|function| function.get("arguments"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             self.calls.push(StreamCall {
                 id: id.to_owned(),
                 name: name.to_owned(),
-                arguments: String::new(),
+                arguments: arguments.to_owned(),
                 complete: false,
             });
             return Ok(());

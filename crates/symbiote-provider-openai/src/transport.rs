@@ -33,8 +33,14 @@ use std::time::Duration;
 
 use symbiote_native_agent::InferenceTransport;
 use symbiote_runtime_sdk::provider::{
-    ModelDescriptor, ProviderError, ProviderRequest, ProviderResponse,
+    MAX_ENVELOPE_BYTES, ModelDescriptor, ProviderError, ProviderRequest, ProviderResponse,
 };
+
+/// What one provider exchange may hold on the wire: the contract's envelope
+/// bound plus the HTTP framing around it — headers, chunk delimiters, the SSE
+/// line furniture. The read stops at this bound while the bytes are still on
+/// the socket.
+const MAX_RESPONSE_BYTES: usize = MAX_ENVELOPE_BYTES + 64 * 1024;
 
 use crate::catalog::ProviderCatalog;
 use crate::wire::{self, StreamAssembler};
@@ -105,14 +111,26 @@ impl Endpoint {
     ) -> Result<Self, ProviderError> {
         let host: String = host.into();
         let path: String = path.into();
+        // A remote endpoint is refused, on purpose: this transport has no
+        // TLS yet, and a bearer credential written to a socket that leaves
+        // the machine is a credential published to the network path. The
+        // endpoints this adapter serves are the machine's own — a local
+        // provider process or a loopback tunnel the operator runs — and
+        // remote enablement is the TLS-bearing increment behind AUTH-01,
+        // not a flag here.
+        let loopback = host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.ends_with(".localhost");
         let refused = host.is_empty()
+            || !loopback
             || !path.starts_with('/')
             || path.contains("://")
             || path
                 .bytes()
                 .any(|byte| byte == b'\r' || byte == b'\n' || byte == b' ');
         if refused {
-            return Err(ProviderError::InvalidEnvelope);
+            return Err(ProviderError::LocalPolicyRequired);
         }
         Ok(Self { host, port, path })
     }
@@ -147,6 +165,10 @@ impl OpenAiTransport {
         if !allowed.permits(endpoint.host()) {
             return Err(ProviderError::LocalPolicyRequired);
         }
+        // A catalog the reader cannot hold is refused at construction, not
+        // discovered mid-run: the transport's every refusal rests on this
+        // document being one its reader speaks.
+        catalog.validate()?;
         Ok(Self {
             endpoint,
             credential,
@@ -172,15 +194,42 @@ impl OpenAiTransport {
 
     fn exchange(&self, request_body: &serde_json::Value) -> Result<String, ProviderError> {
         let credential = self.credential.credential()?;
+        // The credential rides one header line, so a credential carrying a
+        // line break or a space is a second header nobody configured — or a
+        // whole second request. Refused, not sanitized: a credential that
+        // needs mangling to be sent is a credential this endpoint must not
+        // receive.
+        if credential.is_empty()
+            || credential
+                .bytes()
+                .any(|byte| byte <= b' ' || byte >= b'\x7f')
+        {
+            return Err(ProviderError::CredentialRequired);
+        }
         let body = serde_json::to_vec(request_body).map_err(|_| ProviderError::InvalidEnvelope)?;
-        let mut stream =
-            std::net::TcpStream::connect((self.endpoint.host.as_str(), self.endpoint.port))
-                .map_err(|_| ProviderError::Unavailable)?;
-        stream
-            .set_read_timeout(Some(self.deadline))
+        // One wall clock for the whole exchange: connect, writes and reads
+        // each get the time that is LEFT, so a peer that dribbles a byte
+        // inside every socket timeout cannot hold the run forever.
+        let started = std::time::Instant::now();
+        let remaining = || {
+            self.deadline
+                .checked_sub(started.elapsed())
+                .ok_or(ProviderError::Unavailable)
+        };
+        let address = std::net::ToSocketAddrs::to_socket_addrs(&(
+            self.endpoint.host.as_str(),
+            self.endpoint.port,
+        ))
+        .map_err(|_| ProviderError::Unavailable)?
+        .next()
+        .ok_or(ProviderError::Unavailable)?;
+        let mut stream = std::net::TcpStream::connect_timeout(&address, remaining()?)
             .map_err(|_| ProviderError::Unavailable)?;
         stream
-            .set_write_timeout(Some(self.deadline))
+            .set_read_timeout(Some(remaining()?))
+            .map_err(|_| ProviderError::Unavailable)?;
+        stream
+            .set_write_timeout(Some(remaining()?))
             .map_err(|_| ProviderError::Unavailable)?;
         let request = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -193,10 +242,25 @@ impl OpenAiTransport {
             .write_all(request.as_bytes())
             .and_then(|_| stream.write_all(&body))
             .map_err(|_| ProviderError::Unavailable)?;
+        // The response is read under the published bound — headers, framing
+        // and body together. A provider answer larger than what this adapter
+        // can accept is refused while it is still bytes on the socket, not
+        // after it has been allocated and parsed.
         let mut raw = Vec::new();
-        stream
-            .take_remaining(&mut raw)
-            .map_err(|_| ProviderError::Unavailable)?;
+        let mut scratch = [0u8; 8192];
+        loop {
+            match stream.read(&mut scratch) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if raw.len() + read > MAX_RESPONSE_BYTES {
+                        return Err(ProviderError::EnvelopeTooLarge);
+                    }
+                    raw.extend_from_slice(&scratch[..read]);
+                }
+                Err(_) => return Err(ProviderError::Unavailable),
+            }
+            remaining()?;
+        }
         let header_end = raw
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
@@ -216,7 +280,21 @@ impl OpenAiTransport {
         if status != 200 {
             return Err(Self::classify(status));
         }
-        Ok(String::from_utf8_lossy(&raw[header_end + 4..]).into_owned())
+        // The body is what the transfer framing says it is: chunked framing
+        // carries its own sizes and delimiters, and handing those bytes to
+        // the JSON or event parser is how a body silently loses pieces.
+        let raw_body = &raw[header_end + 4..];
+        let chunked = head.lines().skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("transfer-encoding")
+                    && value.trim().eq_ignore_ascii_case("chunked")
+            })
+        });
+        if chunked {
+            decode_chunked(raw_body)
+        } else {
+            Ok(String::from_utf8_lossy(raw_body).into_owned())
+        }
     }
 
     /// Extracts each `data:` event's JSON payload from a server-sent-event
@@ -240,15 +318,32 @@ impl OpenAiTransport {
     }
 }
 
-/// `Read::read_to_end` under another name, so the import list above stays
-/// honest about which reads this adapter performs.
-trait TakeRemaining {
-    fn take_remaining(&mut self, out: &mut Vec<u8>) -> std::io::Result<()>;
-}
-
-impl TakeRemaining for std::net::TcpStream {
-    fn take_remaining(&mut self, out: &mut Vec<u8>) -> std::io::Result<()> {
-        self.read_to_end(out).map(|_| ())
+fn decode_chunked(raw: &[u8]) -> Result<String, ProviderError> {
+    let mut body = Vec::new();
+    let mut cursor = 0;
+    loop {
+        let line_end = raw[cursor..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or(ProviderError::InvalidEnvelope)?
+            + cursor;
+        let size_text = String::from_utf8_lossy(&raw[cursor..line_end]);
+        let size = usize::from_str_radix(size_text.trim().split(';').next().unwrap_or(""), 16)
+            .map_err(|_| ProviderError::InvalidEnvelope)?;
+        cursor = line_end + 2;
+        if size == 0 {
+            return Ok(String::from_utf8_lossy(&body).into_owned());
+        }
+        if cursor + size + 2 > raw.len() {
+            return Err(ProviderError::InvalidEnvelope);
+        }
+        body.extend_from_slice(&raw[cursor..cursor + size]);
+        cursor += size;
+        // The chunk's own CRLF delimiter, exactly where the size said.
+        if raw.get(cursor) != Some(&b'\r') || raw.get(cursor + 1) != Some(&b'\n') {
+            return Err(ProviderError::InvalidEnvelope);
+        }
+        cursor += 2;
     }
 }
 
@@ -262,7 +357,7 @@ impl InferenceTransport for OpenAiTransport {
         // capabilities, the contract answers for the envelope.
         self.authorize(request)?;
         request.validate(model)?;
-        let encoded = wire::encode_request(request);
+        let encoded = wire::encode_request(request)?;
         let body = self.exchange(&encoded)?;
         if request.streaming {
             let mut assembler = StreamAssembler::default();
