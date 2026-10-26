@@ -144,6 +144,7 @@
     { "pins": { "artifact": "crates/symbiote-native-agent", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-projection", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-protocol", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
+    { "pins": { "artifact": "crates/symbiote-provider-openai", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-repo", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-runtime-discovery", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },
     { "pins": { "artifact": "crates/symbiote-runtime-sdk", "decisions": [{ "id": "ADR-0001/HOST-STACK", "revision": 2 }], "compatibility": [] }, "status": "settled" },

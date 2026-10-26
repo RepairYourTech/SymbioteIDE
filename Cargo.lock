@@ -3113,6 +3113,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiote-provider-openai"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "symbiote-contract-read",
+ "symbiote-domain",
+ "symbiote-native-agent",
+ "symbiote-runtime-sdk",
+]
+
+[[package]]
 name = "symbiote-repo"
 version = "0.1.0"
 dependencies = [

@@ -176,6 +176,10 @@ CLAIMS: tuple[Claim, ...] = (
     Claim("providers.md states the 128-message envelope bound", "docs/contracts/providers.md",
           "the_contract_states_the_envelope_bounds_this_module_enforces",
           "at most 128 messages", "at most 129 messages"),
+    Claim("provider-openai.md states the 256 KiB envelope bound",
+          "docs/contracts/provider-openai.md",
+          "the_contract_document_names_the_bounds_this_adapter_enforces",
+          "envelope bound of 256 KiB", "envelope bound of 257 KiB"),
     Claim("repository.md states the 16 KiB content-head bound", "docs/contracts/repository.md",
           "the_contract_states_the_bounds_this_crate_enforces",
           "at most 16 KiB each", "at most 17 KiB each"),
@@ -217,6 +221,8 @@ CLAIMS: tuple[Claim, ...] = (
 # library's own `src` is `--lib`, and one in a binary's is `--bin <name>` — the CLI's exit codes
 # are held by a case in `symbiote-host/src/bin/symbiote/tests.rs`, which is neither of the others.
 SELECTORS: dict[tuple[str, str], str] = {
+    ("symbiote-provider-openai",
+     "the_contract_document_names_the_bounds_this_adapter_enforces"): "--test protocol",
     ("symbiote-architecture", "the_document_writes_a_row_for_every_module_the_crate_declares"):
         "--test document",
     ("symbiote-client-sdk", "the_contract_names_every_outcome_this_crate_classifies_and_none_it_does_not"):
