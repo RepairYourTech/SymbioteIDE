@@ -104,6 +104,8 @@ HELD: dict[str, tuple[tuple[str, str], ...]] = {
         ("symbiote-protocol", "the_documents_state_the_version_and_bounds_this_crate_enforces"),),
     "docs/contracts/providers.md": (
         ("symbiote-runtime-sdk", "the_contract_states_the_envelope_bounds_this_module_enforces"),),
+    "docs/contracts/provider-openai.md": (
+        ("symbiote-provider-openai", "the_contract_document_names_the_bounds_this_adapter_enforces"),),
     "docs/contracts/repository.md": (
         ("symbiote-repo", "the_contract_states_the_bounds_this_crate_enforces"),),
     "docs/contracts/runtime-discovery.md": (
@@ -185,6 +187,7 @@ FIGURES: dict[str, int] = {
     "docs/contracts/protocol.md": 2,
     "docs/contracts/provider-registry.md": 0,
     "docs/contracts/providers.md": 1,
+    "docs/contracts/provider-openai.md": 1,
     "docs/contracts/repository.md": 4,
     "docs/contracts/resource-consent.md": 0,
     "docs/contracts/role-resolution.md": 1,

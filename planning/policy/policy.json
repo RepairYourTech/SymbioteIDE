@@ -215,6 +215,7 @@
       {"doc": "docs/contracts/configuration.md", "surface": "config"},
       {"doc": "docs/contracts/providers.md", "surface": "config"},
       {"doc": "docs/contracts/provider-registry.md", "surface": "config"},
+      {"doc": "docs/contracts/provider-openai.md", "surface": "runtime"},
       {"doc": "docs/contracts/domain.md", "surface": "domain"},
       {"doc": "docs/contracts/project-team.md", "surface": "domain"},
       {"doc": "docs/contracts/role-resolution.md", "surface": "domain"},

@@ -459,7 +459,7 @@
           "channel": "repository",
           "subject": "no_electron",
           "ok": true,
-          "detail": "no manifest of 30 declares Electron"
+          "detail": "no manifest of 31 declares Electron"
         },
         {
           "channel": "repository",
